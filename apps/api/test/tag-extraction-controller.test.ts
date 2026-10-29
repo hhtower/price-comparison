@@ -6,6 +6,7 @@ import { AuthGuard } from '../src/auth/auth.guard.js';
 import { AiController, TagJobCreateDto, TagJobScopeDto } from '../src/ai/ai.controller.js';
 import { AiAdminController } from '../src/ai/ai-admin.controller.js';
 import { AiService } from '../src/ai/ai.service.js';
+import { AiRepository } from '../src/ai/ai.repository.js';
 test('tag creation validates cost acknowledgment and bounded IDs, disallows caller model',async()=>{
  const valid={productIds:['1'],requestId:'7310f082-cb6e-4422-8c8d-966788b25905',previewDigest:'a'.repeat(64),acknowledgePossibleCharge:true};
  assert.equal((await validate(Object.assign(new TagJobCreateDto(),valid))).length,0);
@@ -26,18 +27,33 @@ test('tag admin routes retain authentication and validate pagination/IDs',async(
  assert.throws(()=>admin.tagResults('2','101'),{code:'INVALID_PAGE_SIZE'});assert.throws(()=>admin.tagAudit('2','0'),{code:'INVALID_ID'});
 });
 
-test('all-pending scope validates a boolean and is passed through preview and creation', async () => {
+test('all-pending scope validates a boolean and creates a background job without a preview digest', async () => {
  const scope = { allPending: true };
  assert.equal((await validate(Object.assign(new TagJobScopeDto(), scope), { whitelist: true, forbidNonWhitelisted: true })).length, 0);
  for (const allPending of [null, 'true', 1, false]) assert.ok((await validate(Object.assign(new TagJobScopeDto(), { allPending }))).length);
  const calls: unknown[] = [];
- const controller = new AiController({ previewTagJob: async (input: unknown) => { calls.push(input); return {}; }, createTagJob: async (input: unknown) => { calls.push(input); return { id: 1n }; } } as never, {} as never);
- await controller.previewTags(scope as TagJobScopeDto);
- await controller.createTags({ ...scope, requestId: '7310f082-cb6e-4422-8c8d-966788b25905', previewDigest: 'a'.repeat(64), acknowledgePossibleCharge: true } as TagJobCreateDto);
+ const controller = new AiController({ createTagJob: async (input: unknown) => { calls.push(input); return { id: 1n }; } } as never, {} as never);
+ await controller.createTags({ ...scope, requestId: '7310f082-cb6e-4422-8c8d-966788b25905', acknowledgePossibleCharge: true } as TagJobCreateDto);
  assert.equal((calls[0] as any).allPending, true);
- assert.equal((calls[1] as any).allPending, true);
+ assert.equal((calls[0] as any).previewDigest, undefined);
  assert.equal((await validate(Object.assign(new TagJobCreateDto(),{allPending:true,requestId:'7310f082-cb6e-4422-8c8d-966788b25905',acknowledgePossibleCharge:true}))).length,0);
  assert.ok((await validate(Object.assign(new TagJobCreateDto(),{productIds:['1'],requestId:'7310f082-cb6e-4422-8c8d-966788b25905',acknowledgePossibleCharge:true}))).length);
+});
+
+test('controller rejects all-pending preview and digest creation through the real service before database access', async () => {
+ const previous={...process.env};
+ try {
+  Object.assign(process.env,{AI_STANDARDIZATION_ENABLED:'true',AI_TAG_EXTRACTION_ENABLED:'true',AI_API_KEY:'test',AI_BASE_URL:'http://localhost:1234/v1',AI_MODEL:'local-test'});
+  let queries=0;
+  const accessed=()=>{queries++;throw new Error('database must not be accessed');};
+  const repository=new AiRepository({selectFrom:accessed,transaction:accessed} as never);
+  const controller=new AiController(new AiService(repository),repository);
+  await assert.rejects(controller.previewTags({allPending:true}),{code:'AI_TAG_PREVIEW_SCOPE_INVALID'});
+  await assert.rejects(controller.createTags({
+   allPending:true,requestId:'7310f082-cb6e-4422-8c8d-966788b25905',previewDigest:'a'.repeat(64),acknowledgePossibleCharge:true,
+  }),{code:'AI_TAG_PREVIEW_NOT_ALLOWED'});
+  assert.equal(queries,0);
+ } finally {for(const key of Object.keys(process.env))if(!(key in previous))delete process.env[key];Object.assign(process.env,previous);}
 });
 test('tag service always chooses configured runtime model',async()=>{
  const previous={...process.env};

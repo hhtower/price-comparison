@@ -27,6 +27,26 @@ test('public protocol detection rejects private addresses and revalidates DNS be
 const item = { id: 5, slug: 'pro', title: { 'zh-CN': 'Pro' }, skus: [{ id: 6, is_active: true, spec_values: {}, price_amount: '650.00', stock_status: 'in_stock' }] };
 const feed = () => Response.json({ status_code: 0, data: [item], pagination: { page: 1, page_size: 12, total: 1, total_page: 1 } });
 
+test('16688 detection quotes only its three preview products within the six-request budget', async () => {
+  const calls: Array<{ path: string; goodsNo?: string }> = [];
+  const detector = new ProtocolDetectionService({ lookup: publicLookup, fetchImpl: async (input, init) => {
+    const path = new URL(String(input)).pathname, body = JSON.parse(String(init?.body));
+    calls.push({ path, goodsNo: body.goods_no });
+    if (path === '/shopApi/goods/list') return Response.json({ code: 1, data: { list: Array.from({ length: 100 }, (_, index) => ({
+      goods_no: `G${index + 1}`, name: `Product ${index + 1}`, price: '10.00', stock_available_quantity: 1,
+    })) } });
+    if (path === '/shopApi/payment/list') return Response.json({ code: 1, data: { list: [{ id: 1, show_name: 'MockPay' }] } });
+    assert.equal(path, '/shopApi/payment/quotePrice');
+    return Response.json({ code: 1, data: { total_amount: '10.50', quantity: 1 } });
+  } });
+  const result = await detector.detect('https://mock.example/shop/S1', '16688');
+  assert.equal(result.status, 'matched');
+  assert.deepEqual(result.products.map(product => product.externalId), ['G1', 'G2', 'G3']);
+  assert.deepEqual(calls.filter(call => call.goodsNo).map(call => call.goodsNo), ['G1', 'G2', 'G3']);
+  assert.equal(calls.length, 5);
+  assert.ok(result.products.every(product => product.settlement?.price === '10.50'));
+});
+
 test('detects the public protocol by schema on an unfamiliar public domain and returns a preview', async () => {
   let requests = 0;
   const detector = new ProtocolDetectionService({ lookup: publicLookup, fetchImpl: async (input, init) => {

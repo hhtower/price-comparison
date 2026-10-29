@@ -16,11 +16,10 @@ export class ShopSubmissionsService {
     const name = requiredText(input.name, 'name');
     const url = normalizeHttpUrl(input.url);
     const platform = input.platform?.trim() ?? '';
-    return this.submissions.create({ name, url, platform });
+    return this.submissions.create({ name, url, platform }, this.shops);
   }
 
-  async listPending(page: number, pageSize: number): Promise<{ items: ShopSubmission[]; total: number }> {
-    await this.submissions.autoApproveExistingProtocols(this.shops);
+  listPending(page: number, pageSize: number): Promise<{ items: ShopSubmission[]; total: number }> {
     return this.submissions.listPending(page, pageSize);
   }
 

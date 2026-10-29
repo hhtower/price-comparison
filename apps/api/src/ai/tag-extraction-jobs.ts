@@ -66,7 +66,8 @@ async function selection(db: Db, input: TagJobScope, lock = false) {
   if (input.retryOfJobId !== undefined) {
     const source = await db.selectFrom('ai_jobs').select(['id','job_type','parent_identity_job_id']).where('id','=',input.retryOfJobId).executeTakeFirst();
     if (!source || source.job_type !== 'tag_extraction') throw new DomainValidationError('AI_TAG_RETRY_SOURCE_INVALID','重试来源必须是标签任务');
-    const members = await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',source.id).$if(products.length>0,q=>q.where('product_id','in',products.map(p=>p.id))).execute();
+    if (products.length !== input.productIds!.length) throw new DomainValidationError('AI_TAG_RETRY_SCOPE_INVALID','重试商品不存在，请重新选择');
+    const members = await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',source.id).where('product_id','in',input.productIds!).execute();
     const allowed = new Set(members.map(m=>String(m.product_id)));
     if (products.some(p=>!allowed.has(String(p.id))) || scope.productIds?.some(id=>!allowed.has(id))) throw new DomainValidationError('AI_TAG_RETRY_SCOPE_INVALID','重试范围必须属于来源标签任务');
   }
@@ -93,6 +94,7 @@ function plan(sized: Awaited<ReturnType<typeof selection>>['sized']) {
   return {representatives,batches,planned};
 }
 async function preview(db: Db,input: TagJobScope & {model:string},lock=false) {
+  if (input.allPending) throw new DomainValidationError('AI_TAG_PREVIEW_SCOPE_INVALID','预览仅支持最多 500 个商品或单个店铺；全部未完成任务请直接创建');
   const {scope,sized}=await selection(db,input,lock);
   const {representatives,batches,planned}=plan(sized);
   const digest=createHash('sha256').update(JSON.stringify({scope,model:input.model,pipeline:pipelineVersionSnapshot(input.model),limits:readAiBatchLimits(),members:sized.map(i=>({id:String(i.product.id),version:String(i.product.content_version),revision:String(i.product.standardization_revision),fingerprint:i.fingerprint,storedFingerprint:i.product.content_fingerprint,inputKey:i.inputKey,standardProductId:String(i.product.standard_product_id),shopSource:i.payload.shopSource,protected:i.protected}))})).digest('hex');
@@ -105,7 +107,10 @@ export async function previewTagJob(db: Db,input: TagJobScope & {model:string}) 
 export async function createManualTagJob(db: Kysely<DatabaseSchema>,input:TagJobRequest) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(input.requestId)) throw new DomainValidationError('AI_TAG_REQUEST_INVALID','requestId 必须是 UUID');
   const scope=canonicalScope(input);
-  if (input.allPending && input.previewDigest === undefined) return enqueueAllPendingTagJob(db,input,scope);
+  if (input.allPending) {
+    if (input.previewDigest !== undefined) throw new DomainValidationError('AI_TAG_PREVIEW_NOT_ALLOWED','全部未完成任务不接受预览摘要，请直接创建后台任务');
+    return enqueueAllPendingTagJob(db,input,scope);
+  }
   if (!input.previewDigest || !/^[a-f0-9]{64}$/u.test(input.previewDigest)) throw new DomainValidationError('AI_TAG_PREVIEW_REQUIRED','请先预览任务范围');
   return db.transaction().execute(async tx=>{
     await sql`select pg_advisory_xact_lock(hashtextextended(${input.requestId.toLowerCase()},0))`.execute(tx);
@@ -118,7 +123,6 @@ export async function createManualTagJob(db: Kysely<DatabaseSchema>,input:TagJob
       if (existing.job_type!=='tag_extraction'||JSON.stringify(Object.entries(saved.scope??{}).sort())!==JSON.stringify(Object.entries(scope).sort())||saved.previewDigest!==input.previewDigest) throw new DomainConflictError('AI_TAG_REQUEST_CONFLICT','该 requestId 已用于其他范围或预览');
       return existing;
     }
-    if (input.allPending) await sql`select pg_advisory_xact_lock(hashtextextended('ai-tag-all-pending',0))`.execute(tx);
     const p=await preview(tx,input,true);
     if (p.digest!==input.previewDigest) throw new DomainConflictError('AI_TAG_PREVIEW_STALE','商品范围或版本已变化，请重新预览');
     const source=input.retryOfJobId===undefined?null:await tx.selectFrom('ai_jobs').select('parent_identity_job_id').where('id','=',input.retryOfJobId).executeTakeFirstOrThrow();

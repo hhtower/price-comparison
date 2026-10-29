@@ -44,6 +44,18 @@ async function fixture(count = 1) {
   for (let offset=0;offset<products.length;offset+=500) await db.insertInto('standard_product_members').values(products.slice(offset,offset+500).map(p=>({ product_id: p.id, standard_product_id: standard.id, assignment_source: 'ai', publication_state: 'published' }))).execute();
   return { repo: new AiRepository(db), job, batch, products, inputId, payload };
 }
+async function preparePending(jobId: bigint) {
+ await db.updateTable('ai_jobs').set({priority:999999}).where('id','=',jobId).execute();
+ const claim=(await new JobsRepository(db).claimNext('ai_batch','tag-scope-preparation',120000))!;
+ assert.equal(claim.row.job_id,jobId);
+ assert.equal(claim.row.step,'prepare');
+ await prepareAllPendingTagJob(db,claim.id,{workerId:claim.claimed_by,attempt:claim.attempts,token:String(claim.row.claim_token)});
+ return db.selectFrom('ai_jobs').selectAll().where('id','=',jobId).executeTakeFirstOrThrow();
+}
+async function completeTagJob(jobId: bigint) {
+ await db.updateTable('ai_job_input_members').set({status:'classified',output:jsonb({outcome:'empty',rejectedTags:[]})}).where('job_id','=',jobId).execute();
+ await db.updateTable('ai_jobs').set({status:'succeeded',phase:'completed'}).where('id','=',jobId).execute();
+}
 
 test('standardization status excludes a newer disabled tag job', async () => {
  const previous = process.env.AI_TAG_EXTRACTION_ENABLED;
@@ -62,29 +74,72 @@ test('standardization status excludes a newer disabled tag job', async () => {
  }
 });
 
+test('API rejects all-pending preview and digest creation before any database access', async () => {
+ const f=await fixture();
+ capturedQueries=[];
+ try {
+  await assert.rejects(previewTagJob(db,{allPending:true,model:'mock'}),{code:'AI_TAG_PREVIEW_SCOPE_INVALID'});
+  await assert.rejects(createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID(),previewDigest:'a'.repeat(64)}),{code:'AI_TAG_PREVIEW_NOT_ALLOWED'});
+  assert.deepEqual(capturedQueries,[]);
+ } finally { capturedQueries=undefined; }
+ assert.equal((await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',f.job.id).execute()).length,1);
+});
+
+test('missing retry IDs never load the source job member list', async () => {
+ const f=await fixture(501);
+ for (const productIds of [[999999999n],[f.inputId,999999999n]]) {
+  capturedQueries=[];
+  try {
+   await assert.rejects(previewTagJob(db,{productIds,retryOfJobId:f.job.id,model:'mock'}),{code:'AI_TAG_RETRY_SCOPE_INVALID'});
+   assert.ok(capturedQueries.every(query=>!query.includes('from "ai_job_input_members"')));
+  } finally { capturedQueries=undefined; }
+ }
+ const valid=await previewTagJob(db,{productIds:[f.inputId],retryOfJobId:f.job.id,model:'mock'});
+ assert.deepEqual(valid.productIds,[String(f.inputId)]);
+ assert.equal(valid.counts.eligible,1);
+});
+
+test('bounded previews accept 500 explicit or shop products and reject expansion to 501', async () => {
+ const f=await fixture(500);
+ const ids=f.products.map(product=>product.id);
+ const shopId=f.products[0]!.shop_id;
+ const explicit=await previewTagJob(db,{productIds:ids,model:'mock'});
+ const shop=await previewTagJob(db,{scopeShopId:shopId,model:'mock'});
+ assert.equal(explicit.counts.selected,500);
+ assert.deepEqual(shop.productIds,explicit.productIds);
+ await db.insertInto('products').values({shop_id:shopId,external_id:'extra',name:'extra',spec:'',normalized_key:'extra',url:'https://test.invalid/extra'}).execute();
+ await assert.rejects(previewTagJob(db,{scopeShopId:shopId,model:'mock'}),{code:'AI_TAG_SCOPE_TOO_LARGE'});
+ capturedQueries=[];
+ try {
+  await assert.rejects(previewTagJob(db,{productIds:[...ids,999999999n],model:'mock'}),{code:'AI_TAG_SCOPE_INVALID'});
+  assert.deepEqual(capturedQueries,[]);
+ } finally {capturedQueries=undefined;}
+});
+
 test('all-pending scope creates 9001 products in one job and prevents repeated or concurrent bulk submission', async () => {
  const f = await fixture(9001);
  await db.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', f.job.id).execute();
  const scope = { allPending: true, model: 'mock' };
- const preview = await previewTagJob(db, scope);
- assert.equal(preview.counts.eligible, 9001);
- assert.equal(preview.counts.uniqueInputs, 1);
- const input = { ...scope, requestId: randomUUID(), previewDigest: preview.previewDigest };
- const results = await Promise.allSettled([createManualTagJob(db, input), createManualTagJob(db, { ...input, requestId: randomUUID() })]);
- const created = results.find((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof createManualTagJob>>> => r.status === 'fulfilled')!.value;
- assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
- assert.equal((results.find(r => r.status === 'rejected') as PromiseRejectedResult).reason.code, 'AI_TAG_PREVIEW_STALE');
- assert.equal(created.total, 9001n);
+ const input = { ...scope, requestId: randomUUID() };
+ const [created,duplicate] = await Promise.all([createManualTagJob(db,input),createManualTagJob(db,{...input,requestId:randomUUID()})]);
+ assert.equal(duplicate.id,created.id);
+ assert.equal(created.phase,'preparing');
+ assert.equal(created.total,0n);
+ assert.equal((await preparePending(created.id)).total,9001n);
  const members = await db.selectFrom('ai_job_input_members').select('product_id').where('job_id', '=', created.id).execute();
  assert.equal(new Set(members.map(m => String(m.product_id))).size, 9001);
- assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', created.id).execute()).length, 1);
+ assert.equal((await db.selectFrom('ai_job_inputs').select('input_id').where('job_id','=',created.id).execute()).length,1);
+ assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', created.id).where('batch_index','>=',0n).execute()).length, 1);
+ assert.equal((await getJobProgress(db,created.id))!.requests.budgetUsed,0);
  assert.equal((await createManualTagJob(db, { ...input, requestId: created.retry_request_id! })).id, created.id);
- const empty = await previewTagJob(db, scope);
- assert.equal(empty.counts.eligible, 0);
- await assert.rejects(createManualTagJob(db, { ...scope, requestId: randomUUID(), previewDigest: empty.previewDigest }), { code: 'AI_TAG_SCOPE_EMPTY' });
+ await completeTagJob(created.id);
+ const empty=await createManualTagJob(db,{...scope,requestId:randomUUID()});
+ const completed=await preparePending(empty.id);
+ assert.equal(completed.total,0n);
+ assert.equal(completed.status,'succeeded');
 });
 
-test('bulk preview and creation plan unique inputs within published identity boundaries', async () => {
+test('background bulk preparation plans unique inputs within published identity boundaries', async () => {
  const f = await fixture(1002);
  await db.updateTable('ai_jobs').set({status:'cancelled'}).where('id','=',f.job.id).execute();
  const values=f.products.map((p,index)=>{
@@ -95,20 +150,18 @@ test('bulk preview and creation plan unique inputs within published identity bou
  const other=await db.insertInto('standard_products').values({canonical_family:'steam',canonical_product:'wallet',canonical_tier:'standard',name:'另一商品',verification_state:'verified'}).returning('id').executeTakeFirstOrThrow();
  const separate=f.products.at(-1)!.id;
  await db.updateTable('standard_product_members').set({standard_product_id:other.id}).where('product_id','=',separate).execute();
- const preview=await previewTagJob(db,{allPending:true,model:'mock'});
- assert.equal(preview.counts.uniqueInputs,1002);
- assert.ok(preview.counts.requestBatches<preview.counts.uniqueInputs);
- const job=await createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID(),previewDigest:preview.previewDigest});
- const batches=await db.selectFrom('ai_job_batches').select('product_ids').where('job_id','=',job.id).execute();
- assert.equal(batches.length,preview.counts.requestBatches);
+ const job=await createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID()});
+ await preparePending(job.id);
+ assert.equal((await db.selectFrom('ai_job_inputs').select('input_id').where('job_id','=',job.id).execute()).length,1002);
+ const batches=await db.selectFrom('ai_job_batches').select('product_ids').where('job_id','=',job.id).where('batch_index','>=',0n).execute();
+ assert.ok(batches.length<1002);
  assert.equal(batches.flatMap(b=>b.product_ids as string[]).length,1002);
  assert.deepEqual(batches.find(b=>(b.product_ids as string[]).includes(String(separate)))!.product_ids,[String(separate)]);
- await db.updateTable('ai_jobs').set({status:'cancelled'}).where('id','=',job.id).execute();
- const before=await previewTagJob(db,{allPending:true,model:'mock'});
+ const before=await previewTagJob(db,{productIds:[separate],model:'mock'});
  const standardId=(await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id','=',f.inputId).executeTakeFirstOrThrow()).standard_product_id;
  await db.updateTable('standard_product_members').set({standard_product_id:standardId}).where('product_id','=',separate).execute();
- await assert.rejects(createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID(),previewDigest:before.previewDigest}),{code:'AI_TAG_PREVIEW_STALE'});
- await db.updateTable('ai_jobs').set({status:'queued'}).where('id','=',job.id).execute();
+ await assert.rejects(createManualTagJob(db,{productIds:[separate],model:'mock',requestId:randomUUID(),previewDigest:before.previewDigest}),{code:'AI_TAG_PREVIEW_STALE'});
+ await completeTagJob(job.id);
 });
 
 test('all-pending and tag queue pending counts use the latest current audited outcomes', async () => {
@@ -152,12 +205,9 @@ test('all-pending and tag queue pending counts use the latest current audited ou
  }
  await db.deleteFrom('ai_job_input_members').where('job_id', '=', f.job.id).where('product_id', 'in', [ids[21]!, ids[24]!]).execute();
  await db.insertInto('product_tags').values({ product_id: ids[21]!, name: 'warranty', value: 'covered' }).execute();
- const preview = await previewTagJob(db, { allPending: true, model: 'mock' });
- assert.deepEqual(preview.productIds, [3, 4, 6, 7, 10, 11, 14, 15, 17, 18, 19, 21, 22, 24].map(i => String(ids[i])));
  for (const status of ['unfinished', 'attention', 'all']) {
    const queue = await readAiTaskQueue(db, { jobType: 'tag_extraction', scopeShopId: f.products[0]!.shop_id, status, limit: 1 });
    assert.equal(queue.summary.pendingProducts, 14, status);
-   assert.equal(queue.summary.pendingProducts, preview.counts.selected, status);
    if (queue.nextCursor) {
      const next = await readAiTaskQueue(db, { jobType: 'tag_extraction', scopeShopId: f.products[0]!.shop_id, status, limit: 1, cursor: queue.nextCursor });
      assert.deepEqual(next.summary, queue.summary);
@@ -166,7 +216,12 @@ test('all-pending and tag queue pending counts use the latest current audited ou
  const retry = await previewTagJob(db, { productIds: [ids[2]!, ids[13]!], retryOfJobId: f.job.id, model: 'mock' });
  assert.deepEqual(retry.productIds, [String(ids[2]), String(ids[13])]);
  assert.equal(retry.counts.eligible, 2);
- for (const extra of [{ productIds: [ids[0]!] }, { scopeShopId: f.products[0]!.shop_id }, { retryOfJobId: f.job.id }]) await assert.rejects(previewTagJob(db, { allPending: true, model: 'mock', ...extra }), { code: 'AI_TAG_SCOPE_REQUIRED' });
+ for (const extra of [{ productIds: [ids[0]!] }, { scopeShopId: f.products[0]!.shop_id }, { retryOfJobId: f.job.id }]) await assert.rejects(createManualTagJob(db, { allPending: true, model: 'mock',requestId:randomUUID(), ...extra }), { code: 'AI_TAG_SCOPE_REQUIRED' });
+ const pending=await createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID()});
+ await preparePending(pending.id);
+ const members=await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',pending.id).orderBy('product_id').execute();
+ assert.deepEqual(members.map(member=>String(member.product_id)),[3,4,6,7,10,11,14,15,17,18,19,21,22,24].map(i=>String(ids[i])));
+ await f.repo.cancelJob(pending.id);
 });
 
 
@@ -425,15 +480,12 @@ for (const field of ['url', 'protocol', 'platform'] as const) for (const complet
   }).where('job_id','=',f.job.id).execute();
   if(completed) await db.updateTable('ai_jobs').set({status:'succeeded'}).where('id','=',f.job.id).execute();
   const queue=()=>readAiTaskQueue(db,{jobType:'tag_extraction',status:'all',scopeShopId:shopId});
-  const pending=async()=> (await previewTagJob(db,{allPending:true,model:'mock'})).productIds.includes(String(f.inputId));
-  assert.equal(await pending(),false);
   const before=await queue();
   assert.equal(before.summary.pendingProducts,0);
   assert.equal(before.summary.coveredProducts,completed?1:0);
   assert.equal(before.items.find(i=>i.id===String(f.job.id))!.remaining,completed?0:1);
   const changed={...source,[field]:field==='url'?`${source.url}/changed`:field==='protocol'?'changed-protocol':'changed-platform'};
   await db.updateTable('shops').set(changed).where('id','=',shopId).execute();
-  assert.equal(await pending(),true);
   const stale=await queue();
   assert.equal(stale.summary.pendingProducts,1);
   assert.equal(stale.summary.coveredProducts,0);
@@ -443,16 +495,21 @@ for (const field of ['url', 'protocol', 'platform'] as const) for (const complet
   const replacement=await db.transaction().execute(tx=>createTagJob(tx,{productIds:[f.inputId],model:'mock'}));
   const member=await db.selectFrom('ai_job_input_members').select('payload').where('job_id','=',replacement.id).executeTakeFirstOrThrow();
   assert.deepEqual((member.payload as Record<string,unknown>).shopSource,changed);
-  assert.equal(await pending(),false);
   assert.equal((await queue()).summary.pendingProducts,0);
   // A newer task for another source must not supersede a matching older task.
   await db.updateTable('shops').set(source).where('id','=',shopId).execute();
-  assert.equal(await pending(),false);
   const restored=await queue();
   assert.equal(restored.summary.pendingProducts,0);
   assert.equal(restored.summary.coveredProducts,completed?1:0);
   assert.equal(restored.items.find(i=>i.id===String(f.job.id))!.remaining,completed?0:1);
   assert.equal(restored.items.find(i=>i.id===String(replacement.id))!.remaining,0);
+  const preparationSource={...source,[field]:field==='url'?`${source.url}/preparation`:field==='protocol'?'preparation-protocol':'preparation-platform'};
+  await db.updateTable('shops').set(preparationSource).where('id','=',shopId).execute();
+  const pending=await createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID()});
+  await preparePending(pending.id);
+  const preparedMember=await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',pending.id).where('product_id','=',f.inputId).executeTakeFirst();
+  assert.equal(preparedMember?.product_id,f.inputId);
+  await completeTagJob(pending.id);
  });
 }
 
@@ -468,9 +525,12 @@ for (const legacy of [
  await db.updateTable('ai_jobs').set({status:'succeeded'}).where('id','=',f.job.id).execute();
  await db.updateTable('ai_job_input_members').set({payload:jsonb({...f.payload,...legacy.extra}),status:'classified',output:jsonb({outcome:'updated',rejectedTags:[]})}).where('job_id','=',f.job.id).execute();
  await db.updateTable('shops').set({url:`https://changed.invalid/${randomUUID()}`}).where('id','=',shopId).execute();
- const preview=await previewTagJob(db,{allPending:true,model:'mock'});
- assert.equal(preview.productIds.includes(String(f.inputId)),!legacy.current);
  const queue=await readAiTaskQueue(db,{jobType:'tag_extraction',status:'all',scopeShopId:shopId});
  assert.equal(queue.summary.pendingProducts,legacy.current?0:1);
  assert.equal(queue.summary.coveredProducts,legacy.current?1:0);
+ const pending=await createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID()});
+ await preparePending(pending.id);
+ const member=await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',pending.id).where('product_id','=',f.inputId).executeTakeFirst();
+ assert.equal(Boolean(member),!legacy.current);
+ await completeTagJob(pending.id);
 });

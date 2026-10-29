@@ -12,7 +12,7 @@ import { ProductsService } from '../src/products/products.service.js';
 import { reconcileDeletedProductNames } from '../src/products/product-name-deletion-repair.js';
 import { StandardizationRepository } from '../src/standardization/standardization.repository.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
-import { createTagJob, previewTagJob } from '../src/ai/tag-extraction-jobs.js';
+import { createTagJob } from '../src/ai/tag-extraction-jobs.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string, products: ProductsRepository;
@@ -169,7 +169,7 @@ for (const path of ['single', 'batch', 'crawler'] as const) {
     const before = (await products.findById(item.id))!;
     const membership = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', item.id).execute();
     const tags = await products.listTags(item.id);
-    assert.equal((await previewTagJob(db, { allPending: true, model: 'mock' })).productIds.includes(String(item.id)), false);
+    assert.equal(Number((await ai.adminTaskQueue({ jobType: 'tag_extraction', status: 'all', scopeShopId: item.shop_id, limit: 1 })).summary.pendingProducts), 0);
 
     await db.transaction().execute(tx => softDeleteProductNames(tx, [item.id], path === 'crawler' ? 'crawler_missing' : 'manual'));
     assert.equal(await products.findById(item.id), undefined);
@@ -188,7 +188,7 @@ for (const path of ['single', 'batch', 'crawler'] as const) {
     assert.equal(restored.standardization_revision, before.standardization_revision);
     assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', item.id).execute(), membership);
     assert.deepEqual(await products.listTags(item.id), tags);
-    assert.equal((await previewTagJob(db, { allPending: true, model: 'mock' })).productIds.includes(String(item.id)), false);
+    assert.equal(Number((await ai.adminTaskQueue({ jobType: 'tag_extraction', status: 'all', scopeShopId: item.shop_id, limit: 1 })).summary.pendingProducts), 0);
     assert.deepEqual(await db.selectFrom('standardization_outbox').select('id').where('product_id', '=', item.id).execute(), []);
     assert.deepEqual(await db.selectFrom('product_change_events').select('id').where('product_id', '=', item.id).execute(), []);
     assert.equal((await ai.createJob({ model: 'mock', productIds: [item.id], jobType: 'incremental' })).total, 0n);

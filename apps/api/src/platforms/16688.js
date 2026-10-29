@@ -5,8 +5,7 @@ import { collectSettlements, settlementJson, minimumPurchaseQuantity, usablePaym
 export const id = '16688';
 export const purchaseQuantity = product => minimumPurchaseQuantity(product.sourceData, 'limit_quantity');
 
-export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options = {}) {
-  options.signal?.throwIfAborted();
+async function readListings(shop, fetchImpl) {
   const shopNo = new URL(shop.url).pathname.split('/').filter(Boolean).pop();
   const response = await fetchImpl(new URL('/shopApi/goods/list', shop.url).href, {
     method: 'POST',
@@ -22,9 +21,12 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
   if (payload?.code !== 1 || !Array.isArray(payload.data?.list)) {
     throw new Error(`16688 goods API: ${payload?.msg || 'invalid response'}`);
   }
+  return payload.data.list;
+}
+
+function normalizeListings(items) {
   const seen = new Set();
-  const items = payload.data.list;
-  const products = items.map(item => {
+  return items.map(item => {
     const externalId = item?.goods_no;
     const price = typeof item?.price === 'string' || typeof item?.price === 'number' ? String(item.price).replace(/,/g, '').trim() : '';
     if (!['string', 'number'].includes(typeof externalId) || !String(externalId).trim()
@@ -56,6 +58,11 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
     };
     return product;
   });
+}
+
+export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options = {}) {
+  options.signal?.throwIfAborted();
+  const products = normalizeListings(await readListings(shop, fetchImpl));
   options.onListComplete?.();
   await observeShop(id, shop, fetchImpl, options);
   return settle(shop, products, fetchImpl, options);
@@ -95,7 +102,8 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
 }
 
 export async function probe(shop, fetchImpl = globalThis.fetch) {
-  return (await crawl(null, shop, fetchImpl)).slice(0, 3);
+  const products = normalizeListings((await readListings(shop, fetchImpl)).slice(0, 3));
+  return settle(shop, products, fetchImpl);
 }
 
 export default { id, name: '16688', hosts: ['www.16688.com.cn'], crawl, probe, settle, purchaseQuantity };

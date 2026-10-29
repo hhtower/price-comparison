@@ -46,6 +46,86 @@ describe('shop protocol approval and complete snapshots', () => {
   const seedSubmission = (input: { name: string; url: string; platform: string }) => database.insertInto('shop_submissions')
     .values({ ...input, status: 'pending', reviewed_at: null, reviewer: null, shop_id: null }).returningAll().executeTakeFirstOrThrow();
 
+  test('pending pages never load or approve the complete submission and shop collections', async () => {
+    await sql`insert into shops(platform, url, name, rating_manifest)
+      select 'audit', 'https://audit-shop-' || n || '.example/', 'Shop ' || n,
+        jsonb_build_object('units', jsonb_build_array(jsonb_build_object('unitId', n::text, 'hash', repeat('a', 64))))
+      from generate_series(1, 30) n`.execute(database);
+    await sql`insert into shop_submissions(platform, url, name, status)
+      select 'audit', 'https://audit-submission-' || n || '.example/', 'Submission ' || n, 'pending'
+      from generate_series(1, 200) n`.execute(database);
+    const before = await database.selectFrom('shop_submissions').selectAll().orderBy('id').execute();
+    const beforeShops = await database.selectFrom('shops').selectAll().orderBy('id').execute();
+    const pendingBatches: number[] = [];
+    const shopBatches: number[] = [];
+    const measured = database.withPlugin({
+      transformQuery: args => args.node,
+      async transformResult(args) {
+        const rows = args.result.rows;
+        if (rows[0] && 'status' in rows[0] && 'url' in rows[0]) pendingBatches.push(rows.length);
+        if (rows[0] && 'rating_manifest' in rows[0]) shopBatches.push(rows.length);
+        return args.result;
+      },
+    });
+    const service = new ShopSubmissionsService(new ShopSubmissionsRepository(measured), new ShopsRepository(measured), detector());
+    const first = await service.listPending(1, 1);
+    const second = await service.listPending(2, 1);
+    assert.ok(pendingBatches.every(size => size <= 1), `page limit must bound submission reads: ${pendingBatches}`);
+    assert.deepEqual(shopBatches, [], 'reading pending pages must not load shop payloads');
+    assert.equal(first.total, 200);
+    assert.equal(second.total, 200);
+    assert.equal(first.items.length, 1);
+    assert.equal(second.items.length, 1);
+    assert.notEqual(first.items[0]!.id, second.items[0]!.id);
+    assert.deepEqual(await database.selectFrom('shop_submissions').selectAll().orderBy('id').execute(), before);
+    assert.deepEqual(await database.selectFrom('shops').selectAll().orderBy('id').execute(), beforeShops);
+  });
+
+  test('registered hosts are approved at creation while unrelated URL checks stay bounded', async () => {
+    await sql`insert into shops(platform, url, name)
+      select 'audit', 'https://create-shop-' || n || '.example/', 'Shop ' || n
+      from generate_series(1, 200) n`.execute(database);
+    await sql`insert into shop_submissions(platform, url, name, status)
+      select 'audit', 'https://create-submission-' || n || '.example/', 'Submission ' || n, 'pending'
+      from generate_series(1, 200) n`.execute(database);
+    const reads: number[] = [];
+    const measured = database.withPlugin({
+      transformQuery: args => args.node,
+      async transformResult(args) {
+        const rows = args.result.rows;
+        if (rows[0] && 'url' in rows[0]) reads.push(rows.length);
+        return args.result;
+      },
+    });
+    const service = new ShopSubmissionsService(new ShopSubmissionsRepository(measured), new ShopsRepository(measured),
+      new ProtocolDetectionService({ fetchImpl: async () => assert.fail('registered hosts do not need probing') }));
+    const created = await service.create({ name: 'Auto-approved shop', url: 'https://catfk.com/shop/CREATED', platform: 'User platform' });
+    assert.equal(created.status, 'approved');
+    assert.ok(created.shop_id);
+    assert.ok(created.reviewed_at);
+    assert.equal(created.reviewer, null);
+    assert.ok(reads.every(size => size <= 100), `creation must not retain entire URL collections: ${reads}`);
+    const shop = await shops.findById(created.shop_id);
+    assert.equal(shop?.protocol, 'liandong');
+    assert.equal(shop?.name, 'Auto-approved shop');
+    assert.equal(shop?.platform, 'User platform');
+    assert.equal((await service.listPending(1, 1)).total, 200);
+    assert.equal((await database.selectFrom('fetch_runs').selectAll().execute()).length, 0);
+    await assert.rejects(service.create({ name: 'Missing tenant', url: 'https://catfk.com/' }), { code: 'INVALID_URL' });
+    const unknown = await service.create({ name: 'Unknown', url: 'https://not-registered.example/' });
+    assert.equal(unknown.status, 'pending');
+  });
+
+  test('creation rolls back both submission and shop when automatic approval fails', async () => {
+    const service = new ShopSubmissionsService(submissions, shops, detector());
+    await sql`alter table shop_submissions add constraint test_create_approval check (status <> 'approved')`.execute(database);
+    try {
+      await assert.rejects(service.create({ name: 'Rollback', url: 'https://catfk.com/shop/CREATE-ROLLBACK' }));
+      assert.deepEqual(await database.selectFrom('shops').selectAll().execute(), []);
+      assert.deepEqual(await database.selectFrom('shop_submissions').selectAll().execute(), []);
+    } finally { await sql`alter table shop_submissions drop constraint test_create_approval`.execute(database); }
+  });
+
   test('submitting equivalent shop URLs creates only one canonical submission', async () => {
     const service = new ShopSubmissionsService(submissions, shops, detector());
     const first = await service.create({ name: '新店', url: 'http://wzyp.cn/shop/NEW/?ref=friend' });
@@ -109,7 +189,7 @@ describe('shop protocol approval and complete snapshots', () => {
       const first = await submit('https://wzyp.cn/shop/NEW?ref=friend');
       assert.equal(first.statusCode, 201);
       assert.match(first.json().id, /^[1-9]\d*$/);
-      assert.equal(first.json().status, 'pending');
+      assert.equal(first.json().status, 'approved');
       const duplicate = await submit('https://wzyp.cn/shop/new');
       assert.equal(duplicate.statusCode, 409);
       assert.equal(duplicate.json().error.code, 'SHOP_SUBMISSION_EXISTS');
@@ -142,24 +222,8 @@ describe('shop protocol approval and complete snapshots', () => {
     assert.equal((await database.selectFrom('fetch_runs').selectAll().execute()).length, 0);
   });
 
-  test('listing auto-approves pending submissions matching a shop with an existing protocol', async () => {
-    const service = new ShopSubmissionsService(submissions, shops, detector());
-    const shop = await shops.upsert({ name: '已有协议店', platform: '链动小铺', protocol: 'liandong', url: 'https://wzyp.cn/shop/AUTO', enabled: true });
-    await shops.upsert({ name: '无协议店', platform: '独立站', url: 'https://plain.example/', enabled: true });
-    const duplicate = await seedSubmission({ name: '重复提交', platform: '用户平台', url: 'https://wzyp.cn/shop/AUTO/?ref=again' });
-    const plain = await seedSubmission({ name: '无协议店提交', platform: '', url: 'https://plain.example/?utm_source=x' });
-    const unknown = await seedSubmission({ name: '未知店', platform: '', url: 'https://unknown.example/' });
-    const list = await service.listPending(1, 100);
-    const duplicateRow = await submissions.findById(duplicate.id);
-    assert.equal(duplicateRow?.status, 'approved');
-    assert.equal(duplicateRow?.shop_id, shop.id);
-    assert.equal(duplicateRow?.reviewer, null);
-    assert.deepEqual(new Set(list.items.map(row => row.id)), new Set([plain.id, unknown.id]));
-    assert.equal((await service.listPending(1, 100)).total, 2);
-  });
-
-  test('listing auto-approves new shops on registered protocol hosts without network probes', async () => {
-    const service = new ShopSubmissionsService(submissions, shops, new ProtocolDetectionService({ lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+  test('known protocol hosts never enter pending pages', async () => {
+    const service = new ShopSubmissionsService(submissions, shops, new ProtocolDetectionService({
       fetchImpl: async () => assert.fail('registered protocol hosts do not need a network probe'),
     }));
     const supported = [
@@ -176,71 +240,37 @@ describe('shop protocol approval and complete snapshots', () => {
       ['https://geminipro.vip/', 'emshop'],
       ['https://catcard.uk/', 'catcard'],
       ['https://lemon-watermelon.com/', 'acg-faka-v5'],
-      ['https://pay.ldxp.cn/shop/LEGACY?ref=old', 'liandong'],
+      ['https://pay.ldxp.cn/shop/ALIAS?ref=tracking', 'liandong'],
     ];
     for (const [url, protocol] of supported) {
-      await seedSubmission({ name: protocol, platform: '用户展示名', url });
+      const created = await service.create({ name: protocol!, platform: 'Display platform', url: url! });
+      assert.equal(created.status, 'approved');
+      const shop = await shops.findById(created.shop_id!);
+      assert.equal(shop?.protocol, protocol);
+      assert.equal(shop?.url, created.url);
+      assert.equal(shop?.enabled, true);
     }
-    const unknown = await seedSubmission({ name: '未知店', platform: 'liandong', url: 'https://unknown.example/' });
-    const invalid = await seedSubmission({ name: '无店铺路径', platform: 'liandong', url: 'https://catfk.com/' });
-    const rejected = await seedSubmission({ name: '已拒绝', platform: '', url: 'https://wzyp.cn/shop/rejected' });
+    const firstUnknown = await service.create({ name: 'Unknown one', url: 'https://unknown-one.example/' });
+    const secondUnknown = await service.create({ name: 'Unknown two', url: 'https://unknown-two.example/' });
+    const rejected = await service.create({ name: 'Rejected', url: 'https://rejected.example/' });
     await submissions.review(rejected.id, 'rejected', 'admin', null);
-    const [first, second] = await Promise.all([service.listPending(1, 1), service.listPending(2, 1)]);
-    assert.equal(first.total, 2); assert.equal(second.total, 2);
-    assert.deepEqual(new Set([...first.items, ...second.items].map(row => row.id)), new Set([unknown.id, invalid.id]));
-    const approved = await database.selectFrom('shop_submissions').selectAll().where('status', '=', 'approved').execute();
-    assert.equal(approved.length, supported.length);
-    for (const row of approved) {
-      const shop = await shops.findById(row.shop_id!);
-      assert.ok(shop);
-      assert.equal(shop.protocol, supported.find(([url]) => url === row.url)?.[1]);
-      assert.equal(shop.platform, row.platform); assert.equal(shop.name, row.name);
-      assert.equal(shop.enabled, true); assert.equal(row.reviewer, null); assert.ok(row.reviewed_at);
-      assert.ok(!shop.url.includes('pay.ldxp.cn'));
-    }
     const before = await database.selectFrom('shops').selectAll().orderBy('id').execute();
-    assert.equal((await service.listPending(1, 100)).total, 2);
+    const [first, second] = await Promise.all([service.listPending(1, 1), service.listPending(2, 1)]);
+    assert.equal(first.total, 2);
+    assert.equal(second.total, 2);
+    assert.deepEqual(new Set([...first.items, ...second.items].map(row => row.id)), new Set([firstUnknown.id, secondUnknown.id]));
     assert.deepEqual(await database.selectFrom('shops').selectAll().orderBy('id').execute(), before);
     assert.equal((await submissions.findById(rejected.id))?.status, 'rejected');
-    assert.equal((await database.selectFrom('fetch_runs').selectAll().execute()).length, 0);
   });
 
-  test('automatic approval reuses canonical shops and preserves disabled and deleted records', async () => {
-    const service = new ShopSubmissionsService(submissions, shops, detector());
-    const disabled = await shops.upsert({ name: '停用店', platform: '原平台', protocol: 'liandong', url: 'https://wzyp.cn/shop/DISABLED', enabled: false });
-    const deleted = await shops.upsert({ name: '删除店', platform: '原平台', protocol: 'liandong', url: 'https://wzyp.cn/shop/DELETED', enabled: true });
-    await shops.softDelete(deleted.id);
-    const before = await database.selectFrom('shops').selectAll().orderBy('id').execute();
-    const duplicate = await seedSubmission({ name: '不同名称', platform: '', url: 'https://wzyp.cn/shop/disabled/?ref=x' });
-    const removed = await seedSubmission({ name: '不同名称', platform: '', url: 'https://wzyp.cn/shop/deleted/?ref=x' });
-    const variants = await Promise.all(['https://catfk.com/shop/SAME', 'https://catfk.com/shop/SAME/?ref=again']
-      .map(url => seedSubmission({ name: '新店', platform: '', url })));
-    assert.equal((await service.listPending(1, 100)).total, 1);
-    assert.equal((await submissions.findById(duplicate.id))?.shop_id, disabled.id);
-    assert.equal((await submissions.findById(removed.id))?.status, 'pending');
-    assert.deepEqual((await database.selectFrom('shops').selectAll().orderBy('id').execute()).slice(0, 2), before);
-    assert.equal((await submissions.findById(variants[0].id))?.shop_id, (await submissions.findById(variants[1].id))?.shop_id);
-    assert.equal((await database.selectFrom('shops').selectAll().execute()).length, 3);
-  });
-
-  test('automatic approval rolls back shop creation when updating the submission fails', async () => {
-    const pending = await seedSubmission({ name: '回滚店', platform: '', url: 'https://catfk.com/shop/ROLLBACK' });
-    await sql`alter table shop_submissions add constraint test_auto_approval check (status <> 'approved')`.execute(database);
-    try {
-      await assert.rejects(new ShopSubmissionsService(submissions, shops, detector()).listPending(1, 100));
-      assert.equal((await submissions.findById(pending.id))?.status, 'pending');
-      assert.equal((await database.selectFrom('shops').selectAll().execute()).length, 0);
-    } finally { await sql`alter table shop_submissions drop constraint test_auto_approval`.execute(database); }
-  });
-
-  test('automatic approval does not block a submission being manually reviewed', async () => {
-    const pending = await seedSubmission({ name: '审核中', platform: '', url: 'https://catfk.com/shop/LOCKED' });
+  test('pending pages do not lock submissions under manual review', async () => {
+    const pending = await seedSubmission({ name: 'Under review', platform: '', url: 'https://manual-review.example/' });
     let release!: () => void, locked!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const ready = new Promise<void>(resolve => { locked = resolve; });
     const manual = submissions.approve(pending.id, 'admin', async (row, transaction) => {
       locked(); await gate;
-      return shops.upsert({ name: row.name, platform: row.platform, url: row.url, protocol: 'liandong', enabled: true }, transaction);
+      return shops.upsert({ name: row.name, platform: row.platform, url: row.url, protocol: 'public-products-v1', enabled: true }, transaction);
     });
     await ready;
     try {
@@ -248,35 +278,6 @@ describe('shop protocol approval and complete snapshots', () => {
     } finally { release(); await manual; }
     assert.equal((await submissions.findById(pending.id))?.reviewer, 'admin');
     assert.equal((await database.selectFrom('shops').selectAll().execute()).length, 1);
-  });
-
-  test('automatic approval binds an existing unbound HTTP shop without changing its identity or disabled state', async () => {
-    const shop = await shops.upsert({ name: '保留名称', platform: '保留平台', url: 'http://wzyp.cn/shop/HTTP/?ref=old', enabled: false });
-    const pending = await seedSubmission({ name: '提交名称', platform: '提交平台', url: 'https://wzyp.cn/shop/http' });
-    assert.equal((await new ShopSubmissionsService(submissions, shops, detector()).listPending(1, 100)).total, 0);
-    const current = await shops.findById(shop.id);
-    assert.ok(current);
-    assert.equal(current.url, 'https://wzyp.cn/shop/http');
-    assert.equal(current.protocol, 'liandong'); assert.equal(current.enabled, false);
-    assert.equal(current.name, shop.name); assert.equal(current.platform, shop.platform);
-    assert.equal((await submissions.findById(pending.id))?.shop_id, shop.id);
-    assert.equal((await database.selectFrom('shops').selectAll().execute()).length, 1);
-  });
-
-  test('automatic approval prefers an existing canonical shop over an earlier unbound URL variant', async () => {
-    const service = new ShopSubmissionsService(submissions, shops, detector());
-    for (const state of ['disabled', 'deleted']) {
-      await shops.upsert({ name: '历史变体', platform: '旧平台', url: `http://wzyp.cn/shop/${state.toUpperCase()}/?ref=old`, enabled: true });
-      const canonical = await shops.upsert({ name: '规范店', platform: '原平台', url: `https://wzyp.cn/shop/${state}`, protocol: 'liandong', enabled: false });
-      if (state === 'deleted') await shops.softDelete(canonical.id);
-      const before = await database.selectFrom('shops').selectAll().orderBy('id').execute();
-      const pending = await seedSubmission({ name: '提交名称', platform: '', url: `${canonical.url}?ref=again` });
-      await service.listPending(1, 100);
-      const reviewed = await submissions.findById(pending.id);
-      assert.equal(reviewed?.status, state === 'deleted' ? 'pending' : 'approved');
-      assert.equal(reviewed?.shop_id, state === 'deleted' ? null : canonical.id);
-      assert.deepEqual(await database.selectFrom('shops').selectAll().orderBy('id').execute(), before);
-    }
   });
 
   test('a concurrent source edit cannot apply a protocol validated against the old URL', async () => {
