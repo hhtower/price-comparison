@@ -1,0 +1,13 @@
+{
+  "name": "@price-comparison/catalog",
+  "version": "2026.10.2801",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "exports": {
+    "./*": {
+      "types": "./src/*.ts",
+      "default": "./dist/*.js"
+    }
+  }
+}

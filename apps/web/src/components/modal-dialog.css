@@ -1,0 +1,11 @@
+.modal-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+
+.modal-dialog::backdrop { background: #17212b80; }
+html:has(dialog[open][aria-modal="true"]) { overflow: hidden; }

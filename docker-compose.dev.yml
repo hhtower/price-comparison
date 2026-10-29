@@ -1,0 +1,101 @@
+# 本地一体化模式:内置 PostgreSQL/Redis 容器,覆盖 .env 同名连接变量(生产用根目录 docker-compose.yml)。
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://price:change-me@postgres:5432/price_comparison}
+    REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379}
+    NODE_ENV: production
+  init: true
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  migrate:
+    <<: *app
+    build:
+      context: .
+      target: build
+    profiles: ["setup"]
+    restart: "no"
+    command: ["npm", "run", "db:migrate"]
+    healthcheck:
+      disable: true
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: price_comparison
+      POSTGRES_USER: price
+      POSTGRES_PASSWORD: change-me
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U price -d price_comparison"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    <<: *app
+    ports:
+      - "3000:3000"
+    command: ["node", "dist/server/main.js"]
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    stop_grace_period: 30s
+
+  worker-official-reference:
+    <<: *app
+    restart: on-failure
+    command: ["node", "dist/server/workers/official-reference.worker.js"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s
+
+  worker-ai:
+    <<: *app
+    profiles: ["ai-standardization"]
+    command: ["node", "dist/server/workers/ai.worker.js"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s
+
+  worker-standardization:
+    <<: *app
+    profiles: ["ai-standardization"]
+    command: ["node", "dist/server/workers/standardization-entrypoint.js"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s
+
+  worker-crawler:
+    <<: *app
+    command: ["node", "dist/server/workers/crawler.worker.js"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s
+
+volumes:
+  postgres-data:
+  redis-data:

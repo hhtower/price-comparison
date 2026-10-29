@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "../../dist/server",
+    "allowJs": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/platforms/*.js",
+    "src/products/*.js",
+    "src/quality/modeltrace/*.js"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

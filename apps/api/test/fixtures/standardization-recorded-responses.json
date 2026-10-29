@@ -1,0 +1,32 @@
+{
+  "version": "standardization-recorded-responses-20260920-v1",
+  "fixtureVersion": "standardization-quality-20260920-v1",
+  "catalog": [
+    { "standardProductId": "1", "identity": { "family": "openai", "product": "chatgpt", "tier": "plus" } },
+    { "standardProductId": "2", "identity": { "family": "steam", "product": "steam account", "tier": "plus" } },
+    { "standardProductId": "3", "identity": { "family": "openai", "product": "chatgpt", "tier": "pro_5x" } },
+    { "standardProductId": "4", "identity": { "family": "microsoft", "product": "outlook", "tier": "account" } },
+    { "standardProductId": "5", "identity": { "family": "bytedance", "product": "tiktok account", "tier": "standard" } },
+    { "standardProductId": "6", "identity": { "family": "x", "product": "premium", "tier": "standard" } },
+    { "standardProductId": "7", "identity": { "family": "x", "product": "premium", "tier": "premium_plus" } },
+    { "standardProductId": "8", "identity": { "family": "x", "product": "premium", "tier": "basic" } }
+  ],
+  "outcomes": [
+    { "id": "chatgpt-plus-default", "preBudgetCandidateIds": ["1", "3"], "sentCandidateIds": ["1", "3"], "status": "classified", "standardProductId": "1", "tags": { "duration": "1 month", "access": "shared" } },
+    { "id": "other-brand-plus", "preBudgetCandidateIds": ["2", "1"], "sentCandidateIds": ["2", "1"], "status": "classified", "standardProductId": "2", "tags": {} },
+    { "id": "chatgpt-pro", "preBudgetCandidateIds": ["3", "1"], "sentCandidateIds": ["1"], "status": "classified", "identity": { "family": "openai", "product": "chatgpt", "tier": "pro_5x" }, "tags": { "access": "shared" } },
+    { "id": "chatgpt-sms", "preBudgetCandidateIds": [], "sentCandidateIds": [], "status": "classified", "identity": { "family": "openai", "product": "chatgpt_sms", "tier": "standard" }, "tags": { "region": "us" } },
+    { "id": "outlook-fields", "preBudgetCandidateIds": ["4"], "sentCandidateIds": ["4"], "status": "classified", "standardProductId": "4", "tags": {} },
+    { "id": "tiktok-cn", "preBudgetCandidateIds": ["5"], "sentCandidateIds": ["5"], "status": "unclassified", "reasonCode": "insufficient_evidence", "tags": {} },
+    { "id": "x-premium-alias", "preBudgetCandidateIds": ["6", "7"], "sentCandidateIds": ["6", "7"], "status": "classified", "standardProductId": "6", "tags": {} },
+    { "id": "x-premium-plus", "preBudgetCandidateIds": ["7", "6"], "sentCandidateIds": ["7", "6"], "status": "classified", "standardProductId": "6", "tags": {} },
+    { "id": "duration-shared-variant", "preBudgetCandidateIds": ["1", "3"], "sentCandidateIds": ["1", "3"], "status": "classified", "identity": { "family": "openai", "product": "chatgpt", "tier": "plus_shared" }, "tags": { "duration": "3 months", "access": "shared" } },
+    { "id": "transitive-a", "preBudgetCandidateIds": ["8", "6"], "sentCandidateIds": ["8", "6"], "status": "classified", "standardProductId": "8", "tags": {} },
+    { "id": "transitive-b", "preBudgetCandidateIds": ["8", "6"], "sentCandidateIds": ["8", "6"], "status": "classified", "standardProductId": "8", "tags": { "duration": "1 month" } },
+    { "id": "transitive-c", "preBudgetCandidateIds": ["7", "8"], "sentCandidateIds": ["7", "8"], "status": "classified", "standardProductId": "8", "tags": { "duration": "1 month", "region": "global" } },
+    { "id": "missing-evidence", "preBudgetCandidateIds": [], "sentCandidateIds": [], "status": "unclassified", "reasonCode": "insufficient_evidence", "tags": {} },
+    { "id": "non-sale-notice", "preBudgetCandidateIds": [], "sentCandidateIds": [], "status": "classified", "standardProductId": "1", "tags": {} },
+    { "id": "zero-price-real-item", "preBudgetCandidateIds": ["1"], "sentCandidateIds": ["1"], "status": "classified", "standardProductId": "1", "tags": {} },
+    { "id": "long-tail-conflict", "preBudgetCandidateIds": ["2", "1"], "sentCandidateIds": ["2", "1"], "status": "classified", "standardProductId": "1", "tags": {} }
+  ]
+}

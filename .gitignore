@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env*
+!.env.example
+.superpowers/
+.claude/
+.local/
+.playwright-cli/
+.playwright-mcp/
+.omc/
+.tmp-q
+output/
+/data/
+scripts/.omc-*
+scripts/tmp-*
+# Local deployment overrides
+docker-compose.override.yml

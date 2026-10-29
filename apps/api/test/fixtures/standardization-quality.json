@@ -1,0 +1,22 @@
+{
+  "version": "standardization-quality-20260920-v1",
+  "modelSemanticQuality": "unknown",
+  "samples": [
+    { "id": "chatgpt-plus-default", "evidence": { "title": "Plus 一个月合租账号", "selectedOptions": ["1个月", "合租"] }, "shouldClassify": true, "identity": { "family": "openai", "product": "chatgpt", "tier": "plus" }, "tags": { "duration": "1 month", "access": "shared" }, "sameIdentityGroup": "chatgpt-plus" },
+    { "id": "other-brand-plus", "evidence": { "title": "Steam Plus 会员账号" }, "shouldClassify": true, "identity": { "family": "steam", "product": "steam account", "tier": "plus" }, "tags": {}, "differentFrom": ["chatgpt-plus-default"] },
+    { "id": "chatgpt-pro", "evidence": { "title": "ChatGPT Pro 5x 独享" }, "shouldClassify": true, "identity": { "family": "openai", "product": "chatgpt", "tier": "pro_5x" }, "tags": { "access": "dedicated" }, "differentFrom": ["chatgpt-plus-default"] },
+    { "id": "chatgpt-sms", "evidence": { "title": "ChatGPT 接码服务 美区一次" }, "shouldClassify": true, "identity": { "family": "openai", "product": "chatgpt_sms", "tier": "standard" }, "tags": { "region": "us", "duration": "single-use" }, "differentFrom": ["chatgpt-plus-default"] },
+    { "id": "outlook-fields", "evidence": { "title": "Outlook 邮箱账号", "category": "Microsoft", "selectedOptions": ["普通账号"] }, "shouldClassify": true, "identity": { "family": "microsoft", "product": "outlook", "tier": "account" }, "tags": {}, "sameIdentityGroup": "outlook-account" },
+    { "id": "tiktok-cn", "evidence": { "title": "TikTok 抖音国际版账号" }, "shouldClassify": true, "identity": { "family": "bytedance", "product": "tiktok account", "tier": "standard" }, "tags": {}, "sameIdentityGroup": "tiktok-account" },
+    { "id": "x-premium-alias", "evidence": { "title": "Twitter / X Premium 标准套餐" }, "shouldClassify": true, "identity": { "family": "x", "product": "premium", "tier": "standard" }, "tags": {}, "sameIdentityGroup": "x-premium-standard" },
+    { "id": "x-premium-plus", "evidence": { "title": "X Premium+ 会员" }, "shouldClassify": true, "identity": { "family": "x", "product": "premium", "tier": "premium_plus" }, "tags": {}, "differentFrom": ["x-premium-alias"] },
+    { "id": "duration-shared-variant", "evidence": { "title": "ChatGPT Plus 3个月独享" }, "shouldClassify": true, "identity": { "family": "openai", "product": "chatgpt", "tier": "plus" }, "tags": { "duration": "3 months", "access": "dedicated" }, "sameIdentityGroup": "chatgpt-plus" },
+    { "id": "transitive-a", "evidence": { "title": "X Premium Basic" }, "shouldClassify": true, "identity": { "family": "x", "product": "premium", "tier": "basic" }, "tags": {}, "differentFrom": ["transitive-c"] },
+    { "id": "transitive-b", "evidence": { "title": "Twitter Premium Basic Monthly" }, "shouldClassify": true, "identity": { "family": "x", "product": "premium", "tier": "basic" }, "tags": { "duration": "1 month" }, "sameIdentityGroup": "x-basic" },
+    { "id": "transitive-c", "evidence": { "title": "Twitter Premium Monthly Plus" }, "shouldClassify": true, "identity": { "family": "x", "product": "premium", "tier": "premium_plus" }, "tags": { "duration": "1 month" }, "differentFrom": ["transitive-a"] },
+    { "id": "missing-evidence", "evidence": { "title": "高级会员" }, "shouldClassify": false, "unclassifiedReason": "insufficient_evidence", "identity": null, "tags": {} },
+    { "id": "non-sale-notice", "evidence": { "title": "退款说明 请勿下单" }, "shouldClassify": false, "unclassifiedReason": "non_sale_item", "identity": null, "tags": {} },
+    { "id": "zero-price-real-item", "evidence": { "title": "ChatGPT Plus 试用兑换", "price": 0 }, "shouldClassify": true, "identity": { "family": "openai", "product": "chatgpt", "tier": "plus" }, "tags": {}, "sameIdentityGroup": "chatgpt-plus" },
+    { "id": "long-tail-conflict", "evidence": { "title": "ChatGPT Plus 账号", "description": "稳定快速。" , "selectedOptions": ["前文宣传内容", "尾部明确：Steam Plus，不是 ChatGPT"] }, "shouldClassify": true, "identity": { "family": "steam", "product": "steam account", "tier": "plus" }, "tags": {}, "differentFrom": ["chatgpt-plus-default"] }
+  ]
+}

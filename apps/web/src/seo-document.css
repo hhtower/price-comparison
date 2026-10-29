@@ -1,0 +1,24 @@
+/* Readable server HTML remains usable when scripts are disabled or unavailable. */
+.seo-document {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 28px 24px;
+  overflow-wrap: anywhere;
+}
+.seo-document nav { margin-bottom: 28px; }
+.seo-document h1 { font-size: clamp(24px, 4vw, 36px); }
+.seo-document article, .seo-document section {
+  margin: 20px 0;
+  padding: 20px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #dce2e6);
+  border-radius: 10px;
+}
+.seo-document li { margin: 16px 0; }
+.seo-document a { color: var(--accent, #147d76); }
+.seo-document time { font-size: 0.9em; }
+
+.seo-document dt { margin-top: 16px; font-weight: 600; }
+.seo-document dd { margin: 6px 0 16px; line-height: 1.7; }
+.seo-document [id] { scroll-margin-top: 24px; }
+.seo-document a:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }

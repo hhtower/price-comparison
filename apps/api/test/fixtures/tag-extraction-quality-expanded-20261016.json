@@ -1,0 +1,1115 @@
+{
+  "version": "tag-eval-expanded-20261016-v1",
+  "annotationScope": "AI-authored synthetic diagnostic cases; not independent human labels or a representative production holdout. No production data or credentials.",
+  "officialSource": "https://developers.openai.com/api/docs/guides/evaluation-best-practices",
+  "samples": [
+    {
+      "id": "1001",
+      "split": "diagnostic",
+      "caseGroup": "接码状态",
+      "scenario": "已接码",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1001",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "账号已完成短信验证。"
+        }
+      },
+      "expected": [
+        {
+          "name": "sms_verification",
+          "value": "verified",
+          "path": "sourceData.evidence",
+          "quote": "账号已完成短信验证。"
+        }
+      ]
+    },
+    {
+      "id": "1002",
+      "split": "diagnostic",
+      "caseGroup": "接码状态",
+      "scenario": "待接码要求",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1002",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "买家使用前必须自行接码。"
+        }
+      },
+      "expected": [
+        {
+          "name": "sms_required",
+          "value": "有",
+          "path": "sourceData.evidence",
+          "quote": "买家使用前必须自行接码。"
+        }
+      ]
+    },
+    {
+      "id": "1003",
+      "split": "diagnostic",
+      "caseGroup": "接码状态",
+      "scenario": "未接码",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1003",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "账号尚未完成短信验证。"
+        }
+      },
+      "expected": [
+        {
+          "name": "sms_verification",
+          "value": "unverified",
+          "path": "sourceData.evidence",
+          "quote": "账号尚未完成短信验证。"
+        }
+      ]
+    },
+    {
+      "id": "1004",
+      "split": "diagnostic",
+      "caseGroup": "接码状态",
+      "scenario": "无需接码",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1004",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "买家使用时无需短信验证。"
+        }
+      },
+      "expected": [
+        {
+          "name": "sms_required",
+          "value": "无",
+          "path": "sourceData.evidence",
+          "quote": "买家使用时无需短信验证。"
+        }
+      ]
+    },
+    {
+      "id": "1005",
+      "split": "diagnostic",
+      "caseGroup": "交付角色",
+      "scenario": "成品号",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1005",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "出售成品账号。"
+        }
+      },
+      "expected": [
+        {
+          "name": "delivery",
+          "value": "account",
+          "path": "sourceData.evidence",
+          "quote": "出售成品账号。"
+        }
+      ]
+    },
+    {
+      "id": "1006",
+      "split": "diagnostic",
+      "caseGroup": "交付角色",
+      "scenario": "代充",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1006",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "给买家已有账号充值。"
+        }
+      },
+      "expected": [
+        {
+          "name": "delivery",
+          "value": "top_up",
+          "path": "sourceData.evidence",
+          "quote": "给买家已有账号充值。"
+        }
+      ]
+    },
+    {
+      "id": "1007",
+      "split": "diagnostic",
+      "caseGroup": "交付角色",
+      "scenario": "车位",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1007",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "家庭组共享车位。"
+        }
+      },
+      "expected": [
+        {
+          "name": "account_type",
+          "value": "seat",
+          "path": "sourceData.evidence",
+          "quote": "家庭组共享车位。"
+        },
+        {
+          "name": "access",
+          "value": "shared",
+          "path": "sourceData.evidence",
+          "quote": "家庭组共享车位。"
+        }
+      ]
+    },
+    {
+      "id": "1008",
+      "split": "diagnostic",
+      "caseGroup": "交付角色",
+      "scenario": "母号",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1008",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "交付母号。"
+        }
+      },
+      "expected": [
+        {
+          "name": "account_type",
+          "value": "parent_account",
+          "path": "sourceData.evidence",
+          "quote": "交付母号。"
+        }
+      ]
+    },
+    {
+      "id": "1009",
+      "split": "diagnostic",
+      "caseGroup": "续费",
+      "scenario": "可续费",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1009",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "支持续费。"
+        }
+      },
+      "expected": [
+        {
+          "name": "renewable",
+          "value": "有",
+          "path": "sourceData.evidence",
+          "quote": "支持续费。"
+        }
+      ]
+    },
+    {
+      "id": "1010",
+      "split": "diagnostic",
+      "caseGroup": "续费",
+      "scenario": "不可续费",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1010",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "不可续费。"
+        }
+      },
+      "expected": [
+        {
+          "name": "renewable",
+          "value": "无",
+          "path": "sourceData.evidence",
+          "quote": "不可续费。"
+        }
+      ]
+    },
+    {
+      "id": "1011",
+      "split": "diagnostic",
+      "caseGroup": "续费",
+      "scenario": "到期后续费",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1011",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "订阅到期后才可续费。"
+        }
+      },
+      "expected": [
+        {
+          "name": "renewable",
+          "value": "有",
+          "path": "sourceData.evidence",
+          "quote": "订阅到期后才可续费。"
+        },
+        {
+          "name": "renewal_timing",
+          "value": "after_expiry",
+          "path": "sourceData.evidence",
+          "quote": "订阅到期后才可续费。"
+        }
+      ]
+    },
+    {
+      "id": "1012",
+      "split": "diagnostic",
+      "caseGroup": "续费",
+      "scenario": "随时续费",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1012",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "随时可以续费。"
+        }
+      },
+      "expected": [
+        {
+          "name": "renewable",
+          "value": "有",
+          "path": "sourceData.evidence",
+          "quote": "随时可以续费。"
+        },
+        {
+          "name": "renewal_timing",
+          "value": "any_time",
+          "path": "sourceData.evidence",
+          "quote": "随时可以续费。"
+        }
+      ]
+    },
+    {
+      "id": "1013",
+      "split": "diagnostic",
+      "caseGroup": "登录与限制",
+      "scenario": "明确密码登录",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1013",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "产品使用密码登录。"
+        }
+      },
+      "expected": [
+        {
+          "name": "login_method",
+          "value": "password",
+          "path": "sourceData.evidence",
+          "quote": "产品使用密码登录。"
+        }
+      ]
+    },
+    {
+      "id": "1014",
+      "split": "diagnostic",
+      "caseGroup": "登录与限制",
+      "scenario": "禁止不代表支持",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1014",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "禁止反代。"
+        }
+      },
+      "expected": [
+        {
+          "name": "usage_restriction",
+          "value": "禁止反代",
+          "path": "sourceData.evidence",
+          "quote": "禁止反代。"
+        }
+      ]
+    },
+    {
+      "id": "1015",
+      "split": "diagnostic",
+      "caseGroup": "登录与限制",
+      "scenario": "邮箱凭证不证明产品登录",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1015",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "邮箱密码只用于收取通知，未说明产品登录方式或短信验证状态。"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "1016",
+      "split": "diagnostic",
+      "caseGroup": "登录与限制",
+      "scenario": "明确短信要求",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1016",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "买家必须完成短信验证。"
+        }
+      },
+      "expected": [
+        {
+          "name": "sms_required",
+          "value": "有",
+          "path": "sourceData.evidence",
+          "quote": "买家必须完成短信验证。"
+        }
+      ]
+    },
+    {
+      "id": "1017",
+      "split": "diagnostic",
+      "caseGroup": "双重验证",
+      "scenario": "已开2FA",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1017",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "已开启2FA。"
+        }
+      },
+      "expected": [
+        {
+          "name": "2fa",
+          "value": "有",
+          "path": "sourceData.evidence",
+          "quote": "已开启2FA。"
+        }
+      ]
+    },
+    {
+      "id": "1018",
+      "split": "diagnostic",
+      "caseGroup": "双重验证",
+      "scenario": "未开2FA",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1018",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "未开启2FA。"
+        }
+      },
+      "expected": [
+        {
+          "name": "2fa",
+          "value": "无",
+          "path": "sourceData.evidence",
+          "quote": "未开启2FA。"
+        }
+      ]
+    },
+    {
+      "id": "1019",
+      "split": "diagnostic",
+      "caseGroup": "双重验证",
+      "scenario": "混合状态",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1019",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "2FA有无随机混发。"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "1020",
+      "split": "diagnostic",
+      "caseGroup": "双重验证",
+      "scenario": "建议不证明状态",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1020",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "建议买家自行设置2FA。"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "1021",
+      "split": "diagnostic",
+      "caseGroup": "实名与绑卡",
+      "scenario": "已实名",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1021",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "已完成KYC实名认证。"
+        }
+      },
+      "expected": [
+        {
+          "name": "kyc",
+          "value": "verified",
+          "path": "sourceData.evidence",
+          "quote": "已完成KYC实名认证。"
+        }
+      ]
+    },
+    {
+      "id": "1022",
+      "split": "diagnostic",
+      "caseGroup": "实名与绑卡",
+      "scenario": "实名要求",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1022",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "买家使用前必须完成KYC实名认证。"
+        }
+      },
+      "expected": [
+        {
+          "name": "kyc_required",
+          "value": "有",
+          "path": "sourceData.evidence",
+          "quote": "买家使用前必须完成KYC实名认证。"
+        }
+      ]
+    },
+    {
+      "id": "1023",
+      "split": "diagnostic",
+      "caseGroup": "实名与绑卡",
+      "scenario": "免绑卡",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1023",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "无需绑卡即可激活。"
+        }
+      },
+      "expected": [
+        {
+          "name": "card_binding_required",
+          "value": "无",
+          "path": "sourceData.evidence",
+          "quote": "无需绑卡即可激活。"
+        }
+      ]
+    },
+    {
+      "id": "1024",
+      "split": "diagnostic",
+      "caseGroup": "实名与绑卡",
+      "scenario": "需绑卡",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1024",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "激活时需要绑定支付卡。"
+        }
+      },
+      "expected": [
+        {
+          "name": "card_binding_required",
+          "value": "有",
+          "path": "sourceData.evidence",
+          "quote": "激活时需要绑定支付卡。"
+        }
+      ]
+    },
+    {
+      "id": "1025",
+      "split": "diagnostic",
+      "caseGroup": "所选规格",
+      "scenario": "所选规格优先",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1025",
+        "name": "订阅使用期1个月",
+        "spec": "所选规格：12个月。"
+      },
+      "expected": [
+        {
+          "name": "duration",
+          "value": "12 months",
+          "path": "spec",
+          "quote": "所选规格：12个月。"
+        }
+      ]
+    },
+    {
+      "id": "1026",
+      "split": "diagnostic",
+      "caseGroup": "所选规格",
+      "scenario": "同层冲突",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1026",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "同一所选规格同时写明使用期30天和60天，无法确认。"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "1027",
+      "split": "diagnostic",
+      "caseGroup": "质保",
+      "scenario": "首登窗口",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1027",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "仅首登质保24小时。"
+        }
+      },
+      "expected": [
+        {
+          "name": "warranty",
+          "value": "covered",
+          "path": "sourceData.evidence",
+          "quote": "仅首登质保24小时。"
+        },
+        {
+          "name": "warranty_scope",
+          "value": "first_login",
+          "path": "sourceData.evidence",
+          "quote": "仅首登质保24小时。"
+        },
+        {
+          "name": "warranty_window",
+          "value": "24 hours",
+          "path": "sourceData.evidence",
+          "quote": "仅首登质保24小时。"
+        }
+      ]
+    },
+    {
+      "id": "1028",
+      "split": "diagnostic",
+      "caseGroup": "质保",
+      "scenario": "质保天数",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1028",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "质保30天。"
+        }
+      },
+      "expected": [
+        {
+          "name": "warranty",
+          "value": "covered",
+          "path": "sourceData.evidence",
+          "quote": "质保30天。"
+        },
+        {
+          "name": "warranty_days",
+          "value": "30",
+          "path": "sourceData.evidence",
+          "quote": "质保30天。"
+        }
+      ]
+    },
+    {
+      "id": "1029",
+      "split": "diagnostic",
+      "caseGroup": "质保",
+      "scenario": "排除不等于全部无保障",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1029",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "封号不保。"
+        }
+      },
+      "expected": [
+        {
+          "name": "warranty_exclusion",
+          "value": "ban",
+          "path": "sourceData.evidence",
+          "quote": "封号不保。"
+        }
+      ]
+    },
+    {
+      "id": "1030",
+      "split": "diagnostic",
+      "caseGroup": "质保",
+      "scenario": "明确无质保",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1030",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "本商品无质保。"
+        }
+      },
+      "expected": [
+        {
+          "name": "warranty",
+          "value": "none",
+          "path": "sourceData.evidence",
+          "quote": "本商品无质保。"
+        }
+      ]
+    },
+    {
+      "id": "1031",
+      "split": "diagnostic",
+      "caseGroup": "期限与额度",
+      "scenario": "令牌有效期",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1031",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "Token有效期7天。"
+        }
+      },
+      "expected": [
+        {
+          "name": "token_validity",
+          "value": "7 days",
+          "path": "sourceData.evidence",
+          "quote": "Token有效期7天。"
+        }
+      ]
+    },
+    {
+      "id": "1032",
+      "split": "diagnostic",
+      "caseGroup": "期限与额度",
+      "scenario": "订阅使用期",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1032",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "订阅使用期7天。"
+        }
+      },
+      "expected": [
+        {
+          "name": "duration",
+          "value": "7 days",
+          "path": "sourceData.evidence",
+          "quote": "订阅使用期7天。"
+        }
+      ]
+    },
+    {
+      "id": "1033",
+      "split": "diagnostic",
+      "caseGroup": "账号属性",
+      "scenario": "注册年份",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1033",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "账号注册年份为2021年。"
+        }
+      },
+      "expected": [
+        {
+          "name": "registration_year",
+          "value": "2021",
+          "path": "sourceData.evidence",
+          "quote": "账号注册年份为2021年。"
+        }
+      ]
+    },
+    {
+      "id": "1034",
+      "split": "diagnostic",
+      "caseGroup": "账号属性",
+      "scenario": "号龄",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1034",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "账号号龄2年。"
+        }
+      },
+      "expected": [
+        {
+          "name": "account_age",
+          "value": "2 years",
+          "path": "sourceData.evidence",
+          "quote": "账号号龄2年。"
+        }
+      ]
+    },
+    {
+      "id": "1035",
+      "split": "diagnostic",
+      "caseGroup": "设备与地区",
+      "scenario": "商品地区",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1035",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "商品所属地区：菲律宾。"
+        }
+      },
+      "expected": [
+        {
+          "name": "region",
+          "value": "ph",
+          "path": "sourceData.evidence",
+          "quote": "商品所属地区：菲律宾。"
+        }
+      ]
+    },
+    {
+      "id": "1036",
+      "split": "diagnostic",
+      "caseGroup": "设备与地区",
+      "scenario": "注册地不代替商品地区",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1036",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "账号注册地：日本；商品所属地区未说明。"
+        }
+      },
+      "expected": [
+        {
+          "name": "registration_region",
+          "value": "jp",
+          "path": "sourceData.evidence",
+          "quote": "账号注册地：日本；商品所属地区未说明。"
+        }
+      ]
+    },
+    {
+      "id": "1037",
+      "split": "diagnostic",
+      "caseGroup": "设备与地区",
+      "scenario": "明确设备支持",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1037",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "支持安卓设备使用。"
+        }
+      },
+      "expected": [
+        {
+          "name": "device_platform",
+          "value": "android",
+          "path": "sourceData.evidence",
+          "quote": "支持安卓设备使用。"
+        }
+      ]
+    },
+    {
+      "id": "1038",
+      "split": "diagnostic",
+      "caseGroup": "设备与地区",
+      "scenario": "注册设备不证明支持",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1038",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "注册时使用安卓真机；支持哪些设备未说明。"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "1039",
+      "split": "diagnostic",
+      "caseGroup": "交付流程",
+      "scenario": "人工充值",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1039",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "人工手动充值。"
+        }
+      },
+      "expected": [
+        {
+          "name": "delivery",
+          "value": "top_up",
+          "path": "sourceData.evidence",
+          "quote": "人工手动充值。"
+        },
+        {
+          "name": "delivery_mode",
+          "value": "manual",
+          "path": "sourceData.evidence",
+          "quote": "人工手动充值。"
+        }
+      ]
+    },
+    {
+      "id": "1040",
+      "split": "diagnostic",
+      "caseGroup": "交付流程",
+      "scenario": "自动兑换码",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1040",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "自动发货，交付格式为CDK兑换码。"
+        }
+      },
+      "expected": [
+        {
+          "name": "delivery",
+          "value": "redemption",
+          "path": "sourceData.evidence",
+          "quote": "自动发货，交付格式为CDK兑换码。"
+        },
+        {
+          "name": "delivery_format",
+          "value": "cdk",
+          "path": "sourceData.evidence",
+          "quote": "自动发货，交付格式为CDK兑换码。"
+        },
+        {
+          "name": "delivery_mode",
+          "value": "automatic",
+          "path": "sourceData.evidence",
+          "quote": "自动发货，交付格式为CDK兑换码。"
+        }
+      ]
+    },
+    {
+      "id": "1041",
+      "split": "diagnostic",
+      "caseGroup": "期限与额度",
+      "scenario": "价格库存不是权益",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1041",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "售价20元，库存50件。"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "1042",
+      "split": "diagnostic",
+      "caseGroup": "期限与额度",
+      "scenario": "月积分与起购数量",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-10-16",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "1042",
+        "name": "商品",
+        "sourceData": {
+          "evidence": "包含每月6000积分；最低购买数量3份。"
+        }
+      },
+      "expected": [
+        {
+          "name": "credits_monthly",
+          "value": "6000",
+          "path": "sourceData.evidence",
+          "quote": "包含每月6000积分；最低购买数量3份。"
+        },
+        {
+          "name": "minimum_quantity",
+          "value": "3",
+          "path": "sourceData.evidence",
+          "quote": "包含每月6000积分；最低购买数量3份。"
+        }
+      ]
+    }
+  ]
+}

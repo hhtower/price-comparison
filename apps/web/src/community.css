@@ -1,0 +1,66 @@
+.compact-catalog .site-header.community-header {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 10px 24px;
+}
+.community-header .brand-block { display: block; grid-column: 1; grid-row: 1; }
+.public-brand-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 24px; }
+.community-header .brand { grid-column: 1; grid-row: 1; justify-self: start; }
+.compact-catalog .community-header .brand-disclaimer { max-width: 850px; margin: 9px 0 0; }
+.community-header .public-header-actions { grid-column: 2; grid-row: 1; }
+.catalog-coverage { display: flex; align-items: baseline; gap: 8px; max-width: 100%; margin: 0; color: var(--catalog-muted); font-size: 11px; line-height: 1.6; white-space: nowrap; }
+.catalog-coverage strong { color: #21675e; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+@media (min-width: 761px) {
+  .community-header .brand-disclaimer > span { display: block; }
+}
+.community-links { display: inline-flex; align-items: center; gap: 2px; }
+.community-trigger {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  box-sizing: border-box; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: #21675e; font: inherit; text-decoration: none; cursor: pointer;
+}
+.community-trigger:hover { background: #f1f5f2; color: #133f38; }
+.community-trigger::after {
+  content: attr(aria-label); position: absolute; top: 100%; left: 50%; transform: translateX(-50%); z-index: 20;
+  width: max-content; padding: 6px 8px; border-radius: 6px; background: #20352f; color: #fff;
+  font-size: 12px; line-height: 1.5; white-space: nowrap; visibility: hidden;
+}
+.community-trigger:hover::after, .community-trigger:focus-visible::after { visibility: visible; }
+.modal-dialog.community-dialog {
+  box-sizing: border-box; width: 336px; padding: 24px; border: 1px solid #e1e7e3; border-radius: 12px;
+  background: #fff; color: #20352f; box-shadow: 0 16px 48px #172d3026; font-family: inherit; overscroll-behavior: contain;
+}
+.community-dialog::backdrop { background: #162d2a55; }
+.community-dialog h2 { margin: 0; padding-right: 28px; font-size: 18px; line-height: 1.5; font-weight: 600; }
+.community-close {
+  position: absolute; right: 12px; top: 12px; width: 40px; height: 40px; padding: 0; border: 0;
+  background: transparent; color: #718078; font: 24px Arial, sans-serif; cursor: pointer;
+}
+.community-close:hover { color: #20352f; }
+.community-qr { display: block; width: 240px; height: auto; max-width: 100%; margin: 20px auto 12px; background: #fff; }
+.community-qr-error, .community-copy-error { margin: 12px 0; color: #8d4f38; font-size: 12px; line-height: 1.7; }
+.community-group { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.community-group input {
+  box-sizing: content-box; width: 9ch; min-width: 0; border: 0; padding: 4px 0; background: transparent;
+  color: #35483e; font: inherit; font-size: 16px; font-variant-numeric: tabular-nums;
+}
+.community-copy {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 36px; height: 36px;
+  border: 0; padding: 0; border-radius: 6px; background: transparent; color: #718078; cursor: pointer;
+}
+.community-copy:hover { background: #f1f5f2; color: #21674f; }
+.community-copy:disabled { opacity: .5; cursor: wait; }
+.community-copy-feedback { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.community-save { display: block; width: fit-content; margin: 6px auto 0; padding: 6px; color: #63766c; font-size: 12px; text-decoration: none; }
+.community-save:hover { color: #21674f; text-decoration: underline; }
+.community-trigger:focus-visible, .community-dialog :focus-visible { outline: 2px solid #318d7c; outline-offset: 3px; }
+@media (max-width: 760px) {
+  .compact-catalog .site-header.community-header { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .community-header .brand-block { display: contents; }
+  .public-brand-row { grid-column: 1; grid-row: 1; gap: 4px 18px; }
+  .compact-catalog .community-header .brand { min-height: 44px; font-size: 21px; white-space: nowrap; }
+  .compact-catalog .community-header .brand-mark { width: 28px; height: 28px; }
+  .community-header .brand-with-logo { gap: 7px; }
+  .community-header .public-header-actions { grid-column: 1; grid-row: 2; flex-wrap: wrap; gap: 8px 16px; }
+  .compact-catalog .community-header .quality-tools-link { font-size: 12px; white-space: nowrap; }
+  .compact-catalog .community-header .submit-shop-button { font-size: 12px; padding: 8px; white-space: nowrap; }
+  .compact-catalog .community-header .brand-disclaimer { grid-column: 1 / -1; grid-row: 3; max-width: none; width: auto; margin: 0; font-size: 10px; line-height: 1.7; }
+}

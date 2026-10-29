@@ -1,0 +1,70 @@
+# 生产部署：PostgreSQL/Redis 使用 .env 指向的外部实例，
+# 不启动内置数据库容器；api 端口仅绑定本机回环，由反向代理对外提供域名 + HTTPS。
+# Linux 下通过 host-gateway 让容器以 host.docker.internal 访问宿主机端口。
+x-app: &app
+  image: ai-price-comparison:prod
+  build: .
+  env_file: .env
+  environment:
+    NODE_ENV: production
+  init: true
+  restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  migrate:
+    <<: *app
+    image: ai-price-comparison:setup
+    build:
+      context: .
+      target: build
+    profiles: ["setup"]
+    restart: "no"
+    command: ["npm", "run", "db:migrate"]
+    healthcheck:
+      disable: true
+
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:3100:3000"
+    command: ["node", "dist/server/main.js"]
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    stop_grace_period: 30s
+
+  worker-crawler:
+    <<: *app
+    command: ["node", "dist/server/workers/crawler.worker.js"]
+    # worker 不监听 HTTP，关闭镜像级健康检查避免恒为 unhealthy。
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s
+
+  worker-official-reference:
+    <<: *app
+    restart: on-failure
+    command: ["node", "dist/server/workers/official-reference.worker.js"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s
+
+  worker-ai:
+    <<: *app
+    command: ["node", "dist/server/workers/ai.worker.js"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s
+
+  worker-standardization:
+    <<: *app
+    command: ["node", "dist/server/workers/standardization-entrypoint.js"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s

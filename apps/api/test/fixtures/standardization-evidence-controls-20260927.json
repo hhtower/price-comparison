@@ -1,0 +1,14 @@
+{
+  "version": "standardization-evidence-controls-20260927-v1",
+  "purpose": "Synthetic injected failures for metric regression; not model quality observations.",
+  "samples": [
+    { "id": "same-evidence-isolation", "labelState": "decidable", "shouldClassify": false, "identity": null, "tags": {}, "manualIsolation": true, "evidenceChanged": false },
+    { "id": "changed-provider-product", "labelState": "decidable", "shouldClassify": true, "identity": { "family": "example_beta", "product": "api_credit", "tier": "standard" }, "previousIdentity": { "family": "example_alpha", "product": "api_credit", "tier": "standard" }, "evidenceChanged": true, "tags": {} },
+    { "id": "unknown-current-plan", "labelState": "pending_evidence", "shouldClassify": false, "identity": null, "tags": {} }
+  ],
+  "outcomes": [
+    { "id": "same-evidence-isolation", "status": "classified", "identity": { "family": "openai", "product": "chatgpt", "tier": "plus" }, "preBudgetCandidateIds": [], "sentCandidateIds": [], "tags": {} },
+    { "id": "changed-provider-product", "status": "classified", "identity": { "family": "example_alpha", "product": "api_credit", "tier": "standard" }, "preBudgetCandidateIds": [], "sentCandidateIds": [], "tags": {} },
+    { "id": "unknown-current-plan", "status": "unclassified", "reasonCode": "insufficient_evidence", "preBudgetCandidateIds": [], "sentCandidateIds": [], "tags": {} }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "name": "product-price-comparison",
+  "version": "2026.10.2801",
+  "type": "module",
+  "scripts": {
+    "start": "node dist/server/main.js",
+    "start:dev": "tsx watch apps/api/src/main.ts",
+    "dev": "tsx scripts/dev.ts",
+    "dev:ai-standardization": "concurrently -k -n ai,standardization \"tsx apps/api/src/workers/ai.worker.ts\" \"tsx apps/api/src/workers/standardization-entrypoint.ts\"",
+    "build": "npm run build:shared && tsc -p apps/api/tsconfig.json && vite build --config apps/web/vite.config.js",
+    "db:migrate": "tsx apps/api/scripts/migrate.ts",
+    "perf:fixtures": "tsx apps/api/perf/fixtures.ts",
+    "perf:catalog": "k6 run apps/api/perf/catalog.k6.js",
+    "perf:catalog:cold": "tsx apps/api/perf/catalog-cold.ts",
+    "perf:ai": "k6 run apps/api/perf/ai-write.k6.js",
+    "perf:explain": "tsx apps/api/perf/catalog-plan.ts",
+    "worker:ai": "tsx apps/api/src/workers/ai.worker.ts",
+    "worker:crawler": "tsx apps/api/src/workers/crawler.worker.ts",
+    "worker:official-reference": "tsx apps/api/src/workers/official-reference.worker.ts",
+    "worker:standardization": "tsx apps/api/src/workers/standardization-entrypoint.ts",
+    "test": "npm run test:e2e && npm run test:web",
+    "test:e2e": "cross-env CATALOG_VERSION_BUMP_MIN_INTERVAL_MS=0 node --import tsx --test --test-concurrency=1 \"apps/api/test/*.test.js\" \"apps/api/test/*.test.ts\" \"apps/api/test/*.spec.ts\" \"apps/api/test/*-spec.ts\"",
+    "typecheck": "tsc -p apps/api/tsconfig.json --noEmit && tsc -p packages/catalog/tsconfig.json --noEmit",
+    "build:shared": "tsc -p packages/catalog/tsconfig.json",
+    "postinstall": "npm run build:shared",
+    "test:web": "cross-env NODE_ENV=test vitest run --config apps/web/vite.config.js --mode test"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "^11.1.6",
+    "@testcontainers/postgresql": "^12.1.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/node": "^24.3.0",
+    "@types/pg": "^8.23.1",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "jsdom": "^29.1.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0",
+    "yaml": "^2.9.1"
+  },
+  "license": "GPL-3.0-only",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

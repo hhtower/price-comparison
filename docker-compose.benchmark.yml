@@ -1,0 +1,26 @@
+services:
+  standardization-benchmark:
+    build:
+      context: .
+      target: benchmark
+    profiles: ["standardization-benchmark"]
+    init: true
+    restart: "no"
+    cpus: ${STANDARDIZATION_BENCHMARK_CPU_LIMIT:?Set the deployment-equivalent CPU limit}
+    mem_limit: ${STANDARDIZATION_BENCHMARK_MEMORY_LIMIT_BYTES:?Set the deployment-equivalent memory limit in bytes}
+    environment:
+      TEST_DATABASE_URL: ${STANDARDIZATION_BENCHMARK_DATABASE_URL:?Set an isolated PostgreSQL benchmark URL}
+      STANDARDIZATION_BENCHMARK_CPU_LIMIT: ${STANDARDIZATION_BENCHMARK_CPU_LIMIT:?Set the deployment-equivalent CPU limit}
+      STANDARDIZATION_BENCHMARK_MEMORY_LIMIT_BYTES: ${STANDARDIZATION_BENCHMARK_MEMORY_LIMIT_BYTES:?Set the deployment-equivalent memory limit in bytes}
+      STANDARDIZATION_BENCHMARK_SEED: ${STANDARDIZATION_BENCHMARK_SEED:-20260920}
+      STANDARDIZATION_BENCHMARK_RUNS: ${STANDARDIZATION_BENCHMARK_RUNS:-5}
+      AI_CONCURRENCY: ${AI_CONCURRENCY:-2}
+      PG_POOL_MAX: ${PG_POOL_MAX:-10}
+      API_CONNECTIONS: ${API_CONNECTIONS:-2}
+      CRAWLER_CONNECTIONS: ${CRAWLER_CONNECTIONS:-1}
+      AI_CONNECTIONS: ${AI_CONNECTIONS:-2}
+      STANDARDIZATION_CONNECTIONS: ${STANDARDIZATION_CONNECTIONS:-2}
+    volumes:
+      - ${STANDARDIZATION_BENCHMARK_REPORT_DIR:?Set a writable host report directory}:/reports
+    command: ["--output", "/reports/standardization-deployment-benchmark.json", "--check"]
+    stop_grace_period: 15m

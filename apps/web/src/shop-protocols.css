@@ -1,0 +1,26 @@
+#pending-shops{padding-top:0}
+.pending-shops-toolbar{flex-wrap:wrap}
+.pending-shops-toolbar strong{font-size:13px}
+.pending-shops-toolbar strong span{margin-left:6px;color:var(--accent);font-variant-numeric:tabular-nums}
+.pending-shops-toolbar small{color:var(--muted);font-size:12px}
+#pending-shops>.batch-actions{margin-bottom:12px;flex-shrink:0}
+.pending-shops-table table{min-width:1020px}
+.pending-shops-table th:first-child{width:44px}
+.pending-shops-table th:nth-child(2){width:26%}
+.pending-shops-table th:nth-child(3){width:32%}
+.pending-shops-table th:nth-child(4){width:172px}
+.pending-shops-table th:nth-child(5){width:190px}
+#pending-shops .selection-column{text-align:center;padding:13px 10px}
+.pending-shops-table input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+.pending-shops-table tbody tr.is-selected{background:var(--accent-soft)}
+.pending-shops-table .row-actions{flex-wrap:wrap}
+#pending-shops .row-actions .quiet-button.danger-text{color:#a64d4d;min-width:54px}
+.protocol-review-main{min-width:0}
+.protocol-picker{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.protocol-picker label{min-width:0;max-width:100%}
+.protocol-picker select,.shop-editor select{min-height:38px;max-width:100%;border:1px solid var(--line);background:#fff;padding:6px 10px;color:var(--ink)}
+.protocol-picker select{min-height:34px;border-radius:8px}
+.protocol-picker button{min-height:34px;color:var(--muted);cursor:pointer;font-size:12px}
+.protocol-status{font-size:12px;color:#8c5d23;margin:8px 0;overflow-wrap:anywhere}
+.pending-shops-table button:disabled{opacity:.5;cursor:not-allowed}
+.shop-protocol-label{display:block;margin-top:5px;font-size:11px;color:var(--muted)}
