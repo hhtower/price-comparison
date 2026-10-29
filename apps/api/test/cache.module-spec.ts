@@ -4,12 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type Socket } from 'node:net';
 import test from 'node:test';
 import { Test } from '@nestjs/testing';
-import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { createCache, type Cache } from 'cache-manager';
+import { CACHE, createCache, type Cache } from '../src/cache/cache.js';
 import type KeyvRedis from '@keyv/redis';
 import { CatalogCacheModule, catalogCacheOptions, CATALOG_CACHE_TTL_MS, CATALOG_MEMORY_CACHE_ENTRIES } from '../src/cache/cache.module.js';
 
-test('official cache module exposes CACHE_MANAGER and bounds the memory tier with LRU', async () => {
+test('Nest cache provider exposes CACHE and bounds the memory tier with LRU', async () => {
   const cache = createCache(catalogCacheOptions({}));
   try {
     assert.equal(cache.stores.length, 1);
@@ -161,7 +160,7 @@ for (const stalledCommand of ['GET', 'SET']) {
 
 test('Nest owns the configured cache provider and closes the Redis adapter on shutdown', async () => {
   const module = await Test.createTestingModule({ imports: [CatalogCacheModule] }).compile();
-  const cache = module.get<Cache>(CACHE_MANAGER);
+  const cache = module.get<Cache>(CACHE);
   const key = 'framework-lifecycle:' + randomUUID();
   const redis = cache.stores[1]?.store as KeyvRedis | undefined;
   try {

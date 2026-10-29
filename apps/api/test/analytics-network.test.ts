@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createCache } from 'cache-manager';
+import { createCache } from '../src/cache/cache.js';
 import { AnalyticsNetworkService, analyticsCacheOptions, analyticsClientIp } from '../src/analytics/analytics-network.js';
 
 const identity = { success: true, ip: '8.8.8.8', country_code: 'US', country: 'United States', region: 'California', city: 'Mountain View', connection: { isp: 'Google LLC' } };

@@ -17,6 +17,29 @@ test('deployment excludes local artifacts', () => {
   }
 });
 
+test('dependency lockfile is portable and matches workspace manifests without a root self-dependency', () => {
+  const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+  const checkPaths = (value: unknown): void => {
+    if (typeof value === 'string') {
+      assert.ok(!/^(?:file:)?(?:[A-Za-z]:[\\/]|\/|\\\\)/u.test(value), 'lockfile must not contain absolute filesystem paths');
+    } else if (value && typeof value === 'object') {
+      for (const [key, item] of Object.entries(value)) {
+        checkPaths(key);
+        checkPaths(item);
+      }
+    }
+  };
+  checkPaths(lock);
+  for (const directory of ['', 'apps/api', 'apps/web', 'packages/catalog']) {
+    const manifest = JSON.parse(readFileSync(directory ? `${directory}/package.json` : 'package.json', 'utf8'));
+    const entry = lock.packages[directory];
+    assert.equal(entry.version, manifest.version);
+    for (const section of ['dependencies', 'devDependencies']) assert.deepEqual(entry[section], manifest[section]);
+    assert.equal(entry.dependencies?.[manifest.name], undefined, 'workspace must not depend on itself');
+  }
+  assert.equal(lock.packages[`node_modules/${lock.name}`], undefined, 'root package must not appear as its own dependency');
+});
+
 test('standardization runtime entrypoint and migration chain are present', () => {
   const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as { scripts?: Record<string, string> };
   assert.equal(packageJson.scripts?.['worker:standardization'], 'tsx apps/api/src/workers/standardization-entrypoint.ts');

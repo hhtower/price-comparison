@@ -10,7 +10,7 @@ import { migrateToLatest } from '../scripts/migrate.js';
 import { CatalogRepository, encodeCatalogCursor, decodeCatalogCursor } from '../src/catalog/catalog.repository.js';
 import { CatalogService, normalizeCatalogQuery } from '../src/catalog/catalog.service.js';
 import { bumpCatalogVersion, CatalogVersionRepository } from '../src/catalog/catalog-version.repository.js';
-import { createCache } from 'cache-manager';
+import { createCache } from '../src/cache/cache.js';
 import { ProductsRepository } from '../src/products/products.repository.js';
 import { assertCatalogPlan } from './fixtures/catalog-plan.js';
 import { PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';

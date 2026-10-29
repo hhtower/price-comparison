@@ -11,7 +11,7 @@ import { AnalyticsRepository } from '../src/analytics/analytics.repository.js';
 import { AnalyticsNetworkService, analyticsCacheOptions } from '../src/analytics/analytics-network.js';
 import { analyticsPeriod } from '../src/analytics/analytics-input.js';
 import type { AnalyticsCollection } from '../src/analytics/analytics-contract.js';
-import { createCache } from 'cache-manager';
+import { createCache } from '../src/cache/cache.js';
 
 const connectionString = process.env.TEST_DATABASE_URL;
 test('visitor analytics migration, atomic writes, deduplication and reports over isolated PostgreSQL', { skip: !connectionString }, async t => {

@@ -1,6 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import type { Cache } from 'cache-manager';
+import { CACHE, type Cache } from '../cache/cache.js';
 import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQuery, type CatalogSort, type CatalogTag } from './catalog.repository.js';
 import { DomainValidationError } from '../common/errors.js';
 import { normalizePurchaseTag, parseCatalogSearch } from '@price-comparison/catalog/purchase-attributes';
@@ -143,7 +142,7 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
 export class CatalogService {
   constructor(
     @Inject(CatalogRepository) private readonly repository: CatalogRepository,
-    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    @Inject(CACHE) private readonly cache: Cache,
   ) {}
 
   getProducts() { return this.repository.publicProducts(); }

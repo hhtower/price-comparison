@@ -3,7 +3,7 @@ import test from 'node:test';
 import { CatalogController } from '../src/catalog/catalog.controller.js';
 import { CatalogService } from '../src/catalog/catalog.service.js';
 import type { CatalogQuery, CatalogRepository } from '../src/catalog/catalog.repository.js';
-import { createCache } from 'cache-manager';
+import { createCache } from '../src/cache/cache.js';
 
 test('public product endpoints return metadata, preserve merges and return real 404 without masking failures', async () => {
   let unavailable = false;

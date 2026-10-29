@@ -11,7 +11,7 @@ import { JobsRepository, type ClaimedJob } from '../src/jobs/jobs.repository.js'
 import { CatalogRepository } from '../src/catalog/catalog.repository.js';
 import { CatalogService } from '../src/catalog/catalog.service.js';
 import { CatalogVersionRepository } from '../src/catalog/catalog-version.repository.js';
-import { createCache } from 'cache-manager';
+import { createCache } from '../src/cache/cache.js';
 import { Keyv } from 'keyv';
 import { createHash } from 'node:crypto';
 import { AdminRepository } from '../src/admin/admin.repository.js';

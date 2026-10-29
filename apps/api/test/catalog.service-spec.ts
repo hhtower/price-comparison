@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createCache } from 'cache-manager';
+import { createCache } from '../src/cache/cache.js';
 import { CatalogService, normalizeCatalogQuery, type CatalogQueryInput } from '../src/catalog/catalog.service.js';
 import type { CatalogFacets, CatalogPage, CatalogQuery, CatalogRepository } from '../src/catalog/catalog.repository.js';
 

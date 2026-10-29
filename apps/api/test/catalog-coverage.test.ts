@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createCache } from 'cache-manager';
+import { createCache } from '../src/cache/cache.js';
 import { DummyDriver, Kysely, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler, type CompiledQuery } from 'kysely';
 import { CatalogController } from '../src/catalog/catalog.controller.js';
 import { CatalogRepository } from '../src/catalog/catalog.repository.js';

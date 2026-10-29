@@ -1,7 +1,6 @@
 import { isIP } from 'node:net';
 import { isPublicAddress } from '../quality/quality-network.js';
-import { createCache, type Cache } from 'cache-manager';
-import { createKeyv as createMemoryKeyv } from 'cacheable';
+import { createCache, createMemoryStore, type CacheOptions, type Cache } from '../cache/cache.js';
 import { createKeyvNonBlocking } from '@keyv/redis';
 
 export interface AnalyticsNetwork {
@@ -15,17 +14,16 @@ const SUCCESS_TTL_MS = 30 * 86400000;
 const FAILURE_TTL_MS = 5 * 60000;
 
 export function analyticsCacheOptions(environment: NodeJS.ProcessEnv = process.env) {
-  const stores = [createMemoryKeyv({ ttl: SUCCESS_TTL_MS, lruSize: 2048 })];
+  const stores = [createMemoryStore(SUCCESS_TTL_MS, 2048)];
   const url = environment.REDIS_URL?.trim();
   if (url) {
     const redis = createKeyvNonBlocking({
       url, disableOfflineQueue: true, commandsQueueMaxLength: 128,
       socket: { connectTimeout: 1000, socketTimeout: 1000, reconnectStrategy: false },
-    }, { namespace: 'analytics-ip-v1', connectionTimeout: 1000 });
-    redis.on('error', () => {});
+    }, { namespace: 'analytics-ip-v2', connectionTimeout: 1000 });
     stores.push(redis);
   }
-  return { stores, ttl: SUCCESS_TTL_MS, refreshThreshold: 0, nonBlocking: false };
+  return { stores, ttl: SUCCESS_TTL_MS } satisfies CacheOptions;
 }
 const empty = (ip: string | null, geoStatus: AnalyticsNetwork['geoStatus']): AnalyticsNetwork => ({ ip, countryCode: null, country: null, region: null, city: null, isp: null, geoStatus });
 
