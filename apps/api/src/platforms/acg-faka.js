@@ -38,7 +38,8 @@ async function read(shop, path, fetchImpl, options, form) {
 async function page(shop, current, fetchImpl, options) {
   const payload = await read(shop, `/user/api/index/commodity?page=${current}&limit=${PAGE_SIZE}`, fetchImpl, options);
   if (!Array.isArray(payload.data) || !Number.isSafeInteger(payload.total) || payload.total < 0
-    || payload.total > PAGE_SIZE * MAX_PAGES || payload.data.length > PAGE_SIZE || payload.data.length > payload.total) fail('invalid pagination');
+    || payload.total > PAGE_SIZE * MAX_PAGES
+    || payload.data.length > Math.min(PAGE_SIZE, Math.max(0, payload.total - (current - 1) * PAGE_SIZE))) fail('invalid pagination');
   for (const item of payload.data) {
     if (!productId(item?.id) || typeof item.name !== 'string' || !item.name.trim() || ![0, 1].includes(item.status)) fail('invalid product');
   }
@@ -47,7 +48,7 @@ async function page(shop, current, fetchImpl, options) {
 }
 
 function validateListings(payload) {
-  if (!Array.isArray(payload?.data)) fail('invalid pagination');
+  if (!Array.isArray(payload?.data) || payload.data.length > PAGE_SIZE) fail('invalid pagination');
   for (const item of payload.data) {
     if (!productId(item?.id) || typeof item.name !== 'string' || !item.name.trim() || ![0, 1].includes(item.status)) fail('invalid product');
   }
@@ -55,12 +56,11 @@ function validateListings(payload) {
 }
 
 async function categoryPage(shop, categoryId, current, fetchImpl, options) {
-  // 首次请求复刻站点前端(裸 categoryId 不带分页),补页时才加 page/limit
-  const query = `categoryId=${categoryId}` + (current > 1 ? `&page=${current}&limit=${PAGE_SIZE}` : '');
+  const query = `categoryId=${categoryId}&page=${current}&limit=${PAGE_SIZE}`;
   return validateListings(await read(shop, `/user/api/index/commodity?${query}`, fetchImpl, options));
 }
 
-// Prefer the storefront's category view; fall back only when discovery is unavailable or empty.
+// A successful discovery with no populated categories uses the flat listing.
 // Callers persist the returned list as a complete snapshot, so listing failures must propagate.
 async function discoverListings(shop, fetchImpl, options) {
   const collected = new Map();
@@ -70,33 +70,23 @@ async function discoverListings(shop, fetchImpl, options) {
       collected.set(item.id, item);
     }
   };
-  let categories = null, categoryClaims = null, flatTotal = null;
-  let payload;
-  try {
-    payload = await read(shop, '/user/api/index/data', fetchImpl, options);
-  } catch (error) {
-    if (options.signal?.aborted || error?.name === 'AbortError') throw error;
-    // Older themes may not expose category discovery.
-  }
-  if (Array.isArray(payload?.data)) {
-    const active = payload.data.filter(cat => productId(cat?.id)
-      && Number.isSafeInteger(cat?.commodity_count) && cat.commodity_count > 0);
-    categories = active.length;
-    categoryClaims = active.reduce((sum, cat) => sum + cat.commodity_count, 0);
-    for (const cat of active) {
-      const first = await categoryPage(shop, cat.id, 1, fetchImpl, options);
-      add(first.data);
-      // 返回数少于声称值时按分页补抓,防大分类被默认 limit 截断
-      if (first.data.length < cat.commodity_count) {
-        for (let current = 2; current <= Math.max(2, Math.ceil(cat.commodity_count / PAGE_SIZE)); current++) {
-          const batch = await categoryPage(shop, cat.id, current, fetchImpl, options);
-          if (!batch.data.length) break;
-          add(batch.data);
-        }
-      }
+  const payload = await read(shop, '/user/api/index/data', fetchImpl, options);
+  if (!Array.isArray(payload.data) || payload.data.some(cat => !productId(cat?.id)
+    || !Number.isSafeInteger(cat?.commodity_count) || cat.commodity_count < 0 || cat.commodity_count > PAGE_SIZE * MAX_PAGES)
+    || new Set(payload.data.map(cat => cat.id)).size !== payload.data.length) fail('invalid categories');
+  const active = payload.data.filter(cat => cat.commodity_count > 0);
+  const categories = active.length, categoryClaims = active.reduce((sum, cat) => sum + cat.commodity_count, 0);
+  let flatTotal = null;
+  for (const cat of active) {
+    const before = collected.size;
+    for (let current = 1; current <= Math.ceil(cat.commodity_count / PAGE_SIZE); current++) {
+      const batch = await categoryPage(shop, cat.id, current, fetchImpl, options);
+      if (batch.data.length > Math.min(PAGE_SIZE, cat.commodity_count - (current - 1) * PAGE_SIZE)) fail('invalid pagination');
+      add(batch.data);
     }
+    if (collected.size - before !== cat.commodity_count) fail('incomplete category pagination');
   }
-  if (!collected.size) {
+  if (!active.length) {
     for (let current = 1; current <= MAX_PAGES; current++) {
       const batch = await page(shop, current, fetchImpl, options);
       if (flatTotal !== null && batch.total !== flatTotal) fail('pagination changed during crawl');

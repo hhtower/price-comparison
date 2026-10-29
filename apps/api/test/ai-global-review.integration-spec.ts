@@ -83,7 +83,7 @@ describe('global standard product review', () => {
     await db.updateTable('products').set({ deleted_at: new Date() }).where('id', '=', p.id).execute();
   });
 
-  test('current members span tasks and manual assignments without duplicates or stale evidence', async () => {
+  test('current members omit stored tags and preserve pagination and current assignment evidence', async () => {
     const a = await standard('global A');
     const b = await standard('global B');
     const p1 = await product('first');
@@ -94,6 +94,8 @@ describe('global standard product review', () => {
     const j1 = await result(p1.id, a.id);
     const j2 = await result(p1.id, a.id);
     const j3 = await result(p2.id, a.id);
+    const currentDecision = { status: 'classified', identity: { kind: 'existing', id: String(a.id) } };
+    await db.updateTable('ai_standardization_results').set({ decision: jsonb(currentDecision) }).where('job_id', '=', j2).execute();
     await db.insertInto('standard_product_members').values([
       { product_id: p1.id, standard_product_id: a.id, assignment_source: 'ai', decision_version: j2 },
       { product_id: p2.id, standard_product_id: a.id, assignment_source: 'ai', decision_version: j3 },
@@ -102,7 +104,12 @@ describe('global standard product review', () => {
       { product_id: deleted.id, standard_product_id: a.id },
     ]).execute();
     await db.updateTable('products').set({ deleted_at: new Date() }).where('id', '=', deleted.id).execute();
-    await db.insertInto('product_tags').values({ product_id: p1.id, name: '周期', value: '当前标签' }).execute();
+    await db.insertInto('product_tags').values(Array.from({ length: 1000 }, (_, index) => ({
+      product_id: p1.id, name: 'usage_restriction', value: `current restriction ${index}`,
+    }))).execute();
+    const storedTags = await db.selectFrom('product_tags').select(sql<number>`count(*)::int`.as('count'))
+      .where('product_id', '=', p1.id).executeTakeFirstOrThrow();
+    assert.equal(storedTags.count, 1000);
     const page = await repository.listGlobalStandardProducts({ limit: 1, includeTotal: true });
     assert.equal(page.total, 2);
     assert.equal(page.items[0]?.productCount, 2);
@@ -111,12 +118,26 @@ describe('global standard product review', () => {
     assert.equal(next.items[0]?.standardProductId, String(b.id));
     assert.equal(next.nextCursor, null);
     const first = await repository.listGlobalStandardProductItems({ standardProductId: a.id, limit: 1 });
+    assert.equal(first.items.length, 1);
+    assert.equal(first.items[0]?.productId, String(p1.id));
+    assert.equal(first.nextCursor, String(p1.id));
     assert.equal(first.items[0]?.sourceJobId, String(j2));
     assert.notEqual(first.items[0]?.sourceJobId, String(j1));
-    assert.deepEqual(first.items[0]?.tags, [{ name: '周期', value: '当前标签' }]);
+    assert.equal(Object.hasOwn(first.items[0]!, 'tags'), false, 'member pages must omit stored tags');
+    assert.equal(first.items[0]?.standardName, 'global A');
+    assert.equal(first.items[0]?.assignmentSource, 'ai');
+    assert.deepEqual(first.items[0]?.evidence, ['old evidence']);
+    assert.equal(first.items[0]?.reason, `reason ${j2}`);
+    assert.deepEqual(first.items[0]?.decision, currentDecision);
     const second = await repository.listGlobalStandardProductItems({ standardProductId: a.id, limit: 1, cursor: first.nextCursor! });
+    assert.equal(second.items.length, 1);
     assert.equal(second.items[0]?.productId, String(p2.id));
     assert.equal(second.nextCursor, null);
+    assert.equal(Object.hasOwn(second.items[0]!, 'tags'), false);
+    assert.equal(second.items[0]?.sourceJobId, String(j3));
+    assert.deepEqual(second.items[0]?.evidence, ['old evidence']);
+    assert.equal(second.items[0]?.reason, `reason ${j3}`);
+    assert.deepEqual(second.items[0]?.decision, {});
     // A later failed task does not replace the evidence of the current assignment.
     await result(p1.id, null);
     assert.equal((await repository.listGlobalStandardProductItems({ standardProductId: a.id, limit: 10 })).items[0]?.sourceJobId, String(j2));
@@ -127,6 +148,9 @@ describe('global standard product review', () => {
     assert.equal(reassigned.items[0]?.sourceJobId, null);
     assert.deepEqual(reassigned.items[0]?.evidence, []);
     assert.equal(reassigned.items[0]?.assignmentSource, 'human');
+    assert.equal(reassigned.items[0]?.reason, null);
+    assert.equal(reassigned.items[0]?.decision, null);
+    assert.ok(reassigned.items.every(row => !Object.hasOwn(row, 'tags')));
     assert.equal((await repository.listGlobalResults({ limit: 100 })).items.length, 0);
   });
 

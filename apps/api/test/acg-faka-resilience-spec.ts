@@ -44,8 +44,9 @@ describe('acg-faka 站点侧缺陷容忍(2026-10-25 六店实测)', () => {
     const products = await acgFaka.crawl(undefined, shop, makeFetch(url => {
       if (url.pathname.endsWith('/data')) return { code: 200, data: [{ id: 9, commodity_count: 2 }] };
       if (url.pathname.endsWith('/commodity')) {
-        if (url.searchParams.has('page')) throw new Error('不应请求平铺分页');
         assert.equal(url.searchParams.get('categoryId'), '9');
+        assert.equal(url.searchParams.get('page'), '1');
+        assert.equal(url.searchParams.get('limit'), '12');
         return { code: 200, data: [listing(1), listing(2)] };
       }
       return standardItemReads()(url);
@@ -56,17 +57,21 @@ describe('acg-faka 站点侧缺陷容忍(2026-10-25 六店实测)', () => {
     assert.equal(stats!.flatTotal, null);
   });
 
-  test('分类返回数少于声称值时按分页补抓(防大分类被默认 limit 截断)', async () => {
+  test('category pagination uses the requested offset through the final short page', async () => {
+    const items = Array.from({ length: 13 }, (_, index) => listing(index + 1));
+    const pages: number[] = [];
     const products = await acgFaka.crawl(undefined, shop, makeFetch(url => {
-      if (url.pathname.endsWith('/data')) return { code: 200, data: [{ id: 9, commodity_count: 3 }] };
+      if (url.pathname.endsWith('/data')) return { code: 200, data: [{ id: 9, commodity_count: 13 }] };
       if (url.pathname.endsWith('/commodity')) {
-        if (!url.searchParams.has('page')) return { code: 200, data: [listing(1), listing(2)] };
-        assert.equal(url.searchParams.get('page'), '2');
-        return { code: 200, data: [listing(3)] };
+        assert.equal(url.searchParams.get('categoryId'), '9');
+        const current = Number(url.searchParams.get('page')), limit = Number(url.searchParams.get('limit'));
+        pages.push(current);
+        return { code: 200, data: items.slice((current - 1) * limit, current * limit) };
       }
       return standardItemReads()(url);
     }));
-    assert.equal(products.length, 3);
+    assert.deepEqual(products.map(product => product.externalId), items.map(item => String(item.id)));
+    assert.deepEqual(pages, [1, 2]);
   });
 
   test('a later category failure rejects the crawl without marking a partial list complete', async () => {

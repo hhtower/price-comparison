@@ -145,13 +145,13 @@ describe('admin lists over real PostgreSQL', () => {
     const query = new URLSearchParams({ productId: ids.productAlpha!.toString(), limit: '1' });
     const first = await get(`tags?${query}`);
     assert.deepEqual(first.items, [
-      { id: ids.tagBrand!.toString(), productId: ids.productAlpha!.toString(), name: 'brand', value: 'Acme', productCount: '1', productIds: [ids.productAlpha!.toString()] },
+      { id: ids.tagBrand!.toString(), productId: ids.productAlpha!.toString(), name: 'brand', value: 'Acme', productCount: '1' },
     ]);
     assert.ok(first.nextCursor);
 
     const second = await get(`tags?${new URLSearchParams({ ...Object.fromEntries(query), cursor: first.nextCursor! })}`);
     assert.deepEqual(second.items, [
-      { id: ids.tagColor!.toString(), productId: ids.productAlpha!.toString(), name: 'color', value: 'Red', productCount: '1', productIds: [ids.productAlpha!.toString()] },
+      { id: ids.tagColor!.toString(), productId: ids.productAlpha!.toString(), name: 'color', value: 'Red', productCount: '1' },
     ]);
     assert.equal(second.nextCursor, undefined);
   });

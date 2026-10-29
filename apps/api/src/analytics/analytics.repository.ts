@@ -7,6 +7,12 @@ import { AnalyticsNetworkService, type AnalyticsNetwork } from './analytics-netw
 
 const networkFields = `host(ip) as ip, country_code as "countryCode", country, region, city, isp, geo_status as "geoStatus"`;
 
+type AnalyticsVisit = AnalyticsNetwork & {
+  id: string; visitorId: string; sessionId: string; page: AnalyticsCollection['page'];
+  device: AnalyticsCollection['device']; browser: AnalyticsCollection['browser']; source: AnalyticsCollection['source'];
+  activeMs: number; startedAt: string; lastSeenAt: string; actions: number; geoFromCache: boolean;
+};
+
 // Filter reports, not stored events, so historical data follows the same rule.
 const reportableIp = `not exists (
   select 1 from analytics_excluded_ips e
@@ -141,13 +147,30 @@ export class AnalyticsRepository {
 
   async visits(query: AnalyticsQuery) {
     const period = analyticsPeriod(query.days);
-    const result = await this.pool.query(`with visits as materialized (${enrichedVisits})
-      select jsonb_build_object('total', (select count(*)::integer from visits), 'items', (select coalesce(jsonb_agg(row order by row."startedAt" desc, row.id desc), '[]'::jsonb) from (
+    const result = await this.pool.query<{ data: { total: number; items: AnalyticsVisit[] } }>(`with page as materialized (
+        select v.* from analytics_visits v
+        where v.started_at >= $1::timestamptz and v.started_at < $2::timestamptz and ${reportableIp}
+        order by v.started_at desc, v.id desc limit $3 offset $4
+      )
+      select jsonb_build_object('total', (select count(*)::integer from analytics_visits v
+        where v.started_at >= $1::timestamptz and v.started_at < $2::timestamptz and ${reportableIp}),
+        'items', (select coalesce(jsonb_agg(row order by row."startedAt" desc, row.id desc), '[]'::jsonb) from (
         select v.id, v.visitor_id as "visitorId", v.session_id as "sessionId", v.page, v.device, v.browser, v.source, v.active_ms as "activeMs", v.started_at as "startedAt", v.last_seen_at as "lastSeenAt",
-        host(v.ip) as ip, v.country_code as "countryCode", v.country, v.region, v.city, v.isp, v.geo_status as "geoStatus", v.geo_from_cache as "geoFromCache",
+        host(v.ip) as ip, v.country_code as "countryCode", v.country, v.region, v.city, v.isp, v.geo_status as "geoStatus", false as "geoFromCache",
         (select count(*)::integer from analytics_actions a where a.visit_id = v.id and a.created_at < $2::timestamptz) as actions
-        from visits v order by v.started_at desc, v.id desc limit $4 offset $5
-      ) row)) as data`, [period.start, period.end, JSON.stringify(await this.cachedNetworks(period.start, period.end)), query.limit, (query.page - 1) * query.limit]);
-    return { ...result.rows[0].data, page: query.page, pageSize: query.limit, period };
+        from page v
+      ) row)) as data`, [period.start, period.end, query.limit, (query.page - 1) * query.limit]);
+    const data = result.rows[0].data;
+    const addresses = [...new Set(data.items.flatMap(visit =>
+      visit.ip && (visit.geoStatus === 'unknown' || visit.geoStatus === 'unavailable') ? [visit.ip] : []))];
+    const cached = new Map((this.network && addresses.length ? await this.network.cached(addresses) : []).map(network => [network.ip, network]));
+    const items = data.items.map(visit => {
+      const supplement = visit.geoStatus === 'unknown' || visit.geoStatus === 'unavailable' ? cached.get(visit.ip) : undefined;
+      if (!supplement) return visit;
+      return { ...visit, countryCode: visit.countryCode ?? supplement.countryCode, country: visit.country ?? supplement.country,
+        region: visit.region ?? supplement.region, city: visit.city ?? supplement.city, isp: visit.isp ?? supplement.isp,
+        geoStatus: 'resolved' as const, geoFromCache: true };
+    });
+    return { ...data, items, page: query.page, pageSize: query.limit, period };
   }
 }

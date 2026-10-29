@@ -1819,8 +1819,6 @@ export class AiRepository {
     const { rows } = await sql<Record<string, unknown>>`
       select p.id as "productId", p.name, p.spec, s.name as "shopName", sp.name as "standardName", sp.platform,
         m.assignment_source as "assignmentSource", r.job_id as "sourceJobId", m.created_at as "publishedAt",
-        coalesce((select jsonb_agg(jsonb_build_object('name', t.name, 'value', t.value) order by t.id)
-          from product_tags t where t.product_id=p.id), '[]'::jsonb) as tags,
         coalesce(r.evidence, '[]'::jsonb) as evidence, r.reason, r.decision
       from standard_product_members m
       join standard_products sp on sp.id=m.standard_product_id and sp.verification_state='verified' and sp.merged_into_id is null

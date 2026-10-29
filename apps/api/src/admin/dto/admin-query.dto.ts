@@ -3,13 +3,7 @@ import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsNotEmpty, Matches, Max,
 
 const POSITIVE_ID = /^[1-9]\d*$/;
 
-export class AdminPageQueryDto {
-  @IsOptional()
-  @IsString()
-  @MinLength(1)
-  @MaxLength(512)
-  cursor?: string;
-
+export class NumberedPageQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -21,14 +15,22 @@ export class AdminPageQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(100)
-  pageSize?: number;
+  page?: number;
+}
+
+export class AdminPageQueryDto extends NumberedPageQueryDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(512)
+  cursor?: string;
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  page?: number;
+  @Max(100)
+  pageSize?: number;
 }
 
 function trimKeyword({ value }: { value: unknown }): unknown {
@@ -115,7 +117,7 @@ export class ListStandardProductsQueryDto extends AdminPageQueryDto {
   platform?: string;
 }
 
-export class ListPlatformsQueryDto extends AdminPageQueryDto {
+export class ListPlatformsQueryDto extends NumberedPageQueryDto {
   @IsOptional()
   @IsIn(['enabled', 'disabled', 'all'])
   status?: 'enabled' | 'disabled' | 'all';
@@ -153,7 +155,7 @@ export class ListTagsQueryDto extends AdminPageQueryDto {
   value?: string;
 }
 
-export class ListAiJobsQueryDto extends AdminPageQueryDto {
+export class ListAiJobsQueryDto extends NumberedPageQueryDto {
   @IsOptional()
   @IsIn(['queued', 'running', 'paused', 'ready', 'ready_with_errors', 'succeeded', 'failed', 'cancelled'])
   status?: 'queued' | 'running' | 'paused' | 'ready' | 'ready_with_errors' | 'succeeded' | 'failed' | 'cancelled';

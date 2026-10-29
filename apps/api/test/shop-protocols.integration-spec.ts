@@ -331,6 +331,7 @@ describe('shop protocol approval and complete snapshots', () => {
       config: { category: { 月卡: 5, 年卡: 50 } } };
     const api: typeof fetch = async input => {
       const path = new URL(String(input)).pathname;
+      if (path.endsWith('/data')) return Response.json({ code: 200, data: [] });
       if (path.endsWith('/commodity')) return Response.json({ code: 200, total: 1, data: [product] });
       if (path.endsWith('/commodityDetail')) return Response.json({ code: 200, data: product });
       if (path.endsWith('/stock')) return Response.json({ code: 200, data: { stock: 0, stock_state: 0 } });

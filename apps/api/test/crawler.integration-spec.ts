@@ -562,6 +562,7 @@ describe('complete shop snapshot synchronization', () => {
     const fetchImpl: typeof fetch = async input => {
       const url = new URL(String(input));
       const json = (data: unknown) => Response.json({ code: 200, data });
+      if (url.pathname.endsWith('/data')) return json([]);
       if (url.pathname.endsWith('/commodity')) return Response.json({ code: 200, total: 1, data: [{ id: 220, name: 'Plus', status: 1 }] });
       if (url.pathname.endsWith('/commodityDetail')) return missing ? Response.json({ code: 0, msg: '商品不存在' })
         : json({ id: 220, name: 'Plus', status: 1, inventory_hidden: 0, minimum: 1, maximum: 0,
@@ -602,6 +603,43 @@ describe('complete shop snapshot synchronization', () => {
     assert.ok(removedDuringPayment.deleted_at);
     assert.equal(removedDuringPayment.deletion_source, 'crawler_missing');
     assert.ok(!(await visibleProducts()).includes(String(product.id)));
+  });
+
+  test('incomplete ACG category pages cannot retire products from a previous complete snapshot', async () => {
+    const s = await shop();
+    await database.updateTable('shops').set({ url: 'https://apiciyuan.top/', protocol: 'acg-faka' }).where('id', '=', s.id).execute();
+    const listings = Array.from({ length: 30 }, (_, i) => ({ id: i + 1, name: `Snapshot P${i + 1}`, status: 1 }));
+    let incomplete = false;
+    const fetchImpl: typeof fetch = async input => {
+      const url = new URL(String(input));
+      const json = (data: unknown) => Response.json({ code: 200, data });
+      if (url.pathname.endsWith('/data')) return json([{ id: 1, commodity_count: 30 }]);
+      if (url.pathname.endsWith('/commodity')) {
+        const page = Number(url.searchParams.get('page'));
+        const limit = Number(url.searchParams.get('limit'));
+        assert.equal(limit, 12);
+        return json(incomplete && page === 2 ? [] : listings.slice((page - 1) * limit, page * limit));
+      }
+      if (url.pathname.endsWith('/commodityDetail')) {
+        const id = Number(url.searchParams.get('commodityId'));
+        return json({ id, name: `Snapshot P${id}`, status: 1, inventory_hidden: 0, minimum: 1, maximum: 0,
+          draft_status: 0, only_user: 0, purchase_count: 0, config: {}, description: '' });
+      }
+      if (url.pathname.endsWith('/stock')) return json({ stock: 1, stock_state: 1 });
+      if (url.pathname.endsWith('/valuation')) return json({ price: '10.00' });
+      if (url.pathname.endsWith('/pay')) return json([]);
+      throw new Error('unexpected ACG endpoint');
+    };
+    const handler = createCrawlerHandler(database, new ProductsRepository(database), {
+      publicFetchFactory: async () => ({ fetch: fetchImpl, close: async () => {} }),
+    });
+    await handler(await claim(s.id));
+    const before = await database.selectFrom('products').selectAll().where('shop_id', '=', s.id).orderBy('id').execute();
+    assert.equal(before.length, 30);
+    incomplete = true;
+    await assert.rejects(handler(await claim(s.id)), /incomplete category pagination/);
+    assert.deepEqual(await database.selectFrom('products').selectAll().where('shop_id', '=', s.id).orderBy('id').execute(), before);
+    assert.ok(before.every(product => product.deleted_at === null));
   });
 
   test('settlement retry drops changed source and product snapshots without issuing quote requests', async () => {

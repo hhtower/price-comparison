@@ -42,7 +42,7 @@ export interface StandardProductListFilter extends PageRequest {
   readonly platform?: string;
 }
 
-export interface PlatformListFilter extends PageRequest {
+export interface PlatformListFilter extends Pick<PageRequest, 'page' | 'limit'> {
   readonly status?: 'enabled' | 'disabled' | 'all';
   readonly keyword?: string;
 }
@@ -54,7 +54,7 @@ export interface TagListFilter extends PageRequest {
   readonly value?: string;
 }
 
-export interface AiJobListFilter extends PageRequest {
+export interface AiJobListFilter extends Pick<PageRequest, 'page' | 'limit'> {
   readonly status?: AiJobStatus;
   readonly shopId?: bigint;
 }
@@ -119,7 +119,6 @@ export interface AdminTagRow {
   readonly name: string;
   readonly value: string;
   readonly product_count?: bigint;
-  readonly product_ids?: readonly bigint[];
 }
 
 export interface AdminTagProductRow extends AdminProductRow {
@@ -355,7 +354,7 @@ export class AdminRepository {
     let query = this.database
       .selectFrom('product_tags')
       .innerJoin('products as tagged_products', 'tagged_products.id', 'product_tags.product_id')
-      .select([sql<bigint>`min(product_tags.id)`.as('id'), sql<bigint>`min(product_tags.product_id)`.as('product_id'), 'product_tags.name', 'product_tags.value', sql<bigint>`count(*)`.as('product_count'), sql<bigint[]>`array_agg(product_tags.product_id order by product_tags.product_id)`.as('product_ids')])
+      .select([sql<bigint>`min(product_tags.id)`.as('id'), sql<bigint>`min(product_tags.product_id)`.as('product_id'), 'product_tags.name', 'product_tags.value', sql<bigint>`count(*)`.as('product_count')])
       .where('tagged_products.deleted_at', 'is', null)
       .groupBy(['product_tags.name', 'product_tags.value'])
       .orderBy('product_tags.name', 'asc')
@@ -398,22 +397,19 @@ export class AdminRepository {
     };
   }
   async listAiJobs(filter: AiJobListFilter = {}): Promise<CursorPage<AdminAiJobRow>> {
-    const page = normalizePageRequest(filter);
-    let query = this.database
-      .selectFrom('ai_jobs')
-      .select([
+    const { limit, page = 1 } = normalizePageRequest(filter);
+    let query = this.database.selectFrom('ai_jobs');
+    if (filter.status) query = query.where('status', '=', filter.status);
+    if (filter.shopId !== undefined) query = query.where('scope_shop_id', '=', filter.shopId);
+    const [items, count] = await Promise.all([
+      query.select([
         'id', 'status', 'total', 'processed', 'applied', 'model', 'auto_apply', 'error',
         'created_at', 'finished_at', 'scope_shop_id', 'prompt_version', 'phase',
         'pause_requested', 'cancel_requested', 'failed_batches',
-      ])
-      .orderBy('id', 'asc')
-      .limit(page.limit + 1);
-
-    if (filter.status) query = query.where('status', '=', filter.status);
-    if (filter.shopId !== undefined) query = query.where('scope_shop_id', '=', filter.shopId);
-    if (page.afterId !== undefined) query = query.where('id', '>', page.afterId);
-
-    return buildCursorPage(await query.execute(), page.limit);
+      ]).orderBy('id', 'asc').offset((page - 1) * limit).limit(limit).execute(),
+      query.select(({ fn }) => fn.countAll<string>().as('total')).executeTakeFirstOrThrow(),
+    ]);
+    return { items, total: Number(count.total), page, pageSize: limit };
   }
 
   async listRunHistory(filter: RunHistoryListFilter = {}): Promise<CursorPage<AdminRunHistoryRow>> {
@@ -448,20 +444,17 @@ export class AdminRepository {
   }
 
   async listPlatforms(request: PlatformListFilter = {}): Promise<CursorPage<AdminPlatformRow>> {
-    const page = normalizePageRequest(request);
-    let query = this.database.selectFrom('product_platforms').select(['name', 'enabled']).orderBy('name');
+    const { limit, page = 1 } = normalizePageRequest(request);
+    let query = this.database.selectFrom('product_platforms');
     if (request.status === 'enabled' || request.status === 'disabled') query = query.where('enabled', '=', request.status === 'enabled');
     if (request.keyword) query = query.where('name', 'ilike', containsPattern(request.keyword));
-    const rows = await query.execute();
-    if (page.page !== undefined) {
-      const slice = rows.slice((page.page - 1) * page.limit, page.page * page.limit);
-      const items = await Promise.all(slice.map(async (row) => ({ id: row.name, name: row.name, enabled: row.enabled, standard_product_count: BigInt(Number((await this.database.selectFrom('standard_products').select(({ fn }) => fn.countAll<number>().as('count')).where('platform', '=', row.name).executeTakeFirstOrThrow()).count)) })));
-      return { items, total: rows.length, page: page.page, pageSize: page.limit };
-    }
-    const start = page.afterId === undefined ? 0 : Number(page.afterId);
-    const slice = rows.slice(start, start + page.limit + 1);
-    const items = await Promise.all(slice.slice(0, page.limit).map(async (row) => ({ id: row.name, name: row.name, enabled: row.enabled, standard_product_count: BigInt(Number((await this.database.selectFrom('standard_products').select(({ fn }) => fn.countAll<number>().as('count')).where('platform', '=', row.name).executeTakeFirstOrThrow()).count)) })));
-    return { items, ...(slice.length > page.limit ? { nextCursor: String(start + page.limit) } : {}) };
+    const [rows, count] = await Promise.all([
+      query.select(['name', 'enabled', sql<bigint>`(select count(*) from standard_products sp
+        where sp.platform = product_platforms.name)`.as('standard_product_count')])
+        .orderBy('name').offset((page - 1) * limit).limit(limit).execute(),
+      query.select(({ fn }) => fn.countAll<string>().as('total')).executeTakeFirstOrThrow(),
+    ]);
+    return { items: rows.map(row => ({ id: row.name, ...row })), total: Number(count.total), page, pageSize: limit };
   }
 
   async createPlatform(name: string): Promise<AdminPlatformRow> {

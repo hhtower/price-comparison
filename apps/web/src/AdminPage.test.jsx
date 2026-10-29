@@ -1004,7 +1004,7 @@ describe('AdminPage', () => {
       const url = new URL(input, 'http://localhost');
       if (url.pathname === '/api/auth/me') return jsonResponse({ ok: true });
       if (url.pathname === '/api/admin/shops') return jsonResponse(paged([]));
-      if (url.pathname === '/api/admin/tags') return jsonResponse(paged([{ id: '1', name: 'region', value: 'US', productCount: '1', productIds: ['9'] }]));
+      if (url.pathname === '/api/admin/tags') return jsonResponse(paged([{ id: '1', name: 'region', value: 'US', productCount: '1' }]));
       if (url.pathname === '/api/admin/tags/products') return jsonResponse(paged([{ id: '9', name: '商品九', spec: '月付', shopId: '2', shopName: '商铺二' }]));
       return jsonResponse({ error: 'Unhandled' }, 404);
     }));

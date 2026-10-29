@@ -88,7 +88,6 @@ interface TagResponse {
   readonly name: string;
   readonly value: string;
   readonly productCount: string;
-  readonly productIds: readonly string[];
 }
 
 interface AiJobResponse {
@@ -269,7 +268,8 @@ export class AdminController {
   @Get('ai/jobs')
   async listAiJobs(@Query(new ValidationPipe({ expectedType: ListAiJobsQueryDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) query: ListAiJobsQueryDto): Promise<PageResponse<AiJobResponse>> {
     const filter: AiJobListFilter = {
-      ...pageRequest(query),
+      page: query.page,
+      limit: query.limit,
       ...(query.status === undefined ? {} : { status: query.status }),
       ...(query.shopId === undefined ? {} : { shopId: parseId(query.shopId, 'shopId') }),
     };
@@ -290,8 +290,8 @@ export class AdminController {
 
   @Get('platforms')
   async listPlatforms(@Query(new ValidationPipe({ expectedType: ListPlatformsQueryDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) query: ListPlatformsQueryDto) {
-    const page = await this.service.listPlatforms({ ...pageRequest(query), ...(query.keyword === undefined ? {} : { keyword: query.keyword }), ...(query.status === undefined ? {} : { status: query.status }) } satisfies PlatformListFilter);
-    return { items: page.items.map((p) => ({ id: p.id, name: p.name, enabled: p.enabled, standardProductCount: p.standard_product_count.toString(), standard_product_count: p.standard_product_count.toString() })), nextCursor: page.nextCursor, total: page.total, page: page.page, pageSize: page.pageSize };
+    const page = await this.service.listPlatforms({ page: query.page, limit: query.limit, ...(query.keyword === undefined ? {} : { keyword: query.keyword }), ...(query.status === undefined ? {} : { status: query.status }) } satisfies PlatformListFilter);
+    return { items: page.items.map((p) => ({ id: p.id, name: p.name, enabled: p.enabled, standardProductCount: p.standard_product_count.toString(), standard_product_count: p.standard_product_count.toString() })), total: page.total, page: page.page, pageSize: page.pageSize };
   }
 
   @Post('platforms')
@@ -412,7 +412,6 @@ function toTagResponse(row: AdminTagRow): TagResponse {
     name: row.name,
     value: row.value,
     productCount: (row.product_count ?? 0n).toString(),
-    productIds: (row.product_ids ?? []).map(id => id.toString()),
   };
 }
 

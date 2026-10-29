@@ -16,6 +16,7 @@ function api({ pages = [[listing()]], total = 1, product = detail(), stock = { s
     const url = new URL(input), body = new URLSearchParams(init.body);
     const changed = await intercept?.(url, body, init);
     if (changed) return changed;
+    if (url.pathname === '/user/api/index/data') return json([]);
     if (url.pathname === '/user/api/index/commodity') return Response.json({ code: 200, msg: 'success', total, data: pages[Number(url.searchParams.get('page')) - 1] ?? [] });
     if (url.pathname === '/user/api/index/commodityDetail') return json({ ...product, id: Number(url.searchParams.get('commodityId')) });
     if (url.pathname === '/user/api/index/stock') return json(stock);
@@ -310,7 +311,7 @@ test('acg-faka bounds flat pagination by the stable total and preserves list sta
   }), { onListStats: stats => reports.push(stats) });
   assert.deepEqual(products.map(product => product.externalId), ['17', '19']);
   assert.deepEqual(requests, [1, 2, 3]);
-  assert.deepEqual(reports, [{ unique: 2, duplicates: 0, categories: null, categoryClaims: null, flatTotal: 25 }]);
+  assert.deepEqual(reports, [{ unique: 2, duplicates: 0, categories: 0, categoryClaims: 0, flatTotal: 25 }]);
 });
 
 test('acg-faka rejects invalid totals and aggregate overflow without completing a list', async () => {
