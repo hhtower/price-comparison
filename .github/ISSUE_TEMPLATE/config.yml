@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 私密报告安全漏洞
+    url: https://github.com/hhtower/price-comparison/security/advisories/new
+    about: 安全漏洞请通过此入口私密反馈，请勿在公开 Issue 中提供漏洞细节。

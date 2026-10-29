@@ -64,7 +64,7 @@ docker compose -f docker-compose.dev.yml up -d --build
 
 ## 贡献
 
-欢迎通过 Issue 反馈问题、通过 Pull Request 提交改进。开始前请阅读 [贡献指南](CONTRIBUTING.md)。
+欢迎通过 Issue 模板反馈问题或建议、通过 Pull Request 提交改进。开始前请阅读 [贡献指南](CONTRIBUTING.md)，参与社区时请遵守 [行为准则](CODE_OF_CONDUCT.md)。
 
 项目使用 npm workspaces：
 

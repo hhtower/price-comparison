@@ -64,7 +64,7 @@ Open `http://localhost:3000`. Database state persists in Docker volumes. The bun
 
 ## Contributing
 
-Issues and pull requests are welcome. Please read the [contribution guide](CONTRIBUTING.md) first.
+Bug reports, feature suggestions, and pull requests are welcome. Use the issue templates and read the [contribution guide](CONTRIBUTING.md) first. Community participants are expected to follow the [code of conduct](CODE_OF_CONDUCT.md).
 
 The repository uses npm workspaces:
 
