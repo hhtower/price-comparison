@@ -17,7 +17,7 @@ function render(ui) {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const quote = id => ({ productId: String(id), shopId: String(id), shop: '商铺' + id, name: '报价' + id, price: 10, priceStatus: 'verified', priceExpiresAt: '2099-01-01T00:00:00Z', currency: 'CNY', tags: [] });
-const product = id => ({ id: String(id), name: '商品' + id, platform: 'openai', shopCount: 4, productCount: 8, offers: [0, 1, 2, 3].map(n => quote(id * 4 + n)), offersTruncated: true });
+const product = id => ({ id: String(id), name: '商品' + id, platform: 'openai', shopCount: 4, productCount: 8, offers: [0, 1, 2, 3].map(n => quote(id * 4 + n)) });
 const response = items => Response.json({ items, platformFacets: ['openai'] });
 const facetsResponse = () => Response.json({ tagFacets: [{ name: 'access', value: 'dedicated', priority: 1 }] });
 

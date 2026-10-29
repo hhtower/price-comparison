@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readTextEvidence, validateTextReview, aggregateTextReviews, TEXT_REVIEW_VERSION } from '../src/shops/shop-text-review.js';
+import { readTextEvidence, validateTextReview, createTextReviewAccumulator, TEXT_REVIEW_VERSION, type ProductReviewRow } from '../src/shops/shop-text-review.js';
 
 const text = { unitId: 'item', name: '月度套餐', description: '交付账号。服务一个月。', hash: 'a'.repeat(64) };
 const answers = Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key,
@@ -14,6 +14,12 @@ const manifest = { sourceUrl: source.url, sourceProtocol: source.protocol, sourc
 const stored = { version: TEXT_REVIEW_VERSION, contentVersion: '1', fingerprint: 'b'.repeat(64), source, textHash: text.hash, review };
 const row = { external_id: 'item', content_version: 1n, content_fingerprint: stored.fingerprint,
   source_data: { ratingText: text }, text_review: stored };
+
+function aggregateTextReviews(input: unknown, origin: typeof source, rows: ProductReviewRow[], now: number) {
+  const accumulator = createTextReviewAccumulator(input, origin, now);
+  for (const row of rows) accumulator?.add(row);
+  return accumulator?.finish() ?? null;
+}
 
 test('text review requires closed complete three-state judgments and real scoped quotes', () => {
   assert.deepEqual(validateTextReview(review, text), review);
@@ -41,4 +47,20 @@ test('whole-source manifest preserves unknowns, deduplicates SKUs and rejects st
     answers: { ...answers, L1: { value: false, reason: '未明确', evidence: [] } } } } };
   assert.equal(aggregateTextReviews(manifest, source, [row, conflict], 100)?.reviewed, 0);
   assert.equal(aggregateTextReviews(manifest, source, [row], 86_400_100), null);
+});
+
+test('incremental text reviews keep conflicts across batches and retain only judgments', () => {
+  const accumulator = createTextReviewAccumulator(manifest, source, 100)!;
+  accumulator.add(row);
+  assert.equal(accumulator.finish().reviewed, 1);
+  accumulator.add({ ...row, external_id: 'duplicate' });
+  assert.equal(accumulator.finish().reviewed, 1);
+  accumulator.add({ ...row, text_review: { ...stored, review: { ...review,
+    answers: { ...answers, L1: { value: false, reason: '未明确', evidence: [] } } } } });
+  accumulator.add(row);
+  const result = accumulator.finish();
+  assert.equal(result.reviewed, 0);
+  assert.equal(result.listings[0]?.answers, null);
+  assert.ok(!JSON.stringify(result).includes('evidence'));
+  assert.equal(createTextReviewAccumulator(manifest, source, 86_400_100), null);
 });

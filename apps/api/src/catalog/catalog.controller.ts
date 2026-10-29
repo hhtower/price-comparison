@@ -60,14 +60,12 @@ export class CatalogController {
   @Get()
   getCatalog(@Query() query: Record<string, unknown>) {
     const hasDetail = query.detailKind !== undefined || query.detailPage !== undefined || query.detailPageSize !== undefined;
-    if (hasDetail && ((query.view !== undefined && typeof query.view !== 'string')
-      || (query.standardProductId !== undefined && typeof query.standardProductId !== 'string'))) {
+    if (hasDetail && query.standardProductId !== undefined && typeof query.standardProductId !== 'string') {
       throw new DomainValidationError('INVALID_DETAIL_QUERY', '详情视图参数无效');
     }
     const input: CatalogQueryInput = {
       ...catalogFilters(query),
       sort: typeof query.sort === 'string' ? query.sort : undefined,
-      view: typeof query.view === 'string' ? query.view : undefined,
       detailKind: query.detailKind,
       detailPage: query.detailPage,
       detailPageSize: query.detailPageSize,

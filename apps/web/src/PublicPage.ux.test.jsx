@@ -13,7 +13,7 @@ vi.mock('react-virtuoso', async importOriginal => {
 
 const tags = [{ name: 'access', value: 'dedicated' }, { name: 'duration', value: '1 month' }];
 const offers = Array.from({ length: 15 }, (_, i) => ({ productId: String(i + 1), shopId: String(i % 2 + 1), shop: i % 2 ? '乙店' : '甲店', name: `报价${i + 1}`, spec: '完整规格：独享、月付、含售后', price: String(i + 10), currency: 'CNY', productUrl: `https://example.com/${i + 1}`, tags, capturedAt: '2026-10-02T00:00:00Z' }));
-const item = { id: '42', name: 'ChatGPT Plus', platform: 'openai', shopCount: 2, productCount: 15, offers: offers.slice(0, 4), offersTruncated: true };
+const item = { id: '42', name: 'ChatGPT Plus', platform: 'openai', shopCount: 2, productCount: 15, offers: offers.slice(0, 4) };
 let requests;
 beforeEach(() => {
   requests = [];
@@ -327,52 +327,81 @@ test.each([['20', '10'], ['-1', ''], ['', '1.111']])('rejects invalid amount bou
   expect(requests.filter(url => url.searchParams.has('detailKind'))).toHaveLength(1);
 });
 
-test('local offers stay CNY-only and apply an upper-only bound with immediate sorting', async () => {
+test('paginated offers request CNY-only prices and apply an upper-only bound with immediate sorting', async () => {
   const localOffers = [
     { ...offers[0], name: '人民币十元', price: '10', currency: 'CNY' },
     { ...offers[1], name: '人民币二十元', price: '20', currency: 'CNY' },
     { ...offers[2], name: '美元一元', price: '1', currency: 'USD' },
   ].map(offer => ({ ...offer, priceStatus: 'verified', priceExpiresAt: new Date(Date.now() + 3600000).toISOString() }));
-  vi.stubGlobal('fetch', vi.fn(async input => String(input).includes('/analytics/')
-    ? new Response(null, { status: 204 })
-    : Response.json({ items: [{ ...item, offersTruncated: false, offers: localOffers, allOffers: localOffers }], total: 1 })));
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
+    requests.push(url);
+    if (url.pathname.endsWith('/facets')) return Response.json({ tagFacets: [] });
+    const params = url.searchParams;
+    const selected = params.has('priceMax') ? [localOffers[0]] : params.get('offerSort') === 'priceDesc' ? [localOffers[1], localOffers[0]] : localOffers.slice(0, 2);
+    const page = Number(params.get('detailPage'));
+    const pageSize = Number(params.get('detailPageSize'));
+    return Response.json({ items: [{ ...item, offers: localOffers,
+      ...(params.has('detailKind') ? { detail: { kind: 'offers', page, pageSize, total: selected.length, entries: selected.slice(page * pageSize, (page + 1) * pageSize) } } : {}) }], total: 1 });
+  }));
   mount();
   fireEvent.click(await screen.findByRole('button', { name: '15 条报价' }));
   const dialog = within(screen.getByRole('dialog'));
+  await dialog.findByText('人民币二十元');
   expect(dialog.queryByText('美元一元')).not.toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
   fireEvent.change(dialog.getByRole('spinbutton', { name: '最高价格' }), { target: { value: '15' } });
   fireEvent.change(dialog.getByRole('combobox', { name: '报价排序' }), { target: { value: 'priceDesc' } });
-  expect(dialog.getByText('人民币二十元')).toBeInTheDocument();
+  expect(await dialog.findByText('人民币二十元')).toBeInTheDocument();
+  const sortedParams = requests.filter(url => url.searchParams.has('detailKind')).at(-1).searchParams;
+  expect(sortedParams.get('currency')).toBe('CNY');
+  expect(sortedParams.get('offerSort')).toBe('priceDesc');
+  expect(sortedParams.has('priceMax')).toBe(false);
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
-  expect(dialog.getByText('人民币十元')).toBeInTheDocument();
+  expect(await dialog.findByText('人民币十元')).toBeInTheDocument();
   expect(dialog.queryByText('人民币二十元')).not.toBeInTheDocument();
+  const filteredParams = requests.filter(url => url.searchParams.has('detailKind')).at(-1).searchParams;
+  expect(filteredParams.get('priceMax')).toBe('15');
+  expect(filteredParams.has('priceMin')).toBe(false);
   fireEvent.click(dialog.getByRole('button', { name: /^筛选/ }));
   fireEvent.click(dialog.getByRole('button', { name: '清除全部', exact: true }));
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
-  expect(dialog.getByText('人民币二十元')).toBeInTheDocument();
+  expect(await dialog.findByText('人民币二十元')).toBeInTheDocument();
   expect(dialog.queryByText('美元一元')).not.toBeInTheDocument();
 });
 
-test('one local search matches shop names, quote names or nonempty specifications', async () => {
+test('one detail search displays matches in shop names, quote names or nonempty specifications', async () => {
   const localOffers = [
     { ...offers[0], name: '星河账号', shop: '甲店', spec: '旧规格关键词' },
     { ...offers[1], name: '普通账号', shop: '星河商铺' },
     { ...offers[2], name: '规格匹配账号', shop: '丙店', spec: '星河' },
     { ...offers[3], name: '不相关账号', shop: '丁店', spec: '' },
   ];
-  vi.stubGlobal('fetch', vi.fn(async input => String(input).includes('/analytics/')
-    ? new Response(null, { status: 204 })
-    : Response.json({ items: [{ ...item, offersTruncated: false, offers: localOffers, allOffers: localOffers }], total: 1 })));
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
+    requests.push(url);
+    const params = url.searchParams;
+    const selected = params.get('q') === '星河' ? localOffers.slice(0, 3) : localOffers;
+    const page = Number(params.get('detailPage'));
+    const pageSize = Number(params.get('detailPageSize'));
+    return Response.json({ items: [{ ...item, offers: localOffers,
+      ...(params.has('detailKind') ? { detail: { kind: 'offers', page, pageSize, total: selected.length, entries: selected.slice(page * pageSize, (page + 1) * pageSize) } } : {}) }], total: 1 });
+  }));
   mount();
   fireEvent.click(await screen.findByRole('button', { name: '15 条报价' }));
   const dialog = within(screen.getByRole('dialog'));
+  await dialog.findByText('不相关账号');
   fireEvent.change(dialog.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '星河' } });
   fireEvent.submit(dialog.getByRole('form', { name: '详情查询' }));
-  expect(dialog.getByText('星河账号')).toBeInTheDocument();
+  expect(await dialog.findByText('星河账号')).toBeInTheDocument();
   expect(dialog.getByText('普通账号')).toBeInTheDocument();
   expect(dialog.getByText('规格匹配账号')).toBeInTheDocument();
   expect(dialog.queryByText('不相关账号')).not.toBeInTheDocument();
+  const params = requests.filter(url => url.searchParams.has('detailKind')).at(-1).searchParams;
+  expect(params.get('q')).toBe('星河');
+  expect(params.get('searchMode')).toBe('literal');
 });
 
 test('nested comparison and report dialogs close without dismissing quote details', async () => {

@@ -125,17 +125,132 @@ describe('catalog SQL read model', () => {
     return product.id;
   }
 
+  test('catalog lists stay bounded when one shop has many SKUs and a large rating manifest', async () => {
+    for (let i = 0; i < 600; i++) await addSku(shopOne, `bounded-${i}`, '15.00');
+    await database.updateTable('shops').set({ rating_manifest: jsonb({
+      sourceUrl: 'https://catalog-shop.invalid', sourceProtocol: 'dujiaoka', sourcePlatform: 'alpha',
+      observedAt: Date.now(), units: Array.from({ length: 5000 }, (_, i) => ({ unitId: `unit-${i}`, hash: 'a'.repeat(64) })),
+    }) }).where('id', '=', shopOne).execute();
+    const duplicated = await sql<{ bytes: bigint }>`select
+      pg_column_size(jsonb_build_object('manifest', rating_manifest))::bigint * 601 as bytes
+      from shops where id = ${shopOne}`.execute(database);
+    assert.ok(duplicated.rows[0]!.bytes > 268435455n, 'the old repeated manifests would exceed the JSONB array limit');
+    let wireBytes = 0;
+    const measured = database.withPlugin({
+      transformQuery: args => args.node,
+      async transformResult(args) {
+        wireBytes += Buffer.byteLength(JSON.stringify(args.result.rows, (_key, value) => typeof value === 'bigint' ? String(value) : value));
+        return args.result;
+      },
+    });
+    const page = await new CatalogRepository(measured, quotePolicy).search({ tags: [], limit: 1 });
+    assert.equal(page.items[0]?.productCount, 601);
+    assert.equal(page.items[0]?.offers.length, 1);
+    assert.equal('allOffers' in page.items[0]!, false);
+    assert.ok(wireBytes < 1024 * 1024, `one manifest must be sent once, received ${wireBytes} bytes`);
+    const ids: string[] = [];
+    for (let detailPage = 0; detailPage < 13; detailPage++) {
+      const detail = await repository.search({ tags: [], limit: 1, standardProductId: String(standardOne),
+        detailKind: 'offers', detailPage, detailPageSize: 50 });
+      assert.equal(detail.items[0]?.detail?.total, 601);
+      ids.push(...detail.items[0]!.detail!.entries.map(entry => (entry as { productId: string }).productId));
+    }
+    assert.equal(new Set(ids).size, 601);
+  });
+
+  test('large text reviews are consumed in bounded batches without losing late conflicts', async () => {
+    const source = { url: 'https://catalog-shop.invalid', protocol: 'dujiaoka', platform: 'alpha' };
+    const text = { unitId: 'shared-parent', name: '套餐', description: 'x'.repeat(32768), hash: 'a'.repeat(64) };
+    const review = {
+      answers: Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key,
+        { value: true, reason: '明确说明', evidence: [{ field: 'name', quote: text.name }] }])),
+      consistency: Object.fromEntries(['C1','C2','C3','C4','C5','C6'].map(key => [key,
+        { value: false, reason: '无冲突', evidence: [] }])),
+    };
+    await database.updateTable('shops').set({ rating_manifest: jsonb({
+      sourceUrl: source.url, sourceProtocol: source.protocol, sourcePlatform: source.platform,
+      observedAt: Date.now(), units: [{ unitId: text.unitId, hash: text.hash }, { unitId: 'unknown', hash: null }],
+    }) }).where('id', '=', shopOne).execute();
+    await database.insertInto('products').values(Array.from({ length: 130 }, (_, i) => ({
+      shop_id: shopOne, external_id: `review-${i}`, name: 'Review source', spec: '',
+      normalized_key: `review-${i}`, url: `https://catalog.invalid/review-${i}`,
+      content_version: 1n, content_fingerprint: 'b'.repeat(64), source_data: jsonb({ ratingText: text }),
+      text_review: jsonb({ version: TEXT_REVIEW_VERSION, contentVersion: '1', fingerprint: 'b'.repeat(64),
+        source, textHash: text.hash, review: i === 129
+          ? { ...review, answers: { ...review.answers, L1: { value: false, reason: '未明确', evidence: [] } } } : review }),
+    }))).execute();
+    let maxBatchBytes = 0;
+    let batches = 0;
+    let published = false;
+    const measured = database.withPlugin({
+      transformQuery: args => args.node,
+      async transformResult(args) {
+        maxBatchBytes = Math.max(maxBatchBytes, Buffer.byteLength(JSON.stringify(args.result.rows)));
+        if (args.result.rows.length) batches++;
+        if (!published && args.result.rows.some(row => row.kind === 0)) {
+          published = true;
+          await database.updateTable('products').set({ text_review: jsonb({
+            version: TEXT_REVIEW_VERSION, contentVersion: '1', fingerprint: 'b'.repeat(64),
+            source, textHash: text.hash, review,
+          }) }).where('shop_id', '=', shopOne).where('external_id', '=', 'review-129').execute();
+        }
+        return args.result;
+      },
+    });
+    const page = await new CatalogRepository(measured, quotePolicy).search({ tags: [], limit: 1 });
+    assert.deepEqual(page.items[0]?.offers[0]?.shopScoreDetails?.text,
+      { total: 2, reviewed: 0, disclosureContribution: '0.00', consistencyContribution: '0.00' });
+    assert.ok(maxBatchBytes < 3 * 1024 * 1024, `review bodies must not form one result array: ${maxBatchBytes}`);
+    assert.ok(batches > 1);
+    assert.equal(published, true);
+    const after = await repository.search({ tags: [], limit: 1 });
+    assert.equal(after.items[0]?.offers[0]?.shopScoreDetails?.text?.reviewed, 1,
+      'a review published between FETCH batches only belongs to the next catalog snapshot');
+    const plan = await repository.explain({ tags: [], limit: 1 });
+    const sortSizes: number[] = [];
+    const visit = (value: unknown) => {
+      if (!value || typeof value !== 'object') return;
+      if ('Sort Space Used' in value) sortSizes.push(Number(value['Sort Space Used']));
+      for (const child of Object.values(value)) {
+        if (Array.isArray(child)) child.forEach(visit);
+        else visit(child);
+      }
+    };
+    visit(plan);
+    assert.ok(sortSizes.every(size => size < 256), `database sorts must not contain review bodies: ${sortSizes} KiB`);
+  });
+
+  test('failed catalog reads close their cursor and restore the caller transaction settings', async () => {
+    const failure = new Error('interrupted catalog consumer');
+    await database.transaction().execute(async tx => {
+      await sql`set local jit = on`.execute(tx);
+      const interrupted = tx.withPlugin({
+        transformQuery: args => args.node,
+        async transformResult(args) {
+          if (args.result.rows.some(row => row.kind === 0)) throw failure;
+          return args.result;
+        },
+      });
+      await assert.rejects(new CatalogRepository(interrupted, quotePolicy).search({ tags: [], limit: 1 }),
+        error => error === failure);
+      assert.equal((await sql<{ jit: string }>`show jit`.execute(tx)).rows[0]?.jit, 'on');
+      assert.equal((await sql<{ count: number }>`select count(*)::int as count from pg_cursors
+        where name like 'catalog_%'`.execute(tx)).rows[0]?.count, 0);
+      assert.equal((await new CatalogRepository(tx, quotePolicy).search({ tags: [], limit: 1 })).items.length, 1);
+    });
+  });
+
   test('shop scores stay identical in every catalog shape and expire without exposing source observations', async () => {
     const source = { url: 'https://catalog-shop.invalid', protocol: 'dujiaoka' };
     const now = Date.now();
     const state = mergeShopObservation(null, source, { deposit: { amountMinor: 10000, currency: 'CNY', purpose: null },
       volume: 1000, counterDefinition: 'public_display_count', observedAt: new Date(now - 86_370_000).toISOString() }, now);
     await database.updateTable('shops').set({ shop_rating: jsonb(state) }).where('id', '=', shopOne).execute();
-    for (const input of [{}, { search: 'Widget' }, { view: 'summary' as const },
+    for (const input of [{}, { search: 'Widget' }, {},
       { standardProductId: String(standardOne), detailKind: 'offers' as const },
       { standardProductId: String(standardOne), detailKind: 'shops' as const }]) {
       const page = await repository.search({ ...input, tags: [], limit: 10 });
-      const offers = page.items.flatMap(item => [...item.offers, ...(item.allOffers ?? []),
+      const offers = page.items.flatMap(item => [...item.offers,
         ...(item.detail?.entries ?? []).map(entry => 'offer' in entry ? entry.offer : entry)]);
       assert.ok(offers.length > 0);
       assert.ok(offers.every(offer => offer.shopScore === '33.75'));
@@ -170,11 +285,11 @@ describe('catalog SQL read model', () => {
     await database.updateTable('shops').set({ rating_manifest: jsonb({ sourceUrl: source.url, sourceProtocol: source.protocol,
       sourcePlatform: source.platform, observedAt: Date.now(), units: [{ unitId: text.unitId, hash: text.hash },
         { unitId: 'unpublished-product', hash: null }] }) }).where('id', '=', shopOne).execute();
-    for (const input of [{}, { search: 'Widget One' }, { view: 'summary' as const },
+    for (const input of [{}, { search: 'Widget One' }, {},
       { standardProductId: String(standardOne), detailKind: 'offers' as const },
       { standardProductId: String(standardOne), detailKind: 'shops' as const }]) {
       const page = await repository.search({ ...input, tags: [], limit: 10 });
-      const offers = page.items.flatMap(item => [...item.offers, ...(item.allOffers ?? []),
+      const offers = page.items.flatMap(item => [...item.offers,
         ...(item.detail?.entries ?? []).map(entry => 'offer' in entry ? entry.offer : entry)]);
       assert.ok(offers.length);
       assert.ok(offers.every(offer => offer.shopScore === '10.00'));
@@ -212,7 +327,7 @@ describe('catalog SQL read model', () => {
     const concurrent = database.withPlugin({
       transformQuery: args => args.node,
       async transformResult(args) {
-        if (!changed && args.result.rows.some(row => 'entries' in row)) {
+        if (!changed && args.result.rows.some(row => row.kind === 0)) {
           changed = true;
           await database.transaction().execute(async tx => {
             await tx.updateTable('shops').set({ rating_manifest: jsonb({ ...manifest,
@@ -228,7 +343,7 @@ describe('catalog SQL read model', () => {
     assert.ok(changed);
     assert.ok(page.items.every(item => item.offers.every(offer => offer.shopScore === '0.00')),
       'the old manifest must not be combined with a newly published review');
-    assert.equal(statements.filter(statement => statement.startsWith('with ')).length, 1);
+    assert.equal(statements.filter(statement => statement.startsWith('declare ')).length, 1);
     const next = await repository.search({ tags: [], limit: 10 });
     assert.ok(next.items.every(item => item.offers.every(offer => offer.shopScore === '10.00')));
   });
@@ -241,13 +356,14 @@ describe('catalog SQL read model', () => {
     await addSku(shopOne, 'newcomer-short', '1.00', [delivery('account'), days(29)]);
     await addSku(shopOne, 'newcomer-unknown', '2.00', [delivery('top_up')]);
     await addSku(shopOne, 'newcomer-code', '3.00', [delivery('redemption'), days(90)]);
-    for (const view of ['summary', 'full'] as const) {
-      const page = await repository.search({ tags: [], newcomer: true, view, limit: 20 });
+    {
+      const page = await repository.search({ tags: [], newcomer: true, standardProductId: String(standardOne),
+        detailKind: 'offers', detailPageSize: 50, limit: 20 });
       assert.equal(page.total, 1);
       assert.equal(page.offerTotal, 2);
       assert.equal(page.items[0]!.minPrice, '30.00');
       assert.equal(page.items[0]!.productCount, 2);
-      if (view === 'full') assert.deepEqual(new Set(page.items[0]!.allOffers!.map(offer => offer.productId)), new Set([String(topUp), String(account)]));
+      assert.deepEqual(new Set(page.items[0]!.detail!.entries.map(offer => (offer as { productId: string }).productId)), new Set([String(topUp), String(account)]));
     }
     const detail = await repository.search({ tags: [], newcomer: true, standardProductId: String(standardOne),
       detailKind: 'offers', detailPageSize: 1, detailPage: 1, limit: 1 });
@@ -290,24 +406,24 @@ describe('catalog SQL read model', () => {
       ids.push(String(standard.id));
     }
     const expected = [...ids, String(standardOne), String(standardTwo)];
-    for (const view of ['full', 'summary'] as const) {
-      assert.deepEqual((await repository.search({ tags: [], limit: 100, view })).items.map(item => item.id), expected);
+    {
+      assert.deepEqual((await repository.search({ tags: [], limit: 100 })).items.map(item => item.id), expected);
       const combined = identities.flatMap(([family], index) => ['xai', 'x', 'cursor'].includes(family!) ? [ids[index]!] : []);
       for (const platform of ['xai', 'x', 'twitter', 'cursor']) {
-        assert.deepEqual((await repository.search({ platform, tags: [], limit: 100, view })).items.map(item => item.id), combined);
+        assert.deepEqual((await repository.search({ platform, tags: [], limit: 100 })).items.map(item => item.id), combined);
       }
       const paged: string[] = [];
       let cursor: string | undefined;
       do {
-        const page = await repository.search({ tags: [], limit: 3, view, ...(cursor ? { cursor } : {}) });
+        const page = await repository.search({ tags: [], limit: 3, ...(cursor ? { cursor } : {}) });
         paged.push(...page.items.map(item => item.id));
         cursor = page.nextCursor;
       } while (cursor);
       assert.deepEqual(paged, expected);
-      assert.deepEqual((await repository.search({ platform: 'openai', tags: [], limit: 100, view })).items.map(item => item.id), ids.slice(0, 7));
-      assert.deepEqual((await repository.search({ platform: 'email', tags: [], limit: 100, view })).items.map(item => item.id), ids.slice(22));
-      assert.deepEqual((await repository.search({ search: 'Approved', tags: [], limit: 100, view })).items.map(item => item.id), ids);
-      assert.deepEqual((await repository.search({ sort: 'price', tags: [], limit: 100, view })).items.map(item => item.id),
+      assert.deepEqual((await repository.search({ platform: 'openai', tags: [], limit: 100 })).items.map(item => item.id), ids.slice(0, 7));
+      assert.deepEqual((await repository.search({ platform: 'email', tags: [], limit: 100 })).items.map(item => item.id), ids.slice(22));
+      assert.deepEqual((await repository.search({ search: 'Approved', tags: [], limit: 100 })).items.map(item => item.id), ids);
+      assert.deepEqual((await repository.search({ sort: 'price', tags: [], limit: 100 })).items.map(item => item.id),
         [String(standardTwo), String(standardOne), ...ids.toReversed()]);
     }
     assert.deepEqual((await repository.publicProducts()).items.map(item => item.id), expected);
@@ -369,8 +485,8 @@ describe('catalog SQL read model', () => {
   });
 
   for (const query of [
-    { view: 'summary' as const }, { view: 'full' as const },
-    { view: 'summary' as const, search: 'Widget' }, { view: 'full' as const, search: 'Widget' },
+    {},
+    { search: 'Widget' }, { search: 'Widget' },
     { detailKind: 'offers' as const }, { detailKind: 'shops' as const },
   ]) test(`exposes database settlement quantity and unit price without totals: ${JSON.stringify(query)}`, async () => {
     await sql`update offers set settlement_quantity = 5, settlement_price = 2.002,
@@ -383,7 +499,7 @@ describe('catalog SQL read model', () => {
     assert.equal(page.items[0]?.id, String(standardOne), 'ranks the 2.002 unit price ahead of 6.00, not the 10.01 total');
     const item = page.items[0]!;
     assert.equal(item.minPrice, '2.002');
-    const offers = [...item.offers, ...(item.allOffers ?? []),
+    const offers = [...item.offers,
       ...(item.detail?.entries.map(entry => 'offer' in entry ? entry.offer : entry) ?? [])];
     assert.ok(offers.length > 0);
     for (const offer of offers) {
@@ -402,14 +518,14 @@ describe('catalog SQL read model', () => {
         where idempotency_key = 'one-new'`.execute(database);
       const formatted = (await repository.search({ ...query, standardProductId: String(standardOne), tags: [], limit: 20 })).items[0]!;
       assert.equal(formatted.minPrice, expected);
-      for (const offer of [...formatted.offers, ...(formatted.allOffers ?? []),
+      for (const offer of [...formatted.offers,
         ...(formatted.detail?.entries.map(entry => 'offer' in entry ? entry.offer : entry) ?? [])]) {
         assert.equal(offer.price, expected);
         assert.equal(offer.settlementQuantity, quantity ?? 1);
       }
     }
     await database.updateTable('shops').set({ protocol: '16688' }).where('id', '=', shopOne).execute();
-    const marketplace = await repository.search({ view: 'summary', sort: 'price', tags: [], limit: 20 });
+    const marketplace = await repository.search({ sort: 'price', tags: [], limit: 20 });
     assert.ok(marketplace.items[0]!.offers.every(offer => offer.independentShop === false), 'marketplace protocols drop the risk marker');
   });
 
@@ -423,23 +539,23 @@ describe('catalog SQL read model', () => {
     const now = new Date();
     await database.updateTable('offers').set({ settlement_price: '98.00', settlement_verified_at: now, settlement_payment_method: 'alipay', captured_at: now }).where('product_id', '=', a).execute();
     await database.updateTable('offers').set({ settlement_price: '95.00', settlement_verified_at: now, settlement_payment_method: 'alipay', captured_at: now }).where('product_id', '=', b).execute();
-    const page = await repository.search({ standardProductId: String(standardOne), tags: [], limit: 20 });
+    const page = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [], limit: 20 });
     assert.equal(page.items[0]?.minPrice, '1.00');
     assert.deepEqual(page.items[0]?.offers.map(offer => offer.productId), [c, a].map(String));
-    assert.deepEqual(page.items[0]?.allOffers?.map(offer => offer.productId).slice(0, 3), [c, b, a].map(String));
-    assert.equal(page.items[0]?.allOffers?.find(offer => offer.productId === String(c))?.price, '1.00');
-    const offerA = page.items[0]?.allOffers?.find(offer => offer.productId === String(a));
+    assert.deepEqual(page.items[0]?.detail!.entries?.map(offer => offer.productId).slice(0, 3), [c, b, a].map(String));
+    assert.equal(page.items[0]?.detail!.entries?.find(offer => offer.productId === String(c))?.price, '1.00');
+    const offerA = page.items[0]?.detail!.entries?.find(offer => offer.productId === String(a));
     assert.equal(offerA?.listedPrice, '90.00');
     assert.equal(offerA?.priceStatus, 'verified');
     assert.equal(offerA?.paymentMethod, 'alipay');
-    for (const view of ['summary', 'full'] as const) {
-      const filtered = await repository.search({ view, standardProductId: String(standardOne), priceMin: '96', priceMax: '99', tags: [], limit: 20 });
+    {
+      const filtered = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, priceMin: '96', priceMax: '99', tags: [], limit: 20 });
       assert.equal(filtered.offerTotal, 1);
       assert.equal(filtered.items[0]?.minPrice, '98.00');
       assert.deepEqual(filtered.items[0]?.offers.map(offer => offer.productId), [String(a)]);
     }
     for (const detailKind of ['offers', 'shops'] as const) {
-      const filtered = await repository.search({ standardProductId: String(standardOne), detailKind, priceMin: '96', priceMax: '99', tags: [], limit: 20 });
+      const filtered = await repository.search({ standardProductId: String(standardOne), detailKind, detailPageSize: 50, priceMin: '96', priceMax: '99', tags: [], limit: 20 });
       assert.equal(filtered.items[0]?.detail?.total, 1);
       const entry = filtered.items[0]?.detail?.entries[0];
       assert.equal(entry && ('offer' in entry ? entry.offer.price : entry.price), '98.00');
@@ -459,20 +575,20 @@ describe('catalog SQL read model', () => {
     const earlier = new Date(Date.now() - quotePolicy.ttlMs + 1);
     await database.updateTable('offers').set({ captured_at: new Date(), settlement_verified_at: earlier }).where('idempotency_key', '=', 'one-new').execute();
     await database.updateTable('offers').set({ captured_at: earlier, settlement_verified_at: new Date() }).where('product_id', '=', productTwo).execute();
-    const before = await repository.search({ view: 'summary', tags: [], sort: 'price', limit: 1 });
+    const before = await repository.search({ tags: [], sort: 'price', limit: 1 });
     assert.equal(Date.parse(before.nextExpiryAt!), Date.now() + 1, 'expiry includes the quote on a different catalog page');
     assert.equal(Date.parse((await repository.facets({ tags: [] })).nextExpiryAt!), Date.now() + 1);
     assert.equal(before.items[0]?.minPrice, '6.00');
     context.mock.timers.tick(1);
-    for (const view of ['summary', 'full'] as const) {
-      const page = await repository.search({ view, sort: 'price', tags: [], limit: 20 });
+    {
+      const page = await repository.search({ sort: 'price', tags: [], limit: 20 });
       assert.equal(page.total, 1);
       assert.deepEqual(page.items.map(item => item.minPrice), ['10.00']);
       assert.ok(page.items.every(item => item.offers[0]?.priceStatus === 'expired'));
       assert.equal(Date.parse(page.nextExpiryAt!), Date.now() - 1 + quotePolicy.ttlMs);
       assert.equal(Date.parse(page.items[0]!.offers[0]!.inventoryExpiresAt!), Date.parse(page.nextExpiryAt!));
       assert.equal(Date.parse(page.items[0]!.offers[0]!.priceVerifiedAt!), earlier.getTime());
-      assert.equal((await repository.search({ view, priceMin: '0', tags: [], limit: 20 })).total, 1);
+      assert.equal((await repository.search({ priceMin: '0', tags: [], limit: 20 })).total, 1);
     }
     for (const detailKind of ['offers', 'shops'] as const) {
       const page = await repository.search({ standardProductId: String(standardOne), detailKind, tags: [], limit: 20 });
@@ -497,7 +613,7 @@ describe('catalog SQL read model', () => {
     await database.updateTable('offers').set({ settlement_price: null, settlement_verified_at: null, settlement_payment_method: null }).execute();
     const newer = await addSku(shopOne, 'newer-unknown', '1.00');
     await database.updateTable('offers').set({ settlement_price: null, settlement_verified_at: null, settlement_payment_method: null }).where('product_id', '=', newer).execute();
-    const first = await repository.search({ view: 'summary', sort: 'price', tags: [], limit: 1 });
+    const first = await repository.search({ sort: 'price', tags: [], limit: 1 });
     assert.equal(first.items[0]?.minPrice, '1.00');
     assert.equal(first.items[0]?.offers[0]?.productId, String(newer));
     assert.equal(first.items[0]?.offers[0]?.priceStatus, 'estimated');
@@ -511,7 +627,7 @@ describe('catalog SQL read model', () => {
     await database.updateTable('offers').set({ settlement_price: '99.00', settlement_verified_at: new Date(), settlement_payment_method: 'alipay' }).where('product_id', '=', productTwo).execute();
     const verifiedFirst = await repository.search({ sort: 'price', tags: [], limit: 20 });
     assert.deepEqual(verifiedFirst.items.map(item => item.id), [standardOne, standardTwo].map(String));
-    for (const query of [{ view: 'full' }, { view: 'summary' }, { detailKind: 'offers' }, { detailKind: 'shops' }] as const) {
+    for (const query of [{}, { detailKind: 'offers' }, { detailKind: 'shops' }] as const) {
       const page = await repository.search({ ...query, standardProductId: String(standardOne), priceMax: '2', tags: [], limit: 20 });
       assert.equal(page.offerTotal, 1);
       assert.equal(page.items[0]?.minPrice, '1.00');
@@ -526,13 +642,13 @@ describe('catalog SQL read model', () => {
     const cache = createCache({ ttl: 30_000 });
     const service = new CatalogService(repository, cache);
     try {
-      assert.equal((await service.getCatalog({ view: 'summary' })).total, 2);
-      assert.equal(Date.parse((await service.getCatalog({ view: 'summary' })).nextExpiryAt!), Date.now() + 1);
+      assert.equal((await service.getCatalog({})).total, 2);
+      assert.equal(Date.parse((await service.getCatalog({})).nextExpiryAt!), Date.now() + 1);
       assert.equal(Date.parse((await service.getFacets({})).nextExpiryAt!), Date.now() + 1);
       context.mock.timers.tick(1);
-      assert.equal((await service.getCatalog({ view: 'summary' })).total, 0);
+      assert.equal((await service.getCatalog({})).total, 0);
       assert.deepEqual((await service.getFacets({})).tagFacets, []);
-      for (const query of [{ view: 'full' }, { view: 'summary', search: 'Widget' },
+      for (const query of [{}, { search: 'Widget' },
         { standardProductId: String(standardOne), detailKind: 'offers' },
         { standardProductId: String(standardOne), detailKind: 'shops' }] as const) {
         assert.equal((await repository.search({ ...query, tags: [], limit: 20 })).total, 0);
@@ -550,7 +666,7 @@ describe('catalog SQL read model', () => {
     await database.updateTable('offers').set({ currency: 'USD' }).where('product_id', '=', dollars).execute();
     const cny = await repository.search({ tags: [], limit: 20 });
     assert.equal(cny.items[0]?.minPrice, '10.00');
-    assert.ok(!cny.items[0]?.allOffers?.some(offer => offer.productId === String(dollars)));
+    assert.ok(!cny.items[0]?.offers.some(offer => offer.productId === String(dollars)));
     assert.equal((await repository.search({ currency: 'USD', tags: [], limit: 20 })).items[0]?.minPrice, '0.01');
     assert.ok(!(await repository.facets({ tags: [] })).tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'redemption'));
     assert.ok((await repository.facets({ currency: 'USD', tags: [] })).tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'redemption'));
@@ -574,16 +690,17 @@ describe('catalog SQL read model', () => {
         await database.updateTable('offers').set({ settlement_verified_at: new Date(Date.now() - quotePolicy.ttlMs + 500) }).where('product_id', '=', sku).execute();
       }
     }
-    const summary = await repository.search({ view: 'summary', tags: [], limit: 1 });
+    const summary = await repository.search({ tags: [], limit: 1 });
     assert.equal(summary.items[0]?.offers.length, 4);
     assert.ok(!summary.items[0]?.offers.some(offer => offer.name.includes('expiry-4') || offer.productId === String(nonwinner)));
     assert.equal(Date.parse(summary.nextExpiryAt!), Date.now() + 3_600_000,
       'hidden payment labels cannot invalidate a bounded preview');
     assert.equal(Date.parse((await repository.facets({ tags: [] })).nextExpiryAt!), Date.now() + 3_600_000);
-    assert.equal(Date.parse((await repository.search({ shopId: String(shopOne), tags: [], limit: 1 })).nextExpiryAt!), Date.now() + 1000);
+    assert.equal(Date.parse((await repository.search({ standardProductId: String(standardOne), detailKind: 'offers',
+      shopId: String(shopOne), tags: [], limit: 1 })).nextExpiryAt!), Date.now() + 1000);
     await database.updateTable('offers').set({ captured_at: new Date(Date.now() - quotePolicy.ttlMs + 500) })
       .where('product_id', '=', outsidePreview).execute();
-    assert.equal(Date.parse((await repository.search({ view: 'summary', tags: [], limit: 1 })).nextExpiryAt!), Date.now() + 500,
+    assert.equal(Date.parse((await repository.search({ tags: [], limit: 1 })).nextExpiryAt!), Date.now() + 500,
       'hidden inventory still changes exact totals');
   });
 
@@ -592,11 +709,11 @@ describe('catalog SQL read model', () => {
       captured_at: new Date(Date.now() - quotePolicy.ttlMs + 10),
       settlement_verified_at: new Date(Date.now() - quotePolicy.ttlMs + 5),
     }).where('product_id', '=', productTwo).execute();
-    for (const view of ['summary', 'full'] as const) {
-      const page = await repository.search({ view, search: 'One source', tags: [], limit: 20 });
+    {
+      const page = await repository.search({ search: 'One source', tags: [], limit: 20 });
       assert.deepEqual(page.items.map(item => item.id), [String(standardOne)]);
       assert.equal(Date.parse(page.nextExpiryAt!), Date.now() + 3_600_000);
-      const empty = await repository.search({ view, search: 'no-such-product', tags: [], limit: 20 });
+      const empty = await repository.search({ search: 'no-such-product', tags: [], limit: 20 });
       assert.equal(empty.total, 0);
       assert.equal(empty.nextExpiryAt, null);
     }
@@ -611,7 +728,7 @@ describe('catalog SQL read model', () => {
       settlement_verified_at: new Date(Date.now() - quotePolicy.ttlMs + 5),
     }).where('product_id', '=', productTwo).execute();
     const input = { search: 'Two source', tags: [] };
-    const page = await repository.search({ ...input, view: 'summary', limit: 20 });
+    const page = await repository.search({ ...input, limit: 20 });
     assert.equal(Date.parse(page.nextExpiryAt!), Date.now() + 5);
     assert.equal(Date.parse((await repository.facets(input)).nextExpiryAt!), Date.now() + 10);
   });
@@ -620,12 +737,12 @@ describe('catalog SQL read model', () => {
     await database.updateTable('offers').set({
       settlement_verified_at: new Date(Date.now() - quotePolicy.ttlMs + 5),
     }).where('idempotency_key', '=', 'two-visible').execute();
-    for (const view of ['summary', 'full'] as const) {
-      const first = await repository.search({ view, tags: [], limit: 1 });
+    {
+      const first = await repository.search({ tags: [], limit: 1 });
       assert.deepEqual(first.items.map(item => item.id), [String(standardOne)]);
       assert.equal(Date.parse(first.nextExpiryAt!), Date.now() + 3_600_000);
       assert.ok(first.nextCursor, 'metadata lookahead must still preserve pagination');
-      const second = await repository.search({ view, tags: [], limit: 1, cursor: first.nextCursor });
+      const second = await repository.search({ tags: [], limit: 1, cursor: first.nextCursor });
       assert.deepEqual(second.items.map(item => item.id), [String(standardTwo)]);
       assert.equal(Date.parse(second.nextExpiryAt!), Date.now() + 5);
     }
@@ -639,7 +756,7 @@ describe('catalog SQL read model', () => {
       settlement_verified_at: new Date(Date.now() - quotePolicy.ttlMs + 5),
     }).where('product_id', '=', productTwo).execute();
     for (const search of [undefined, 'source']) {
-      const page = await repository.search({ view: 'summary', platform: 'openai', search, tags: [], limit: 20 });
+      const page = await repository.search({ platform: 'openai', search, tags: [], limit: 20 });
       assert.deepEqual(page.items.map(item => item.id), [String(standardOne)]);
       assert.ok(page.platformFacets.includes('anthropic'));
       assert.equal(Date.parse(page.nextExpiryAt!), Date.now() + 10);
@@ -654,7 +771,7 @@ describe('catalog SQL read model', () => {
     const cache = createCache({ ttl: 30_000 });
     const service = new CatalogService(repository, cache);
     try {
-      const input = { priceMin: '0', view: 'summary' };
+      const input = { priceMin: '0' };
       const version = await versions.current();
       assert.equal((await service.getCatalog(input)).total, 2);
       assert.ok((await service.getFacets(input)).tagFacets.some(tag => tag.name === 'access' && tag.value === 'dedicated'));
@@ -675,16 +792,17 @@ describe('catalog SQL read model', () => {
     } finally { await cache.disconnect(); }
   });
 
-  test('summary browsing uses one statement and classifies each standard only once', async () => {
+  test('browsing uses one cursor snapshot and classifies each standard only once', async () => {
     await addRankingChoices();
     for (const sort of ['default', 'price', 'updated'] as const) {
       statements.length = 0;
-      const page = await repository.search({ view: 'summary', sort, tags: [], limit: 1 });
+      const page = await repository.search({ sort, tags: [], limit: 1 });
       assert.equal(page.items.length, 1);
-      assert.equal(statements.length, 1, 'browsing must not pay BEGIN, SET LOCAL and COMMIT round trips');
-      assert.match(statements[0]!.trim(), /^with /u);
+      assert.equal(statements.filter(statement => statement.startsWith('declare ')).length, 1);
+      assert.ok(statements.some(statement => statement.startsWith('fetch forward 64')));
+      assert.ok(statements.some(statement => statement.startsWith('close ')));
     }
-    const plan: any = await repository.explain({ view: 'summary', tags: [], limit: 1 });
+    const plan: any = await repository.explain({ tags: [], limit: 1 });
     const nodes: any[] = [];
     const visit = (node: any) => { nodes.push(node); for (const child of node.Plans ?? []) visit(child); };
     visit(plan[0].Plan);
@@ -695,15 +813,16 @@ describe('catalog SQL read model', () => {
 
   test('cold catalog searches and purchase filters read one prepared projection statement', async () => {
     for (const input of [
-      { view: 'summary' as const }, { view: 'full' as const, search: 'Widget source' },
-      { view: 'summary' as const, tags: [{ name: 'color', value: 'red' }] },
+      {}, { search: 'Widget source' },
+      { tags: [{ name: 'color', value: 'red' }] },
     ]) {
       statements.length = 0;
       const page = await repository.search({ tags: [], limit: 20, ...input });
       assert.equal(page.total, 2);
-      assert.equal(statements.length, 1, 'cold reads must not pay transaction-control round trips');
-      assert.match(statements[0]!, /catalog_read_offers/u);
-      assert.doesNotMatch(statements[0]!, /from offers\b|join products\b/u);
+      const reads = statements.filter(statement => statement.startsWith('declare '));
+      assert.equal(reads.length, 1, 'all catalog data comes from one statement snapshot');
+      assert.match(reads[0]!, /catalog_read_offers/u);
+      assert.doesNotMatch(reads[0]!, /from offers\b|join products\b/u);
     }
     statements.length = 0;
     await repository.facets({ search: 'Widget source', tags: [] });
@@ -724,7 +843,12 @@ describe('catalog SQL read model', () => {
     ]) {
       const query = normalizeCatalogQuery(input);
       const eligible = await repository.search({ platform: query.platform, search: query.search, tags: [], limit: 100 });
-      const facts = eligible.items.flatMap(item => item.allOffers!.flatMap(offer => offer.tags));
+      const details = await Promise.all(eligible.items.map(item => repository.search({
+        platform: query.platform, search: query.search, tags: [], limit: 1, standardProductId: item.id,
+        detailKind: 'offers', detailPageSize: 50,
+      })));
+      const facts = details.flatMap(page => page.items.flatMap(item =>
+        item.detail!.entries.flatMap(entry => ('offer' in entry ? entry.offer : entry).tags)));
       const readable = facts.filter(tag => PURCHASE_ATTRIBUTE_DEFINITIONS.some(d => d.name === tag.name && d.values.some(v => v.value === tag.value))
         || (tag.name === 'duration' && /^[1-9][0-9]{0,3} (months?|days)$/u.test(tag.value))
         || (tag.name === 'warranty_days' && /^[1-9][0-9]{0,4}$/u.test(tag.value)));
@@ -822,14 +946,13 @@ describe('catalog SQL read model', () => {
       const expected = (detailKind === 'offers' ? [blue, second, tied, productOne, third, ...extra] : [blue, second, third, extra[0]!, extra[2]!, extra[4]!, extra[6]!]).map(String);
       const actual: string[] = [];
       for (let detailPage = 0; detailPage <= Math.ceil(expected.length / 2); detailPage += 1) {
-        const result = await service.getCatalog({ standardProductId: String(standardOne), view: 'full', detailKind, detailPage, detailPageSize: 2 });
+        const result = await service.getCatalog({ standardProductId: String(standardOne), detailKind, detailPage, detailPageSize: 2 });
         const item = result.items[0]!;
         assert.equal(result.items.length, 1);
         assert.equal(item.productCount, 13);
         assert.equal(item.shopCount, 7);
         assert.equal(item.offers.length, 4);
-        assert.equal(item.allOffers, undefined);
-        assert.equal(item.offersTruncated, true);
+        assert.equal('allOffers' in item, false);
         assert.equal(item.detail?.kind, detailKind);
         assert.equal(item.detail?.page, detailPage);
         assert.equal(item.detail?.pageSize, 2);
@@ -845,7 +968,7 @@ describe('catalog SQL read model', () => {
       }
       assert.deepEqual(actual, expected);
       assert.equal(new Set(actual).size, expected.length);
-      const plan: any = await repository.explain({ standardProductId: String(standardOne), view: 'full', detailKind, detailPage: 1, detailPageSize: 2, tags: [], limit: 20 });
+      const plan: any = await repository.explain({ standardProductId: String(standardOne), detailKind, detailPage: 1, detailPageSize: 2, tags: [], limit: 20 });
       const nodes: any[] = [];
       const visit = (node: any) => { nodes.push(node); for (const child of node.Plans ?? []) visit(child); };
       visit(plan[0].Plan);
@@ -853,17 +976,17 @@ describe('catalog SQL read model', () => {
       assert.equal(details?.['Node Type'], 'Limit', 'detail rows must be limited before the JSON aggregation reads them');
       assert.equal(details?.['Actual Rows'], 2);
     }
-    const full = await service.getCatalog({ standardProductId: String(standardOne), view: 'full' });
-    assert.equal(full.items[0]?.offers.length, 7);
-    assert.equal(full.items[0]?.allOffers?.length, 13);
-    assert.equal(full.items[0]?.detail, undefined);
+    const summary = await service.getCatalog({ standardProductId: String(standardOne) });
+    assert.equal(summary.items[0]?.offers.length, 4);
+    assert.equal(summary.items[0]?.productCount, 13);
+    assert.equal(summary.items[0]?.detail, undefined);
   });
 
   test('detail pages apply purchase and search filters before totals and shop winners', async () => {
     const { second, tied, third } = await addRankingChoices();
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
     for (const detailKind of ['offers', 'shops'] as const) {
-      const input = { standardProductId: String(standardOne), view: 'full', detailKind, detailPageSize: 2,
+      const input = { standardProductId: String(standardOne), detailKind, detailPageSize: 2,
         platform: 'alpha', q: 'widget', tag: { name: 'color', value: 'red' } };
       const first = (await service.getCatalog(input)).items[0]!;
       const secondPage = (await service.getCatalog({ ...input, detailPage: 1 })).items[0]!;
@@ -895,7 +1018,7 @@ describe('catalog SQL read model', () => {
       assert.deepEqual(page.items.map(item => [item.id, item.name]), [[String(standardOne), 'ChatGPT 绑卡服务']]);
       assert.ok((await repository.facets({ search, tags: [] })).tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'account'));
     }
-    assert.equal((await repository.search({ view: 'summary', tags: [], limit: 20 })).items[0]?.name, 'ChatGPT 绑卡服务');
+    assert.equal((await repository.search({ tags: [], limit: 20 })).items[0]?.name, 'ChatGPT 绑卡服务');
     assert.equal((await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', tags: [], limit: 20 })).items[0]?.name, 'ChatGPT 绑卡服务');
     const stored = await database.selectFrom('standard_products').select(['name', 'canonical_product']).where('id', '=', standardOne).executeTakeFirstOrThrow();
     assert.deepEqual(stored, { name: 'openai / chatgpt_card_binding_service / standard', canonical_product: 'chatgpt_card_binding_service' });
@@ -988,7 +1111,7 @@ describe('catalog SQL read model', () => {
     assert.equal(oneShop.items[0]?.shopCount, 1);
     const usd = await service.getCatalog({ ...input, currency: 'USD', detailKind: 'offers' });
     assert.deepEqual(usd.items[0]?.detail?.entries.map(entry => 'offer' in entry ? entry.offer.productId : entry.productId), [String(dollars)]);
-    const summary = await service.getCatalog({ view: 'summary', shopId: String(secondShop), priceMin: '9', priceMax: '9' });
+    const summary = await service.getCatalog({ shopId: String(secondShop), priceMin: '9', priceMax: '9' });
     assert.equal(summary.offerTotal, 2);
     assert.deepEqual(summary.items[0]?.offers.map(offer => offer.productId), [String(second)]);
     assert.equal((await service.getCatalog({ ...input, shopQuery: 'ShopZZ' })).total, 0);
@@ -1033,20 +1156,19 @@ describe('catalog SQL read model', () => {
       await addSku(shop.id, `preview-${i}`, String(i + 1));
     }
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
-    const page = await service.getCatalog({ view: 'summary', limit: 1 });
+    const page = await service.getCatalog({ limit: 1 });
     assert.equal(page.total, 2);
     assert.equal(page.items[0]?.offers.length, 4);
     assert.equal(page.items[0]?.shopCount, 8);
     assert.equal(page.items[0]?.productCount, 8);
-    assert.equal(page.items[0]?.allOffers, undefined);
-    assert.equal(page.items[0]?.offersTruncated, true);
+    assert.equal('allOffers' in page.items[0]!, false);
     assert.equal(page.items[0]?.minPrice, '1.00');
     assert.ok(page.nextCursor);
-    const detail = await service.getCatalog({ standardProductId: String(standardOne), view: 'full' });
+    const detail = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 10 });
     assert.equal(detail.items.length, 1);
-    assert.equal(detail.items[0]?.allOffers?.length, 8);
-    const filtered = await service.getCatalog({ standardProductId: String(standardOne), view: 'full', tag: { name: 'size', value: 'large' } });
-    assert.deepEqual(filtered.items[0]?.allOffers?.map(offer => offer.productId), [String(productOne)]);
+    assert.equal(detail.items[0]?.detail?.entries.length, 8);
+    const filtered = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', tag: { name: 'size', value: 'large' } });
+    assert.deepEqual(filtered.items[0]?.detail?.entries.map(entry => (entry as { productId: string }).productId), [String(productOne)]);
   });
 
   test('filter endpoint includes readable conditions and preserves selected raw filters', async () => {
@@ -1057,7 +1179,7 @@ describe('catalog SQL read model', () => {
       { product_id: covered30, name: 'access', value: '独享' },
     ]).execute();
     const full = await repository.search({ tags: [], limit: 20 });
-    const summary = await repository.search({ view: 'summary', tags: [], limit: 20 });
+    const summary = await repository.search({ tags: [], limit: 20 });
     assert.equal(summary.total, full.total);
     assert.equal(summary.offerTotal, full.offerTotal);
     assert.equal('tagFacets' in full, false);
@@ -1066,7 +1188,7 @@ describe('catalog SQL read model', () => {
     assert.ok(options.tagFacets.some(tag => tag.name === 'region' && tag.value === 'us'));
     assert.ok(!options.tagFacets.some(tag => tag.value === '100刀' || tag.value === 'account_password_backup_email_2fa'));
     assert.ok(options.tagFacets.some(tag => tag.name === 'warranty_days' && tag.value === '30'));
-    const filtered = await repository.search({ view: 'summary', tags: [{ name: 'region', value: 'us' }], limit: 20 });
+    const filtered = await repository.search({ tags: [{ name: 'region', value: 'us' }], limit: 20 });
     assert.equal(filtered.offerTotal, 2);
     const selectedOptions = await repository.facets({ tags: [{ name: 'region', value: 'us' }] });
     assert.ok(selectedOptions.tagFacets.some(tag => tag.name === 'region' && tag.value === 'us'));
@@ -1075,7 +1197,7 @@ describe('catalog SQL read model', () => {
   });
 
   test('empty catalog searches avoid the alias lookup entirely', async () => {
-    const plan = await repository.explain({ view: 'summary', tags: [], limit: 20 });
+    const plan = await repository.explain({ tags: [], limit: 20 });
     assert.ok(!JSON.stringify(plan).includes('standard_product_aliases'));
   });
 
@@ -1083,8 +1205,8 @@ describe('catalog SQL read model', () => {
     await addPurchaseChoices();
     await addOfferHistory();
     for (const query of [
-      { view: 'summary' as const, tags: [], limit: 1 },
-      { view: 'summary' as const, tags: [{ name: 'warranty', value: 'covered' }], limit: 1 },
+      { tags: [], limit: 1 },
+      { tags: [{ name: 'warranty', value: 'covered' }], limit: 1 },
       { search: 'verified', tags: [], limit: 1 },
     ]) {
       const plan: any = await repository.explain(query);
@@ -1178,7 +1300,7 @@ describe('catalog SQL read model', () => {
     await database.updateTable('standard_products').set({ platform: 'openai' }).execute();
     await database.insertInto('product_tags').values({ product_id: productOne, name: 'delivery', value: 'top_up' }).execute();
     const query = normalizeCatalogQuery({ q: '', platform: 'openai', tag: JSON.stringify({ name: 'delivery', value: 'top_up' }),
-      limit: 20, view: 'summary', sort: 'default' });
+      limit: 20, sort: 'default' });
     const page = await repository.search(query);
     assert.deepEqual(page.items.map(item => item.id), [String(standardOne)]);
     assert.equal(page.offerTotal, 1);
@@ -1203,7 +1325,7 @@ describe('catalog SQL read model', () => {
       { product_id: productOne, name: 'access', value: 'dedicated' },
       { product_id: productTwo, name: 'access', value: 'shared' },
     ]).execute();
-    const query = { platform: 'cursor', view: 'summary' as const, tags: [], limit: 1 };
+    const query = { platform: 'cursor', tags: [], limit: 1 };
     const page = await repository.search(query);
     assert.deepEqual(page.items.map(item => item.id), [String(standardOne)]);
     assert.deepEqual(page.platformFacets, ['openai', 'xai']);
@@ -1224,17 +1346,21 @@ describe('catalog SQL read model', () => {
     assert.equal(attributes?.['Actual Rows'], 1, 'only the selected platform needs quote payloads');
   });
 
-  test('summary browsing reads only visible quote facts and preserves full-query ranking', async () => {
+  test('browsing reads only visible quote facts and agrees with paginated detail ranking', async () => {
     await addPurchaseChoices();
     await addRankingChoices();
     const compare = async (query: Parameters<CatalogRepository['search']>[0]) => {
-      const full = await repository.search({ ...query, view: 'full' });
-      const summary = await repository.search({ ...query, view: 'summary' });
-      assert.deepEqual(summary, { ...full, items: full.items.map(({ allOffers: _all, ...item }) => ({
-        ...item, offers: item.offers.slice(0, 4), offersTruncated: true,
-      })) });
+      const summary = await repository.search(query);
+      for (const item of summary.items) {
+        const { cursor: _cursor, ...filters } = query;
+        const detail = (await repository.search({ ...filters, standardProductId: item.id, detailKind: 'shops', detailPageSize: 4 })).items[0]!;
+        assert.equal(item.minPrice, detail.minPrice);
+        assert.equal(item.productCount, detail.productCount);
+        assert.equal(item.shopCount, detail.shopCount);
+        assert.deepEqual(item.offers, detail.detail!.entries.map(entry => 'offer' in entry ? entry.offer : entry));
+      }
       assert.equal('tagFacets' in summary, false);
-      return full.nextCursor;
+      return summary.nextCursor;
     };
     for (const sort of ['default', 'price', 'updated'] as const) {
       const query = { sort, tags: [], limit: 1 };
@@ -1243,7 +1369,7 @@ describe('catalog SQL read model', () => {
     }
     await compare({ tags: [{ name: 'warranty', value: 'covered' }], limit: 1 });
     await addOfferHistory();
-    const plan: any = await repository.explain({ view: 'summary', tags: [], limit: 1 });
+    const plan: any = await repository.explain({ tags: [], limit: 1 });
     assertCatalogPlan(plan);
     assert.doesNotMatch(JSON.stringify(plan), /facet_counts|facet_sums|facet_options/);
     const nodes: any[] = [];
@@ -1257,25 +1383,25 @@ describe('catalog SQL read model', () => {
   });
 
   test('sorts the whole catalog by price and newest SKU before cursor pagination', async () => {
-    const low = await repository.search({ view: 'summary', sort: 'price', tags: [], limit: 1 });
+    const low = await repository.search({ sort: 'price', tags: [], limit: 1 });
     assert.equal(low.items[0]?.id, String(standardTwo));
-    const next = await repository.search({ view: 'summary', sort: 'price', tags: [], limit: 1, cursor: low.nextCursor });
+    const next = await repository.search({ sort: 'price', tags: [], limit: 1, cursor: low.nextCursor });
     assert.equal(next.items[0]?.id, String(standardOne));
     assert.equal(next.nextCursor, undefined);
     await assert.rejects(repository.search({ sort: 'updated', tags: [], limit: 1, cursor: low.nextCursor }), { code: 'INVALID_CURSOR' });
     const newest = await addSku(shopOne, 'newest-expensive', '100');
     await database.updateTable('offers').set({ captured_at: new Date('2026-09-25T12:00:00Z') }).where('product_id', '=', newest).execute();
-    const recent = await repository.search({ view: 'summary', sort: 'updated', tags: [], limit: 1 });
+    const recent = await repository.search({ sort: 'updated', tags: [], limit: 1 });
     assert.equal(recent.items[0]?.id, String(standardOne));
     assert.equal(recent.items[0]?.minPrice, '10.00');
-    const older = await repository.search({ view: 'summary', sort: 'updated', tags: [], limit: 1, cursor: recent.nextCursor });
+    const older = await repository.search({ sort: 'updated', tags: [], limit: 1, cursor: recent.nextCursor });
     assert.equal(older.items[0]?.id, String(standardTwo));
   });
 
   test('keeps sorted cursors stable on tied prices and restores a caller transaction JIT setting', async () => {
     await database.updateTable('offers').set({ price: '6.00', settlement_price: '6.00' }).where('product_id', '=', productOne).execute();
-    const first = await repository.search({ view: 'summary', sort: 'price', tags: [], limit: 1 });
-    const second = await repository.search({ view: 'summary', sort: 'price', tags: [], limit: 1, cursor: first.nextCursor });
+    const first = await repository.search({ sort: 'price', tags: [], limit: 1 });
+    const second = await repository.search({ sort: 'price', tags: [], limit: 1, cursor: first.nextCursor });
     assert.deepEqual([first.items[0]?.id, second.items[0]?.id], [String(standardOne), String(standardTwo)]);
     await database.transaction().execute(async transaction => {
       await sql`set local jit = on`.execute(transaction);
@@ -1332,11 +1458,11 @@ describe('catalog SQL read model', () => {
     await database.updateTable('standard_products').set({ platform: 'software', canonical_family: 'software', canonical_product: 'icloud_hidden_mail_toolkit' }).where('id', '=', standardOne).execute();
     await database.updateTable('standard_products').set({ platform: 'bundle', canonical_family: 'bundle', canonical_product: 'gmail_and_subscription_bundle' }).where('id', '=', standardTwo).execute();
     await database.insertInto('product_tags').values({ product_id: productOne, name: 'access', value: 'dedicated' }).execute();
-    for (const view of [undefined, 'summary'] as const) {
-      const other = await repository.search({ platform: 'other', tags: [], view, limit: 20 });
+    {
+      const other = await repository.search({ platform: 'other', tags: [], limit: 20 });
       assert.equal(other.total, 2);
       assert.deepEqual(other.platformFacets, ['other']);
-      assert.equal((await repository.search({ platform: 'email', tags: [], view, limit: 20 })).total, 0);
+      assert.equal((await repository.search({ platform: 'email', tags: [], limit: 20 })).total, 0);
     }
     assert.ok((await repository.facets({ platform: 'other', tags: [] })).tagFacets.some(tag => tag.name === 'access'));
     assert.deepEqual((await repository.facets({ platform: 'email', tags: [] })).tagFacets, []);
@@ -1354,7 +1480,7 @@ describe('catalog SQL read model', () => {
     assert.deepEqual(ip.items.map(item => item.id), [standardOne.toString()]);
     assert.deepEqual(ip.platformFacets, ['openai', 'ip']);
     assert.equal(ip.items[0]?.platform, '其它');
-    const browse = await repository.search({ platform: 'ip', view: 'summary', tags: [], limit: 1 });
+    const browse = await repository.search({ platform: 'ip', tags: [], limit: 1 });
     assert.deepEqual(browse.items.map(item => item.id), [standardOne.toString()]);
     assert.deepEqual(browse.platformFacets, ['openai', 'ip']);
     assert.equal((await repository.search({ platform: 'other', tags: [], limit: 20 })).total, 0);
@@ -1380,15 +1506,15 @@ describe('catalog SQL read model', () => {
   test('purchase intent filters the same SKU before calculating prices and counts', async () => {
     const { covered30 } = await addPurchaseChoices();
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
-    const result = await service.getCatalog({ q: 'ChatGPT Plus 已接码 质保至少30天' });
+    const result = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, q: 'ChatGPT Plus 已接码 质保至少30天' });
     assert.equal(result.total, 1);
     assert.equal(result.offerTotal, 1);
     assert.equal(result.items[0]?.minPrice, '30.00');
-    assert.deepEqual(result.items[0]?.allOffers.map(offer => offer.productId), [String(covered30)]);
+    assert.deepEqual(result.items[0]?.detail!.entries.map(offer => offer.productId), [String(covered30)]);
     assert.ok(result.items[0]?.offers[0]?.tags.some(tag => tag.name === 'warranty_days' && tag.value === '30'));
     assert.equal(result.appliedQuery?.warrantyDaysMin, 30);
     for (const detailKind of ['offers', 'shops'] as const) {
-      const paged = await service.getCatalog({ standardProductId: String(standardOne), view: 'full', detailKind,
+      const paged = await service.getCatalog({ standardProductId: String(standardOne), detailKind, detailPageSize: 50,
         q: 'ChatGPT Plus 已接码', warrantyDaysMin: 30, tag: { name: 'region', value: 'us' } });
       assert.equal(paged.items[0]?.detail?.total, 1);
       assert.equal(paged.items[0]?.minPrice, '30.00');
@@ -1398,10 +1524,10 @@ describe('catalog SQL read model', () => {
 
   test('purchase filters use OR within a dimension and AND across dimensions', async () => {
     const { covered30, covered7 } = await addPurchaseChoices();
-    const result = await repository.search({ tags: [{ name: 'region', value: 'us' }, { name: 'region', value: 'philippines' }, { name: 'sms_verification', value: 'verified' }], limit: 20 });
-    assert.deepEqual(result.items[0]?.allOffers.map(offer => offer.productId), [covered7, covered30].map(String));
+    const result = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'region', value: 'us' }, { name: 'region', value: 'philippines' }, { name: 'sms_verification', value: 'verified' }], limit: 20 });
+    assert.deepEqual(result.items[0]?.detail!.entries.map(offer => offer.productId), [covered7, covered30].map(String));
     assert.equal(result.items[0]?.minPrice, '7.00');
-    const impossible = await repository.search({ tags: [{ name: 'sms_verification', value: 'unverified' }], warrantyDaysMin: 30, limit: 20 });
+    const impossible = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'sms_verification', value: 'unverified' }], warrantyDaysMin: 30, limit: 20 });
     assert.equal(impossible.total, 0);
   });
 
@@ -1411,12 +1537,12 @@ describe('catalog SQL read model', () => {
     await addSku(shopOne, 'unknown-coverage', '0.50', [{ name: 'warranty', value: 'covered' }]);
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
     for (const input of [{ warrantyDaysMin: 30 }, { q: 'ChatGPT 质保至少30天' }]) {
-      const page = await service.getCatalog(input);
-      assert.deepEqual(page.items[0]?.allOffers.map(offer => offer.productId), [covered30, covered90].map(String));
+      const page = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, ...input });
+      assert.deepEqual(page.items[0]?.detail!.entries.map(offer => offer.productId), [covered30, covered90].map(String));
       assert.equal(page.items[0]?.minPrice, '30.00');
     }
-    const overridden = await service.getCatalog({ q: 'ChatGPT 质保至少30天', warrantyDaysMin: 90 });
-    assert.deepEqual(overridden.items[0]?.allOffers.map(offer => offer.productId), [String(covered90)]);
+    const overridden = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, q: 'ChatGPT 质保至少30天', warrantyDaysMin: 90 });
+    assert.deepEqual(overridden.items[0]?.detail!.entries.map(offer => offer.productId), [String(covered90)]);
   });
 
   test('duration aliases match all equivalent quotes without conflating months with days', async () => {
@@ -1424,22 +1550,22 @@ describe('catalog SQL read model', () => {
     const alias = await addSku(shopOne, 'duration-alias', '11.00', [{ name: 'duration', value: '1 months' }]);
     const days = await addSku(shopOne, 'duration-days', '12.00', [{ name: 'duration', value: '30 days' }]);
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
-    const months = await service.getCatalog({ tag: [{ name: 'duration', value: '1个月' }] });
-    assert.deepEqual(months.items[0]?.allOffers.map(offer => offer.productId), [month, alias].map(String));
-    const byDays = await service.getCatalog({ tag: [{ name: 'duration', value: '30 days' }] });
-    assert.deepEqual(byDays.items[0]?.allOffers.map(offer => offer.productId), [String(days)]);
+    const months = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tag: [{ name: 'duration', value: '1个月' }] });
+    assert.deepEqual(months.items[0]?.detail!.entries.map(offer => offer.productId), [month, alias].map(String));
+    const byDays = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tag: [{ name: 'duration', value: '30 days' }] });
+    assert.deepEqual(byDays.items[0]?.detail!.entries.map(offer => offer.productId), [String(days)]);
     const facets = await service.getFacets({});
     assert.deepEqual(facets.tagFacets.filter(tag => tag.name === 'duration').map(tag => tag.value).sort(), ['1 month', '30 days']);
   });
 
   test('unknown warranty remains distinct from explicit none and first-login coverage', async () => {
     const { noWarranty, firstLogin } = await addPurchaseChoices();
-    const none = await repository.search({ platform: 'openai', tags: [{ name: 'warranty', value: 'none' }], limit: 20 });
-    assert.deepEqual(none.items[0]?.allOffers.map(offer => offer.productId), [String(noWarranty)]);
-    const unknown = await repository.search({ platform: 'openai', tags: [{ name: 'warranty', value: 'unknown' }], limit: 20 });
-    assert.deepEqual(unknown.items[0]?.allOffers.map(offer => offer.productId), [String(productOne)]);
-    const first = await repository.search({ tags: [{ name: 'warranty_scope', value: 'first_login' }], limit: 20 });
-    assert.deepEqual(first.items[0]?.allOffers.map(offer => offer.productId), [String(firstLogin)]);
+    const none = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, platform: 'openai', tags: [{ name: 'warranty', value: 'none' }], limit: 20 });
+    assert.deepEqual(none.items[0]?.detail!.entries.map(offer => offer.productId), [String(noWarranty)]);
+    const unknown = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, platform: 'openai', tags: [{ name: 'warranty', value: 'unknown' }], limit: 20 });
+    assert.deepEqual(unknown.items[0]?.detail!.entries.map(offer => offer.productId), [String(productOne)]);
+    const first = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'warranty_scope', value: 'first_login' }], limit: 20 });
+    assert.deepEqual(first.items[0]?.detail!.entries.map(offer => offer.productId), [String(firstLogin)]);
     assert.ok(!first.items[0]?.offers[0]?.tags.some(tag => tag.name === 'duration' || tag.name === 'warranty_days'));
   });
 
@@ -1448,8 +1574,8 @@ describe('catalog SQL read model', () => {
     const product = await addSku(shopOne, 'historical', '19.00');
     await database.updateTable('products').set({ name: 'ChatGPT Plus 未接码 速刷 无质保', spec: '独享 兑换码' }).where('id', '=', product).execute();
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
-    const result = await service.getCatalog({ q: 'plus 未接码 速刷 无质保' });
-    assert.deepEqual(result.items[0]?.allOffers.map(offer => offer.productId), [String(product)]);
+    const result = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, q: 'plus 未接码 速刷 无质保' });
+    assert.deepEqual(result.items[0]?.detail!.entries.map(offer => offer.productId), [String(product)]);
     assert.ok(result.items[0]?.offers[0]?.tags.some(tag => tag.name === 'intended_use' && tag.value === 'rapid'));
     assert.ok(result.items[0]?.offers[0]?.tags.some(tag => tag.name === 'delivery' && tag.value === 'redemption'));
   });
@@ -1471,11 +1597,11 @@ describe('catalog SQL read model', () => {
     await database.updateTable('products').set({ name: '日抛号', spec: '商家原文' }).where('id', '=', named).execute();
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
     for (const input of [{ q: '日抛' }, { q: '速刷' }, { tags: [{ name: 'intended_use', value: 'rapid' }] }]) {
-      const result = await service.getCatalog(input);
+      const result = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, ...input });
       assert.equal(result.offerTotal, 4);
-      assert.deepEqual(new Set(result.items.flatMap(item => item.allOffers!.map(offer => offer.productId))),
+      assert.deepEqual(new Set(result.items.flatMap(item => item.detail!.entries!.map(offer => offer.productId))),
         new Set([daily, rapid, both, named].map(String)));
-      for (const offer of result.items.flatMap(item => item.allOffers!)) {
+      for (const offer of result.items.flatMap(item => item.detail!.entries!)) {
         assert.deepEqual(offer.tags.filter(tag => tag.name === 'intended_use'), [{ name: 'intended_use', value: 'rapid' }]);
         assert.ok(!offer.tags.some(tag => tag.value === 'disposable'));
       }
@@ -1501,8 +1627,8 @@ describe('catalog SQL read model', () => {
     await addPurchaseChoices();
     const product = await addSku(shopOne, 'conflict', '0.50', [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: '30 days' }]);
     await database.updateTable('products').set({ name: '未接码 无质保', spec: '' }).where('id', '=', product).execute();
-    const result = await repository.search({ tags: [{ name: 'sms_verification', value: 'verified' }], warrantyDaysMin: 30, limit: 20 });
-    assert.ok(result.items.every(item => item.allOffers.every(offer => offer.productId !== String(product))));
+    const result = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'sms_verification', value: 'verified' }], warrantyDaysMin: 30, limit: 20 });
+    assert.ok(result.items.every(item => item.detail!.entries.every(offer => offer.productId !== String(product))));
   });
 
   test('options remain selectable across purchase filters while the list filters matching offers', async () => {
@@ -1581,7 +1707,7 @@ describe('catalog SQL read model', () => {
     assert.deepEqual(page.items[0]?.offers.map(offer => offer.productId), [productOne.toString()]);
     assert.deepEqual((await repository.facets({ tags: [] })).tagFacets, []);
     for (const detailKind of ['offers', 'shops'] as const) {
-      const detail = await repository.search({ standardProductId: String(standardOne), view: 'full', detailKind, detailPage: 0, detailPageSize: 2, tags: [], limit: 20 });
+      const detail = await repository.search({ standardProductId: String(standardOne), detailKind, detailPage: 0, detailPageSize: 2, tags: [], limit: 20 });
       assert.equal(detail.items[0]?.productCount, 1);
       assert.equal(detail.items[0]?.shopCount, 1);
       assert.equal(detail.items[0]?.detail?.total, 1);
@@ -1648,20 +1774,20 @@ describe('catalog SQL read model', () => {
     const service = new CatalogService(repository, cache);
     try {
       const first = await service.getCatalog({ tags: [], limit: 20 });
-      assert.equal(first.items.flatMap(item => item.allOffers ?? []).find(offer => offer.productId === String(productOne))?.spec, 'large');
-      const queryCount = statements.length;
+      assert.equal(first.items.flatMap(item => item.offers).find(offer => offer.productId === String(productOne))?.spec, 'large');
+      const queryCount = statements.filter(statement => statement.startsWith('declare ')).length;
       const second = await service.getCatalog({ tags: [], limit: 20 });
       assert.deepEqual(second, first);
-      assert.equal(statements.length, queryCount + 1, 'each read uses one live projection statement');
+      assert.equal(statements.filter(statement => statement.startsWith('declare ')).length, queryCount + 1, 'each read opens a fresh snapshot');
       const products = new ProductsRepository(database);
       await products.update(productOne, { url: 'https://catalog.invalid/updated-one' });
       const updated = await service.getCatalog({ tags: [], limit: 20 });
-      const updatedOffer = updated.items.flatMap(item => item.allOffers ?? []).find(offer => offer.productId === String(productOne));
+      const updatedOffer = updated.items.flatMap(item => item.offers).find(offer => offer.productId === String(productOne));
       assert.equal(updatedOffer?.productUrl, 'https://catalog.invalid/updated-one');
       assert.notDeepEqual(updated, first);
       await products.update(productOne, { spec: 'changed cached product' });
       const unpublished = await service.getCatalog({ tags: [], limit: 20 });
-      assert.ok(!unpublished.items.some(item => item.allOffers.some(offer => offer.productId === String(productOne))),
+      assert.ok(!unpublished.items.some(item => item.offers.some(offer => offer.productId === String(productOne))),
         'evidence changes withdraw the old classification and cannot reuse cached offers');
     } finally { await cache.disconnect(); }
   });

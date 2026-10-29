@@ -16,7 +16,7 @@ test('catalog reads use the live projection without a version round trip or a ca
     const loader = async () => { reads += 1; return projection; };
     const cache = createCache();
     const service = new CatalogService({ search: loader, facets: loader } as unknown as CatalogRepository, cache);
-    const read = () => kind === 'page' ? service.getCatalog({ view: 'summary' }) : service.getFacets({});
+    const read = () => kind === 'page' ? service.getCatalog({}) : service.getFacets({});
     try {
       assert.deepEqual(await read(), first);
       projection = latest;
@@ -115,13 +115,13 @@ test('repository calls receive normalized queries, distinct detail pages and fil
     search: async (query: CatalogQuery) => { pages.push(query); return emptyPage; },
     facets: async (query: unknown) => { facets.push(query); return { tagFacets: [] }; },
   } as unknown as CatalogRepository, cache);
-  const base = { standardProductId: '42', view: 'full', detailKind: 'offers' };
+  const base = { standardProductId: '42', detailKind: 'offers' };
   const detail = { standardProductId: '42', detailKind: 'offers', detailPage: 0, detailPageSize: 4, tags: [], limit: 20 };
   try {
     for (const input of [
       base, { ...base, detailPage: 0, detailPageSize: 4 }, { ...base, detailPage: 1 },
       { ...base, detailKind: 'shops' }, { ...base, detailPageSize: 2 },
-      { ...base, tag: { name: 'region', value: 'us' } }, { standardProductId: '42', view: 'full' }, base,
+      { ...base, tag: { name: 'region', value: 'us' } }, { standardProductId: '42' }, base,
     ]) await service.getCatalog(input);
     assert.deepEqual(pages, [
       detail, detail, { ...detail, detailPage: 1 }, { ...detail, detailKind: 'shops' },
@@ -130,7 +130,7 @@ test('repository calls receive normalized queries, distinct detail pages and fil
     ]);
     const filters = { platform: ' OpenAI ', q: ' Ｐｌｕｓ ', shopQuery: ' Ｍａｌｌ ',
       priceMin: '7', priceMax: 9, offerSort: 'priceDesc', tag: { name: ' region ', value: ' US ' } };
-    await service.getCatalog({ ...filters, sort: 'default', view: 'full', limit: 999 });
+    await service.getCatalog({ ...filters, sort: 'default', limit: 999 });
     assert.deepEqual(pages.at(-1), { platform: 'openai', search: 'plus', shopQuery: 'Mall',
       priceMin: '7.00', priceMax: '9.00', currency: 'CNY', offerSort: 'priceDesc',
       tags: [{ name: 'region', value: 'us' }], limit: 100 });
@@ -152,7 +152,6 @@ test('invalid page and facet inputs reach no repository query', async () => {
     facets: async () => { reads += 1; return { tagFacets: [] }; },
   } as unknown as CatalogRepository, cache);
   const invalid: { input: CatalogQueryInput; code: string; both: boolean }[] = [
-    { input: { view: 'anything' }, code: 'INVALID_VIEW', both: false },
     { input: { sort: 'anything' }, code: 'INVALID_SORT', both: false },
     { input: { detailKind: 'offers' }, code: 'INVALID_DETAIL_QUERY', both: false },
     { input: { standardProductId: '0' }, code: 'INVALID_STANDARD_PRODUCT', both: true },
@@ -171,21 +170,20 @@ test('invalid page and facet inputs reach no repository query', async () => {
 });
 
 test('validates summary, detail and sorting query parameters before reading the catalog', () => {
-  assert.deepEqual(normalizeCatalogQuery({ view: 'summary', standardProductId: '42', sort: 'price' }), { view: 'summary', standardProductId: '42', sort: 'price', tags: [], limit: 20 });
+  assert.deepEqual(normalizeCatalogQuery({ standardProductId: '42', sort: 'price' }), { standardProductId: '42', sort: 'price', tags: [], limit: 20 });
   for (const standardProductId of ['0', '-1', 'abc', '9223372036854775808']) {
     assert.throws(() => normalizeCatalogQuery({ standardProductId }), { code: 'INVALID_STANDARD_PRODUCT' });
   }
-  assert.throws(() => normalizeCatalogQuery({ view: 'anything' }), { code: 'INVALID_VIEW' });
   assert.throws(() => normalizeCatalogQuery({ sort: 'anything' }), { code: 'INVALID_SORT' });
 });
 
 test('detail pagination normalizes defaults and rejects invalid or unbounded requests', () => {
   const base = { standardProductId: '42', detailKind: 'offers' };
   assert.deepEqual(normalizeCatalogQuery(base), { standardProductId: '42', detailKind: 'offers', detailPage: 0, detailPageSize: 4, tags: [], limit: 20 });
-  assert.deepEqual(normalizeCatalogQuery({ ...base, view: 'full', detailPage: 0, detailPageSize: 4 }), normalizeCatalogQuery(base));
+  assert.deepEqual(normalizeCatalogQuery({ ...base, detailPage: 0, detailPageSize: 4 }), normalizeCatalogQuery(base));
   assert.equal(normalizeCatalogQuery({ ...base, detailKind: 'shops', detailPage: 2, detailPageSize: 50 }).detailPage, 2);
   for (const input of [
-    { detailKind: 'offers' }, { ...base, view: 'summary' }, { ...base, detailKind: 'other' },
+    { detailKind: 'offers' }, { ...base, detailKind: 'other' },
     { standardProductId: '42', detailPage: 0 }, { standardProductId: '42', detailPageSize: 4 },
     ...[-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER].map(detailPage => ({ ...base, detailPage })),
     ...[0, -1, 1.5, 51, Number.NaN, Number.POSITIVE_INFINITY].map(detailPageSize => ({ ...base, detailPageSize })),

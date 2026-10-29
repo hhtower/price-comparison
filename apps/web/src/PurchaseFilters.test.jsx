@@ -13,9 +13,20 @@ async function openFilters(tagFacets, product = {}) {
     const url = new URL(input, 'http://localhost');
     if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
     requests.push(url);
+    const params = url.searchParams;
+    let detail;
+    if (params.has('detailKind')) {
+      const groups = Map.groupBy(params.getAll('tag').map(JSON.parse), tag => tag.name);
+      const offers = (product.offers || []).filter(offer =>
+        [...groups].every(([name, tags]) => offer.tags?.some(tag => tag.name === name && tags.some(selected => selected.value === tag.value)))
+        && (!params.has('warrantyDaysMin') || offer.tags?.some(tag => tag.name === 'warranty_days' && Number(tag.value) >= Number(params.get('warrantyDaysMin')))));
+      const page = Number(params.get('detailPage'));
+      const pageSize = Number(params.get('detailPageSize'));
+      detail = { kind: params.get('detailKind'), page, pageSize, total: offers.length, entries: offers.slice(page * pageSize, (page + 1) * pageSize) };
+    }
     return Response.json(url.pathname === '/api/catalog/facets' ? { tagFacets } : {
       total: 1, platformFacets: ['openai', 'google'],
-      items: [{ id: '1', name: '筛选测试商品', platform: 'openai', offers: [], ...product }],
+      items: [{ id: '1', name: '筛选测试商品', platform: 'openai', ...product, offers: (product.offers || []).slice(0, 4), ...(detail ? { detail } : {}) }],
     });
   }));
   render(<VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 300 }}><PublicPage /></VirtuosoMockContext.Provider>);
@@ -146,16 +157,17 @@ test('clears both duration units in quote details without clearing the delivery 
     { name: '月付代充', tags: [facets[0], facets[3]] }, { name: '三十天代充', tags: [facets[1], facets[3]] },
     { name: '七天代充', tags: [facets[2], facets[3]] }, { name: '月付账号', tags: [facets[0], facets[4]] },
   ].map((offer, index) => ({ ...offer, productId: String(index), shopId: '1', shop: '测试店铺', currency: 'CNY', productUrl: 'https://example.com/' + index }));
-  await openFilters(facets, { offers, allOffers: offers, productCount: 4 });
+  await openFilters(facets, { offers, productCount: 4 });
   fireEvent.keyDown(window, { key: 'Escape' });
   fireEvent.click(screen.getByRole('button', { name: '4 条报价' }));
   const dialog = within(screen.getByRole('dialog', { name: /筛选测试商品/ }));
+  await dialog.findByText('月付代充');
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
   fireEvent.click(await dialog.findByRole('checkbox', { name: '订阅时长：1个月' }));
   fireEvent.click(dialog.getByRole('checkbox', { name: '订阅时长：30天' }));
   fireEvent.click(dialog.getByRole('checkbox', { name: '交付方式：代充' }));
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
-  expect(dialog.getByText('月付代充')).toBeInTheDocument();
+  expect(await dialog.findByText('月付代充')).toBeInTheDocument();
   expect(dialog.getByText('三十天代充')).toBeInTheDocument();
   expect(dialog.queryByText('七天代充')).not.toBeInTheDocument();
   expect(dialog.queryByText('月付账号')).not.toBeInTheDocument();
@@ -163,9 +175,9 @@ test('clears both duration units in quote details without clearing the delivery 
   fireEvent.click(await dialog.findByRole('button', { name: '清除订阅时长' }));
   expect(within(dialog.getByRole('group', { name: '订阅时长' })).getByRole('status')).toHaveTextContent('不限');
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
+  expect(await dialog.findByText('七天代充')).toBeInTheDocument();
   expect(dialog.getByText('月付代充')).toBeInTheDocument();
   expect(dialog.getByText('三十天代充')).toBeInTheDocument();
-  expect(dialog.getByText('七天代充')).toBeInTheDocument();
   expect(dialog.queryByText('月付账号')).not.toBeInTheDocument();
 });
 
@@ -281,33 +293,34 @@ test('keeps any coverage distinct from period coverage and clears only warranty 
   await waitFor(() => expect(requests.at(-1).searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'delivery', value: 'top_up' }]));
 });
 
-test('replaces warranty conditions in the quote detail panel and filters the actual local offers', async () => {
+test('replaces warranty conditions in the quote detail panel and displays filtered detail entries', async () => {
   const facets = [{ name: 'warranty', value: 'none' }, { name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_scope', value: 'period' }, { name: 'warranty_days', value: '90' }];
   const offers = [
     { name: '首登报价', tags: [facets[1]] },
     { name: '长周期报价', tags: [facets[2], facets[3]] },
     { name: '无保报价', tags: [facets[0]] },
   ].map((offer, index) => ({ ...offer, productId: String(index), shopId: '1', shop: '测试店铺', currency: 'CNY', productUrl: 'https://example.com/' + index }));
-  await openFilters(facets, { offers, allOffers: offers, productCount: 3 });
+  await openFilters(facets, { offers, productCount: 3 });
   fireEvent.keyDown(window, { key: 'Escape' });
   fireEvent.click(screen.getByRole('button', { name: '3 条报价' }));
   const dialog = within(screen.getByRole('dialog', { name: /筛选测试商品/ }));
+  await dialog.findByText('首登报价');
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
   fireEvent.click(await dialog.findByRole('radio', { name: '按质保时长' }));
   fireEvent.click(dialog.getByRole('radio', { name: '至少30天' }));
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
-  expect(dialog.getByText('长周期报价')).toBeInTheDocument();
+  expect(await dialog.findByText('长周期报价')).toBeInTheDocument();
   expect(dialog.queryByText('首登报价')).not.toBeInTheDocument();
   expect(dialog.queryByText('无保报价')).not.toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: '筛选（1）' }));
   fireEvent.click(await dialog.findByRole('radio', { name: '无质保' }));
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
-  expect(dialog.getByText('无保报价')).toBeInTheDocument();
+  expect(await dialog.findByText('无保报价')).toBeInTheDocument();
   expect(dialog.queryByText('长周期报价')).not.toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: '筛选（1）' }));
   fireEvent.click(await dialog.findByRole('radio', { name: '质保要求不限' }));
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
-  expect(dialog.getByText('首登报价')).toBeInTheDocument();
+  expect(await dialog.findByText('首登报价')).toBeInTheDocument();
   expect(dialog.getByText('长周期报价')).toBeInTheDocument();
   expect(dialog.getByText('无保报价')).toBeInTheDocument();
 });

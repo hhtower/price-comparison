@@ -33,7 +33,7 @@ test('facet endpoint normalizes only filters and never fetches a product page', 
   assert.deepEqual(await new CatalogController(service).getFacets({
     platform: ' OpenAI ', q: 'Plus 已接码',
     tag: [JSON.stringify({ name: 'region', value: 'us' }), JSON.stringify({ name: 'sms_verification', value: 'unverified' })],
-    warrantyDaysMin: '30', limit: 'bad', sort: 'bad', cursor: 'bad', view: 'bad',
+    warrantyDaysMin: '30', limit: 'bad', sort: 'bad', cursor: 'bad',
   }), facets);
   assert.deepEqual(actual, { platform: 'openai', search: 'plus',
     tags: [{ name: 'region', value: 'us' }, { name: 'sms_verification', value: 'unverified' }], warrantyDaysMin: 30 });
@@ -58,7 +58,7 @@ test('catalog controller preserves detail pagination and purchase filters from U
     createCache({ ttl: 30_000 }),
   );
   await new CatalogController(service).getCatalog({
-    standardProductId: '42', view: 'full', detailKind: 'shops', detailPage: '2', detailPageSize: '3',
+    standardProductId: '42', detailKind: 'shops', detailPage: '2', detailPageSize: '3',
     platform: ' OpenAI ', q: 'Plus', tag: JSON.stringify({ name: 'region', value: 'us' }), warrantyDaysMin: '30',
   });
   assert.deepEqual(actual, {
@@ -73,12 +73,12 @@ test('catalog controller rejects malformed and repeated detail query values befo
     search: async () => { reads += 1; return { items: [], total: 0, platformFacets: [] }; },
   } as unknown as CatalogRepository, createCache({ ttl: 30_000 }));
   const controller = new CatalogController(service);
-  const base = { standardProductId: '42', view: 'full', detailKind: 'offers' };
+  const base = { standardProductId: '42', detailKind: 'offers' };
   for (const query of [
     ...['', ' ', '-1', '+1', '1.0', '1e1', '01', 'Infinity', 'NaN', '9007199254740992', ['0', '1'], {}, null].map(detailPage => ({ ...base, detailPage })),
     ...['', '0', '51', '2.5', ['4', '5'], {}, null].map(detailPageSize => ({ ...base, detailPageSize })),
     ...['', 'invalid', ['offers', 'shops'], {}, null].map(detailKind => ({ ...base, detailKind })),
-    { ...base, standardProductId: ['42', '43'] }, { ...base, view: ['full', 'summary'] },
+    { ...base, standardProductId: ['42', '43'] },
     { standardProductId: '42', detailPage: '1' }, { detailKind: 'offers' },
   ]) {
     await assert.rejects(async () => controller.getCatalog(query), { code: 'INVALID_DETAIL_QUERY' });

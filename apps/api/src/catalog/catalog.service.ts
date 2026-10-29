@@ -7,7 +7,6 @@ import { normalizeCatalogPlatform } from '@price-comparison/catalog/platform-gro
 
 export interface CatalogQueryInput {
   readonly sort?: string;
-  readonly view?: string;
   readonly standardProductId?: unknown;
   readonly shopQuery?: unknown;
   readonly shopId?: unknown;
@@ -36,9 +35,6 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
   }
   if (input.sort !== undefined && !['default', 'price', 'updated'].includes(input.sort)) {
     throw new DomainValidationError('INVALID_SORT', '排序方式无效');
-  }
-  if (input.view !== undefined && input.view !== 'summary' && input.view !== 'full') {
-    throw new DomainValidationError('INVALID_VIEW', '目录视图无效');
   }
   const standardProductId = input.standardProductId;
   if (standardProductId !== undefined && (typeof standardProductId !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(standardProductId) || BigInt(standardProductId) >= 2n ** 63n)) {
@@ -78,10 +74,10 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
     : typeof value === 'number' ? value : typeof value === 'string' && /^(0|[1-9][0-9]*)$/u.test(value) ? Number(value) : Number.NaN;
   const detailPage = detailInteger(input.detailPage, 0);
   const detailPageSize = detailInteger(input.detailPageSize, 4);
-  if (hasDetail && (!standardProductId || input.view === 'summary' || (input.detailKind !== 'offers' && input.detailKind !== 'shops')
+  if (hasDetail && (!standardProductId || (input.detailKind !== 'offers' && input.detailKind !== 'shops')
     || !Number.isSafeInteger(detailPage) || detailPage < 0 || !Number.isSafeInteger(detailPageSize) || detailPageSize < 1 || detailPageSize > 50
     || !Number.isSafeInteger(detailPage * detailPageSize))) {
-    throw new DomainValidationError('INVALID_DETAIL_QUERY', '详情分页需要有效商品、完整视图、详情类型和分页参数');
+    throw new DomainValidationError('INVALID_DETAIL_QUERY', '详情分页需要有效商品、详情类型和分页参数');
   }
   const search = String(input.search ?? input.q ?? '').normalize('NFKC').trim();
   if (search.length > 500) throw new DomainValidationError('INVALID_SEARCH', '搜索内容不能超过500个字符');
@@ -119,7 +115,6 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
   const limit = Number.isSafeInteger(input.limit) ? Number(input.limit) : 20;
   return {
     ...(input.sort && input.sort !== 'default' ? { sort: input.sort as CatalogSort } : {}),
-    ...(input.view === 'summary' ? { view: 'summary' as const } : {}),
     ...(standardProductId ? { standardProductId } : {}),
     ...(shopQuery ? { shopQuery } : {}),
     ...(shopId ? { shopId } : {}),

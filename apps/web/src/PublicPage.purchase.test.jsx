@@ -26,7 +26,8 @@ function mockApi({ status = 200, merged = false, expires = false, inventoryExpir
       if (url.searchParams.has('detailKind') && url.searchParams.get('standardProductId') !== product.id) return Response.json({ error: 'standardProductId required for detail' }, { status: 400 });
       const offer = expires ? { ...quote, inventoryExpiresAt, priceExpiresAt: new Date(Date.now() + (reads === 1 ? 200 : -1)).toISOString() } : { ...quote, inventoryExpiresAt, priceStatus, tags, settlementQuantity, price, listedPrice, paymentMethod };
       return Response.json({ nextExpiryAt: expires && reads === 1 ? offer.priceExpiresAt : offer.inventoryExpiresAt, total: 1, platformFacets: ['openai', 'anthropic'], items: [{ ...product, offers: [offer, { ...quote, inventoryExpiresAt, productId: '10', price: '18.00', listedPrice: '18.00', priceStatus: 'estimated', paymentMethod: '支付价（预估：售价）' }], minPrice: '12.50', productCount: 25, shopCount: 2,
-        ...(url.searchParams.has('detailKind') ? { detail: { entries: [offer], total: 25 } } : {}) }] });
+        ...(url.searchParams.has('detailKind') ? { detail: { kind: url.searchParams.get('detailKind'), page: Number(url.searchParams.get('detailPage')),
+          pageSize: Number(url.searchParams.get('detailPageSize')), entries: [offer], total: 25 } } : {}) }] });
     }
     return new Response(null, { status: 204 });
   }));
@@ -626,7 +627,7 @@ test('aggregate details reuse the selected SKU and closing its explanation prese
   mockApi({ tags: [{ name: 'usage_restriction', value: '禁止改密' }] }); render(<App />);
   fireEvent.click(await screen.findByRole('button', { name: '25 条报价' }));
   const parent = await screen.findByRole('dialog', { name: /报价/ });
-  const trigger = within(parent).getAllByRole('button', { name: '商品说明', exact: true })[0]; trigger.focus(); fireEvent.click(trigger);
+  const trigger = (await within(parent).findAllByRole('button', { name: '商品说明', exact: true }))[0]; trigger.focus(); fireEvent.click(trigger);
   const details = screen.getByRole('dialog', { name: quote.name });
   expect(details).toHaveTextContent('禁止改密'); expect(details).toHaveTextContent(quote.spec);
   fireEvent.keyDown(details, { key: 'Escape' });

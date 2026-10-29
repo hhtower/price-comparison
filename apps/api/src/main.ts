@@ -56,7 +56,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
     registerPublicPages(adapter, {
       template: readFileSync(resolve(clientRoot, 'index.html'), 'utf8'),
       siteUrl: process.env.PUBLIC_SITE_URL,
-      getCatalog: input => app.get(CatalogService).getCatalog(input ?? { view: 'summary', limit: 20 }),
+      getCatalog: input => app.get(CatalogService).getCatalog(input ?? { limit: 20 }),
       getProducts: () => app.get(CatalogService).getProducts(),
       getProduct: id => app.get(CatalogService).getProduct(id),
     });

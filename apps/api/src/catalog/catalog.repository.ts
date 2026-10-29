@@ -1,10 +1,11 @@
 import { Inject, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type RawBuilder } from 'kysely';
 import { DATABASE } from '../database/database.providers.js';
 import { DomainValidationError } from '../common/errors.js';
 import type { DatabaseSchema, JsonValue } from '../database/types.js';
 import { readShopRating, type ShopRatingDetails } from '../shops/shop-rating.js';
-import { aggregateTextReviews } from '../shops/shop-text-review.js';
+import { createTextReviewAccumulator, type ProductReviewRow } from '../shops/shop-text-review.js';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
 import { catalogOrderRank, catalogPlatformGroup, OTHER_CATALOG_RANK } from './catalog-order.js';
 import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './quote-policy.js';
@@ -36,7 +37,6 @@ export type CatalogOfferSort = 'price' | 'priceDesc' | 'updated';
 export interface CatalogCursor { readonly sortOrder: bigint; readonly standardProductId: bigint; readonly catalogRank?: number; readonly sort?: Exclude<CatalogSort, 'default'>; readonly sortValue?: string }
 export interface CatalogQuery {
   readonly sort?: CatalogSort;
-  readonly view?: 'summary' | 'full';
   readonly standardProductId?: string;
   readonly shopQuery?: string;
   readonly shopId?: string;
@@ -90,9 +90,7 @@ export interface CatalogItem {
   readonly shopCount: number;
   readonly productCount: number;
   readonly offers: readonly CatalogOffer[];
-  readonly allOffers?: readonly CatalogOffer[];
   readonly detail?: CatalogDetail;
-  readonly offersTruncated?: boolean;
   readonly latestCapturedAt?: string;
   readonly minPrice: string | null;
 }
@@ -130,9 +128,13 @@ interface CatalogResult {
   total: number;
   offer_total: number;
   next_expiry_at: string | null;
-  text_reviews: { shop_id: string; external_id: string; content_version: string;
-    content_fingerprint: string | null; source_data: JsonValue; text_review: JsonValue }[];
 }
+
+type InternalRating = { state: JsonValue | null; url: string; protocol: string | null; platform: string; manifest: JsonValue | null };
+type CatalogReadRow =
+  | { kind: 0; payload: CatalogResult }
+  | { kind: 1; payload: { shop_id: string; rating: InternalRating } }
+  | { kind: 2; payload: ProductReviewRow & { shop_id: string } };
 
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 20;
@@ -210,60 +212,53 @@ export class CatalogRepository {
 
   async search(input: CatalogQuery): Promise<CatalogPage> {
     const query = input;
-    const result = await this.runRead(database => buildCatalogQuery(input, this.policy).execute(database));
-    const { entries, platform_facets: platformFacets, total } = result.rows[0]!;
-    const hasNext = result.rows[0]!.has_next;
+    let result!: CatalogResult;
+    const shops = new Map<string, { rating: InternalRating; reviews: ReturnType<typeof createTextReviewAccumulator> }>();
+    await this.readCatalogRows(input, row => {
+      if (row.kind === 0) result = row.payload;
+      else if (row.kind === 1) {
+        const { shop_id: id, rating } = row.payload;
+        shops.set(id, { rating, reviews: createTextReviewAccumulator(rating.manifest, rating, this.policy.now()) });
+      } else shops.get(row.payload.shop_id)?.reviews?.add(row.payload);
+    });
+    const { entries, platform_facets: platformFacets, total } = result;
+    const hasNext = result.has_next;
     const visible = entries;
-    type InternalRating = { state: JsonValue | null; url: string; protocol: string | null; platform: string; manifest: JsonValue | null };
-    const reviewRows = result.rows[0]!.text_reviews;
-    const reviewsByShop = new Map<string, typeof reviewRows>();
-    for (const row of reviewRows) {
-      const id = String(row.shop_id);
-      if (!reviewsByShop.has(id)) reviewsByShop.set(id, []);
-      reviewsByShop.get(id)!.push(row);
-    }
-    let nextExpiry = result.rows[0]!.next_expiry_at ? Date.parse(result.rows[0]!.next_expiry_at) : Infinity;
+    let nextExpiry = result.next_expiry_at ? Date.parse(result.next_expiry_at) : Infinity;
     const ratings = new Map<string, ReturnType<typeof readShopRating>>();
     const withRating = (offer: CatalogOffer): CatalogOffer => {
-      const { _shopRating, ...publicOffer } = offer as CatalogOffer & {
-        _shopRating?: InternalRating;
-      };
       let rating = ratings.get(offer.shopId);
       if (!rating) {
-        const now = this.policy.now();
-        rating = _shopRating ? readShopRating(_shopRating.state, _shopRating, now,
-          aggregateTextReviews(_shopRating.manifest, _shopRating, reviewsByShop.get(offer.shopId) ?? [], now))
+        const shop = shops.get(offer.shopId);
+        rating = shop ? readShopRating(shop.rating.state, shop.rating, this.policy.now(), shop.reviews?.finish())
           : { score: null, nextExpiryAt: null, details: null };
         ratings.set(offer.shopId, rating);
         if (rating.nextExpiryAt !== null) nextExpiry = Math.min(nextExpiry, rating.nextExpiryAt);
       }
-      return { ...publicOffer, name: sanitizeOfferName(publicOffer.name), shopScore: rating.score, shopScoreDetails: rating.details,
+      return { ...offer, name: sanitizeOfferName(offer.name), shopScore: rating.score, shopScoreDetails: rating.details,
         shopScoreExpiresAt: rating.nextExpiryAt === null ? null : new Date(rating.nextExpiryAt).toISOString() };
     };
     const items = visible.map(({ sortOrder: _sortOrder, sortValue: _sortValue, catalogRank: _catalogRank, ...item }): CatalogItem => {
-      // Summary and paginated detail responses carry only their bounded offers.
-      if (query.view === 'summary' || query.detailKind) delete (item as { allOffers?: readonly CatalogOffer[] }).allOffers;
       const detail = item.detail?.kind === 'shops' ? { ...item.detail, entries: item.detail.entries.map(entry => ({ ...entry, offer: withRating(entry.offer) })) }
         : item.detail ? { ...item.detail, entries: item.detail.entries.map(withRating) } : undefined;
-      return { ...item, offers: item.offers.map(withRating), ...(item.allOffers ? { allOffers: item.allOffers.map(withRating) } : {}),
-        ...(detail ? { detail } : {}), name: standardProductDisplayName(item.name), standardProductId: item.id, minPrice: item.offers[0]!.price,
-        ...(query.view === 'summary' || query.detailKind ? { offersTruncated: true } : {}) };
+      return { ...item, offers: item.offers.map(withRating),
+        ...(detail ? { detail } : {}), name: standardProductDisplayName(item.name), standardProductId: item.id, minPrice: item.offers[0]!.price };
     });
     const last = visible.at(-1);
-    return { items, nextExpiryAt: Number.isFinite(nextExpiry) ? new Date(nextExpiry).toISOString() : null, platformFacets: groupCatalogPlatforms(platformFacets), total: Number(total), offerTotal: Number(result.rows[0]!.offer_total),
+    return { items, nextExpiryAt: Number.isFinite(nextExpiry) ? new Date(nextExpiry).toISOString() : null, platformFacets: groupCatalogPlatforms(platformFacets), total: Number(total), offerTotal: Number(result.offer_total),
       appliedQuery: { text: query.search ?? '', tags: query.tags, ...(query.warrantyDaysMin ? { warrantyDaysMin: query.warrantyDaysMin } : {}) },
       ...(hasNext && last ? { nextCursor: encodeCatalogCursor({ sortOrder: BigInt(last.sortOrder), standardProductId: BigInt(last.id),
         ...(query.sort && query.sort !== 'default' ? { sort: query.sort, sortValue: last.sortValue } : { catalogRank: last.catalogRank }) }) } : {}) };
   }
 
   async facets(input: CatalogFacetsQuery): Promise<CatalogFacets> {
-    const result = await this.runRead(database => buildCatalogQuery({ ...input, view: 'summary', limit: 1 }, this.policy, true).execute(database));
+    const result = await this.runRead(database => buildCatalogQuery({ ...input, limit: 1 }, this.policy, true).execute(database));
     return { tagFacets: result.rows[0]!.tag_facets, nextExpiryAt: result.rows[0]!.next_expiry_at };
   }
 
   async explainFacets(input: CatalogFacetsQuery): Promise<unknown> {
     const result = await this.runRead(database => sql<{ 'QUERY PLAN': unknown }>`
-      explain (analyze, buffers, format json) ${buildCatalogQuery({ ...input, view: 'summary', limit: 1 }, this.policy, true)}
+      explain (analyze, buffers, format json) ${buildCatalogQuery({ ...input, limit: 1 }, this.policy, true)}
     `.execute(database));
     return result.rows[0]?.['QUERY PLAN'] ?? [];
   }
@@ -275,28 +270,56 @@ export class CatalogRepository {
     return result.rows[0]?.['QUERY PLAN'] ?? [];
   }
 
-  private async runRead<T>(run: (database: Kysely<DatabaseSchema>) => Promise<T>): Promise<T> {
-    if (!this.database.isTransaction) return run(this.database);
+  private async readCatalogRows(input: CatalogQuery, consume: (row: CatalogReadRow) => void): Promise<void> {
+    const read = async (database: Kysely<DatabaseSchema>) => {
+      const cursor = sql.id(`catalog_${randomUUID().replaceAll('-', '')}`);
+      // A server cursor keeps one statement snapshot and bounds raw review bodies in Node.
+      await sql`declare ${cursor} no scroll cursor for ${buildCatalogQuery(input, this.policy)}`.execute(database);
+      let failed = false;
+      try {
+        for (;;) {
+          const batch = await sql<CatalogReadRow>`fetch forward 64 from ${cursor}`.execute(database);
+          for (const row of batch.rows) consume(row);
+          if (batch.rows.length < 64) break;
+        }
+      } catch (error) { failed = true; throw error; }
+      finally {
+        const close = sql`close ${cursor}`.execute(database);
+        if (failed) await close.catch(() => {});
+        else await close;
+      }
+    };
+    if (this.database.isTransaction) await this.runRead(read);
+    else await this.database.transaction().execute(tx => this.runRead(read, tx));
+  }
+
+  private async runRead<T>(run: (database: Kysely<DatabaseSchema>) => Promise<T>, database = this.database): Promise<T> {
+    if (!database.isTransaction) return run(database);
     // Preserve callers that explicitly enable JIT inside their transaction.
-    const setting = await sql<{ jit: string }>`show jit`.execute(this.database);
-    await sql`set local jit = off`.execute(this.database);
-    const result = await run(this.database);
-    await sql`select set_config('jit', ${setting.rows[0]!.jit}, true)`.execute(this.database);
-    return result;
+    const setting = await sql<{ jit: string }>`show jit`.execute(database);
+    await sql`set local jit = off`.execute(database);
+    let failed = false;
+    try { return await run(database); }
+    catch (error) { failed = true; throw error; }
+    finally {
+      const restore = sql`select set_config('jit', ${setting.rows[0]!.jit}, true)`.execute(database);
+      if (failed) await restore.catch(() => {});
+      else await restore;
+    }
   }
 }
 
 type FacetResult = { tag_facets: CatalogFacets['tagFacets']; next_expiry_at: string | null };
 function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly: true): RawBuilder<FacetResult>;
-function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly?: false): RawBuilder<CatalogResult>;
-function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly = false): RawBuilder<CatalogResult> | RawBuilder<FacetResult> {
+function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly?: false): RawBuilder<CatalogReadRow>;
+function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly = false): RawBuilder<CatalogReadRow> | RawBuilder<FacetResult> {
   const now = new Date(policy.now());
   const freshAfter = new Date(now.getTime() - policy.ttlMs);
   const pricesOnly = !optionsOnly && !input.search?.trim();
   const verified = sql`r.settlement_price is not null and r.settlement_price >= 0 and r.settlement_price < 'Infinity'::numeric
     and r.settlement_verified_at is not null and nullif(btrim(r.settlement_payment_method), '') is not null`;
   const price = pricesOnly ? sql`r.price` : sql`case when ${verified} then r.settlement_price else r.listed_price end`;
-  const payloadFields = sql`r.product_name, r.product_url, r.product_spec, sh.shop_name, sh.independent_shop, sh.shop_rating, r.tags, r.listed_price, r.currency,
+  const payloadFields = sql`r.product_name, r.product_url, r.product_spec, sh.shop_name, sh.independent_shop, r.tags, r.listed_price, r.currency,
     case when not (${verified}) then 'estimated'
       when least(r.captured_at, r.settlement_verified_at) <= ${freshAfter}::timestamptz then 'expired' else 'verified' end as price_status,
     case when ${verified} then r.settlement_verified_at end as price_verified_at,
@@ -319,11 +342,9 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
   if (input.priceMax !== undefined) conditions.push(sql`${price} <= ${input.priceMax}::numeric`);
   const currency = input.currency ?? 'CNY';
   if (currency) conditions.push(sql`r.currency = ${currency}`);
-  const summary = input.view === 'summary';
-  const preview = summary || input.detailKind !== undefined;
   // Normalized detail requests target one standard product; cap rows before JSON construction.
   const detailPage = input.detailPage ?? 0;
-  const detailPageSize = input.detailPageSize ?? 4;
+  const detailPageSize = Math.min(Math.max(Math.trunc(input.detailPageSize ?? 4), 1), 50);
   const detailOrder = sql`(d.price is null), ${input.offerSort === 'updated' ? sql`d.captured_at desc, d.price`
     : input.offerSort === 'priceDesc' ? sql`d.price desc nulls last` : sql`d.price nulls last`},
     case when d.price is null then d.captured_at end desc, d.shop_id, d.product_id`;
@@ -382,14 +403,14 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
     ), visible_page as materialized (
       select * from page
       order by sort_value, ${sort === 'default' ? sql`catalog_rank,` : sql``} sort_order, standard_product_id limit ${limit}
-    )${preview && input.detailKind !== 'shops' ? sql`, preview_shop_totals as materialized (
+    )${input.detailKind !== 'shops' ? sql`, preview_shop_totals as materialized (
       select * from (
         select s.*, row_number() over (partition by s.standard_product_id order by s.min_price, s.shop_id) as shop_rank
         from shop_totals s join visible_page using (standard_product_id)
       ) ranked where shop_rank <= 4
     )` : sql``}, shop_winner_ids as (
       select min(e.product_id) as product_id${input.detailKind === 'shops' ? sql`, max(s.product_count)::int as shop_product_count` : sql``}
-      from filtered_skus e join ${sql.table(preview && input.detailKind !== 'shops' ? 'preview_shop_totals' : 'shop_totals')} s using (standard_product_id, shop_id)
+      from filtered_skus e join ${sql.table(input.detailKind !== 'shops' ? 'preview_shop_totals' : 'shop_totals')} s using (standard_product_id, shop_id)
       join visible_page using (standard_product_id) where e.price = s.min_price
       group by e.standard_product_id, e.shop_id
     ), shop_winners as (
@@ -410,8 +431,6 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
       from catalog_groups sp
     ), catalog_shops as materialized (
       select sh.id as shop_id, sh.name as shop_name,
-        jsonb_build_object('state', sh.shop_rating, 'url', sh.url, 'protocol', sh.protocol,
-          'platform', sh.platform, 'manifest', sh.rating_manifest) as shop_rating,
         -- Marketplace protocols are the lower-risk baseline; every other or unknown protocol is a self-built storefront with a higher-risk marker.
         (sh.protocol is distinct from 'liandong' and sh.protocol is distinct from '16688') as independent_shop,
         ${words.length || input.shopQuery ? sql`lower(normalize(sh.name, NFKC))` : sql`null::text`} as search_text
@@ -455,13 +474,12 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
         (select to_jsonb(min(captured_at) + ${policy.ttlMs} * interval '1 millisecond') #>> '{}' from scoped_skus) as next_expiry_at
       from facet_options f left join facet_tags t using (name, value)`;
   }
-  const priceDeadlines = !preview ? sql`select verification_at from filtered_skus join visible_page using (standard_product_id)`
-    : input.detailKind ? sql`select verification_at from preview_skus union all select verification_at from detail_skus`
+  const priceDeadlines = input.detailKind ? sql`select verification_at from preview_skus union all select verification_at from detail_skus`
       : sql`select verification_at from preview_skus`;
   const navigationIds = requestedPlatform || tagConditions.length
     ? sql`select distinct standard_product_id from eligible_skus`
     : sql`select standard_product_id from product_totals`;
-  return sql<CatalogResult>`with ${eligibleCte}, ${tagConditions.length ? sql`purchase_matches as materialized (
+  return sql<CatalogReadRow>`with ${eligibleCte}, ${tagConditions.length ? sql`purchase_matches as materialized (
       select r.product_id from catalog_read_offers r where ${filters}
     ),` : sql``} filtered_skus as ${requestedPlatform || tagConditions.length ? sql`materialized` : sql`not materialized`} (
       select e.* from eligible_skus e
@@ -471,7 +489,7 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
       select w.*, ${payloadFields}
       from ranked_shops w join catalog_read_offers r using (product_id)
       join catalog_shops sh on sh.shop_id = r.shop_id
-      ${preview ? sql`where preview_rank <= 4` : sql``}
+      where preview_rank <= 4
     )${input.detailKind ? sql`, detail_skus as materialized (
       select * from ${sql.table(input.detailKind === 'shops' ? 'ranked_shops' : 'filtered_skus')} d
       order by ${detailOrder} limit ${detailPageSize} offset ${detailPage * detailPageSize}
@@ -484,7 +502,7 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
         'key', d.shop_id::text, 'name', d.shop_name, 'count', d.shop_product_count, 'offer',` : sql``}
         jsonb_build_object(
           'shopId', d.shop_id::text, 'productId', d.product_id::text, 'name', d.product_name,
-          'shop', d.shop_name, '_shopRating', d.shop_rating, 'independentShop', d.independent_shop, 'price', ${offerPriceText('d')}, 'currency', d.currency,
+          'shop', d.shop_name, 'independentShop', d.independent_shop, 'price', ${offerPriceText('d')}, 'currency', d.currency,
           'listedPrice', d.listed_price::text, 'priceStatus', d.price_status, 'priceVerifiedAt', d.price_verified_at,
           'priceExpiresAt', d.price_expires_at, 'inventoryExpiresAt', d.inventory_expires_at, 'paymentMethod', d.payment_method, 'settlementQuantity', d.settlement_quantity,
           'productUrl', d.product_url, 'spec', d.product_spec, 'tags', d.tags,
@@ -496,34 +514,25 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
       select page.catalog_rank, page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.sort_value,
         page.product_count, page.shop_count, page.latest_captured_at, jsonb_agg(jsonb_build_object(
         'shopId', w.shop_id::text, 'productId', w.product_id::text, 'name', w.product_name,
-        'shop', w.shop_name, '_shopRating', w.shop_rating, 'independentShop', w.independent_shop, 'price', ${offerPriceText('w')}, 'currency', w.currency,
+         'shop', w.shop_name, 'independentShop', w.independent_shop, 'price', ${offerPriceText('w')}, 'currency', w.currency,
         'listedPrice', w.listed_price::text, 'priceStatus', w.price_status, 'priceVerifiedAt', w.price_verified_at,
         'priceExpiresAt', w.price_expires_at, 'inventoryExpiresAt', w.inventory_expires_at, 'paymentMethod', w.payment_method, 'settlementQuantity', w.settlement_quantity,
         'productUrl', w.product_url, 'spec', w.product_spec,
         'tags', w.tags,
         'capturedAt', w.captured_at, 'stale', false, 'inStock', true
-      ) order by w.price nulls last, case when w.price is null then w.captured_at end desc, w.shop_id, w.product_id) as offers,
-      ${preview ? sql`null::jsonb` : sql`(select jsonb_agg(jsonb_build_object(
-        'shopId', allw.shop_id::text, 'productId', allw.product_id::text, 'name', allw.product_name,
-        'shop', allw.shop_name, '_shopRating', allw.shop_rating, 'independentShop', allw.independent_shop, 'price', ${offerPriceText('allw')}, 'currency', allw.currency,
-        'listedPrice', allw.listed_price::text, 'priceStatus', allw.price_status, 'priceVerifiedAt', allw.price_verified_at,
-        'priceExpiresAt', allw.price_expires_at, 'inventoryExpiresAt', allw.inventory_expires_at, 'paymentMethod', allw.payment_method, 'settlementQuantity', allw.settlement_quantity,
-        'productUrl', allw.product_url, 'spec', allw.product_spec,
-        'tags', allw.tags,
-        'capturedAt', allw.captured_at, 'stale', false, 'inStock', true
-      ) order by allw.price nulls last, case when allw.price is null then allw.captured_at end desc, allw.shop_id, allw.product_id)
-       from (select f.*, ${payloadFields} from filtered_skus f join catalog_read_offers r using (product_id)
-         join catalog_shops sh on sh.shop_id = r.shop_id
-         where f.standard_product_id = page.standard_product_id) allw)`} as all_offers
+       ) order by w.price nulls last, case when w.price is null then w.captured_at end desc, w.shop_id, w.product_id) as offers
       from visible_page page join preview_skus w using (standard_product_id)
       group by page.catalog_rank, page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.sort_value,
         page.product_count, page.shop_count, page.latest_captured_at
-    )
+    ), returned_shop_ids as materialized (
+      select distinct shop_id from preview_skus
+      ${input.detailKind ? sql`union select shop_id from detail_skus` : sql``}
+    ), catalog_page as (
     select
       (select count(*) > ${limit} from page) as has_next,
       (select coalesce(jsonb_agg(jsonb_build_object(
         'id', standard_product_id::text, 'name', standard_product_name, 'platform', platform,
-        'catalogRank', catalog_rank, 'sortOrder', sort_order::text, 'sortValue', sort_value::text, 'offers', offers, 'allOffers', all_offers,
+        'catalogRank', catalog_rank, 'sortOrder', sort_order::text, 'sortValue', sort_value::text, 'offers', offers,
         'shopCount', shop_count, 'productCount', product_count, 'latestCapturedAt', latest_captured_at
       )${input.detailKind ? sql` || jsonb_build_object('detail', jsonb_build_object(
         'kind', ${input.detailKind}::text, 'page', ${detailPage}::bigint, 'pageSize', ${detailPageSize}::int,
@@ -535,23 +544,34 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
          join catalog_standards sp on sp.id = e.standard_product_id) platforms) as platform_facets,
       (select count(*)::int from product_totals) as total,
       (select coalesce(sum(product_count), 0)::int from product_totals) as offer_total,
-      -- Read all shop reviews with the manifest in the same statement snapshot.
-      (select coalesce(jsonb_agg(jsonb_build_object(
-        'shop_id', p.shop_id::text, 'external_id', p.external_id, 'content_version', p.content_version::text,
-        'content_fingerprint', p.content_fingerprint, 'source_data', jsonb_build_object('ratingText', p.source_data->'ratingText'),
-        'text_review', p.text_review)), '[]'::jsonb)
-       from products p join shops s on s.id = p.shop_id
-       where s.rating_manifest is not null and p.text_review is not null and p.shop_id in (
-         select w.shop_id from preview_skus w join visible_page using (standard_product_id)
-         ${input.detailKind ? sql`union select shop_id from detail_skus` : sql``}
-       )) as text_reviews,
       -- Prices stay comparable after verification expires; only matching price
       -- labels and the inventory behind results/navigation can change this response.
       to_jsonb(least(
         (select min(captured_at) from eligible_skus),
         (select min(verification_at) from (${priceDeadlines}) deadlines where verification_at > ${freshAfter}::timestamptz)
       ) + ${policy.ttlMs} * interval '1 millisecond'
-      ) #>> '{}' as next_expiry_at
+       ) #>> '{}' as next_expiry_at
+    ), read_rows as (
+      select 0 as kind, null::bigint as shop_id, null::bigint as product_id
+      union all
+      select 1, shop_id, null::bigint from returned_shop_ids
+      union all
+      select 2, p.shop_id, p.id
+        from products p join returned_shop_ids r on r.shop_id = p.shop_id join shops s on s.id = p.shop_id
+        where s.rating_manifest is not null and p.text_review is not null
+    )
+    -- OFFSET 0 keeps payload construction above the sort of narrow row identities.
+    select r.kind, case r.kind
+      when 0 then (select to_jsonb(p) from catalog_page p)
+      when 1 then (select jsonb_build_object('shop_id', s.id::text, 'rating', jsonb_build_object(
+        'state', s.shop_rating, 'url', s.url, 'protocol', s.protocol, 'platform', s.platform, 'manifest', s.rating_manifest))
+        from shops s where s.id = r.shop_id)
+      else (select jsonb_build_object(
+        'shop_id', p.shop_id::text, 'external_id', p.external_id, 'content_version', p.content_version::text,
+        'content_fingerprint', p.content_fingerprint, 'source_data', jsonb_build_object('ratingText', p.source_data->'ratingText'),
+        'text_review', p.text_review) from products p where p.id = r.product_id)
+      end as payload
+    from (select * from read_rows order by kind offset 0) r
   `;
 }
 

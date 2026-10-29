@@ -893,7 +893,6 @@ describe('complete shop snapshot synchronization', () => {
     for (const refresh of refreshes.slice(0, 4)) await refresh(0);
     const available = await service.getCatalog(query);
     assert.deepEqual(available.items[0]?.offers.map(offer => offer.productId), productIds.slice(4));
-    assert.deepEqual(available.items[0]?.allOffers.map(offer => offer.productId), productIds.slice(4));
     assert.equal(available.items[0]?.minPrice, '5.00');
     assert.equal(available.items[0]?.shopCount, 2);
     assert.equal(available.items[0]?.productCount, 2);

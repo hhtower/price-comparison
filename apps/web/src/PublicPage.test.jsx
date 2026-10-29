@@ -274,7 +274,7 @@ test('keeps desktop draft choices visible after changing the search and refreshi
 
 test('dismisses quote details before the open desktop filter panel on Escape', async () => {
   const user = userEvent.setup();
-  const item = { id: '42', name: '报价测试商品', productCount: 2, offers: [], offersTruncated: true };
+  const item = { id: '42', name: '报价测试商品', productCount: 2, offers: [] };
   vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ items: [item], tagFacets: [{ name: 'access', value: 'dedicated' }] })));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /报价测试商品/ });
@@ -352,16 +352,18 @@ test('keeps raw merchant values out of purchase filters and shows readable condi
   expect(await screen.findByLabelText('已选筛选条件')).toHaveTextContent('独享');
 });
 
-test('loads full quotes with the current purchase filters when a summary card is opened', async () => {
+test('loads paginated quotes with the current purchase filters when a preview card is opened', async () => {
   const user = userEvent.setup();
   const calls = [];
   const quote = { productId: '1', shopId: '1', name: '首条报价', shop: '商铺', price: '10', productUrl: 'https://example.com/1', independentShop: true, tags: [] };
-  const item = { id: '42', name: 'ChatGPT Plus', shopCount: 1, productCount: 2, offers: [quote], offersTruncated: true };
+  const item = { id: '42', name: 'ChatGPT Plus', shopCount: 1, productCount: 2, offers: [quote] };
   vi.stubGlobal('fetch', vi.fn(async (input, init) => {
     const url = new URL(input, 'http://localhost');
     if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
     calls.push({ url, signal: init?.signal });
-    return jsonResponse({ total: 1, items: [url.searchParams.has('standardProductId') ? { ...item, allOffers: [quote, { ...quote, productId: '2', name: '按需加载的报价' }], offersTruncated: false } : item], tagFacets: [] });
+    return jsonResponse({ total: 1, items: [url.searchParams.has('detailKind') ? { ...item,
+      detail: { kind: 'offers', page: Number(url.searchParams.get('detailPage')), pageSize: Number(url.searchParams.get('detailPageSize')),
+        total: 2, entries: [quote, { ...quote, productId: '2', name: '按需加载的报价' }] } } : item], tagFacets: [] });
   }));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /ChatGPT Plus/ });
@@ -377,7 +379,7 @@ test('loads full quotes with the current purchase filters when a summary card is
   await user.click(badge);
   expect(badge).toHaveTextContent(/^自建站$/);
   expect(calls.filter(call => call.url.pathname === '/api/catalog')).toHaveLength(1);
-  expect(calls.find(call => call.url.pathname === '/api/catalog').url.searchParams.get('view')).toBe('summary');
+  expect(calls.find(call => call.url.pathname === '/api/catalog').url.searchParams.has('view')).toBe(false);
   await user.type(screen.getByRole('textbox', { name: '搜索商品' }), 'Plus 已接码');
   await waitFor(() => expect(calls.at(-1).url.searchParams.get('q')).toBe('Plus 已接码'));
   await user.click(await screen.findByRole('button', { name: '2 条报价' }));
@@ -389,7 +391,10 @@ test('loads full quotes with the current purchase filters when a summary card is
   expect(within(detail).getAllByRole('button', { name: '自建站' })).toHaveLength(2);
   expect(detail).toBeInTheDocument();
   expect(calls.at(-1).url.searchParams.get('standardProductId')).toBe('42');
-  expect(calls.at(-1).url.searchParams.get('view')).toBe('full');
+  expect(calls.at(-1).url.searchParams.has('view')).toBe(false);
+  expect(calls.at(-1).url.searchParams.get('detailKind')).toBe('offers');
+  expect(calls.at(-1).url.searchParams.get('detailPage')).toBe('0');
+  expect(calls.at(-1).url.searchParams.get('detailPageSize')).toBe('12');
   expect(calls.at(-1).url.searchParams.get('q')).toBe('plus');
   expect(calls.at(-1).url.searchParams.getAll('tag')).toContain(JSON.stringify({ name: 'sms_verification', value: 'verified' }));
   expect(calls.at(-1).url.searchParams.get('searchMode')).toBe('literal');
@@ -415,7 +420,7 @@ test('shows common durations first and keeps selected options visible after coll
 
 test('retries failed quote details and ignores a response arriving after the dialog closes', async () => {
   const user = userEvent.setup();
-  const item = { id: '42', name: 'ChatGPT Plus', productCount: 2, offers: [], offersTruncated: true };
+  const item = { id: '42', name: 'ChatGPT Plus', productCount: 2, offers: [] };
   let attempts = 0;
   let resolveDetail;
   let detailSignal;
@@ -435,7 +440,7 @@ test('retries failed quote details and ignores a response arriving after the dia
   expect(await screen.findByRole('status')).toHaveTextContent('正在加载报价');
   await user.click(screen.getByRole('button', { name: '关闭报价详情' }));
   expect(detailSignal.aborted).toBe(true);
-  await act(async () => resolveDetail(jsonResponse({ items: [{ ...item, allOffers: [] }] })));
+  await act(async () => resolveDetail(jsonResponse({ items: [{ ...item, detail: { kind: 'offers', page: 0, pageSize: 12, total: 0, entries: [] } }] })));
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   expect(screen.getByRole('heading', { name: /ChatGPT Plus/ })).toBeInTheDocument();
 });
@@ -448,7 +453,7 @@ describe('PublicPage', () => {
     vi.stubGlobal('fetch', vi.fn(async input => {
       if (String(input) === '/api/analytics/collect') return new Response(null, { status: 204 });
     calls.push(new URL(input, 'http://localhost'));
-      return jsonResponse({ total: 1, offerTotal: 1, platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 1 }, { name: 'warranty', value: 'covered', priority: 1 }], items: [{ id: 'plus', name: 'ChatGPT Plus', platform: 'openai', offers: [quote], allOffers: [quote] }] });
+      return jsonResponse({ total: 1, offerTotal: 1, platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 1 }, { name: 'warranty', value: 'covered', priority: 1 }], items: [{ id: 'plus', name: 'ChatGPT Plus', platform: 'openai', offers: [quote] }] });
     }));
     render(<PublicPage />);
     await screen.findByRole('heading', { name: /ChatGPT Plus/ });
@@ -474,7 +479,7 @@ describe('PublicPage', () => {
       const url = new URL(input, 'http://localhost');
     if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
       calls.push(url);
-      return jsonResponse({ total: 1, offerTotal: 1, platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 8 }, { name: 'sms_verification', value: 'unverified', priority: 2 }, { name: 'warranty', value: 'covered', priority: 4 }], items: [{ id: 'plus', name: 'ChatGPT Plus', platform: 'openai', offers: [quote], allOffers: [quote] }], appliedQuery: { text: url.searchParams.get('q') || '', tags: [] } });
+      return jsonResponse({ total: 1, offerTotal: 1, platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 8 }, { name: 'sms_verification', value: 'unverified', priority: 2 }, { name: 'warranty', value: 'covered', priority: 4 }], items: [{ id: 'plus', name: 'ChatGPT Plus', platform: 'openai', offers: [quote] }], appliedQuery: { text: url.searchParams.get('q') || '', tags: [] } });
     }));
     render(<PublicPage />);
     await screen.findByRole('heading', { name: /ChatGPT Plus/ });
@@ -579,6 +584,8 @@ describe('PublicPage', () => {
           id: 'standard:1',
           name: '洗发水',
           platform: '个护清洁',
+          shopCount: 6,
+          productCount: 6,
           offers: [
             { shop: '低价店', price: 9.9, productUrl: 'https://example.com/low', capturedAt: '2026-09-07 08:00:00', inStock: true },
             { shop: '第二店', price: 12, productUrl: 'https://example.com/2', capturedAt: '2026-09-07 08:01:00', inStock: true },
@@ -594,10 +601,20 @@ describe('PublicPage', () => {
     };
     catalog.items[0].offers = catalog.items[0].offers.filter(offer => offer.inStock);
     catalog.items[0].offers.forEach((offer, index) => Object.assign(offer, { productId: index + 1, shopId: index + 1, name: `报价 ${index + 1}`, tags: [], priceStatus: 'verified', priceExpiresAt: '2099-01-01T00:00:00Z' }));
+    const detailOffers = catalog.items[0].offers;
+    catalog.items[0].offers = detailOffers.slice(0, 4);
     vi.stubGlobal('fetch', vi.fn(async (input, init) => {
       const url = new URL(input, 'http://localhost:3000');
       calls.push({ path: url.pathname + url.search, init, body: init?.body ? JSON.parse(init.body) : null });
-      if (url.pathname === '/api/catalog') return jsonResponse(catalog);
+      if (url.pathname === '/api/catalog') {
+        if (!url.searchParams.has('detailKind')) return jsonResponse(catalog);
+        const kind = url.searchParams.get('detailKind');
+        const page = Number(url.searchParams.get('detailPage'));
+        const pageSize = Number(url.searchParams.get('detailPageSize'));
+        const entries = (kind === 'shops'
+          ? detailOffers.map(offer => ({ key: String(offer.shopId), name: offer.shop, count: 1, offer })) : detailOffers).slice(page * pageSize, (page + 1) * pageSize);
+        return jsonResponse({ ...catalog, items: [{ ...catalog.items[0], detail: { kind, page, pageSize, total: 6, entries } }] });
+      }
       if (url.pathname === '/api/shop-submissions') return jsonResponse({ id: 1, status: 'pending' }, 201);
       return jsonResponse({ error: 'Not found' }, 404);
     }));
@@ -621,13 +638,15 @@ describe('PublicPage', () => {
     await user.click(screen.getByRole('button', { name: '6 条报价' }));
     const quotes = within(screen.getByRole('dialog', { name: '洗发水 · 报价' }));
     expect(quotes.queryByRole('combobox', { name: '每页数量' })).not.toBeInTheDocument();
-    expect(quotes.getByText('已显示全部 6 条报价')).toBeInTheDocument();
+    expect(await quotes.findByText('已显示全部 6 条报价')).toBeInTheDocument();
     expect(quotes.getAllByRole('link', { name: '去商家' })).toHaveLength(6);
     expect(quotes.getByText(/第六店/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '关闭报价详情' }));
 
     await user.click(screen.getByRole('button', { name: '6 家商铺' }));
-    expect(screen.getByRole('dialog', { name: '洗发水 · 商铺' })).toBeInTheDocument();
+    const shops = within(screen.getByRole('dialog', { name: '洗发水 · 商铺' }));
+    expect(await shops.findByText('已显示全部 6 家商铺')).toBeInTheDocument();
+    expect(shops.getByText('低价店')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '关闭商铺详情' }));
 
     await user.click(screen.getByRole('button', { name: '提交商铺' }));
@@ -669,7 +688,6 @@ test('shows one winning quote per shop on the product card', async () => {
     items: [{
       id: 'sp-1', name: 'ChatGPT Free', platform: 'openai', shopCount: 2, productCount: 5,
       offers: [quote('a1', 'shop-a', '商铺 A', 1), quote('b1', 'shop-b', '商铺 B', 2)],
-      allOffers: [quote('a1', 'shop-a', '商铺 A', 1), quote('a2', 'shop-a', '商铺 A', 1.1), quote('a3', 'shop-a', '商铺 A', 1.2), quote('a4', 'shop-a', '商铺 A', 1.3), quote('b1', 'shop-b', '商铺 B', 2)],
     }],
   };
   vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(catalog)));
@@ -919,12 +937,12 @@ test('requests globally sorted pages without downloading the full catalog', asyn
   expect(calls.filter(url => url.pathname === '/api/catalog')).toHaveLength(2);
 });
 
-test('sorts recent products by the newest offer, not the cheapest offer', async () => {
+test('requests newest-offer sorting and preserves the server product order', async () => {
   const user = userEvent.setup();
   const offer = (id, price, capturedAt) => ({ productId: id, shopId: id, shop: `商铺${id}`, name: `报价${id}`, price, currency: 'CNY', productUrl: `https://example.com/${id}`, capturedAt, tags: [] });
   const items = [
-    { id: 'old', name: '旧商品', platform: 'web', offers: [offer('old-low', 1, '2026-09-01T08:00:00Z')], allOffers: [offer('old-low', 1, '2026-09-01T08:00:00Z'), offer('old-new', 20, '2026-09-02T08:00:00Z')] },
-    { id: 'recent', name: '新商品', platform: 'web', offers: [offer('recent-low', 2, '2026-09-01T08:00:00Z')], allOffers: [offer('recent-low', 2, '2026-09-01T08:00:00Z'), offer('recent-new', 30, '2026-09-10T08:00:00Z')] },
+    { id: 'old', name: '旧商品', platform: 'web', offers: [offer('old-low', 1, '2026-09-01T08:00:00Z')] },
+    { id: 'recent', name: '新商品', platform: 'web', offers: [offer('recent-low', 2, '2026-09-01T08:00:00Z')] },
   ];
   const calls = [];
   vi.stubGlobal('fetch', vi.fn(async input => {

@@ -19,7 +19,7 @@ function mockCatalog() {
     currency: 'CNY', inStock: true, priceStatus: 'verified', capturedAt: '2026-10-24T00:00:00Z',
     priceExpiresAt: '2099-01-01T00:00:00Z', tags: [{ name: 'delivery', value: 'top_up' }, { name: 'warranty_days', value: '30' }] };
   const item = { id: '1', name: 'ChatGPT Plus', platform: 'openai', shopCount: 1, productCount: 1,
-    offers: [offer], offersTruncated: true };
+    offers: [offer] };
   vi.stubGlobal('fetch', vi.fn(async input => {
     const url = new URL(input, 'http://localhost');
     if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });

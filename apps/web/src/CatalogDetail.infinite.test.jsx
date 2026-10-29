@@ -17,8 +17,8 @@ const quote = id => ({ productId: String(id), shopId: String(id), shop: '商铺'
       : id === 5 ? { deposit: null, volume: null, text: { reviewed: 2, total: 4, disclosureContribution: '11.50', consistencyContribution: '1.00' } } : null,
   shopScoreExpiresAt: id === 3 ? '2000-01-01T00:00:00Z' : null,
   price: id + 10, currency: 'CNY', priceStatus: 'verified', priceExpiresAt: '2099-01-01T00:00:00Z', tags: [] });
-const item = { id: '42', name: '商品', platform: 'openai', productCount: 25, shopCount: 25, offersTruncated: true, offers: [quote(0)] };
-function mockApi({ failNext = false } = {}) {
+const item = { id: '42', name: '商品', platform: 'openai', productCount: 25, shopCount: 25, offers: [quote(0)] };
+function mockApi({ failNext = false, empty = false } = {}) {
   const calls = [];
   vi.stubGlobal('fetch', vi.fn(async (input, options) => {
     const url = new URL(input, 'http://localhost');
@@ -26,11 +26,11 @@ function mockApi({ failNext = false } = {}) {
     calls.push({ url, signal: options?.signal });
     const page = Number(url.searchParams.get('detailPage'));
     if (failNext && page === 1) { failNext = false; return new Response(null, { status: 503 }); }
-    const total = url.searchParams.get('q') || url.searchParams.get('shopId') ? 2 : 25;
+    const total = empty ? 0 : url.searchParams.get('q') || url.searchParams.get('shopId') ? 2 : 25;
     const size = Number(url.searchParams.get('detailPageSize'));
     const offers = Array.from({ length: Math.max(0, Math.min(size, total - page * size)) }, (_, index) => quote(page * size + index));
     const entries = url.searchParams.get('detailKind') === 'shops' ? offers.map(offer => ({ key: offer.shopId, name: offer.shop, count: 2, offer })) : offers;
-    return Response.json({ items: [{ ...item, detail: { total, entries } }] });
+    return Response.json({ items: [{ ...item, detail: { kind: url.searchParams.get('detailKind'), page, pageSize: size, total, entries } }] });
   }));
   return calls;
 }
@@ -42,6 +42,18 @@ async function open(kind = 'offers') {
   return modal;
 }
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+test.each(['offers', 'shops'])('empty paginated %s show the server count without preview entries', async kind => {
+  const calls = mockApi({ empty: true });
+  render(<PublicPage />);
+  fireEvent.click(await screen.findByRole('button', { name: kind === 'shops' ? '25 家商铺' : '25 条报价' }));
+  const modal = screen.getByRole('dialog', { name: /商品/ });
+  await within(modal).findByText(kind === 'shops' ? '没有匹配的商铺' : '没有匹配的报价');
+  expect(within(modal).getByText(kind === 'shops' ? '0 家商铺' : '0 条报价')).toBeInTheDocument();
+  expect(within(modal).queryByText('商铺0')).not.toBeInTheDocument();
+  expect(within(modal).queryByText('报价0')).not.toBeInTheDocument();
+  expect(calls).toHaveLength(1);
+});
 
 test.each(['offers', 'shops'])('%s label shop scores and omit absent scores without a placeholder', async kind => {
   mockApi(); const modal = await open(kind);
@@ -111,6 +123,11 @@ test.each(['offers', 'shops'])('modal %s append batches inside its own scroll co
   await within(modal).findByText(kind === 'shops' ? '已显示全部 25 家商铺' : '已显示全部 25 条报价');
   await act(async () => virtual.endReached());
   expect(calls.map(({ url }) => url.searchParams.get('detailPage'))).toEqual(['0', '1', '2']);
+  for (const { url } of calls) {
+    expect(url.searchParams.get('detailKind')).toBe(kind);
+    expect(url.searchParams.get('detailPageSize')).toBe('12');
+    expect(url.searchParams.has('view')).toBe(false);
+  }
 });
 
 test('failed modal batches preserve loaded quotes and retry the same batch', async () => {

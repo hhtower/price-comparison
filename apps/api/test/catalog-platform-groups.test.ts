@@ -29,13 +29,16 @@ test('recognizes IP product identities without matching accounts, scripts or API
   for (const product of ['chatgpt', 'script', 'subscription', 'stripe', 'cliproxy', 'reverse_proxy']) assert.doesNotMatch(product, pattern);
 });
 
-test('catalog lists, summaries and facets filter the IP group using canonical product identity', async () => {
+test('catalog lists, paginated details and facets filter the IP group using canonical product identity', async () => {
   const queries: CompiledQuery[] = [];
   class Driver extends DummyDriver {
     async acquireConnection(): Promise<any> {
       return { executeQuery: async (query: CompiledQuery) => {
         queries.push(query);
-        return { rows: [{ entries: [], text_reviews: [], platform_facets: [], total: 0, offer_total: 0, tag_facets: [], next_expiry_at: null, has_next: false }] };
+        const page = { entries: [], platform_facets: [], total: 0, offer_total: 0, next_expiry_at: null, has_next: false };
+        return { rows: query.sql.startsWith('show jit') ? [{ jit: 'off' }]
+          : query.sql.startsWith('fetch ') ? [{ kind: 0, payload: page }]
+          : query.sql.startsWith('with ') ? [{ tag_facets: [], next_expiry_at: null }] : [] };
       } };
     }
   }
@@ -47,8 +50,8 @@ test('catalog lists, summaries and facets filter the IP group using canonical pr
   } });
   try {
     const repository = new CatalogRepository(db);
-    await repository.search({ platform: 'ip', tags: [] });
-    await repository.search({ platform: 'ip', tags: [], view: 'summary' });
+    await repository.search({ platform: 'ip', tags: [], limit: 20 });
+    await repository.search({ platform: 'ip', standardProductId: '42', detailKind: 'offers', tags: [], limit: 20 });
     await repository.facets({ platform: 'ip', tags: [] });
     const reads = queries.filter(query => query.sql.includes('as platform_group'));
     assert.equal(reads.length, 3);

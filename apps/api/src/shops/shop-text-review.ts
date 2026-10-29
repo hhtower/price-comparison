@@ -58,8 +58,8 @@ Consistency: true means confirmed conflicting claims for the SAME sold object an
 C1: product/plan/delivery identity. C2: delivery form/channel. C3: use term/start, separate from warranty. C4: features/use limits including recharge region. C5: buyer eligibility/actions. C6: nonmonetary aftersales events, handling and term; never actual fulfillment truth.
 Unknown contributes no support; never invent certainty to increase a score. Do not infer absence from extracted tags. textReview does not change decisions: decisions remains one binary decision per proposed tag.`;
 
-type ProductReviewRow = { external_id: string; content_version: bigint | string; content_fingerprint: string | null; source_data: unknown; text_review: unknown };
-export function aggregateTextReviews(manifest: unknown, source: Source, rows: readonly ProductReviewRow[], now: number) {
+export type ProductReviewRow = { external_id: string; content_version: bigint | string; content_fingerprint: string | null; source_data: unknown; text_review: unknown };
+export function createTextReviewAccumulator(manifest: unknown, source: Source, now: number) {
   if (!closed(manifest, ['sourceUrl','sourceProtocol','sourcePlatform','observedAt','units'])
     || manifest.sourceUrl !== source.url || manifest.sourceProtocol !== source.protocol || manifest.sourcePlatform !== source.platform
     || typeof manifest.observedAt !== 'number' || !Number.isSafeInteger(manifest.observedAt) || manifest.observedAt < 0
@@ -70,32 +70,36 @@ export function aggregateTextReviews(manifest: unknown, source: Source, rows: re
       || unit.hash !== null && !hash(unit.hash) || units.has(unit.unitId)) return null;
     units.set(unit.unitId, unit.hash);
   }
-  const reviews = new Map<string, TextReview>();
+  type Listing = { unitId: string; answers: Record<string, boolean | null> | null; consistency: Record<string, boolean | null> | null };
+  const reviews = new Map<string, Listing>();
   const conflicts = new Set<string>();
-  for (const row of rows) {
+  const add = (row: ProductReviewRow) => {
     const text = projectShopText(row.source_data);
-    if (!text || !units.has(text.unitId) || units.get(text.unitId) !== text.hash) continue;
+    if (!text || !units.has(text.unitId) || units.get(text.unitId) !== text.hash) return;
     const stored = row.text_review;
     if (!closed(stored, ['version','contentVersion','fingerprint','source','textHash','review'])
       || stored.version !== TEXT_REVIEW_VERSION || stored.contentVersion !== String(row.content_version)
       || stored.fingerprint !== row.content_fingerprint || stored.textHash !== text.hash
       || !closed(stored.source, ['url','protocol','platform'])
-      || stored.source.url !== source.url || stored.source.protocol !== source.protocol || stored.source.platform !== source.platform) continue;
+      || stored.source.url !== source.url || stored.source.protocol !== source.protocol || stored.source.platform !== source.platform) return;
     try {
       const review = validateTextReview(stored.review, text)!;
       const old = reviews.get(text.unitId);
-      const decisions = (value: TextReview) => [...DISCLOSURE_KEYS.map(key => value.answers[key].value), ...CONSISTENCY_KEYS.map(key => value.consistency[key].value)];
-      if (old && JSON.stringify(decisions(old)) !== JSON.stringify(decisions(review))) conflicts.add(text.unitId);
-      else reviews.set(text.unitId, review);
+      const listing: Listing = { unitId: text.unitId,
+        answers: Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, review.answers[key].value])),
+        consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, review.consistency[key].value])) };
+      if (old && JSON.stringify(old) !== JSON.stringify(listing)) conflicts.add(text.unitId);
+      else reviews.set(text.unitId, listing);
     } catch { /* Invalid or obsolete decisions contribute no evidence. */ }
-  }
-  let reviewed = 0;
-  const listings = [...units.keys()].sort().map(unitId => {
-    const review = conflicts.has(unitId) ? undefined : reviews.get(unitId);
-    if (review) reviewed++;
-    return { unitId,
-      answers: review ? Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, review.answers[key].value])) : null,
-      consistency: review ? Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, review.consistency[key].value])) : null };
-  });
-  return { listings, reviewed, nextExpiryAt: manifest.observedAt + 86_400_000 };
+  };
+  const nextExpiryAt = manifest.observedAt + 86_400_000;
+  return { add, finish() {
+    let reviewed = 0;
+    const listings = [...units.keys()].sort().map(unitId => {
+      const review = conflicts.has(unitId) ? undefined : reviews.get(unitId);
+      if (review) reviewed++;
+      return review ?? { unitId, answers: null, consistency: null };
+    });
+    return { listings, reviewed, nextExpiryAt };
+  } };
 }

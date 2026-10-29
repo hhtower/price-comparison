@@ -132,7 +132,7 @@ function usePriceExpiry(data, refresh, enabled = true) {
   const [revision, tick] = useState(0);
   // Keep local deadlines active when a refresh fails or remains pending.
   const expiries = [data?.nextExpiryAt, ...(data?.items || []).flatMap(item =>
-    [...(item.offers || []), ...(item.allOffers || []), ...(item.detail?.entries || []).map(entry => entry.offer || entry)]
+    [...(item.offers || []), ...(item.detail?.entries || []).map(entry => entry.offer || entry)]
       .flatMap(offer => [offer.priceExpiresAt, offer.inventoryExpiresAt, offer.shopScoreExpiresAt]))]
     .map(value => Date.parse(value)).filter(value => Number.isFinite(value) && value > Date.now());
   const expires = expiries.length ? Math.min(...expiries) : null;
@@ -158,7 +158,7 @@ function useDebounced(value) {
 function FilterCount({ params, enabled, detail = false, current }) {
   const request = useDebounced(params);
   const preview = useQuery({ queryKey: ['filter-count', request], enabled: enabled && !current,
-    queryFn: ({ signal }) => fetchCatalog('/api/catalog?' + request + '&view=summary&limit=1', signal) });
+    queryFn: ({ signal }) => fetchCatalog('/api/catalog?' + request + '&limit=1', signal) });
   usePriceExpiry(preview.data, preview.refetch, enabled && !current);
   const result = current || preview.data;
   return <span className="filter-count" role="status">{!current && (params !== request || preview.isFetching) ? '统计中…' : !current && preview.isError ? '数量暂不可用'
@@ -536,28 +536,6 @@ function OfferComparison({ entries, onRemove, onClose, onOfferDetails }) {
   </ModalDialog>;
 }
 
-function shopEntries(offers) {
-  const entries = new Map();
-  offers.forEach((offer) => {
-    const key = String(offer.shopId || offer.shop || 'unknown-shop');
-    const current = entries.get(key);
-    const price = availableOffer(offer) ? Number(offer.price) : NaN;
-    if (!current) {
-      entries.set(key, { key, name: offer.shop || '未知商铺', count: 1, offer, lowestPrice: price });
-      return;
-    }
-    current.count += 1;
-    if (Number.isFinite(price) && (!Number.isFinite(current.lowestPrice) || price < current.lowestPrice)) {
-      current.lowestPrice = price;
-      current.offer = offer;
-    }
-  });
-  return [...entries.values()].sort((a, b) => {
-    if (Number.isFinite(a.lowestPrice) && Number.isFinite(b.lowestPrice) && a.lowestPrice !== b.lowestPrice) return a.lowestPrice - b.lowestPrice;
-    return a.name.localeCompare(b.name, 'zh-CN');
-  });
-}
-
 function priceRangeError({ priceMin, priceMax }) {
   if ([priceMin, priceMax].some(value => value !== '' && !/^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$/u.test(value))) return '价格须为非负金额，最多两位小数';
   return priceMin !== '' && priceMax !== '' && Number(priceMin) > Number(priceMax) ? '最低价不能高于最高价' : '';
@@ -608,7 +586,6 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     }
   }, [standalone, scrollElement]);
   useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
-  const needsDetail = detail.item.offersTruncated === true;
   const isShops = state.kind === 'shops';
   const label = isShops ? '商铺' : '报价';
   function queryFor(values) {
@@ -632,18 +609,18 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     return params;
   }
   const params = queryFor(state);
-  params.set('view', 'full'); params.set('limit', '1');
+  params.set('limit', '1');
   params.set('detailKind', state.kind); params.set('detailPage', '0');
   params.set('detailPageSize', String(state.pageSize)); params.set('offerSort', state.offerSort);
   const url = '/api/catalog?' + params;
   useEffect(() => {
     if (!standalone) return;
     const next = new URLSearchParams(url.split('?')[1]);
-    for (const name of ['standardProductId', 'view', 'limit', 'platform', 'detailPage', 'detailPageSize']) next.delete(name);
+    for (const name of ['standardProductId', 'limit', 'platform', 'detailPage', 'detailPageSize']) next.delete(name);
     if (!next.get('q')) next.delete('q');
     window.history.replaceState(window.history.state, '', window.location.pathname + '?' + next);
   }, [standalone, url]);
-  const detailQuery = useInfiniteQuery({ queryKey: ['details', url], enabled: needsDetail,
+  const detailQuery = useInfiniteQuery({ queryKey: ['details', url],
     initialPageParam: 0,
     queryFn: ({ signal, pageParam }) => {
       const next = new URLSearchParams(params);
@@ -660,49 +637,24 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     const expiries = pages.map(page => Date.parse(page.nextExpiryAt)).filter(Number.isFinite);
     return { ...pages[0], items: pages.flatMap(page => page.items || []), nextExpiryAt: expiries.length ? new Date(Math.min(...expiries)).toISOString() : null };
   }, [detailQuery.data]);
-  const priceRevision = usePriceExpiry(needsDetail ? detailData : { items: [detail.item] }, needsDetail ? detailQuery.refetch : NOOP);
+  const priceRevision = usePriceExpiry(detailData, detailQuery.refetch);
   const facetParams = queryFor(state).toString();
   const facets = useQuery({ queryKey: ['detail-facets', facetParams], enabled: filterOpen,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog/facets?' + facetParams, signal) });
   usePriceExpiry(facets.data, facets.refetch, filterOpen);
-  const loading = needsDetail && detailQuery.isPending;
-  const error = needsDetail && detailQuery.isError && !detailQuery.data;
-  const item = needsDetail ? detailData.items?.find(item => item.id === detail.item.id) : detail.item;
-  const allOffers = item?.allOffers || item?.offers || EMPTY_LIST;
-  const localEntries = useMemo(() => {
-    const groups = new Map();
-    for (const key of state.tags) { const tag = JSON.parse(key); groups.set(tag.name, [...(groups.get(tag.name) || []), tag.value]); }
-    // Full API responses already apply keyword intent and product-level matching.
-    const stocked = allOffers.filter(currentInventory);
-    const filtered = needsDetail ? stocked : stocked.filter(offer => {
-      const text = `${offer.shop || ''} ${offer.name || ''} ${offer.spec || ''}`.normalize('NFKC').toLocaleLowerCase();
-      return (!state.keyword || state.keyword.normalize('NFKC').toLocaleLowerCase().split(/[\s/]+/u).filter(Boolean).every(word => text.includes(word)))
-        && (!state.shopId || String(offer.shopId) === state.shopId)
-        && (offer.currency || 'CNY') === 'CNY'
-        && (state.priceMin === '' || availableOffer(offer) && Number(offer.price) >= Number(state.priceMin))
-        && (state.priceMax === '' || availableOffer(offer) && Number(offer.price) <= Number(state.priceMax))
-        && [...groups].every(([name, values]) => offer.tags?.some(tag => tag.name === name && values.includes(tag.value)))
-        && (!state.warranty || offer.tags?.some(tag => tag.name === 'warranty_days' && Number(tag.value) >= Number(state.warranty)))
-        && (!state.newcomer || offer.tags?.some(tag => tag.name === 'delivery' && ['top_up', 'account'].includes(tag.value))
-          && offer.tags?.some(tag => tag.name === 'warranty_days' && Number(tag.value) >= 30));
-    });
-    const entries = isShops ? shopEntries(filtered) : filtered;
-    return [...entries].sort((a, b) => {
-      const left = isShops ? a.offer : a; const right = isShops ? b.offer : b;
-      return state.offerSort === 'updated' ? Date.parse(right.capturedAt) - Date.parse(left.capturedAt)
-        : Number(availableOffer(right)) - Number(availableOffer(left)) || (availableOffer(left) && availableOffer(right) ? (Number(left.price) - Number(right.price)) * (state.offerSort === 'priceDesc' ? -1 : 1) : 0);
-    });
-  }, [allOffers, state, isShops, needsDetail, priceRevision]);
+  const loading = detailQuery.isPending;
+  const error = detailQuery.isError && !detailQuery.data;
+  const item = detailData.items?.find(item => item.id === detail.item.id);
+  const offers = item?.offers || detail.item.offers || EMPTY_LIST;
   const entries = useMemo(() => {
     if (loading || error) return EMPTY_LIST;
-    if (!needsDetail) return localEntries;
     const all = detailQuery.data?.pages.flatMap(page => {
       const product = page.items?.find(item => item.id === detail.item.id);
-      return product?.detail?.entries || (isShops ? shopEntries(product?.allOffers || product?.offers || EMPTY_LIST) : product?.allOffers || product?.offers || EMPTY_LIST);
+      return product?.detail?.entries || EMPTY_LIST;
     }) || EMPTY_LIST;
     return [...new Map(all.filter(entry => currentInventory(entry.offer || entry)).map(entry => [isShops ? entry.key : offerIdentity(entry), entry])).values()];
-  }, [loading, error, needsDetail, localEntries, detailQuery.data, detail.item.id, isShops, priceRevision]);
-  const total = Number(item?.detail?.total ?? localEntries.length);
+  }, [loading, error, detailQuery.data, detail.item.id, isShops, priceRevision]);
+  const total = Number(item?.detail?.total ?? 0);
   const visible = entries;
   const columns = !isShops && desktop ? 2 : 1;
   const rows = useMemo(() => Array.from({ length: Math.ceil(visible.length / columns) }, (_, index) => visible.slice(index * columns, (index + 1) * columns)), [visible, columns]);
@@ -769,7 +721,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
         <button type="button" className="text-button" onClick={() => navigate({ keyword: '', tags: [], warranty: '', priceMin: '', priceMax: '', offerSort: 'price' })}>重置</button>
       </form>
       <div className="detail-filter-popover">
-      <FilterPanel id="detail-purchase-filters" open={filterOpen} inline extraCount={Number(Boolean(draft.priceMin || draft.priceMax))} tags={facets.data?.tagFacets || uniqueTags(allOffers.map(offer => offer.tags))} loading={facets.isFetching && !facets.data} error={facets.isError ? '筛选条件加载失败' : ''} onRetry={() => facets.refetch()}
+      <FilterPanel id="detail-purchase-filters" open={filterOpen} inline extraCount={Number(Boolean(draft.priceMin || draft.priceMax))} tags={facets.data?.tagFacets || uniqueTags(offers.map(offer => offer.tags))} loading={facets.isFetching && !facets.data} error={facets.isError ? '筛选条件加载失败' : ''} onRetry={() => facets.refetch()}
         draftTags={draft.tags} draftWarrantyDaysMin={draft.warranty} onWarrantyChange={(warranty, tags) => setDraft(current => ({ ...current, warranty, tags }))}
         onToggle={key => setDraft(current => { const tags = new Set(current.tags); if (tags.has(key)) tags.delete(key); else tags.add(key); return { ...current, tags }; })}
         onClear={() => { setDraft(current => ({ ...current, tags: new Set(), warranty: '', priceMin: '', priceMax: '' })); setRangeError(''); }} onApply={apply} onClose={() => setFilterOpen(false)}>
@@ -789,15 +741,12 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
 }
 
 const StandardProductCard = memo(function StandardProductCard({ item, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, newcomer }) {
-  const allOffers = item.allOffers || item.offers || [];
-  // `offers` is reduced by the API to the cheapest offer for each shop. Use
-  // that list on the card so one shop with several SKUs cannot fill every
-  // visible slot; the detail dialog still uses `allOffers` for all SKUs.
-  const shopOffers = (item.offers || allOffers).filter(currentInventory);
+  const offers = item.offers || EMPTY_LIST;
+  const shopOffers = offers.filter(currentInventory);
   const visible = shopOffers.slice(0, OFFER_PAGE_SIZE);
   const minOffer = shopOffers.find(availableOffer);
-  const shopCount = Number(item.shopCount ?? new Set(allOffers.map((offer) => offer.shopId || offer.shop)).size);
-  const productCount = Number(item.productCount ?? allOffers.length);
+  const shopCount = Number(item.shopCount ?? new Set(offers.map((offer) => offer.shopId || offer.shop)).size);
+  const productCount = Number(item.productCount ?? offers.length);
   const titleId = `product-${item.id}-title`;
   const detailHref = '/products/' + encodeURIComponent(item.id) + '?newcomer=' + String(newcomer);
 
@@ -949,7 +898,7 @@ function PublicCatalog({ productId }) {
     initialPageParam: null,
     queryFn: ({ signal, pageParam }) => {
       const params = new URLSearchParams(request);
-      params.set('limit', '20'); params.set('view', 'summary'); params.set('sort', sort);
+      params.set('limit', '20'); params.set('sort', sort);
       if (pageParam) params.set('cursor', pageParam);
       return fetchCatalog('/api/catalog?' + params, signal);
     },
@@ -993,7 +942,7 @@ function PublicCatalog({ productId }) {
   // Platform switches return the same `platformFacets`, so only the list blanks behind the skeleton.
   const visibleItems = useMemo(() => catalogQuery.isPlaceholderData ? EMPTY_LIST
     : data.items.filter(item => {
-      const offers = item.offers || item.allOffers || EMPTY_LIST;
+      const offers = item.offers || EMPTY_LIST;
       return !offers.length || offers.some(currentInventory);
     }),
   [catalogQuery.isPlaceholderData, data.items, priceRevision]);
@@ -1069,7 +1018,7 @@ function PublicCatalog({ productId }) {
     } catch { setReportError('提交失败，请稍后重试'); } finally { setSubmittingReport(false); }
   };
 
-  const productDetail = useMemo(() => productQuery.data ? { item: { ...productQuery.data, offersTruncated: true }, kind: 'offers', query: '' } : null, [productQuery.data]);
+  const productDetail = useMemo(() => productQuery.data ? { item: productQuery.data, kind: 'offers', query: '' } : null, [productQuery.data]);
   const selectedProductName = formatStandardName(productQuery.data?.name || data.items.find(item => item.id === selectedProduct)?.name || '已选商品');
   const changeSearch = value => { setQuery(value); setSelectedProduct(''); setDraftProduct(''); };
   const changePlatform = value => {
