@@ -8,14 +8,6 @@ RUN npm ci --ignore-scripts
 COPY . .
 RUN npm run build
 
-FROM build AS benchmark
-RUN mkdir -p /reports && chown node:node /reports
-USER node
-VOLUME ["/reports"]
-STOPSIGNAL SIGINT
-ENTRYPOINT ["node", "--import", "tsx", "apps/api/perf/standardization-database-benchmark.ts"]
-CMD ["--output", "/reports/standardization-deployment-benchmark.json", "--check"]
-
 FROM node:22-slim
 WORKDIR /app
 COPY package*.json ./

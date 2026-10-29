@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { parseDocument } from 'yaml';
 
 function sorted(values: Iterable<string>): string[] {
   return [...values].sort((left, right) => left.localeCompare(right));
@@ -78,42 +77,23 @@ test('local AI standardization deployment remains disabled until explicitly enab
   assert.match(incrementalEntrypoint, /requireIncrementalStandardizationWorker\(\);[\s\S]*?NestFactory\.createApplicationContext/);
 });
 
-test('deployment benchmark container is isolated and requires an explicit resource fingerprint', () => {
-  const dockerfile = readFileSync('Dockerfile', 'utf8');
-  const parsed = parseDocument(readFileSync('docker-compose.benchmark.yml', 'utf8'));
-  const environment = readFileSync('.env.example', 'utf8');
-  const benchmarkTarget = /^FROM build AS benchmark$[\s\S]*?(?=^FROM |$(?![\s\S]))/m.exec(dockerfile)?.[0];
-  assert.deepEqual(parsed.errors, []);
-  const compose = parsed.toJS() as { services: Record<string, Record<string, unknown>> };
-  const service = compose.services['standardization-benchmark'];
+test('the PostgreSQL-only release removes SQLite runtime and test helpers', () => {
+  const packageJson = readFileSync('package.json', 'utf8');
+  assert.doesNotMatch(packageJson, /better-sqlite3/);
 
-  assert.ok(benchmarkTarget, 'Dockerfile benchmark target must exist');
-  assert.match(benchmarkTarget, /USER node/);
-  assert.match(benchmarkTarget, /STOPSIGNAL SIGINT/);
-  assert.match(benchmarkTarget, /standardization-database-benchmark\.ts/);
-  assert.deepEqual(Object.keys(compose.services), ['standardization-benchmark']);
-  assert.deepEqual(service?.profiles, ['standardization-benchmark']);
-  assert.deepEqual(service?.build, { context: '.', target: 'benchmark' });
-  assert.match(String(service?.cpus), /^\$\{STANDARDIZATION_BENCHMARK_CPU_LIMIT:\?/u);
-  assert.match(String(service?.mem_limit), /^\$\{STANDARDIZATION_BENCHMARK_MEMORY_LIMIT_BYTES:\?/u);
-  assert.equal(service?.init, true);
-  assert.equal(service?.restart, 'no');
-  assert.equal(service?.stop_grace_period, '15m');
-  assert.deepEqual(service?.command, [
-    '--output', '/reports/standardization-deployment-benchmark.json', '--check',
-  ]);
-  const vars = service?.environment as Record<string, string>;
-  assert.match(vars.TEST_DATABASE_URL, /^\$\{STANDARDIZATION_BENCHMARK_DATABASE_URL:\?/u);
-  assert.match(vars.STANDARDIZATION_BENCHMARK_CPU_LIMIT, /^\$\{STANDARDIZATION_BENCHMARK_CPU_LIMIT:\?/u);
-  assert.match(vars.STANDARDIZATION_BENCHMARK_MEMORY_LIMIT_BYTES, /^\$\{STANDARDIZATION_BENCHMARK_MEMORY_LIMIT_BYTES:\?/u);
-  assert.equal('AI_API_KEY' in vars, false);
-  assert.equal('AI_STANDARDIZATION_ENABLED' in vars, false);
-  assert.equal('AI_INCREMENTAL_STANDARDIZATION_ENABLED' in vars, false);
-  assert.deepEqual(service?.volumes, [
-    '${STANDARDIZATION_BENCHMARK_REPORT_DIR:?Set a writable host report directory}:/reports',
-  ]);
-  assert.match(environment, /^# STANDARDIZATION_BENCHMARK_CPU_LIMIT=$/m);
-  assert.match(environment, /^# STANDARDIZATION_BENCHMARK_MEMORY_LIMIT_BYTES=$/m);
-  assert.match(environment, /^# STANDARDIZATION_BENCHMARK_DATABASE_URL=$/m);
-  assert.match(environment, /^# STANDARDIZATION_BENCHMARK_REPORT_DIR=/m);
+  for (const relativePath of [
+    'apps/api/src/config.js',
+    'apps/api/src/aiRequest.js',
+    'apps/api/src/aiStream.js',
+    'scripts/import-source.js',
+    'test/test-db.js',
+    'test/db.test.js',
+    'test/importer.test.js',
+    'test/normalize.test.js',
+    'test/server-static.test.js',
+    'test/aiRequest.test.js',
+    'test/aiStream.test.js',
+  ]) {
+    assert.equal(existsSync(relativePath), false, `${relativePath} must be removed`);
+  }
 });

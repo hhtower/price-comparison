@@ -6,5 +6,3 @@
 
 - `migrate.ts`：首次安装时使用 `npm run db:migrate` 初始化空数据库，自动按顺序执行全部数据库脚本并记录状态，无需手动逐个运行。
 - `evaluate-standardization.ts`：使用测试 fixtures 和 mock 响应执行离线回归评估，不连接数据库或真实模型。
-
-性能工具位于 `apps/api/perf/`。运行位置、数据库和模型配置以脚本及 `.env.example` 为准；只对隔离测试数据执行性能与模型评估。

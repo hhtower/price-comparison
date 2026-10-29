@@ -70,7 +70,7 @@ docker compose -f docker-compose.dev.yml up -d --build
 
 ```text
 apps/web/           React 前端与界面测试
-apps/api/           NestJS API、worker、迁移、后端测试与性能工具
+apps/api/           NestJS API、worker、迁移与后端测试
 packages/catalog/   前后端共用的商品规则与类型
 scripts/            本地开发启动入口
 docs/               产品截图、商铺评分规则与部署说明

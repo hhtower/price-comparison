@@ -8,7 +8,7 @@
 
 ## 验证
 
-运行 `npm run typecheck`、`npm run build`及受影响测试。`npm test`包含 Node 测试与 Vitest 前端测试；集成测试仅使用专用的 `TEST_DATABASE_URL`、`TEST_REDIS_URL`，或测试自动创建的 Docker 临时容器，不回退使用部署连接。未提供测试连接时，部分测试会跳过或提示缺少配置；使用临时容器的测试需要 Docker。性能工具位于 `apps/api/perf/`，仅对隔离测试数据运行，避免污染业务数据库。
+运行 `npm run typecheck`、`npm run build`及受影响测试。`npm test`包含 Node 测试与 Vitest 前端测试；集成测试仅使用专用的 `TEST_DATABASE_URL`、`TEST_REDIS_URL`，或测试自动创建的 Docker 临时容器，不回退使用部署连接。未提供测试连接时，部分测试会跳过或提示缺少配置；使用临时容器的测试需要 Docker。
 
 LLM 调用通过共享 AI runtime 发送，必须流式传输；分块在内存聚合，完整响应通过 schema、业务约束及长度检查后原子保存。worker 复用共享并发、超时、取消及重试规则。相关测试使用 mock 或免费本地模型。
 

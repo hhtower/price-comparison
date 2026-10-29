@@ -70,7 +70,7 @@ The repository uses npm workspaces:
 
 ```text
 apps/web/           React frontend and UI tests
-apps/api/           NestJS API, workers, migrations, backend tests, and performance tools
+apps/api/           NestJS API, workers, migrations, and backend tests
 packages/catalog/   Shared product rules and types
 scripts/            Local development launcher
 docs/               Screenshots, shop scoring rules, and deployment notes

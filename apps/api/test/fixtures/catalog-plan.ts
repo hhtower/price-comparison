@@ -1,9 +1,3 @@
-import { Kysely, PostgresDialect } from 'kysely';
-import { createPostgresPool } from '../src/database/database.providers.js';
-import '../src/config/env.js';
-import { CatalogRepository } from '../src/catalog/catalog.repository.js';
-import type { DatabaseSchema } from '../src/database/types.js';
-
 // Facets intentionally read tags from every eligible SKU; offer history must stay indexed.
 const PROTECTED_RELATIONS = new Set(['offers']);
 
@@ -43,36 +37,4 @@ function walkPlan(value: unknown, relations: Set<string>): void {
     relations.add(node['Relation Name']);
   }
   for (const child of Object.values(node)) walkPlan(child, relations);
-}
-
-async function main(): Promise<void> {
-  const schema = process.env.PERF_SCHEMA?.trim();
-  if (!schema) throw new Error('PERF_SCHEMA is required');
-  process.env.PG_SCHEMA = schema;
-  const pool = createPostgresPool();
-  const database = new Kysely<DatabaseSchema>({
-    dialect: new PostgresDialect({ pool }),
-  });
-  try {
-    const plan = await new CatalogRepository(database).explain({
-      platform: 'performance',
-      search: 'Performance product',
-      tags: [],
-      limit: 20,
-    });
-    assertCatalogPlan(plan);
-    console.info(JSON.stringify({
-      schema,
-      sequentialScanRelations: sequentialScanRelations(plan),
-    }));
-  } finally {
-    await database.destroy();
-  }
-}
-
-if (process.argv[1]?.endsWith('catalog-plan.ts')) {
-  void main().catch((error: unknown) => {
-    console.error(error);
-    process.exitCode = 1;
-  });
 }

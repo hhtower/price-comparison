@@ -12,7 +12,7 @@ import { CatalogService, normalizeCatalogQuery } from '../src/catalog/catalog.se
 import { bumpCatalogVersion, CatalogVersionRepository } from '../src/catalog/catalog-version.repository.js';
 import { createCache } from 'cache-manager';
 import { ProductsRepository } from '../src/products/products.repository.js';
-import { assertCatalogPlan } from '../perf/catalog-plan.js';
+import { assertCatalogPlan } from './fixtures/catalog-plan.js';
 import { PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
 import { defaultQuotePolicy } from '../src/catalog/quote-policy.js';
 import { mergeShopObservation } from '../src/shops/shop-rating.js';
