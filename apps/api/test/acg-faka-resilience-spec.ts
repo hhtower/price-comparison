@@ -22,24 +22,21 @@ const standardItemReads = (over: { stock?: unknown; quote?: unknown } = {}) => (
 const shop = { url: 'https://t.example/' };
 
 describe('acg-faka 站点侧缺陷容忍(2026-10-25 六店实测)', () => {
-  test('平铺回退:跨页重复与 total 波动不再整轮失败(aizzx/aiaimallss 实测报文)', async () => {
+  test('flat fallback rejects moving totals and duplicate identities from observed broken pagination', async () => {
     const ids = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => listing(from + i));
     const pages: Record<number, { code: number; data: Listing[]; total: number }> = {
       1: { code: 200, data: ids(1, 12), total: 45 },
       2: { code: 200, data: [listing(12), ...ids(13, 23)], total: 42 },
       3: { code: 200, data: [], total: 45 },
     };
-    let stats: { unique: number; duplicates: number; categories: number; categoryClaims: number | null; flatTotal: number | null } | null = null;
-    const products = await acgFaka.crawl(undefined, shop, makeFetch(url =>
-      url.pathname.endsWith('/data') ? { code: 200, data: [] }
-      : url.pathname.endsWith('/commodity') ? pages[Number(url.searchParams.get('page'))]!
-      : standardItemReads()(url)), { onListStats: value => { stats = value; } });
-    assert.equal(products.length, 23);
-    assert.equal(new Set(products.map(product => product.externalId)).size, 23);
-    assert.equal(stats!.unique, 23);
-    assert.equal(stats!.duplicates, 1);
-    assert.equal(stats!.flatTotal, 45);
-    assert.equal(stats!.categories, 0);
+    for (const second of [pages[2]!, { ...pages[2]!, data: ids(13, 24) }, { ...pages[2]!, total: 45 }]) {
+      let completed = false;
+      await assert.rejects(acgFaka.crawl(undefined, shop, makeFetch(url =>
+        url.pathname.endsWith('/data') ? { code: 200, data: [] }
+        : url.pathname.endsWith('/commodity') ? Number(url.searchParams.get('page')) === 2 ? second : pages[Number(url.searchParams.get('page'))]!
+        : standardItemReads()(url)), { onListComplete: () => { completed = true; } }), /pagination changed|duplicate product ID/);
+      assert.equal(completed, false);
+    }
   });
 
   test('分类视图优先于平铺(accharbor 实测:平铺仅 107/179,分类全收)', async () => {
@@ -70,6 +67,19 @@ describe('acg-faka 站点侧缺陷容忍(2026-10-25 六店实测)', () => {
       return standardItemReads()(url);
     }));
     assert.equal(products.length, 3);
+  });
+
+  test('a later category failure rejects the crawl without marking a partial list complete', async () => {
+    let completed = false;
+    await assert.rejects(acgFaka.crawl(undefined, shop, makeFetch(url => {
+      if (url.pathname.endsWith('/data')) return { code: 200, data: [{ id: 1, commodity_count: 1 }, { id: 2, commodity_count: 1 }] };
+      if (url.pathname.endsWith('/commodity')) {
+        if (url.searchParams.get('categoryId') === '1') return { code: 200, data: [listing(1)] };
+        throw new Error('category request failed');
+      }
+      return standardItemReads()(url);
+    }), { onListComplete: () => { completed = true; } }), /category request failed/);
+    assert.equal(completed, false);
   });
 
   test('库存空串按售罄处理(web3chirou id49 实测: stock="" state=0)', async () => {

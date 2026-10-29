@@ -60,53 +60,54 @@ async function categoryPage(shop, categoryId, current, fetchImpl, options) {
   return validateListings(await read(shop, `/user/api/index/commodity?${query}`, fetchImpl, options));
 }
 
-/**
- * 站点平铺分页存在窗口错位(实测 aizzx.me/accharbor.com 同商品跨页重复、AccHarbor 平铺仅 107/179)
- * 且 total 按请求波动(aiaimallss.cn 45↔42),平铺视图不可作完整快照。
- * 因此优先复刻前端行为: /data 分类清单 + 逐类列表;/data 不可用或为空时回退平铺并去重。
- * 完成度经 options.onListStats 上报,不再以整轮失败换取静默完整性。
- */
+// Prefer the storefront's category view; fall back only when discovery is unavailable or empty.
+// Callers persist the returned list as a complete snapshot, so listing failures must propagate.
 async function discoverListings(shop, fetchImpl, options) {
   const collected = new Map();
-  let duplicates = 0;
-  const add = items => { for (const item of items) { if (collected.has(item.id)) duplicates++; else collected.set(item.id, item); } };
+  const add = items => {
+    for (const item of items) {
+      if (collected.has(item.id)) fail('duplicate product ID');
+      collected.set(item.id, item);
+    }
+  };
   let categories = null, categoryClaims = null, flatTotal = null;
+  let payload;
   try {
-    const payload = await read(shop, '/user/api/index/data', fetchImpl, options);
-    if (Array.isArray(payload?.data)) {
-      const active = payload.data.filter(cat => productId(cat?.id)
-        && Number.isSafeInteger(cat?.commodity_count) && cat.commodity_count > 0);
-      categories = active.length;
-      categoryClaims = active.reduce((sum, cat) => sum + cat.commodity_count, 0);
-      for (const cat of active) {
-        const first = await categoryPage(shop, cat.id, 1, fetchImpl, options);
-        add(first.data);
-        // 返回数少于声称值时按分页补抓,防大分类被默认 limit 截断
-        if (first.data.length < cat.commodity_count) {
-          for (let current = 2; current <= Math.max(2, Math.ceil(cat.commodity_count / PAGE_SIZE)); current++) {
-            const batch = await categoryPage(shop, cat.id, current, fetchImpl, options);
-            if (!batch.data.length) break;
-            add(batch.data);
-          }
+    payload = await read(shop, '/user/api/index/data', fetchImpl, options);
+  } catch (error) {
+    if (options.signal?.aborted || error?.name === 'AbortError') throw error;
+    // Older themes may not expose category discovery.
+  }
+  if (Array.isArray(payload?.data)) {
+    const active = payload.data.filter(cat => productId(cat?.id)
+      && Number.isSafeInteger(cat?.commodity_count) && cat.commodity_count > 0);
+    categories = active.length;
+    categoryClaims = active.reduce((sum, cat) => sum + cat.commodity_count, 0);
+    for (const cat of active) {
+      const first = await categoryPage(shop, cat.id, 1, fetchImpl, options);
+      add(first.data);
+      // 返回数少于声称值时按分页补抓,防大分类被默认 limit 截断
+      if (first.data.length < cat.commodity_count) {
+        for (let current = 2; current <= Math.max(2, Math.ceil(cat.commodity_count / PAGE_SIZE)); current++) {
+          const batch = await categoryPage(shop, cat.id, current, fetchImpl, options);
+          if (!batch.data.length) break;
+          add(batch.data);
         }
       }
     }
-  } catch (error) {
-    if (options.signal?.aborted) throw error;
-    // 分类视图不可用(旧版主题/接口缺失): 回退平铺
   }
   if (!collected.size) {
     for (let current = 1; current <= MAX_PAGES; current++) {
       const batch = await page(shop, current, fetchImpl, options);
-      flatTotal = Math.max(flatTotal ?? 0, batch.total);
-      const before = collected.size;
+      if (flatTotal !== null && batch.total !== flatTotal) fail('pagination changed during crawl');
+      flatTotal = batch.total;
       add(batch.data);
-      if (!batch.data.length) break;
-      // total 波动不作硬性对账: 收满声称数,或超过估算页数且本页无新增即止
-      if (current >= Math.ceil(flatTotal / PAGE_SIZE) && (collected.size === before || collected.size >= flatTotal)) break;
+      if (collected.size > flatTotal) fail('invalid pagination');
+      // Permission filtering can leave short or empty pages before the final advertised page.
+      if (current >= Math.ceil(flatTotal / PAGE_SIZE)) break;
     }
   }
-  options.onListStats?.({ unique: collected.size, duplicates, categories, categoryClaims, flatTotal });
+  options.onListStats?.({ unique: collected.size, duplicates: 0, categories, categoryClaims, flatTotal });
   return [...collected.values()];
 }
 

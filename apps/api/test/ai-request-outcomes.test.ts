@@ -133,20 +133,34 @@ test('confirmed rate limiting keeps the shared request retry budget', async () =
 
 test('decision persistence failure after a confirmed response never resends the request', async () => {
   const state = service();
-  const outcomes: string[] = [];
-  const worker = createAiWorker(state as never, {
+  const events: string[] = [];
+  const result = { identities: [], items: [], missingIds: [] };
+  const worker = createAiWorker({
+    ...state,
+    complete: async () => { events.push('complete'); },
+    requeue: async () => { events.push('requeue'); },
+  } as never, {
     repository: {
       prepareBatch: async () => undefined,
-      reserveBatchRequest: async () => undefined,
-      recordBatchRequestOutcome: async (_id: bigint, outcome: string) => { outcomes.push(outcome); },
-      persistBatchDecision: async () => { throw new Error('database unavailable'); },
+      reserveBatchRequest: async () => { events.push('reserve'); return 'reserved' as const; },
+      recordBatchRequestOutcome: async (_id: bigint, outcome: string) => { events.push(`outcome:${outcome}`); },
+      persistBatchDecision: async (_jobId: bigint, _batchId: bigint, decision: unknown) => {
+        assert.deepEqual(decision, result);
+        events.push('persist');
+        throw new Error('database unavailable');
+      },
+      publishBatch: async () => { events.push('publish'); },
     } as never,
-    modelCall: async () => ({ identities: [], items: [], missingIds: [] }),
+    modelCall: async () => { events.push('model'); return result; },
   });
-  await worker.runOnce();
-  await waitForFailure(state);
-  await worker.stop();
-  assert.deepEqual(outcomes, ['confirmed']);
-  assert.equal(state.failures[0]?.retry, false);
-  assert.equal(state.failures[0]?.retryClass, 'result_not_saved');
+  try {
+    await worker.runOnce();
+    await waitForFailure(state);
+    assert.equal(await worker.runOnce(), 0);
+  } finally {
+    await worker.stop();
+  }
+  // Confirmation belongs to the same transaction as the validated decision.
+  assert.deepEqual(events, ['reserve', 'model', 'persist']);
+  assert.deepEqual(state.failures, [{ retry: false, backoffMs: 0, retryClass: 'result_not_saved' }]);
 });

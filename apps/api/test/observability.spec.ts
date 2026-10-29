@@ -288,7 +288,7 @@ test('deployment configuration defines roles, probes, non-root shutdown, and ope
   assert.match(devCompose, /service_healthy/);
   assert.match(env, /RATE_LIMIT_MAX=/);
   assert.match(env, /SLOW_QUERY_THRESHOLD_MS=/);
-  assert.match(env, /PGBOUNCER_POOL_MODE=transaction/);
+  assert.match(postgres, /pool_mode\s*=\s*transaction/);
   assert.match(postgres, /pg_stat_statements/);
   assert.match(postgres, /PgBouncer/);
   assert.match(postgres, /log_min_duration_statement/);

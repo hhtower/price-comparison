@@ -1060,7 +1060,12 @@ describe('AI identity standardization publication', () => {
       if (drift === 'manual') await database.transaction().execute(tx => recordManualDecisions(tx, [source.id], { action: 'quarantine', standardProductId: null, reason: '新人工审核' }));
       else if (drift === 'evidence') await database.updateTable('products').set({ content_version: 2n, standardization_revision: 9n }).where('id', '=', source.id).execute();
       else if (drift === 'fingerprint') {
-        await database.updateTable('products').set({ name: '更新后的Team资料' }).where('id', '=', source.id).execute();
+        const name = '更新后的Team资料';
+        const changed = await database.updateTable('products').set({ name, source_name: name,
+          content_fingerprint: productContentFingerprint({ name, spec: 'monthly' }),
+        }).where('id', '=', source.id).returning(['content_version', 'content_fingerprint']).executeTakeFirstOrThrow();
+        assert.equal(changed.content_version, source.content_version, 'fingerprint drift is guarded even without a version change');
+        assert.notEqual(changed.content_fingerprint, source.content_fingerprint);
         assert.equal((await prepared.repository.getTagExtractionBatchInputs(batch.id)).inputs[0]?.name, frozen.inputs[0]?.name);
       }
       if (drift === 'failed') {

@@ -35,7 +35,7 @@ test('catalog lists, summaries and facets filter the IP group using canonical pr
     async acquireConnection(): Promise<any> {
       return { executeQuery: async (query: CompiledQuery) => {
         queries.push(query);
-        return { rows: [{ entries: [], platform_facets: [], total: 0, offer_total: 0, tag_facets: [], next_expiry_at: null }] };
+        return { rows: [{ entries: [], text_reviews: [], platform_facets: [], total: 0, offer_total: 0, tag_facets: [], next_expiry_at: null, has_next: false }] };
       } };
     }
   }

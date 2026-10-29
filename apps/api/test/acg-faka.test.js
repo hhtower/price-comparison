@@ -301,6 +301,43 @@ test('acg-faka rejects moving pagination, duplicate identities, and partial fail
   }
 });
 
+test('acg-faka bounds flat pagination by the stable total and preserves list statistics', async () => {
+  const requests = [], reports = [];
+  const products = await crawl(null, shop, api({ total: 25, pages: [[listing()], [], [listing(19)]],
+    intercept: url => {
+      if (url.pathname.endsWith('/commodity')) requests.push(Number(url.searchParams.get('page')));
+    },
+  }), { onListStats: stats => reports.push(stats) });
+  assert.deepEqual(products.map(product => product.externalId), ['17', '19']);
+  assert.deepEqual(requests, [1, 2, 3]);
+  assert.deepEqual(reports, [{ unique: 2, duplicates: 0, categories: null, categoryClaims: null, flatTotal: 25 }]);
+});
+
+test('acg-faka rejects invalid totals and aggregate overflow without completing a list', async () => {
+  for (const total of [null, '1', -1, 1.5, Infinity, 12001]) {
+    await assert.rejects(run(api({ total })), /invalid pagination/);
+  }
+  let completed = false;
+  await assert.rejects(crawl(null, shop, api({ total: 13,
+    pages: [Array.from({ length: 12 }, (_, index) => listing(index + 1)), [listing(13), listing(14)]],
+  }), { onListComplete: () => { completed = true; } }), /invalid pagination/);
+  assert.equal(completed, false);
+});
+
+test('acg-faka propagates cancellation while discovering categories or later list pages', async () => {
+  for (const during of ['/user/api/index/data', '/user/api/index/commodity']) {
+    const controller = new AbortController();
+    let completed = false;
+    await assert.rejects(crawl(null, shop, api({ total: 13, intercept: url => {
+      if (url.pathname === during && (during.endsWith('/data') || url.searchParams.get('page') === '2')) {
+        controller.abort();
+        controller.signal.throwIfAborted();
+      }
+    } }), { signal: controller.signal, onListComplete: () => { completed = true; } }), { name: 'AbortError' });
+    assert.equal(completed, false);
+  }
+});
+
 test('acg-faka quotes every race and SKU combination with its own stock', async () => {
   const product = detail({ config: { category: { 月卡: '5', 年卡: '50' }, sku: { 地区: { 美区: 0, 港区: 2 } } } });
   const products = await run(api({ product, intercept: (url, body) => {

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { Kysely, PostgresDialect, type KyselyPlugin } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
-import { type DatabaseSchema, jsonb } from '../src/database/types.js';
+import { type DatabaseSchema } from '../src/database/types.js';
 import { ProductsRepository, productMapKey, type FetchedProduct } from '../src/products/products.repository.js';
 import { softDeleteProductNames } from '../src/products/product-name-deletion.js';
 import { normalizeSourceEvidence, productContentFingerprint } from '../src/standardization/fingerprint.js';
@@ -77,8 +77,8 @@ describe('crawler product batch persistence', () => {
     const original = await db.selectFrom('products').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
     assert.equal(original.source_name, input.sourceName);
     assert.equal(original.source_description, input.description);
-    assert.equal(original.content_fingerprint, productContentFingerprint({ name: input.sourceName!, description: input.description }));
-    const repeated = await upsert([{ ...input, name: 'Different processed display', spec: 'annual',
+    assert.equal(original.content_fingerprint, productContentFingerprint({ name: input.sourceName!, description: input.description, spec: input.spec }));
+    const repeated = await upsert([{ ...input, name: 'Different processed display', spec: ' monthly ',
       sourceData: { serviceEvidence: { brands: ['Derived'], endpoints: [] }, evidence: 'Changed projection' } }]);
     assert.deepEqual(repeated.changedProducts, []);
     const current = await db.selectFrom('products').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
@@ -86,6 +86,7 @@ describe('crawler product batch persistence', () => {
     assert.equal(current.content_version, original.content_version);
     assert.equal(current.source_name, original.source_name);
     assert.equal(current.source_description, original.source_description);
+    assert.equal(current.spec, original.spec);
   });
 
   test('classifies raw content, quote and metadata changes without losing identity', async () => {
@@ -107,7 +108,7 @@ describe('crawler product batch persistence', () => {
     const result = await upsert([
       row(shopId, 'evidence', { description: 'Changed original body' }),
       row(shopId, 'quote', { price: '11.00' }),
-      row(shopId, 'metadata', { spec: 'yearly', sourceCategory: 'Other', sourceData: { processed: true } }),
+      row(shopId, 'metadata', { spec: ' monthly ', sourceCategory: 'Other', sourceData: { processed: true } }),
       row(shopId, 'unchanged'),
     ]);
     assert.deepEqual(result.changedProducts, [evidenceId]);
@@ -125,7 +126,7 @@ describe('crawler product batch persistence', () => {
   });
 
   for (const path of ['crawler', 'batch'] as const) {
-    test(`${path} preserves reviewed data when only specification or processed metadata changes`, async () => {
+    test(`${path} preserves reviewed data when only specification formatting or processed metadata changes`, async () => {
       const { id: shopId } = await shop();
       const repository = new ProductsRepository(db);
       const input = row(shopId, `sales-${path}`, {
@@ -156,7 +157,7 @@ describe('crawler product batch persistence', () => {
       assert.equal(before.events.length, 1);
       assert.equal(before.outbox.length, 1);
       const refreshed = {
-        ...input, spec: 'yearly', sourceCategory: 'Other', sourceData: { evidence: 'Processed projection changed.', sales_count: 9, sales_count_text: '9 buyers' },
+        ...input, spec: ' monthly ', sourceCategory: 'Other', sourceData: { evidence: 'Processed projection changed.', sales_count: 9, sales_count_text: '9 buyers' },
       };
       if (path === 'crawler') {
         const changes = await upsert([refreshed]);

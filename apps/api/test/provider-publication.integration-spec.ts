@@ -79,14 +79,22 @@ test('a saved provider survives the only raw listing being replaced and detached
   const target = await standard();
   const shop = await db.insertInto('shops').values({ name: 'relay shop', platform: 'test', url: `https://shop.invalid/${randomUUID()}` }).returning('id').executeTakeFirstOrThrow();
   const repository = new ProductsRepository(db);
-  const rows = await repository.upsertBatch([{ ...listing('alpha'), shopId: shop.id, externalId: 'one', normalizedKey: randomUUID(), url: '' }]);
+  const description = '<p>Relay endpoint: https://alpha.invalid/v1</p>\n';
+  const rows = await repository.upsertBatch([{ ...listing('alpha'), description, shopId: shop.id, externalId: 'one', normalizedKey: randomUUID(), url: '' }]);
   const productId = [...rows.values()][0]!;
+  const original = (await repository.findById(productId))!;
+  assert.equal(original.source_description, description);
   await db.transaction().execute(async tx => {
     assert.equal(await ensureStandardServiceEvidence(tx, target.id, listing('alpha')), null);
     await tx.insertInto('standard_product_members').values({ product_id: productId, standard_product_id: target.id, assignment_source: 'ai', publication_state: 'published' }).execute();
   });
-  await repository.update(productId, { sourceData: listing('beta').sourceData });
+  const provider = await db.selectFrom('standard_products').select('service_evidence').where('id', '=', target.id).executeTakeFirstOrThrow();
+  const replacement = '<p>Relay endpoint: https://beta.invalid/v1</p>\n';
+  const updated = (await repository.update(productId, { description: replacement, sourceData: listing('beta').sourceData }))!;
+  assert.equal(updated.source_description, replacement);
+  assert.equal(updated.content_version, original.content_version + 1n);
   assert.equal((await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', productId).execute()).length, 0);
+  assert.deepEqual(await db.selectFrom('standard_products').select('service_evidence').where('id', '=', target.id).executeTakeFirstOrThrow(), provider);
   assert.equal(await db.transaction().execute(tx => ensureStandardServiceEvidence(tx, target.id, listing('beta'))), 'service_provider_conflict');
 });
 

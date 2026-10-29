@@ -259,29 +259,41 @@ describe('shop, product, and offer repositories', () => {
     const shop = await testingModule.get(ShopsRepository).upsert({
       platform: '16688', url: 'https://spec-contract.invalid', name: 'Spec', enabled: true,
     });
+    const standard = await seedVerifiedStandard();
     for (const path of ['batch', 'update', 'crawler'] as const) {
       const item = { shopId: shop.id, externalId: path, name: 'Account', description: 'Body',
         spec: '期限：1个月 / 地区: 美区', normalizedKey: path, url: 'https://spec-contract.invalid/item' };
       const id = (await products.upsertBatch([item])).get(productMapKey(shop.id, path))!;
       const initial = (await products.findById(id))!;
       assert.equal(initial.spec, '地区: 美区 / 期限: 1个月');
+      await products.assignStandardProduct(id, standard.id);
+      await products.replaceTags(id, [{ name: 'duration', value: '1 month' }]);
+      const before = (await products.findById(id))!;
+      const members = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', id).execute();
+      const decisions = await db.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', id).execute();
       const write = async (spec: string) => {
         if (path === 'batch') await products.upsertBatch([{ ...item, spec }]);
         else if (path === 'update') await products.update(id, { spec });
         else await db.transaction().execute(tx => products.upsertFetchedProducts(tx, [{ ...item, spec }]));
       };
       await write('地区: 美区 / 期限: 1个月');
-      assert.equal((await products.findById(id))!.content_version, initial.content_version);
-      await products.replaceTags(id, [{ name: 'duration', value: '1 month' }]);
-      const before = (await products.findById(id))!;
+      const formatted = (await products.findById(id))!;
+      assert.equal(formatted.content_version, before.content_version);
+      assert.equal(formatted.standardization_revision, before.standardization_revision);
+      assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', id).execute(), members);
+      assert.deepEqual((await products.listTags(id)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: '1 month' }]);
       await write('期限: 1年 / 地区: 美区');
       const after = (await products.findById(id))!;
       assert.equal(after.content_version, before.content_version + 1n, path);
       assert.equal(after.standardization_revision, before.standardization_revision + 1n, path);
+      assert.equal(after.source_name, initial.source_name);
+      assert.equal(after.source_description, initial.source_description);
       assert.equal(after.content_fingerprint, productContentFingerprint({
         name: after.source_name, description: after.source_description, spec: after.spec,
       }));
       assert.deepEqual(await products.listTags(id), []);
+      assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', id).execute(), []);
+      assert.deepEqual(await db.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', id).execute(), decisions);
       if (path !== 'crawler') {
         const event = await db.selectFrom('product_change_events').select('fingerprint')
           .where('product_id', '=', id).orderBy('id', 'desc').executeTakeFirstOrThrow();
@@ -342,6 +354,7 @@ describe('shop, product, and offer repositories', () => {
     const shop = await shops.upsert({ platform: '16688', url: 'https://deleted.invalid', name: 'Deleted', enabled: true });
     const ids = await products.upsertBatch([{ shopId: shop.id, externalId: 'gone', name: 'Gone', normalizedKey: 'gone', url: 'https://deleted.invalid/gone' }]);
     const id = ids.get(productMapKey(shop.id, 'gone'))!;
+    const original = (await products.findById(id))!;
     const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
     await database.updateTable('standardization_outbox').set({ status: 'succeeded' }).where('product_id', '=', id).execute();
     await products.softDelete(id);
@@ -351,9 +364,14 @@ describe('shop, product, and offer repositories', () => {
     assert.equal((await database.selectFrom('standardization_outbox').select('id').where('product_id', '=', id).execute()).length, 2);
     const standardization = testingModule.get(StandardizationRepository);
     assert.deepEqual(await standardization.claimOutbox('restored-product'), []);
+    const deleted = await database.selectFrom('products').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
+    assert.ok(deleted.deleted_at);
+    assert.equal(deleted.deletion_source, 'manual');
+    assert.equal(deleted.content_version, original.content_version + 1n);
+    assert.equal(deleted.standardization_revision, original.standardization_revision + 1n);
     const restored = await products.restore(id);
-    assert.equal(restored!.content_version, 2n);
-    assert.equal(restored!.standardization_revision, 2n);
+    assert.equal(restored!.content_version, deleted.content_version);
+    assert.equal(restored!.standardization_revision, deleted.standardization_revision);
     const claims = await standardization.claimOutbox('restored-product');
     assert.equal(claims.length, 1);
     assert.equal(claims[0]!.product_id, id);

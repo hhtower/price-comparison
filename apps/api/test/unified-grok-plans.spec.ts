@@ -5,6 +5,8 @@ import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { canonicalProductDisplayName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
 import { validateStandardizationEvidence } from '../src/ai/standardization-evidence.js';
+import { specificationText } from '../src/products/product-spec.js';
+import type { JsonValue } from '../src/database/types.js';
 
 test('official unified plans are distinct from historical Grok and X subscriptions', () => {
   for (const tier of ['plus', 'premium', 'super', 'ultra']) {
@@ -44,13 +46,47 @@ test('selected unified plans pass raw and frozen evidence without becoming legac
   }
 });
 
-test('selected options also establish the unified Super multiplier', () => {
-  for (const sourceData of [{ selectedOptions: 'Super 15x' }, { sku: { code: 'Super 15x' } }]) {
-    const input = { id: '1', name: 'Grok Plus / Premium / Super / Ultra', spec: '', sourceData };
+test('selected options in canonical spec also establish the unified Super multiplier', () => {
+  for (const selected of ['Super 15x', { plan: 'Super 15x' }, [{ name: 'plan', value: 'Super 15x' }]]) {
+    const spec = specificationText(selected);
+    const input = { id: '1', name: 'Grok Plus / Premium / Super / Ultra', spec,
+      sourceData: { evidence: 'Grok、X、Cursor统一订阅,共享AI使用池。' } };
     const identity = { family: 'xai', product: 'grok', tier: 'super' };
-    for (const [format, evidence] of [['raw', input], ['text', buildExtractionPayload(input)]] as const) {
+    const payload = buildExtractionPayload(input);
+    assert.equal(payload.spec, spec);
+    assert.deepEqual(payload.sourceData, input.sourceData);
+    for (const [format, evidence] of [['raw', input], ['text', payload]] as const) {
       assert.deepEqual(assessProductEvidence(evidence, format).identity, identity);
       assert.equal(identityEvidenceConflict(identity, evidence, format), null);
+    }
+  }
+});
+
+test('source spec aliases and SKU codes cannot select a unified plan from a shared menu', () => {
+  const sources: JsonValue[] = [{ selectedOptions: 'Super 15x' }, { sku: { code: 'Super 15x' } }];
+  for (const sourceData of sources) {
+    const input = { id: '1', name: 'Grok Plus / Premium / Super / Ultra', spec: '', sourceData };
+    for (const [format, evidence] of [['raw', input], ['text', buildExtractionPayload(input)]] as const) {
+      assert.equal(assessProductEvidence(evidence, format).identity, undefined, format);
+      for (const tier of ['plus', 'premium', 'super', 'ultra'])
+        assert.ok(identityEvidenceConflict({ family: 'xai', product: 'grok', tier }, evidence, format), tier + ' ' + format);
+    }
+  }
+});
+
+test('canonical selected Super rejects multiple plans, missing or conflicting multipliers and delivery conflicts', () => {
+  for (const [spec, description] of [
+    ['', '套餐可选：Plus 1x / Premium 4x / Super 15x / Ultra 50x'],
+    ['Super 15x / Ultra 50x', ''],
+    ['Super', ''],
+    ['Super 4x', ''],
+    ['Super 15x', '实际交付Grok Premium会员'],
+    ['Super 15x', '实际仅交付Cursor账号，不提供Grok账号'],
+  ] as const) {
+    const input = { id: '1', name: 'Grok Plus / Premium / Super / Ultra', spec,
+      sourceData: { evidence: description } };
+    for (const [format, evidence] of [['raw', input], ['text', buildExtractionPayload(input)]] as const) {
+      assert.ok(identityEvidenceConflict({ family: 'xai', product: 'grok', tier: 'super' }, evidence, format), spec + ' ' + format);
     }
   }
 });

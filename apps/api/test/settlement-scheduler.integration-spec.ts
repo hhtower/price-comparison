@@ -8,6 +8,7 @@ import { enqueueDueSettlements } from '../src/crawler/settlement-scheduler.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
 import { createCrawlerHandler } from '../src/workers/crawler.worker.js';
 import { ProductsRepository } from '../src/products/products.repository.js';
+import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 
 describe('independent settlement expiry scheduling', () => {
   let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
@@ -38,6 +39,8 @@ describe('independent settlement expiry scheduling', () => {
     for (let i = 0; i < count; i++) {
       const product = await db.insertInto('products').values({ shop_id: shop.id, external_id: String(i),
         name: 'Plus', normalized_key: `plus-${i}`, url: shop.url, image_url: null,
+        source_name: 'Plus', source_description: '',
+        content_fingerprint: productContentFingerprint({ name: 'Plus', description: '', spec: '' }),
       }).returning('id').executeTakeFirstOrThrow();
       await db.insertInto('standard_product_members').values({
         product_id: product.id, standard_product_id: standard.id, publication_state: 'published',
@@ -145,15 +148,21 @@ describe('independent settlement expiry scheduling', () => {
   test('a large list bounds native requests and estimates remaining prices in the same snapshot', async () => {
     const shop = await fixture(25);
     await db.insertInto('fetch_runs').values({ shop_id: shop.id, task_type: 'list', status: 'queued', started_at: now }).execute();
-    let quotes = 0;
+    let quotes = 0, observations = 0;
     await createCrawlerHandler(db, new ProductsRepository(db), { fetchFactory: () => async url => {
       if (String(url).endsWith('/goods/list')) return Response.json({ code: 1, data: { list: Array.from({ length: 25 }, (_, i) => ({
         goods_no: String(i), name: 'Plus', price: 10, stock_available_quantity: 10,
       })) } });
       if (String(url).endsWith('/payment/list')) return Response.json({ code: 1, data: { list: [{ id: 1, show_name: 'Alipay' }] } });
+      if (String(url).endsWith('/shop/detail')) {
+        observations++;
+        return Response.json({ code: 1, data: { merchant: {} } });
+      }
+      assert.ok(String(url).endsWith('/payment/quotePrice'));
       quotes++; return Response.json({ code: 1, data: { total_amount: '11.30' } });
     } })((await new JobsRepository(db).claimNext('fetch_run', 'bounded-list', 120000))!);
     assert.equal(quotes, 5);
+    assert.equal(observations, 1);
     const run = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
     assert.equal(run.status, 'succeeded');
     assert.equal(run.item_count, 25n);

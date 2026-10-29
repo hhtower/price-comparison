@@ -10,12 +10,13 @@ import { AiRepository } from '../src/ai/ai.repository.js';
 import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
 import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
+import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 
 describe('current evidence queue projection', () => {
   let db: Kysely<DatabaseSchema>, admin: Pool, schema: string, shopId: bigint;
   before(async () => {
     assert.ok(process.env.TEST_DATABASE_URL, 'TEST_DATABASE_URL is required');
-    schema = 'current_projection_' + Date.now();
+    schema = 'current_projection_' + Date.now() + '_' + Math.floor(Math.random() * 1_000_000);
     admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query('create schema "' + schema + '"');
     process.env.PG_SCHEMA = schema;
@@ -26,15 +27,16 @@ describe('current evidence queue projection', () => {
   after(async () => { await db?.destroy(); if (admin && schema) await admin.query('drop schema "' + schema + '" cascade'); await admin?.end(); delete process.env.PG_SCHEMA; });
 
   async function result(name: string, reason = 'provider_error') {
-    const product = await db.insertInto('products').values({ shop_id: shopId, external_id: name, name, normalized_key: name, url: '', content_version: 1n }).returningAll().executeTakeFirstOrThrow();
+    const product = await db.insertInto('products').values({ shop_id: shopId, external_id: name, name, source_name: name, normalized_key: name, url: '', content_version: 1n,
+      content_fingerprint: productContentFingerprint({ name, spec: '' }) }).returningAll().executeTakeFirstOrThrow();
     const job = await db.insertInto('ai_jobs').values({
       status: 'succeeded', total: 1n, processed: 1n, unclassified: 1n, model: 'mock',
       prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: IDENTITY_POLICY_VERSION,
       pipeline_versions: jsonb(pipelineVersionSnapshot('mock')),
     }).returning('id').executeTakeFirstOrThrow();
-    await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: product.id, fingerprint: 'fp', payload: jsonb({ name }), status: 'succeeded', input_bytes: 1n, estimated_tokens: 1n, content_version: 1n }).execute();
-    await db.insertInto('ai_job_input_members').values({ job_id: job.id, input_id: product.id, product_id: product.id, content_version: 1n, standardization_revision: product.standardization_revision, fingerprint: 'fp', payload: jsonb({ name }), status: 'unclassified' }).execute();
-    await db.insertInto('ai_standardization_results').values({ job_id: job.id, input_id: product.id, product_id: product.id, content_version: 1n, fingerprint: 'fp', status: 'unclassified', reason_code: reason, reason, decision: jsonb({}) }).execute();
+    await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: product.id, fingerprint: product.content_fingerprint, payload: jsonb({ name }), status: 'succeeded', input_bytes: 1n, estimated_tokens: 1n, content_version: 1n }).execute();
+    await db.insertInto('ai_job_input_members').values({ job_id: job.id, input_id: product.id, product_id: product.id, content_version: 1n, standardization_revision: product.standardization_revision, fingerprint: product.content_fingerprint, payload: jsonb({ name }), status: 'unclassified' }).execute();
+    await db.insertInto('ai_standardization_results').values({ job_id: job.id, input_id: product.id, product_id: product.id, content_version: 1n, fingerprint: product.content_fingerprint, status: 'unclassified', reason_code: reason, reason, decision: jsonb({}) }).execute();
     return { product, job };
   }
 
