@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { DATABASE } from '../database/database.providers.js';
 import type { DatabaseSchema, ShopSubmissionTable, ShopSubmissionStatus } from '../database/types.js';
-import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
+import { DomainConflictError, DomainError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
 import { normalizeShopUrl } from '../shops/shop-url.js';
 import { platforms } from '../platforms/index.js';
 import type { ShopsRepository } from '../shops/shops.repository.js';
@@ -31,7 +31,7 @@ export class ShopSubmissionsRepository {
     try {
       return await this.database.transaction().execute(async transaction => {
         await sql`set local lock_timeout = '5s'`.execute(transaction);
-        await sql`lock table shops, shop_submissions in share row exclusive mode`.execute(transaction);
+        await sql`select pg_advisory_xact_lock(hashtextextended(${'shop-submission:' + url}, 0))`.execute(transaction);
         if (await containsShopUrl(transaction, 'shop_submissions', url)) {
           throw new DomainConflictError('SHOP_SUBMISSION_EXISTS', '该商铺地址已提交');
         }
@@ -44,13 +44,14 @@ export class ShopSubmissionsRepository {
         if (!protocol) return submission;
         const shop = await shopsRepository.upsert({
           platform: input.platform, url, name: input.name, protocol, enabled: true,
-        }, transaction);
+        }, transaction, { createOnly: true });
         return transaction.updateTable('shop_submissions').set({
           status: 'approved', reviewed_at: new Date(), reviewer: null, shop_id: shop.id,
         }).where('id', '=', submission.id).returningAll().executeTakeFirstOrThrow();
       });
     } catch (error) {
-      if (isUniqueViolation(error)) throw new DomainConflictError('SHOP_SUBMISSION_EXISTS', '该商铺地址已提交');
+      if (isPostgresError(error, '55P03')) throw new DomainError(503, 'SHOP_SUBMISSION_BUSY', '商铺提交繁忙，请稍后重试');
+      if (isPostgresError(error, '23505')) throw new DomainConflictError('SHOP_SUBMISSION_EXISTS', '该商铺地址已提交');
       throw error;
     }
   }
@@ -87,6 +88,6 @@ async function containsShopUrl(transaction: Transaction<DatabaseSchema>, table: 
   }
 }
 
-function isUniqueViolation(error: unknown): error is { code: string } {
-  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === '23505';
+function isPostgresError(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }

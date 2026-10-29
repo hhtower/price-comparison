@@ -172,6 +172,118 @@ describe('shop protocol approval and complete snapshots', () => {
     assert.equal((await database.selectFrom('shop_submissions').selectAll().execute()).length, 3);
   });
 
+  test('an uncommitted unrelated shop write does not block submission creation', async () => {
+    const existing = await shops.upsert({ name: 'Crawler shop', platform: '', url: 'https://crawler.example/', enabled: true });
+    const writer = await admin.connect();
+    try {
+      await writer.query('begin');
+      await writer.query(`update "${schema}".shops set last_error = 'uncommitted crawler write' where id = $1`, [existing.id]);
+      const service = new ShopSubmissionsService(submissions, shops, detector());
+      const created = await service.create({ name: 'Independent', url: 'https://catfk.com/shop/independent' });
+      assert.equal(created.status, 'approved');
+      assert.ok(created.shop_id);
+      assert.equal((await shops.findById(existing.id))?.last_error, null);
+    } finally {
+      await writer.query('rollback');
+      writer.release();
+    }
+  });
+
+  test('a transaction creating one URL does not block another URL', async () => {
+    const url = 'https://first-concurrent.example/';
+    let release!: () => void, inserted!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { inserted = resolve; });
+    const held = database.withPlugin({
+      transformQuery: args => args.node,
+      async transformResult(args) {
+        if (args.result.rows.some(row => row.url === url && row.status === 'pending')) {
+          inserted();
+          await gate;
+        }
+        return args.result;
+      },
+    });
+    const first = new ShopSubmissionsService(new ShopSubmissionsRepository(held), shops, detector())
+      .create({ name: 'First', url });
+    try {
+      await Promise.race([ready, first.then(() => assert.fail('first transaction must remain open'))]);
+      const second = await new ShopSubmissionsService(submissions, shops, detector())
+        .create({ name: 'Second', url: 'https://second-concurrent.example/' });
+      assert.equal(second.status, 'pending');
+    } finally {
+      release();
+      await first;
+    }
+    assert.equal((await database.selectFrom('shop_submissions').select('id').execute()).length, 2);
+  });
+
+  test('a concurrent administrator insert cannot be overwritten by automatic approval', async () => {
+    const url = 'https://wzyp.cn/shop/admin-race';
+    const writer = await admin.connect();
+    let release!: () => void, checked!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { checked = resolve; });
+    const paused = database.withPlugin({
+      transformQuery: args => args.node,
+      async transformResult(args) {
+        if (args.result.rows.some(row => row.url === url && row.status === 'pending')) {
+          checked();
+          await gate;
+        }
+        return args.result;
+      },
+    });
+    const creation = new ShopSubmissionsService(new ShopSubmissionsRepository(paused), shops, detector())
+      .create({ name: 'Submitted name', url });
+    try {
+      await Promise.race([ready, creation.then(() => assert.fail('creation must wait after checking existing URLs'))]);
+      await writer.query(`insert into "${schema}".shops (url, name, platform, enabled)
+        values ($1, 'Administrator name', 'Administrator platform', false)`, [url]);
+    } finally {
+      release();
+      writer.release();
+    }
+    await assert.rejects(creation, { code: 'SHOP_EXISTS' });
+    const existing = await database.selectFrom('shops').select(['name', 'platform', 'enabled']).where('url', '=', url).executeTakeFirstOrThrow();
+    assert.deepEqual(existing, { name: 'Administrator name', platform: 'Administrator platform', enabled: false });
+    assert.deepEqual(await database.selectFrom('shop_submissions').selectAll().execute(), []);
+  });
+
+  test('equivalent URLs wait on the same advisory lock and return BUSY without leaving writes', async () => {
+    const holder = await admin.connect();
+    const service = new ShopSubmissionsService(submissions, shops, detector());
+    const module = await Test.createTestingModule({
+      controllers: [ShopSubmissionsController],
+      providers: [{ provide: ShopSubmissionsService, useValue: service }],
+    }).compile();
+    const app = module.createNestApplication(new FastifyAdapter(), { logger: false });
+    try {
+      await holder.query('begin');
+      await holder.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", ['shop-submission:https://wzyp.cn/shop/locked']);
+      app.enableVersioning({ type: VersioningType.URI });
+      await app.init();
+      const http = app.getHttpAdapter().getInstance();
+      await http.ready();
+      const response = await http.inject({
+        method: 'POST', url: '/v1/shop-submissions',
+        payload: { name: 'Locked', url: 'http://wzyp.cn/shop/LOCKED/?ref=friend' },
+      });
+      assert.equal(response.statusCode, 503);
+      assert.equal(response.json().error.code, 'SHOP_SUBMISSION_BUSY');
+      assert.ok(response.json().error.message);
+      assert.deepEqual(await database.selectFrom('shop_submissions').selectAll().execute(), []);
+      assert.deepEqual(await database.selectFrom('shops').selectAll().execute(), []);
+      await holder.query('rollback');
+      const created = await service.create({ name: 'Released', url: 'https://wzyp.cn/shop/locked' });
+      assert.equal(created.status, 'approved');
+    } finally {
+      await holder.query('rollback');
+      holder.release();
+      await app.close();
+    }
+  });
+
   test('public submission endpoint returns stable success and duplicate responses', async () => {
     const service = new ShopSubmissionsService(submissions, shops, detector());
     const module = await Test.createTestingModule({

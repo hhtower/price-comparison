@@ -35,13 +35,15 @@ export type ShopScheduleClaim = Pick<Shop, 'id' | 'next_fetch_at' | 'fetch_backo
 export class ShopsRepository {
   constructor(@Inject(DATABASE) private readonly database: Kysely<DatabaseSchema>) {}
 
-  async upsert(input: ShopUpsert, transaction?: Transaction<DatabaseSchema>): Promise<Shop> {
+  async upsert(input: ShopUpsert, transaction?: Transaction<DatabaseSchema>, options: { createOnly?: boolean } = {}): Promise<Shop> {
     const write = async (transaction: Transaction<DatabaseSchema>) => {
       const shop = await transaction
         .insertInto('shops')
         .values({ platform: input.platform, ...(input.protocol === undefined ? {} : { protocol: input.protocol }), url: input.url, name: input.name, enabled: input.enabled, last_fetch_at: null, last_error: null, deleted_at: null })
-        .onConflict((conflict) => conflict.column('url').doUpdateSet(({ ref }) => ({ platform: ref('excluded.platform'), ...(input.protocol === undefined ? {} : { protocol: ref('excluded.protocol') }), name: ref('excluded.name'), enabled: ref('excluded.enabled'), deleted_at: null })))
-        .returningAll().executeTakeFirstOrThrow();
+        .onConflict((conflict) => options.createOnly ? conflict.column('url').doNothing()
+          : conflict.column('url').doUpdateSet(({ ref }) => ({ platform: ref('excluded.platform'), ...(input.protocol === undefined ? {} : { protocol: ref('excluded.protocol') }), name: ref('excluded.name'), enabled: ref('excluded.enabled'), deleted_at: null })))
+        .returningAll().executeTakeFirst();
+      if (!shop) throw new DomainConflictError('SHOP_EXISTS', '该商铺已存在');
       await bumpCatalogVersion(transaction);
       return shop;
     };
