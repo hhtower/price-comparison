@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, afterEach, before, describe, test } from 'node:test';
 import { setTimeout } from 'node:timers/promises';
-import { Kysely, Migrator, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect } from 'kysely';
+import { Migrator } from 'kysely/migration';
 import { Pool, type PoolClient } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 

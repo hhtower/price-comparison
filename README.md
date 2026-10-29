@@ -20,7 +20,7 @@
 
 ### npm 编译运行
 
-需要 Node.js 22.13+ (LTS)、PostgreSQL 16+ 和 Redis 7+。先创建数据库并启动 Redis，在项目根目录执行：
+推荐使用 Node.js 26 LTS；需要 PostgreSQL 16+ 和 Redis 7+。先创建数据库并启动 Redis，在项目根目录执行：
 
 ```bash
 git clone https://github.com/hhtower/price-comparison.git

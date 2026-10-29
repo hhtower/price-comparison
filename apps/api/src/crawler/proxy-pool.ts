@@ -51,7 +51,7 @@ interface PoolEntry {
  */
 export function createDispatcher(proxyUrl: string, { reuseConnections = true }: { reuseConnections?: boolean } = {}): Dispatcher {
   const connectionOptions = reuseConnections ? {} : { pipelining: 0, allowH2: false };
-  if (!isSocksProxy(proxyUrl)) return new ProxyAgent({ uri: proxyUrl, ...connectionOptions });
+  if (!isSocksProxy(proxyUrl)) return new ProxyAgent({ uri: proxyUrl, proxyTunnel: true, ...connectionOptions });
   const url = new URL(proxyUrl);
   return socksDispatcher({
     host: url.hostname,

@@ -20,7 +20,7 @@ Screenshots illustrate the interface; displayed quotes are not current prices or
 
 ### Build and run with npm
 
-Requires Node.js 22.13+ (LTS), PostgreSQL 16+, and Redis 7+. Create a PostgreSQL database and start Redis, then run from the repository root:
+Use Node.js 26 LTS, PostgreSQL 16+, and Redis 7+. Create a PostgreSQL database and start Redis, then run from the repository root:
 
 ```bash
 git clone https://github.com/hhtower/price-comparison.git

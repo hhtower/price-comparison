@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { Kysely, Migrator, PostgresDialect, sql } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
+import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { createPostgresPool } from '../src/database/database.providers.js';
 import type { DatabaseSchema } from '../src/database/types.js';

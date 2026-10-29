@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
-import { Kysely, Migrator, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect } from 'kysely';
+import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import type { ParsedStandardizationResponse, StandardizationDecision } from '../src/ai/ai.schemas.js';

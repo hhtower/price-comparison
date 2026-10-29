@@ -5,11 +5,14 @@ import { createServer as createHttpsServer } from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
 import { test, type TestContext } from 'node:test';
+import { ProxyAgent } from 'undici';
 import { createAiQualityDetector } from '../src/quality/ai-quality-detector.js';
 import { createIpQualityDetector } from '../src/quality/ip-quality-detector.js';
 import { parseIpTarget } from '../src/quality/quality-input.js';
 import { createQualityFetch } from '../src/quality/quality-network.js';
 import { createQualityModelLister } from '../src/quality/quality-models.js';
+import { createModelListCall, createStreamingCall } from '../src/ai/llm-runtime.js';
+import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import type { AiQualityInput } from '../src/quality/quality.types.js';
 
 // The local CONNECT proxy terminates tunnels itself; no upstream or paid API is used.
@@ -17,6 +20,12 @@ async function localProxy(t: TestContext, respond: (request: IncomingMessage, re
   const tunnels: IncomingMessage[] = [];
   const socksRequests: Array<{ address: string; port: number; username: string; password: string }> = [];
   const sockets = new Set<net.Socket>();
+  const agents = new Set<ProxyAgent>();
+  const dispatch = ProxyAgent.prototype.dispatch;
+  t.mock.method(ProxyAgent.prototype, 'dispatch', function (this: ProxyAgent, ...args: Parameters<ProxyAgent['dispatch']>) {
+    agents.add(this);
+    return Reflect.apply(dispatch, this, args);
+  });
   const unexpectedConnections: Array<{ host?: string; port?: number }> = [];
   const proxyHost = options.secureProxy ? 'localhost' : '127.0.0.1';
   // This committed key/certificate is only for the local test fixture, never for deployment.
@@ -110,6 +119,7 @@ async function localProxy(t: TestContext, respond: (request: IncomingMessage, re
     return Reflect.apply(secureConnect, tls, args);
   });
   t.after(async () => {
+    await Promise.all([...agents].map(agent => agent.destroy()));
     for (const socket of sockets) socket.destroy();
     await new Promise<void>(resolve => proxy.close(() => resolve()));
     assert.deepEqual(unexpectedConnections, [], 'no request may bypass the configured proxy, including failed fallbacks');
@@ -122,6 +132,58 @@ function sendStream(response: ServerResponse, content = 'READY', finishReason = 
   response.write('data: ' + JSON.stringify({ id: 'proxy-stream', model: 'target-model', choices: [{ delta: { content: content.slice(0, 2) } }] }) + '\n\n');
   response.end('data: ' + JSON.stringify({ id: 'proxy-stream', model: 'target-model', choices: [{ delta: { content: content.slice(2) }, finish_reason: finishReason }] }) + '\n\ndata: [DONE]\n\n');
 }
+
+test('default AI transport uses the installed Undici for proxied streams, metadata and worker calls', { timeout: 3000 }, async t => {
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('the bundled Node fetch must not handle AI requests'); });
+  const requests: Array<{ url?: string; body: string }> = [];
+  const proxy = await localProxy(t, async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    requests.push({ url: request.url, body });
+    if (request.url === '/v1/models') response.end(JSON.stringify({ data: [{ id: 'target-model' }] }));
+    else sendStream(response, JSON.stringify({ items: [{ id: '11', tags: [] }] }));
+  });
+  const environment = { AI_BASE_URL: 'http://model.invalid/v1', AI_API_KEY: 'test-key', AI_MODEL: 'target-model', AI_PROXY_URL: proxy.url };
+  const signal = new AbortController().signal;
+  const result = await createStreamingCall(environment)({ model: 'target-model', messages: [{ role: 'user', content: 'test' }], signal });
+  assert.equal(result.content, JSON.stringify({ items: [{ id: '11', tags: [] }] }));
+  assert.deepEqual(await createModelListCall(environment)(signal), ['target-model']);
+  const call = createOpenAiModelCall({
+    getTagExtractionBatchInputs: async () => ({
+      jobId: 3n, model: 'target-model',
+      inputs: [{ productId: 11n, name: 'account', spec: null, sourceData: {} }],
+    }),
+  } as never, environment);
+  const workerResult = await call({ id: 7n, row: { job_type: 'tag_extraction' } } as never, signal) as any;
+  assert.deepEqual(workerResult.tagExtractionItems[0].tags, []);
+  assert.deepEqual(requests.map(request => request.url), ['/v1/chat/completions', '/v1/models', '/v1/chat/completions']);
+  assert.ok(requests.filter(request => request.body).every(request => JSON.parse(request.body).stream === true));
+  assert.ok(proxy.tunnels.every(request => request.url === 'model.invalid:80'));
+});
+
+for (const failure of ['cancel', 'timeout']) test('default AI transport closes a proxied stream on ' + failure, { timeout: 3000 }, async t => {
+  let started!: () => void, closed!: () => void;
+  const receiving = new Promise<void>(resolve => { started = resolve; });
+  const disconnected = new Promise<void>(resolve => { closed = resolve; });
+  const proxy = await localProxy(t, (_request, response) => {
+    response.on('close', closed);
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'partial' } }] }) + '\n\n');
+    started();
+  });
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('the bundled Node fetch must not handle AI requests'); });
+  const controller = new AbortController();
+  const call = createStreamingCall({
+    AI_BASE_URL: 'http://model.invalid/v1', AI_API_KEY: 'test-key', AI_PROXY_URL: proxy.url,
+    AI_TIMEOUT_MS: failure === 'timeout' ? '100' : '1000',
+  });
+  const running = call({ model: 'target-model', messages: [{ role: 'user', content: 'test' }], signal: controller.signal });
+  const rejected = assert.rejects(running, failure === 'timeout' ? /timed out/ : /cancelled/);
+  await Promise.race([receiving, rejected.then(() => { throw new Error('request failed before receiving streamed data'); })]);
+  if (failure === 'cancel') controller.abort(new Error('cancelled'));
+  await rejected;
+  await disconnected;
+});
 
 const input: AiQualityInput = { kind: 'ai', endpoint: 'http://8.8.8.8/v1', apiKey: 'private-key', model: 'target-model', mode: 'quick', runs: 1, items: [] };
 const socksTarget = parseIpTarget('socks5://socks-user:socks-secret@9.9.9.9:1080')!;

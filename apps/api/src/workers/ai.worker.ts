@@ -22,7 +22,7 @@ export async function main(): Promise<void> {
   const concurrency = readAiConcurrency(process.env);
   const redis = createAiConcurrencyRedisClient(process.env);
   const metrics = context.get(MetricsService);
-  const modelCall = createOpenAiModelCall(repository, process.env, fetch, logger);
+  const modelCall = createOpenAiModelCall(repository, process.env, undefined, logger);
   const worker = createAiWorker(context.get(JobsRepository), {
     repository,
     modelCall,

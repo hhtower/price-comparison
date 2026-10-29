@@ -29,10 +29,10 @@ export function validateTextReview(value: unknown, text: TextEvidence | null): T
   if (!text) { assert.equal(value, null, 'text review requires a complete captured title/body'); return null; }
   assert(closed(value, ['answers','consistency']), 'invalid text review');
   for (const [group, keys] of [['answers', DISCLOSURE_KEYS], ['consistency', CONSISTENCY_KEYS]] as const) {
-    const judgments = value[group];
+    const judgments: unknown = value[group];
     assert(closed(judgments, keys), 'text review must answer every question');
     for (const key of keys) {
-      const item = judgments[key];
+      const item: unknown = judgments[key];
       assert(closed(item, ['value','reason','evidence']), 'invalid text judgment');
       assert(item.value === null || typeof item.value === 'boolean', 'invalid judgment value');
       assert(typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 600, 'invalid judgment reason');

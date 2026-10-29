@@ -18,7 +18,7 @@ export function createCrawlerRedis(environment: NodeJS.ProcessEnv = process.env)
     expire: (key, seconds) => redis.expire(key, seconds),
     time: () => redis.time(),
     zadd: (key, score, member) => redis.zadd(key, score, member),
-    zrange: (key, start, stop) => redis.zrange(key, start, stop),
+    zrange: (key, start, stop) => redis.zrange(key, start, String(stop)),
     zremrangebyscore: (key, min, max) => redis.zremrangebyscore(key, min, max),
     disconnect: () => redis.disconnect(),
   };

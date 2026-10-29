@@ -123,7 +123,7 @@ export function createAiWorker(service: WorkerRuntimeService, options: FactoryOp
   });
 }
 
-export function createOpenAiModelCall(repository: AiRepository, environment: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch, logger?: WorkerLogger): StandardizationModelCall {
+export function createOpenAiModelCall(repository: AiRepository, environment: NodeJS.ProcessEnv = process.env, fetchImpl?: typeof fetch, logger?: WorkerLogger): StandardizationModelCall {
   const baseUrl = environment.AI_BASE_URL?.trim();
   const apiKey = environment.AI_API_KEY?.trim();
   const model = environment.AI_MODEL?.trim();

@@ -1,10 +1,13 @@
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam, ChatCompletionTool, ChatCompletionToolChoiceOption } from 'openai/resources/chat/completions';
-import { ProxyAgent } from 'undici';
+import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import { normalizeModelIds } from './model-list.js';
 import { providerPolicyRejection } from './provider-policy.js';
 import { buildModelRequestOptions, readModelRequestOptions } from './model-request-options.js';
 export { readAiConcurrency } from './ai-concurrency.js';
+
+// Keep transport security fixes independent of Node's bundled Undici version.
+const defaultFetch = undiciFetch as unknown as typeof fetch;
 
 export interface StreamingToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export interface StreamingUsage { promptTokens: number; completionTokens: number; totalTokens: number; reasoningTokens?: number }
@@ -27,12 +30,12 @@ function createRuntimeClient(environment: NodeJS.ProcessEnv, fetchImpl: typeof f
   if (!baseURL || !apiKey || !Number.isSafeInteger(timeout) || timeout < 1) throw new Error('AI worker configuration is incomplete');
   try { if (!['http:', 'https:'].includes(new URL(baseURL).protocol)) throw new Error(); } catch { throw new Error('AI worker configuration is incomplete'); }
   let dispatcher: ProxyAgent | undefined;
-  if (environment.AI_PROXY_URL?.trim()) { try { dispatcher = new ProxyAgent(environment.AI_PROXY_URL.trim()); } catch { throw new Error('AI worker configuration is incomplete'); } }
+  if (environment.AI_PROXY_URL?.trim()) { try { dispatcher = new ProxyAgent({ uri: environment.AI_PROXY_URL.trim(), proxyTunnel: true }); } catch { throw new Error('AI worker configuration is incomplete'); } }
   return new OpenAI({ apiKey, baseURL, timeout, maxRetries: 0, fetch: fetchImpl, ...(dispatcher ? { fetchOptions: { dispatcher } } : {}) });
 }
 
 /** Metadata GET only: no generation, stream parameter, pagination or automatic retry. */
-export function createModelListCall(environment: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch): (signal: AbortSignal) => Promise<string[]> {
+export function createModelListCall(environment: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = defaultFetch): (signal: AbortSignal) => Promise<string[]> {
   const timeout = Number(environment.AI_TIMEOUT_MS ?? 10_000);
   const maxBytes = Number(environment.AI_MAX_OUTPUT_BYTES ?? 262_144);
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('AI model list configuration is invalid');
@@ -85,7 +88,7 @@ export function createModelListCall(environment: NodeJS.ProcessEnv = process.env
 }
 
 /** The single streaming transport for workers and quality probes. It never retries. */
-export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch, logger?: { log?: (...args: unknown[]) => void }): StreamingCall {
+export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = defaultFetch, logger?: { log?: (...args: unknown[]) => void }): StreamingCall {
   const timeout = Number(environment.AI_TIMEOUT_MS ?? 30_000);
   const maxOutputBytes = Number(environment.AI_MAX_OUTPUT_BYTES ?? 1_048_576);
   const modelOptions = readModelRequestOptions(environment);

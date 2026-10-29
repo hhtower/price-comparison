@@ -1,7 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { FileMigrationProvider, Kysely, Migrator, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect } from 'kysely';
+import { FileMigrationProvider, Migrator } from 'kysely/migration';
 import '../src/config/env.js';
 import { createPostgresPool } from '../src/database/database.providers.js';
 import type { DatabaseSchema } from '../src/database/types.js';

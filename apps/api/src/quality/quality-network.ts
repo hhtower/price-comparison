@@ -38,6 +38,7 @@ function createPinnedProxyAgent(proxyUrl: string, url: URL, address: string, reu
   const host = (isIP(address) === 6 ? '[' + address + ']' : address) + ':' + port;
   return new ProxyAgent({
     uri: proxyUrl,
+    proxyTunnel: true,
     proxyTls: { timeout: 10_000 },
     requestTls: { servername: hostname, timeout: 10_000 },
     factory(origin, options) {
@@ -154,7 +155,7 @@ export async function createQualityFetch(proxy?: ParsedIpTarget, options: { look
         // A request owns its cancellation signal; sharing this agent would reuse an expired signal.
         chainedDispatchers.add(dispatcher);
       } else if (options.proxyDns) {
-        dispatcher = new ProxyAgent({ uri: serverProxyUrl, proxyTls: { timeout: 10_000 }, requestTls: { timeout: 10_000 } });
+        dispatcher = new ProxyAgent({ uri: serverProxyUrl, proxyTunnel: true, proxyTls: { timeout: 10_000 }, requestTls: { timeout: 10_000 } });
         dispatchers.set(key, dispatcher);
       } else {
         dispatcher = createPinnedProxyAgent(serverProxyUrl, url, resolved!.address, options.reuseConnections !== false);
