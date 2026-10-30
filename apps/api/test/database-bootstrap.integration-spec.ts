@@ -64,3 +64,29 @@ test('an existing initial schema upgrades through later migrations while preserv
   const records = await sql<{ name: string }>`select name from kysely_migration order by name`.execute(database);
   assert.deepEqual(records.rows.map(row => row.name), Object.keys(await migrationProvider.getMigrations()).sort());
 });
+
+test('review-key migration backfills existing reviews and rolls back without changing their evidence', async t => {
+  const { database, schema } = await databaseFixture(t);
+  const migrator = new Migrator({ db: database, provider: migrationProvider, migrationTableSchema: schema });
+  assert.ifError((await migrator.migrateTo('024_crawler_monitor_indexes_20261027')).error);
+  const shop = await sql<{ id: bigint }>`insert into shops (name, platform, url)
+    values ('Review migration', 'test', 'https://review-migration.invalid') returning id`.execute(database);
+  const product = await sql<{ id: bigint; source_data: unknown; text_review: unknown }>`
+    insert into products (shop_id, external_id, name, normalized_key, url, source_data, text_review)
+    values (${shop.rows[0]!.id}, 'review', 'Review product', 'review', '',
+      '{"ratingText":{"name":"Complete source","description":"Do not truncate"}}'::jsonb,
+      '{"contentVersion":"0","fingerprint":"","review":{"evidence":"Original review"}}'::jsonb)
+    returning id, source_data, text_review`.execute(database);
+  const original = product.rows[0]!;
+  const read = () => sql<{ id: bigint; source_data: unknown; text_review: unknown; text_review_key: string }>`
+    select id, source_data, text_review, text_review_key from products where id = ${original.id}`.execute(database);
+  await migrateToLatest(database);
+  const upgraded = (await read()).rows[0]!;
+  assert.match(upgraded.text_review_key, /^[a-f0-9]{64}$/u);
+  assert.deepEqual({ id: upgraded.id, source_data: upgraded.source_data, text_review: upgraded.text_review }, original);
+  assert.ifError((await migrator.migrateTo('024_crawler_monitor_indexes_20261027')).error);
+  assert.deepEqual((await sql`select id, source_data, text_review from products where id = ${original.id}`
+    .execute(database)).rows[0], original);
+  await migrateToLatest(database);
+  assert.deepEqual((await read()).rows[0], upgraded);
+});

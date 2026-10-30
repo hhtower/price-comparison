@@ -59,6 +59,27 @@ C1: product/plan/delivery identity. C2: delivery form/channel. C3: use term/star
 Unknown contributes no support; never invent certainty to increase a score. Do not infer absence from extracted tags. textReview does not change decisions: decisions remains one binary decision per proposed tag.`;
 
 export type ProductReviewRow = { external_id: string; content_version: bigint | string; content_fingerprint: string | null; source_data: unknown; text_review: unknown };
+type Listing = { unitId: string; answers: Record<string, boolean | null> | null; consistency: Record<string, boolean | null> | null };
+export type PreparedTextReview = Listing & { hash: string; source: Source };
+
+export function prepareTextReview(row: ProductReviewRow): PreparedTextReview | null {
+  const captured = readTextEvidence({ shopText: (row.source_data as { ratingText?: unknown } | null)?.ratingText });
+  const stored = row.text_review;
+  if (!captured || !closed(stored, ['version','contentVersion','fingerprint','source','textHash','review'])
+    || stored.version !== TEXT_REVIEW_VERSION || stored.contentVersion !== String(row.content_version)
+    || stored.fingerprint !== row.content_fingerprint || stored.textHash !== captured.hash
+    || !closed(stored.source, ['url','protocol','platform'])
+    || typeof stored.source.url !== 'string' || typeof stored.source.platform !== 'string'
+    || stored.source.protocol !== null && typeof stored.source.protocol !== 'string') return null;
+  try {
+    const text = projectShopText(row.source_data)!;
+    const review = validateTextReview(stored.review, text)!;
+    return { unitId: text.unitId, hash: text.hash, source: stored.source as Source,
+      answers: Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, review.answers[key].value])),
+      consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, review.consistency[key].value])) };
+  } catch { return null; }
+}
+
 export function createTextReviewAccumulator(manifest: unknown, source: Source, now: number) {
   if (!closed(manifest, ['sourceUrl','sourceProtocol','sourcePlatform','observedAt','units'])
     || manifest.sourceUrl !== source.url || manifest.sourceProtocol !== source.protocol || manifest.sourcePlatform !== source.platform
@@ -70,27 +91,15 @@ export function createTextReviewAccumulator(manifest: unknown, source: Source, n
       || unit.hash !== null && !hash(unit.hash) || units.has(unit.unitId)) return null;
     units.set(unit.unitId, unit.hash);
   }
-  type Listing = { unitId: string; answers: Record<string, boolean | null> | null; consistency: Record<string, boolean | null> | null };
   const reviews = new Map<string, Listing>();
   const conflicts = new Set<string>();
-  const add = (row: ProductReviewRow) => {
-    const text = projectShopText(row.source_data);
-    if (!text || !units.has(text.unitId) || units.get(text.unitId) !== text.hash) return;
-    const stored = row.text_review;
-    if (!closed(stored, ['version','contentVersion','fingerprint','source','textHash','review'])
-      || stored.version !== TEXT_REVIEW_VERSION || stored.contentVersion !== String(row.content_version)
-      || stored.fingerprint !== row.content_fingerprint || stored.textHash !== text.hash
-      || !closed(stored.source, ['url','protocol','platform'])
-      || stored.source.url !== source.url || stored.source.protocol !== source.protocol || stored.source.platform !== source.platform) return;
-    try {
-      const review = validateTextReview(stored.review, text)!;
-      const old = reviews.get(text.unitId);
-      const listing: Listing = { unitId: text.unitId,
-        answers: Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, review.answers[key].value])),
-        consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, review.consistency[key].value])) };
-      if (old && JSON.stringify(old) !== JSON.stringify(listing)) conflicts.add(text.unitId);
-      else reviews.set(text.unitId, listing);
-    } catch { /* Invalid or obsolete decisions contribute no evidence. */ }
+  const add = (review: PreparedTextReview) => {
+    if (!units.has(review.unitId) || units.get(review.unitId) !== review.hash
+      || review.source.url !== source.url || review.source.protocol !== source.protocol || review.source.platform !== source.platform) return;
+    const old = reviews.get(review.unitId);
+    const listing: Listing = { unitId: review.unitId, answers: review.answers, consistency: review.consistency };
+    if (old && JSON.stringify(old) !== JSON.stringify(listing)) conflicts.add(review.unitId);
+    else reviews.set(review.unitId, listing);
   };
   const nextExpiryAt = manifest.observedAt + 86_400_000;
   return { add, finish() {

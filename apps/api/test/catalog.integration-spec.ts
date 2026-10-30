@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, before, beforeEach, describe, test } from 'node:test';
+import { after, before, beforeEach, describe, test, type TestContext } from 'node:test';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
@@ -7,7 +7,7 @@ import { createPostgresPool } from '../src/database/database.providers.js';
 import type { DatabaseSchema } from '../src/database/types.js';
 import { jsonb } from '../src/database/types.js';
 import { migrateToLatest } from '../scripts/migrate.js';
-import { CatalogRepository, encodeCatalogCursor, decodeCatalogCursor } from '../src/catalog/catalog.repository.js';
+import { CatalogRepository, encodeCatalogCursor, decodeCatalogCursor, type CatalogItem } from '../src/catalog/catalog.repository.js';
 import { CatalogService, normalizeCatalogQuery } from '../src/catalog/catalog.service.js';
 import { bumpCatalogVersion, CatalogVersionRepository } from '../src/catalog/catalog-version.repository.js';
 import { createCache } from '../src/cache/cache.js';
@@ -19,6 +19,12 @@ import { mergeShopObservation } from '../src/shops/shop-rating.js';
 import { TEXT_REVIEW_VERSION } from '../src/shops/shop-text-review.js';
 
 const quotePolicy = { now: () => Date.now(), ttlMs: 3 * 3_600_000 };
+
+function detailOffers(item: CatalogItem) {
+  const detail = item?.detail;
+  assert.ok(detail?.kind === 'offers');
+  return detail.entries;
+}
 
 describe('catalog SQL read model', () => {
   let container: StartedPostgreSqlContainer | undefined;
@@ -53,7 +59,7 @@ describe('catalog SQL read model', () => {
   });
 
   beforeEach(async context => {
-    context.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-10T03:00:00Z') });
+    (context as TestContext).mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-10T03:00:00Z') });
     await database.deleteFrom('offers').execute();
     await database.deleteFrom('product_tags').execute();
     await database.deleteFrom('standard_product_members').execute();
@@ -158,7 +164,7 @@ describe('catalog SQL read model', () => {
     assert.equal(new Set(ids).size, 601);
   });
 
-  test('large text reviews are consumed in bounded batches without losing late conflicts', async () => {
+  test('duplicate text reviews transfer once per content key and cached reads preserve late conflicts', async () => {
     const source = { url: 'https://catalog-shop.invalid', protocol: 'dujiaoka', platform: 'alpha' };
     const text = { unitId: 'shared-parent', name: '套餐', description: 'x'.repeat(32768), hash: 'a'.repeat(64) };
     const review = {
@@ -174,38 +180,47 @@ describe('catalog SQL read model', () => {
     await database.insertInto('products').values(Array.from({ length: 130 }, (_, i) => ({
       shop_id: shopOne, external_id: `review-${i}`, name: 'Review source', spec: '',
       normalized_key: `review-${i}`, url: `https://catalog.invalid/review-${i}`,
-      content_version: 1n, content_fingerprint: 'b'.repeat(64), source_data: jsonb({ ratingText: text }),
-      text_review: jsonb({ version: TEXT_REVIEW_VERSION, contentVersion: '1', fingerprint: 'b'.repeat(64),
+      content_version: BigInt(i + 1), content_fingerprint: i.toString(16).padStart(64, '0'), source_data: jsonb({ ratingText: text }),
+      text_review: jsonb({ version: TEXT_REVIEW_VERSION, contentVersion: String(i + 1), fingerprint: i.toString(16).padStart(64, '0'),
         source, textHash: text.hash, review: i === 129
           ? { ...review, answers: { ...review.answers, L1: { value: false, reason: '未明确', evidence: [] } } } : review }),
     }))).execute();
     let maxBatchBytes = 0;
-    let batches = 0;
+    let wireBytes = 0;
+    let reviewRows = 0;
     let published = false;
     const measured = database.withPlugin({
       transformQuery: args => args.node,
       async transformResult(args) {
-        maxBatchBytes = Math.max(maxBatchBytes, Buffer.byteLength(JSON.stringify(args.result.rows)));
-        if (args.result.rows.length) batches++;
+        const bytes = Buffer.byteLength(JSON.stringify(args.result.rows));
+        maxBatchBytes = Math.max(maxBatchBytes, bytes);
+        wireBytes += bytes;
+        reviewRows += args.result.rows.filter(row => row.kind === 2).length;
         if (!published && args.result.rows.some(row => row.kind === 0)) {
           published = true;
           await database.updateTable('products').set({ text_review: jsonb({
-            version: TEXT_REVIEW_VERSION, contentVersion: '1', fingerprint: 'b'.repeat(64),
+            version: TEXT_REVIEW_VERSION, contentVersion: '130', fingerprint: (129).toString(16).padStart(64, '0'),
             source, textHash: text.hash, review,
           }) }).where('shop_id', '=', shopOne).where('external_id', '=', 'review-129').execute();
         }
         return args.result;
       },
     });
-    const page = await new CatalogRepository(measured, quotePolicy).search({ tags: [], limit: 1 });
+    const reader = new CatalogRepository(measured, quotePolicy);
+    const page = await reader.search({ tags: [], limit: 1 });
     assert.deepEqual(page.items[0]?.offers[0]?.shopScoreDetails?.text,
       { total: 2, reviewed: 0, disclosureContribution: '0.00', consistencyContribution: '0.00' });
     assert.ok(maxBatchBytes < 3 * 1024 * 1024, `review bodies must not form one result array: ${maxBatchBytes}`);
-    assert.ok(batches > 1);
+    assert.equal(reviewRows, 2, 'identical SKUs share a review, but a different late judgment must remain');
+    assert.ok(wireBytes < 128 * 1024, `duplicate bodies must not cross the wire: ${wireBytes}`);
     assert.equal(published, true);
-    const after = await repository.search({ tags: [], limit: 1 });
+    wireBytes = 0;
+    reviewRows = 0;
+    const after = await reader.search({ tags: [], limit: 1 });
     assert.equal(after.items[0]?.offers[0]?.shopScoreDetails?.text?.reviewed, 1,
       'a review published between FETCH batches only belongs to the next catalog snapshot');
+    assert.equal(reviewRows, 1);
+    assert.ok(wireBytes < 8 * 1024, `a cached review only needs its key: ${wireBytes}`);
     const plan = await repository.explain({ tags: [], limit: 1 });
     const sortSizes: number[] = [];
     const visit = (value: unknown) => {
@@ -218,6 +233,58 @@ describe('catalog SQL read model', () => {
     };
     visit(plan);
     assert.ok(sortSizes.every(size => size < 256), `database sorts must not contain review bodies: ${sortSizes} KiB`);
+  });
+
+  test('expired shop manifests do not load text review bodies', async () => {
+    const product = await database.selectFrom('products').select(['content_version', 'content_fingerprint'])
+      .where('id', '=', productOne).executeTakeFirstOrThrow();
+    await database.updateTable('shops').set({ rating_manifest: jsonb({
+      sourceUrl: 'https://catalog-shop.invalid', sourceProtocol: 'dujiaoka', sourcePlatform: 'alpha',
+      observedAt: Date.now() - 86_400_000, units: [{ unitId: 'expired', hash: 'a'.repeat(64) }],
+    }) }).where('id', '=', shopOne).execute();
+    const keyed = await database.updateTable('products').set({
+      source_data: jsonb({ ratingText: { unitId: 'expired', name: 'Expired', description: 'x'.repeat(32768), hash: 'a'.repeat(64) } }),
+      text_review: jsonb({ contentVersion: String(product.content_version), fingerprint: product.content_fingerprint, obsolete: true }),
+    }).where('id', '=', productOne).returning('text_review_key').executeTakeFirstOrThrow();
+    assert.ok(keyed.text_review_key, 'the expired manifest, not an invalid evidence binding, must exclude this review');
+    let reviewRows = 0;
+    const measured = database.withPlugin({
+      transformQuery: args => args.node,
+      async transformResult(args) {
+        reviewRows += args.result.rows.filter(row => row.kind === 2).length;
+        return args.result;
+      },
+    });
+    const page = await new CatalogRepository(measured, quotePolicy).search({ tags: [], limit: 1 });
+    assert.equal(page.items[0]?.offers[0]?.shopScoreDetails?.text, undefined);
+    assert.equal(reviewRows, 0);
+  });
+
+  test('review content keys track every validation input and exclude unrelated source metadata', async () => {
+    const text = { unitId: 'keyed', name: 'Plan', description: 'Complete description', hash: 'a'.repeat(64) };
+    const stored = { version: TEXT_REVIEW_VERSION, contentVersion: '1', fingerprint: 'b'.repeat(64), marker: 'original' };
+    const original = { content_version: 1n, content_fingerprint: 'b'.repeat(64),
+      source_data: jsonb({ ratingText: text }), text_review: jsonb(stored) };
+    const key = async (changes: Partial<typeof original> = {}) =>
+      (await database.updateTable('products').set({ ...original, ...changes }).where('id', '=', productOne)
+        .returning('text_review_key').executeTakeFirstOrThrow()).text_review_key;
+    const initial = await key();
+    assert.match(initial!, /^[a-f0-9]{64}$/u);
+    assert.equal(await key({ source_data: jsonb({ ratingText: text, unrelated: 'metadata' }) }), initial);
+    for (const changes of [
+      { content_version: 2n }, { content_fingerprint: 'c'.repeat(64) },
+      { source_data: jsonb({ ratingText: { ...text, description: 'Changed source text' } }) },
+      { text_review: jsonb({ ...stored, marker: 'changed' }) },
+    ]) assert.notEqual(await key(changes), initial);
+    assert.equal(await key(), initial);
+    assert.equal(await key({ content_version: 2n, content_fingerprint: 'c'.repeat(64),
+      text_review: jsonb({ ...stored, contentVersion: '2', fingerprint: 'c'.repeat(64) }) }), initial,
+    'different SKUs with valid evidence bindings can share the same reviewed text');
+    assert.equal(await key({ text_review: jsonb({ ...stored, contentVersion: 1 }) }), null,
+      'a numeric stored version must not bypass the string version contract');
+    const cleared = await database.updateTable('products').set({ text_review: null }).where('id', '=', productOne)
+      .returning('text_review_key').executeTakeFirstOrThrow();
+    assert.equal(cleared.text_review_key, null);
   });
 
   test('failed catalog reads close their cursor and restore the caller transaction settings', async () => {
@@ -542,9 +609,9 @@ describe('catalog SQL read model', () => {
     const page = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [], limit: 20 });
     assert.equal(page.items[0]?.minPrice, '1.00');
     assert.deepEqual(page.items[0]?.offers.map(offer => offer.productId), [c, a].map(String));
-    assert.deepEqual(page.items[0]?.detail!.entries?.map(offer => offer.productId).slice(0, 3), [c, b, a].map(String));
-    assert.equal(page.items[0]?.detail!.entries?.find(offer => offer.productId === String(c))?.price, '1.00');
-    const offerA = page.items[0]?.detail!.entries?.find(offer => offer.productId === String(a));
+    assert.deepEqual(detailOffers(page.items[0]!).map(offer => offer.productId).slice(0, 3), [c, b, a].map(String));
+    assert.equal(detailOffers(page.items[0]!).find(offer => offer.productId === String(c))?.price, '1.00');
+    const offerA = detailOffers(page.items[0]!).find(offer => offer.productId === String(a));
     assert.equal(offerA?.listedPrice, '90.00');
     assert.equal(offerA?.priceStatus, 'verified');
     assert.equal(offerA?.paymentMethod, 'alipay');
@@ -1510,7 +1577,7 @@ describe('catalog SQL read model', () => {
     assert.equal(result.total, 1);
     assert.equal(result.offerTotal, 1);
     assert.equal(result.items[0]?.minPrice, '30.00');
-    assert.deepEqual(result.items[0]?.detail!.entries.map(offer => offer.productId), [String(covered30)]);
+    assert.deepEqual(detailOffers(result.items[0]!).map(offer => offer.productId), [String(covered30)]);
     assert.ok(result.items[0]?.offers[0]?.tags.some(tag => tag.name === 'warranty_days' && tag.value === '30'));
     assert.equal(result.appliedQuery?.warrantyDaysMin, 30);
     for (const detailKind of ['offers', 'shops'] as const) {
@@ -1525,7 +1592,7 @@ describe('catalog SQL read model', () => {
   test('purchase filters use OR within a dimension and AND across dimensions', async () => {
     const { covered30, covered7 } = await addPurchaseChoices();
     const result = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'region', value: 'us' }, { name: 'region', value: 'philippines' }, { name: 'sms_verification', value: 'verified' }], limit: 20 });
-    assert.deepEqual(result.items[0]?.detail!.entries.map(offer => offer.productId), [covered7, covered30].map(String));
+    assert.deepEqual(detailOffers(result.items[0]!).map(offer => offer.productId), [covered7, covered30].map(String));
     assert.equal(result.items[0]?.minPrice, '7.00');
     const impossible = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'sms_verification', value: 'unverified' }], warrantyDaysMin: 30, limit: 20 });
     assert.equal(impossible.total, 0);
@@ -1538,11 +1605,11 @@ describe('catalog SQL read model', () => {
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
     for (const input of [{ warrantyDaysMin: 30 }, { q: 'ChatGPT 质保至少30天' }]) {
       const page = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, ...input });
-      assert.deepEqual(page.items[0]?.detail!.entries.map(offer => offer.productId), [covered30, covered90].map(String));
+      assert.deepEqual(detailOffers(page.items[0]!).map(offer => offer.productId), [covered30, covered90].map(String));
       assert.equal(page.items[0]?.minPrice, '30.00');
     }
     const overridden = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, q: 'ChatGPT 质保至少30天', warrantyDaysMin: 90 });
-    assert.deepEqual(overridden.items[0]?.detail!.entries.map(offer => offer.productId), [String(covered90)]);
+    assert.deepEqual(detailOffers(overridden.items[0]!).map(offer => offer.productId), [String(covered90)]);
   });
 
   test('duration aliases match all equivalent quotes without conflating months with days', async () => {
@@ -1551,9 +1618,9 @@ describe('catalog SQL read model', () => {
     const days = await addSku(shopOne, 'duration-days', '12.00', [{ name: 'duration', value: '30 days' }]);
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
     const months = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tag: [{ name: 'duration', value: '1个月' }] });
-    assert.deepEqual(months.items[0]?.detail!.entries.map(offer => offer.productId), [month, alias].map(String));
+    assert.deepEqual(detailOffers(months.items[0]!).map(offer => offer.productId), [month, alias].map(String));
     const byDays = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tag: [{ name: 'duration', value: '30 days' }] });
-    assert.deepEqual(byDays.items[0]?.detail!.entries.map(offer => offer.productId), [String(days)]);
+    assert.deepEqual(detailOffers(byDays.items[0]!).map(offer => offer.productId), [String(days)]);
     const facets = await service.getFacets({});
     assert.deepEqual(facets.tagFacets.filter(tag => tag.name === 'duration').map(tag => tag.value).sort(), ['1 month', '30 days']);
   });
@@ -1561,11 +1628,11 @@ describe('catalog SQL read model', () => {
   test('unknown warranty remains distinct from explicit none and first-login coverage', async () => {
     const { noWarranty, firstLogin } = await addPurchaseChoices();
     const none = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, platform: 'openai', tags: [{ name: 'warranty', value: 'none' }], limit: 20 });
-    assert.deepEqual(none.items[0]?.detail!.entries.map(offer => offer.productId), [String(noWarranty)]);
+    assert.deepEqual(detailOffers(none.items[0]!).map(offer => offer.productId), [String(noWarranty)]);
     const unknown = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, platform: 'openai', tags: [{ name: 'warranty', value: 'unknown' }], limit: 20 });
-    assert.deepEqual(unknown.items[0]?.detail!.entries.map(offer => offer.productId), [String(productOne)]);
+    assert.deepEqual(detailOffers(unknown.items[0]!).map(offer => offer.productId), [String(productOne)]);
     const first = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'warranty_scope', value: 'first_login' }], limit: 20 });
-    assert.deepEqual(first.items[0]?.detail!.entries.map(offer => offer.productId), [String(firstLogin)]);
+    assert.deepEqual(detailOffers(first.items[0]!).map(offer => offer.productId), [String(firstLogin)]);
     assert.ok(!first.items[0]?.offers[0]?.tags.some(tag => tag.name === 'duration' || tag.name === 'warranty_days'));
   });
 
@@ -1575,7 +1642,7 @@ describe('catalog SQL read model', () => {
     await database.updateTable('products').set({ name: 'ChatGPT Plus 未接码 速刷 无质保', spec: '独享 兑换码' }).where('id', '=', product).execute();
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
     const result = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, q: 'plus 未接码 速刷 无质保' });
-    assert.deepEqual(result.items[0]?.detail!.entries.map(offer => offer.productId), [String(product)]);
+    assert.deepEqual(detailOffers(result.items[0]!).map(offer => offer.productId), [String(product)]);
     assert.ok(result.items[0]?.offers[0]?.tags.some(tag => tag.name === 'intended_use' && tag.value === 'rapid'));
     assert.ok(result.items[0]?.offers[0]?.tags.some(tag => tag.name === 'delivery' && tag.value === 'redemption'));
   });
@@ -1599,9 +1666,9 @@ describe('catalog SQL read model', () => {
     for (const input of [{ q: '日抛' }, { q: '速刷' }, { tags: [{ name: 'intended_use', value: 'rapid' }] }]) {
       const result = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, ...input });
       assert.equal(result.offerTotal, 4);
-      assert.deepEqual(new Set(result.items.flatMap(item => item.detail!.entries!.map(offer => offer.productId))),
+      assert.deepEqual(new Set(result.items.flatMap(item => detailOffers(item).map(offer => offer.productId))),
         new Set([daily, rapid, both, named].map(String)));
-      for (const offer of result.items.flatMap(item => item.detail!.entries!)) {
+      for (const offer of result.items.flatMap(detailOffers)) {
         assert.deepEqual(offer.tags.filter(tag => tag.name === 'intended_use'), [{ name: 'intended_use', value: 'rapid' }]);
         assert.ok(!offer.tags.some(tag => tag.value === 'disposable'));
       }
@@ -1628,7 +1695,7 @@ describe('catalog SQL read model', () => {
     const product = await addSku(shopOne, 'conflict', '0.50', [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: '30 days' }]);
     await database.updateTable('products').set({ name: '未接码 无质保', spec: '' }).where('id', '=', product).execute();
     const result = await repository.search({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'sms_verification', value: 'verified' }], warrantyDaysMin: 30, limit: 20 });
-    assert.ok(result.items.every(item => item.detail!.entries.every(offer => offer.productId !== String(product))));
+    assert.ok(result.items.every(item => detailOffers(item).every(offer => offer.productId !== String(product))));
   });
 
   test('options remain selectable across purchase filters while the list filters matching offers', async () => {

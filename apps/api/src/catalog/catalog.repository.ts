@@ -1,11 +1,12 @@
 import { Inject, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { LRUCache } from 'lru-cache';
 import { sql, type Kysely, type RawBuilder } from 'kysely';
 import { DATABASE } from '../database/database.providers.js';
 import { DomainValidationError } from '../common/errors.js';
 import type { DatabaseSchema, JsonValue } from '../database/types.js';
 import { readShopRating, type ShopRatingDetails } from '../shops/shop-rating.js';
-import { createTextReviewAccumulator, type ProductReviewRow } from '../shops/shop-text-review.js';
+import { createTextReviewAccumulator, prepareTextReview, type PreparedTextReview, type ProductReviewRow } from '../shops/shop-text-review.js';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
 import { catalogOrderRank, catalogPlatformGroup, OTHER_CATALOG_RANK } from './catalog-order.js';
 import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './quote-policy.js';
@@ -134,7 +135,7 @@ type InternalRating = { state: JsonValue | null; url: string; protocol: string |
 type CatalogReadRow =
   | { kind: 0; payload: CatalogResult }
   | { kind: 1; payload: { shop_id: string; rating: InternalRating } }
-  | { kind: 2; payload: ProductReviewRow & { shop_id: string } };
+  | { kind: 2; payload: { shop_id: string; key: string; review: ProductReviewRow | null } };
 
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 20;
@@ -178,6 +179,11 @@ export function decodeCatalogCursor(value: string): CatalogCursor {
 
 @Injectable()
 export class CatalogRepository {
+  private readonly textReviews = new LRUCache<string, { value: PreparedTextReview | null }>({
+    max: 2048, maxSize: 8 * 1024 * 1024,
+    sizeCalculation: (entry, key) => Buffer.byteLength(key) + Buffer.byteLength(JSON.stringify(entry.value)),
+  });
+
   constructor(@Inject(DATABASE) private readonly database: Kysely<DatabaseSchema>,
     @Optional() @Inject(CATALOG_QUOTE_POLICY) private readonly policy: QuotePolicy = defaultQuotePolicy()) {}
 
@@ -213,14 +219,21 @@ export class CatalogRepository {
   async search(input: CatalogQuery): Promise<CatalogPage> {
     const query = input;
     let result!: CatalogResult;
+    // Pin the advertised keys until this cursor finishes, even if concurrent reads evict them.
+    const cachedReviews = new Map([...this.textReviews.entries()].map(([key, entry]) => [key, entry.value]));
     const shops = new Map<string, { rating: InternalRating; reviews: ReturnType<typeof createTextReviewAccumulator> }>();
     await this.readCatalogRows(input, row => {
       if (row.kind === 0) result = row.payload;
       else if (row.kind === 1) {
         const { shop_id: id, rating } = row.payload;
         shops.set(id, { rating, reviews: createTextReviewAccumulator(rating.manifest, rating, this.policy.now()) });
-      } else shops.get(row.payload.shop_id)?.reviews?.add(row.payload);
-    });
+      } else {
+        const { shop_id: shopId, key, review: raw } = row.payload;
+        const review = raw ? prepareTextReview(raw) : cachedReviews.get(key);
+        if (review !== undefined) this.textReviews.set(key, { value: review });
+        if (review) shops.get(shopId)?.reviews?.add(review);
+      }
+    }, [...cachedReviews.keys()]);
     const { entries, platform_facets: platformFacets, total } = result;
     const hasNext = result.has_next;
     const visible = entries;
@@ -270,11 +283,11 @@ export class CatalogRepository {
     return result.rows[0]?.['QUERY PLAN'] ?? [];
   }
 
-  private async readCatalogRows(input: CatalogQuery, consume: (row: CatalogReadRow) => void): Promise<void> {
+  private async readCatalogRows(input: CatalogQuery, consume: (row: CatalogReadRow) => void, cachedReviewKeys: readonly string[]): Promise<void> {
     const read = async (database: Kysely<DatabaseSchema>) => {
       const cursor = sql.id(`catalog_${randomUUID().replaceAll('-', '')}`);
       // A server cursor keeps one statement snapshot and bounds raw review bodies in Node.
-      await sql`declare ${cursor} no scroll cursor for ${buildCatalogQuery(input, this.policy)}`.execute(database);
+      await sql`declare ${cursor} no scroll cursor for ${buildCatalogQuery(input, this.policy, false, cachedReviewKeys)}`.execute(database);
       let failed = false;
       try {
         for (;;) {
@@ -311,8 +324,8 @@ export class CatalogRepository {
 
 type FacetResult = { tag_facets: CatalogFacets['tagFacets']; next_expiry_at: string | null };
 function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly: true): RawBuilder<FacetResult>;
-function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly?: false): RawBuilder<CatalogReadRow>;
-function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly = false): RawBuilder<CatalogReadRow> | RawBuilder<FacetResult> {
+function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly?: false, cachedReviewKeys?: readonly string[]): RawBuilder<CatalogReadRow>;
+function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly = false, cachedReviewKeys: readonly string[] = []): RawBuilder<CatalogReadRow> | RawBuilder<FacetResult> {
   const now = new Date(policy.now());
   const freshAfter = new Date(now.getTime() - policy.ttlMs);
   const pricesOnly = !optionsOnly && !input.search?.trim();
@@ -551,14 +564,20 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
         (select min(verification_at) from (${priceDeadlines}) deadlines where verification_at > ${freshAfter}::timestamptz)
       ) + ${policy.ttlMs} * interval '1 millisecond'
        ) #>> '{}' as next_expiry_at
+    ), review_products as materialized (
+      select distinct on (p.shop_id, p.text_review_key) p.shop_id, p.id, p.text_review_key
+      from products p join returned_shop_ids r on r.shop_id = p.shop_id join shops s on s.id = p.shop_id
+      where p.text_review_key is not null
+        and jsonb_typeof(s.rating_manifest->'observedAt') = 'number'
+        and s.rating_manifest->'observedAt' > to_jsonb(${now.getTime() - 86_400_000}::bigint)
+        and s.rating_manifest->'observedAt' <= to_jsonb(${now.getTime()}::bigint)
+      order by p.shop_id, p.text_review_key, p.id
     ), read_rows as (
-      select 0 as kind, null::bigint as shop_id, null::bigint as product_id
+      select 0 as kind, null::bigint as shop_id, null::bigint as product_id, null::text as text_review_key
       union all
-      select 1, shop_id, null::bigint from returned_shop_ids
+      select 1, shop_id, null::bigint, null::text from returned_shop_ids
       union all
-      select 2, p.shop_id, p.id
-        from products p join returned_shop_ids r on r.shop_id = p.shop_id join shops s on s.id = p.shop_id
-        where s.rating_manifest is not null and p.text_review is not null
+      select 2, shop_id, id, text_review_key from review_products
     )
     -- OFFSET 0 keeps payload construction above the sort of narrow row identities.
     select r.kind, case r.kind
@@ -566,10 +585,12 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
       when 1 then (select jsonb_build_object('shop_id', s.id::text, 'rating', jsonb_build_object(
         'state', s.shop_rating, 'url', s.url, 'protocol', s.protocol, 'platform', s.platform, 'manifest', s.rating_manifest))
         from shops s where s.id = r.shop_id)
-      else (select jsonb_build_object(
-        'shop_id', p.shop_id::text, 'external_id', p.external_id, 'content_version', p.content_version::text,
+      else jsonb_build_object('shop_id', r.shop_id::text, 'key', r.text_review_key,
+        'review', case when r.text_review_key = any(${cachedReviewKeys}::text[]) then null::jsonb
+        else (select jsonb_build_object(
+        'external_id', p.external_id, 'content_version', p.content_version::text,
         'content_fingerprint', p.content_fingerprint, 'source_data', jsonb_build_object('ratingText', p.source_data->'ratingText'),
-        'text_review', p.text_review) from products p where p.id = r.product_id)
+        'text_review', p.text_review) from products p where p.id = r.product_id) end)
       end as payload
     from (select * from read_rows order by kind offset 0) r
   `;

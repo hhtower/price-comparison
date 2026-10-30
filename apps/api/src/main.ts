@@ -12,6 +12,7 @@ import { PG_POOL } from './database/database.providers.js';
 import { MetricsService } from './observability/metrics.js';
 import { CatalogService } from './catalog/catalog.service.js';
 import { registerPublicPages } from './seo/public-pages.js';
+import { registerStaticAssets } from './seo/static-assets.js';
 import {
   createRequestId,
   StructuredLogger,
@@ -60,14 +61,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
       getProducts: () => app.get(CatalogService).getProducts(),
       getProduct: id => app.get(CatalogService).getProduct(id),
     });
-    fastify.get('/assets/*', async (request, reply) => {
-      const relative = String((request.params as { '*': string })['*'] ?? '');
-      const file = resolve(clientRoot, 'assets', relative);
-      if (!file.startsWith(resolve(clientRoot, 'assets')) || !existsSync(file)) return reply.code(404).send();
-      const extension = file.split('.').pop();
-      const types: Record<string, string> = { js: 'application/javascript', css: 'text/css', png: 'image/png', svg: 'image/svg+xml', woff2: 'font/woff2' };
-      return reply.type(types[extension ?? ''] ?? 'application/octet-stream').send(readFileSync(file));
-    });
+    registerStaticAssets(fastify, clientRoot);
   }
   app.enableVersioning({ type: VersioningType.URI });
   app.useGlobalPipes(

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readTextEvidence, validateTextReview, createTextReviewAccumulator, TEXT_REVIEW_VERSION, type ProductReviewRow } from '../src/shops/shop-text-review.js';
+import { readTextEvidence, validateTextReview, createTextReviewAccumulator, prepareTextReview, TEXT_REVIEW_VERSION, type ProductReviewRow } from '../src/shops/shop-text-review.js';
 
 const text = { unitId: 'item', name: '月度套餐', description: '交付账号。服务一个月。', hash: 'a'.repeat(64) };
 const answers = Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key,
@@ -17,7 +17,10 @@ const row = { external_id: 'item', content_version: 1n, content_fingerprint: sto
 
 function aggregateTextReviews(input: unknown, origin: typeof source, rows: ProductReviewRow[], now: number) {
   const accumulator = createTextReviewAccumulator(input, origin, now);
-  for (const row of rows) accumulator?.add(row);
+  for (const row of rows) {
+    const review = prepareTextReview(row);
+    if (review) accumulator?.add(review);
+  }
   return accumulator?.finish() ?? null;
 }
 
@@ -51,16 +54,40 @@ test('whole-source manifest preserves unknowns, deduplicates SKUs and rejects st
 
 test('incremental text reviews keep conflicts across batches and retain only judgments', () => {
   const accumulator = createTextReviewAccumulator(manifest, source, 100)!;
-  accumulator.add(row);
+  accumulator.add(prepareTextReview(row)!);
   assert.equal(accumulator.finish().reviewed, 1);
-  accumulator.add({ ...row, external_id: 'duplicate' });
+  accumulator.add(prepareTextReview({ ...row, external_id: 'duplicate' })!);
   assert.equal(accumulator.finish().reviewed, 1);
-  accumulator.add({ ...row, text_review: { ...stored, review: { ...review,
-    answers: { ...answers, L1: { value: false, reason: '未明确', evidence: [] } } } } });
-  accumulator.add(row);
+  accumulator.add(prepareTextReview({ ...row, text_review: { ...stored, review: { ...review,
+    answers: { ...answers, L1: { value: false, reason: '未明确', evidence: [] } } } } })!);
+  accumulator.add(prepareTextReview(row)!);
   const result = accumulator.finish();
   assert.equal(result.reviewed, 0);
   assert.equal(result.listings[0]?.answers, null);
   assert.ok(!JSON.stringify(result).includes('evidence'));
   assert.equal(createTextReviewAccumulator(manifest, source, 86_400_100), null);
+});
+
+test('prepared reviews retain only validated judgments and recheck the live manifest and source', () => {
+  const prepared = prepareTextReview(row)!;
+  assert.ok(prepared);
+  assert.ok(!JSON.stringify(prepared).includes('description'));
+  assert.ok(!JSON.stringify(prepared).includes('evidence'));
+  const accumulator = createTextReviewAccumulator(manifest, source, 100)!;
+  accumulator.add(prepared);
+  assert.deepEqual(accumulator.finish(), aggregateTextReviews(manifest, source, [row], 100));
+  const changedSource = createTextReviewAccumulator({ ...manifest, sourceUrl: 'https://changed.invalid' },
+    { ...source, url: 'https://changed.invalid' }, 100)!;
+  changedSource.add(prepared);
+  assert.equal(changedSource.finish().reviewed, 0);
+  const changedManifest = createTextReviewAccumulator({
+    ...manifest, units: [{ unitId: text.unitId, hash: 'c'.repeat(64) }],
+  }, source, 100)!;
+  changedManifest.add(prepared);
+  assert.equal(changedManifest.finish().reviewed, 0);
+  assert.equal(prepareTextReview({ ...row, content_version: 2n }), null);
+  assert.equal(prepareTextReview({ ...row, content_fingerprint: 'changed' }), null);
+  assert.equal(prepareTextReview({ ...row, text_review: { ...stored, review: {
+    ...review, answers: { ...answers, L1: { ...answers.L1, evidence: [{ field: 'name', quote: 'missing' }] } },
+  } } }), null);
 });

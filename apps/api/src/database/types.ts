@@ -73,6 +73,7 @@ export interface ProductTable {
   source_category: Generated<string>;
   source_data: GeneratedJsonbColumn;
   text_review: NullableJsonbColumn;
+  text_review_key: ColumnType<string | null, never, never>;
   normalized_key: string;
   url: string;
   image_url: string | null;

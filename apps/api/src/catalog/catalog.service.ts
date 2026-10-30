@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { CACHE, type Cache } from '../cache/cache.js';
 import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQuery, type CatalogSort, type CatalogTag } from './catalog.repository.js';
 import { DomainValidationError } from '../common/errors.js';
@@ -175,11 +175,13 @@ export class CatalogService {
   }
 
   private async readFresh<T extends { readonly nextExpiryAt?: string | null }>(loader: () => Promise<T>): Promise<T> {
-    for (;;) {
+    const deadline = Date.now() + 5_000;
+    for (let attempt = 0; attempt < 3; attempt++) {
       const result = await loader();
       if (!result.nextExpiryAt || Date.parse(result.nextExpiryAt) > Date.now()) return result;
-      // Refresh the complete snapshot when a read crosses a relevant deadline.
+      if (Date.now() >= deadline) break;
     }
+    throw new ServiceUnavailableException('目录更新频繁，暂时无法取得有效快照，请稍后重试');
   }
 }
 

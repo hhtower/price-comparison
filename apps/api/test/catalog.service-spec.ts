@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { ServiceUnavailableException } from '@nestjs/common';
 import { createCache } from '../src/cache/cache.js';
 import { CatalogService, normalizeCatalogQuery, type CatalogQueryInput } from '../src/catalog/catalog.service.js';
 import type { CatalogFacets, CatalogPage, CatalogQuery, CatalogRepository } from '../src/catalog/catalog.repository.js';
@@ -106,6 +107,41 @@ for (const kind of ['page', 'facets'] as const) test(`${kind} rechecks both expi
     assert.equal(reads, 4, 'a stable response still requires a live read on the next request');
   } finally { await cache.disconnect(); }
 });
+
+for (const kind of ['page', 'facets'] as const) {
+  test(`${kind} stops repeatedly expired reads without returning stale data`, async () => {
+    let reads = 0;
+    const loader = async () => {
+      if (++reads > 4) throw new Error('unbounded catalog reload');
+      return { ...(kind === 'page' ? emptyPage : { tagFacets: [] }), nextExpiryAt: new Date(0).toISOString() };
+    };
+    const cache = createCache();
+    const service = new CatalogService({ search: loader, facets: loader } as unknown as CatalogRepository, cache);
+    try {
+      const read = () => kind === 'page' ? service.getCatalog({}) : service.getFacets({});
+      await assert.rejects(read(), error => error instanceof ServiceUnavailableException && error.getStatus() === 503);
+      assert.equal(reads, 3);
+    } finally { await cache.disconnect(); }
+  });
+
+  test(`${kind} does not start another read after exhausting the freshness retry budget`, async context => {
+    context.mock.timers.enable({ apis: ['Date'], now: 1_000 });
+    let reads = 0;
+    const loader = async () => {
+      reads++;
+      context.mock.timers.tick(5_001);
+      return { ...(kind === 'page' ? emptyPage : { tagFacets: [] }),
+        nextExpiryAt: reads === 1 ? new Date(1_001).toISOString() : null };
+    };
+    const cache = createCache();
+    const service = new CatalogService({ search: loader, facets: loader } as unknown as CatalogRepository, cache);
+    try {
+      const read = () => kind === 'page' ? service.getCatalog({}) : service.getFacets({});
+      await assert.rejects(read(), error => error instanceof ServiceUnavailableException && error.getStatus() === 503);
+      assert.equal(reads, 1);
+    } finally { await cache.disconnect(); }
+  });
+}
 
 test('repository calls receive normalized queries, distinct detail pages and filters on every request', async () => {
   const pages: CatalogQuery[] = [];
