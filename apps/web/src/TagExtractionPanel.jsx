@@ -203,6 +203,11 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
   const queueSequence = useRef(0);
   const queuePending = useRef(null);
   const detailSequence = useRef(0);
+  const auditSequence = useRef(0);
+  const resultVersion = useRef(0);
+  const detailPending = useRef(null);
+  const detailTimer = useRef(null);
+  const latestProgress = useRef(null);
   const selection = useRef(null);
   const draftSequence = useRef(0);
   const submission = useRef(null);
@@ -252,53 +257,96 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
   }, [busy, loadQueue]);
 
   const loadDetail = useCallback(async () => {
-    if (!jobId) return;
-    const sequence = ++detailSequence.current;
-    try {
-      const [next, first] = await Promise.all([requestJson(`/api/admin/ai/jobs/${jobId}`),
-        detailOpen ? requestJson(`/api/admin/ai/jobs/${jobId}/tag-results`) : Promise.resolve(null)]);
-      if (sequence !== detailSequence.current || selection.current !== jobId) return;
-      if (!first) { setSnapshot(next); return; }
-      let results = first; let pages = 1;
-      const items = [...(first.items || [])];
-      while (pages < memberPages.current && results.nextCursor) {
-        results = await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results?cursor=${encodeURIComponent(results.nextCursor)}`);
-        if (sequence !== detailSequence.current) return;
-        items.push(...results.items); pages++;
-      }
-      const openId = expandedRef.current;
-      const audit = openId ? await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results/${openId}`) : null;
-      if (sequence !== detailSequence.current || selection.current !== jobId) return;
-      memberPages.current = pages;
-      setSnapshot(next); setMembers({ ...results, items }); setAudits(audit ? { [openId]: audit } : {});
-    } catch (reason) { if (sequence === detailSequence.current && selection.current === jobId) throw reason; }
+    if (!jobId || !alive.current || selection.current !== jobId) return;
+    if (detailPending.current?.sequence === detailSequence.current) {
+      detailPending.current.again = true;
+      return detailPending.current.promise;
+    }
+    const pending = { sequence: detailSequence.current, again: false, promise: null };
+    const active = () => alive.current && pending.sequence === detailSequence.current && selection.current === jobId;
+    pending.promise = (async () => {
+      do {
+        pending.again = false;
+        const version = ++resultVersion.current;
+        const progressBefore = latestProgress.current;
+        try {
+          const [next, first] = await Promise.all([requestJson(`/api/admin/ai/jobs/${jobId}`),
+            detailOpen ? requestJson(`/api/admin/ai/jobs/${jobId}/tag-results`) : Promise.resolve(null)]);
+          if (!active()) return;
+          const openId = detailOpen ? expandedRef.current : null;
+          const auditRequest = openId ? ++auditSequence.current : null;
+          const audit = openId ? await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results/${openId}`) : null;
+          if (!active()) return;
+          let results = first; let pages = 1;
+          const items = [...(first?.items || [])];
+          while (first && pages < memberPages.current && results.nextCursor) {
+            results = await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results?cursor=${encodeURIComponent(results.nextCursor)}`);
+            if (!active()) return;
+            items.push(...results.items); pages++;
+          }
+          // A slower snapshot must not roll back progress received while it was loading.
+          const progress = latestProgress.current !== progressBefore ? latestProgress.current : null;
+          setSnapshot(progress ? { ...next,
+            job: { ...next.job, ...(progress.status ? { status: progress.status } : {}), ...(progress.phase ? { phase: progress.phase } : {}) },
+            progress: { ...next.progress, ...progress },
+          } : next);
+          if (first) {
+            memberPages.current = pages;
+            setMembers({ ...results, items });
+            setAudits(current => {
+              const id = expandedRef.current;
+              const value = id === openId && auditRequest === auditSequence.current && version === resultVersion.current
+                ? { version, data: audit } : current[id];
+              return value?.version === resultVersion.current ? { [id]: value } : {};
+            });
+          }
+        } catch (reason) {
+          if (!active()) return;
+          if (!pending.again) throw reason;
+        }
+      } while (pending.again && active());
+    })().finally(() => { if (detailPending.current === pending) detailPending.current = null; });
+    detailPending.current = pending;
+    return pending.promise;
   }, [jobId, detailOpen]);
   useEffect(() => {
     if (!jobId) return;
-    memberPages.current = 1; expandedRef.current = null; setSnapshot(null); setMembers(null); setAudits({}); setExpanded(null); setConnection('');
-    loadDetail().catch(reason => { if (selection.current === jobId) setError(reason.message); });
-    return () => { ++detailSequence.current; };
+    setConnection('');
+    loadDetail().catch(reason => { if (alive.current && selection.current === jobId) setError(reason.message); });
+    return () => { ++detailSequence.current; clearTimeout(detailTimer.current); detailTimer.current = null; };
   }, [jobId, loadDetail]);
   useEffect(() => {
     if (!jobId || !snapshot || TERMINAL.has(snapshot.job?.status)) return;
     const controller = new AbortController();
-    const refresh = (includeQueue = true) => {
+    const refresh = () => {
       if (controller.signal.aborted) return;
-      Promise.all([loadDetail(), includeQueue ? loadQueue() : Promise.resolve()]).then(() => { if (!controller.signal.aborted) { setConnection(''); onChanged.current?.(); } }).catch(reason => { if (!controller.signal.aborted) setError(reason.message); });
+      const sequence = detailSequence.current;
+      const active = () => alive.current && selection.current === jobId && sequence === detailSequence.current;
+      Promise.all([loadDetail(), loadQueue()]).then(() => { if (active()) { setConnection(''); onChanged.current?.(); } }).catch(reason => { if (active()) setError(reason.message); });
+    };
+    const refreshResults = () => {
+      if (!detailOpen || detailTimer.current !== null) return;
+      detailTimer.current = setTimeout(() => {
+        detailTimer.current = null;
+        loadDetail().catch(reason => { if (alive.current && selection.current === jobId) setError(reason.message); });
+      }, 1000);
     };
     const stream = createProgressEventSource(`/api/admin/ai/jobs/${jobId}/events`, {
       signal: controller.signal, onOpen: refresh,
       onProgress: progress => {
         if (controller.signal.aborted) return;
-        if (detailOpen || TERMINAL.has(progress.status)) { refresh(TERMINAL.has(progress.status)); return; }
         setConnection('');
-        ++detailSequence.current;
+        latestProgress.current = { ...latestProgress.current, ...progress };
         setSnapshot(current => current && String(current.job?.id) === jobId ? {
           ...current,
           job: { ...current.job, ...(progress.status ? { status: progress.status } : {}), ...(progress.phase ? { phase: progress.phase } : {}) },
           progress: { ...current.progress, ...progress },
         } : current);
         onChanged.current?.();
+        if (TERMINAL.has(progress.status)) {
+          clearTimeout(detailTimer.current); detailTimer.current = null;
+          refresh();
+        } else refreshResults();
       },
       onError: () => { if (!controller.signal.aborted) setConnection('实时连接中断，正在重连；可刷新读取服务端快照。'); },
     });
@@ -314,7 +362,7 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
   function selectJob(id, open = true) {
     setDetailOpen(open);
     if (String(id) === jobId) { if (open === detailOpen) run(loadDetail); return; }
-    selection.current = String(id); ++detailSequence.current; setSnapshot(null); setMembers(null); setAudits({}); expandedRef.current = null; setExpanded(null); setJobId(String(id)); setError('');
+    selection.current = String(id); ++detailSequence.current; memberPages.current = 1; latestProgress.current = null; setSnapshot(null); setMembers(null); setAudits({}); expandedRef.current = null; setExpanded(null); setJobId(String(id)); setError('');
   }
   function closeDetail() {
     ++detailSequence.current; selection.current = null; setDetailOpen(false); setJobId(null);
@@ -347,15 +395,18 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
   async function expand(id) {
     expandedRef.current = expandedRef.current === id ? null : id;
     setExpanded(expandedRef.current);
-    if (audits[id] || expandedRef.current === null) return;
+    if (audits[id]?.version === resultVersion.current || expandedRef.current === null) return;
     const forJob = jobId; const sequence = detailSequence.current;
+    const version = resultVersion.current;
+    const request = ++auditSequence.current;
     const data = await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results/${id}`);
-    if (selection.current === forJob && sequence === detailSequence.current && alive.current) setAudits(current => ({ ...current, [id]: data }));
+    if (selection.current === forJob && sequence === detailSequence.current && version === resultVersion.current && request === auditSequence.current && alive.current) setAudits(current => ({ ...current, [id]: { version, data } }));
   }
   async function moreMembers() {
     const forJob = jobId; const sequence = detailSequence.current;
+    const version = resultVersion.current;
     const next = await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results?cursor=${encodeURIComponent(members.nextCursor)}`);
-    if (selection.current === forJob && sequence === detailSequence.current) { memberPages.current++; setMembers(current => ({ ...next, items: [...current.items, ...next.items] })); }
+    if (alive.current && selection.current === forJob && sequence === detailSequence.current && version === resultVersion.current) { memberPages.current++; setMembers(current => ({ ...next, items: [...current.items, ...next.items] })); }
   }
   const job = snapshot?.job;
   const latest = queue?.items?.[0];
@@ -428,7 +479,7 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
             {snapshot.currentBatches?.length ? <ul>{snapshot.currentBatches.filter(batch => Number(batch.batch_index ?? batch.batchIndex) >= 0).map((batch, index) => <li key={index}>在途批次 {Number(batch.batch_index ?? batch.batchIndex) + 1} · {batch.round} · {batch.step} · {batch.product_count ?? batch.productCount} 份输入</li>)}</ul> : null}
           </details> : null}
       <header className="ai-card-header tag-member-heading"><h4>商品结果</h4></header>
-      {!members ? <p role="status">正在读取商品结果…</p> : members.items.length ? <ul className="tag-member-list">{members.items.map(member => { const id = String(member.id); return <li key={id}><strong>{member.name}</strong><p>{member.shop_name} · {member.spec} · {resultTitle(member.outcome || (['queued', 'processing'].includes(member.status) ? member.status : 'unrecorded'), member.acceptedCount, member.rejectedCount)} · {reasonTitle(member.reason_code)}</p><p>通过 {member.acceptedCount ?? '未记录'} · 拒绝 {member.rejectedCount ?? '未记录'} · 变化字段 {member.changedFields ?? '未记录'}</p><button type="button" aria-expanded={expanded === id} onClick={() => run(() => expand(id))}>查看商品 #{id} 依据</button>{expanded === id ? audits[id] ? <Audit data={audits[id]} /> : <p role="status">正在读取商品依据…</p> : null}</li>; })}</ul> : <EmptyState>暂无商品结果</EmptyState>}
+      {!members ? <p role="status">正在读取商品结果…</p> : members.items.length ? <ul className="tag-member-list">{members.items.map(member => { const id = String(member.id); return <li key={id}><strong>{member.name}</strong><p>{member.shop_name} · {member.spec} · {resultTitle(member.outcome || (['queued', 'processing'].includes(member.status) ? member.status : 'unrecorded'), member.acceptedCount, member.rejectedCount)} · {reasonTitle(member.reason_code)}</p><p>通过 {member.acceptedCount ?? '未记录'} · 拒绝 {member.rejectedCount ?? '未记录'} · 变化字段 {member.changedFields ?? '未记录'}</p><button type="button" aria-expanded={expanded === id} onClick={() => run(() => expand(id))}>查看商品 #{id} 依据</button>{expanded === id ? audits[id]?.version === resultVersion.current ? <Audit data={audits[id].data} /> : <p role="status">正在读取商品依据…</p> : null}</li>; })}</ul> : <EmptyState>暂无商品结果</EmptyState>}
       {members?.nextCursor ? <button type="button" disabled={busy} onClick={() => run(moreMembers)}>加载更多商品结果</button> : null}
 
         </section>

@@ -1,6 +1,6 @@
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AiWorkbench from './AiWorkbench.jsx';
 
@@ -33,6 +33,57 @@ describe('AiWorkbench', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     vi.stubGlobal('EventSource', undefined);
+  });
+
+  test('标准化慢队列轮询单飞，跨越多个周期仍能显示结果并继续轮询', async () => {
+    const pending = [];
+    const calls = installFetch(url => {
+      if (url.pathname.endsWith('/task-queue') && url.searchParams.get('limit') === '1') {
+        return new Promise(resolve => pending.push(resolve));
+      }
+      return response(url.pathname.endsWith('/task-queue') ? { items: [] } : status);
+    });
+    vi.useFakeTimers();
+    const view = render(<AiWorkbench shops={shops} />);
+    try {
+      fireEvent.click(screen.getByRole('tab', { name: '标准化' }));
+      await act(async () => vi.advanceTimersByTimeAsync(30000));
+      expect(pending).toHaveLength(1);
+      await act(async () => pending[0](response({ summary: { pendingProducts: 123 } })));
+      expect(screen.getByRole('region', { name: '标准化队列' })).toHaveTextContent('未处理商品123');
+      await act(async () => vi.advanceTimersByTimeAsync(10000));
+      expect(pending).toHaveLength(2);
+      view.unmount();
+      await act(async () => pending[1](response({ summary: { pendingProducts: 999 } })));
+      const count = calls.length;
+      await act(async () => vi.advanceTimersByTimeAsync(20000));
+      expect(calls).toHaveLength(count);
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  test('标准化手动刷新及离开再返回不受旧队列请求阻塞，迟到响应不覆盖新结果', async () => {
+    const pending = [];
+    installFetch(url => {
+      if (url.pathname.endsWith('/task-queue') && url.searchParams.get('limit') === '1') {
+        return new Promise(resolve => pending.push(resolve));
+      }
+      return response(url.pathname.endsWith('/task-queue') ? { items: [] } : status);
+    });
+    const user = userEvent.setup();
+    const view = render(<AiWorkbench shops={shops} />);
+    await user.click(screen.getByRole('tab', { name: '标准化' }));
+    await user.click(screen.getByRole('button', { name: '刷新状态' }));
+    expect(pending).toHaveLength(2);
+    await user.click(screen.getByRole('tab', { name: '抓取' }));
+    await user.click(screen.getByRole('tab', { name: '标准化' }));
+    expect(pending).toHaveLength(3);
+    await act(async () => pending[2](response({ summary: { pendingProducts: 321 } })));
+    await act(async () => {
+      pending[0](response({ summary: { pendingProducts: 111 } }));
+      pending[1](response({ summary: { pendingProducts: 222 } }));
+    });
+    expect(screen.getByRole('region', { name: '标准化队列' })).toHaveTextContent('未处理商品321');
+    view.unmount();
   });
 
   test('六个入口按任务与记录成对排列，支持键盘切换并关联面板', async () => {

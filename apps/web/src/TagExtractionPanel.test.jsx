@@ -1,10 +1,469 @@
 import React from 'react';
 import { beforeEach, expect, test, vi } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import TagExtractionPanel from './TagExtractionPanel.jsx';
 
 beforeEach(() => { vi.unstubAllGlobals(); vi.stubGlobal('EventSource', undefined); });
+
+function installStreams() {
+  const streams = [];
+  vi.stubGlobal('EventSource', class extends EventTarget {
+    constructor() { super(); streams.push(this); }
+    close() {}
+  });
+  return streams;
+}
+
+function emitProgress(source, progress) {
+  source.dispatchEvent(new MessageEvent('progress', { data: JSON.stringify(progress) }));
+}
+
+test.each(['expand-first', 'refresh-first'])('终态刷新期间切回缓存商品读取当前版本依据（%s）', async order => {
+  const streams = installStreams();
+  let finished = false;
+  const pending = {};
+  const calls = installApi({ state: 'running', handle(call, job) {
+    if (call.path.endsWith('/jobs/8')) return Response.json({ job: { ...job, status: finished ? 'succeeded' : 'running' },
+      progress: { rawProductCount: 2, processed: finished ? 2 : 0 } });
+    if (/tag-results\/[34]$/.test(call.path)) {
+      const id = call.path.split('/').at(-1);
+      const data = { member: { status: finished ? 'succeeded' : 'processing', fingerprint: `${id}-${finished ? 'final' : 'old'}`,
+        ...(finished ? { output: { outcome: 'updated', acceptedTags: [], rejectedTags: [], diff: [] } } : {}) }, batches: [] };
+      return finished ? new Promise(resolve => { pending[id] = () => resolve(Response.json(data)); }) : Response.json(data);
+    }
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
+  await screen.findByText('输入指纹：3-old');
+  await user.click(screen.getByRole('button', { name: '查看商品 #4 依据' }));
+  await screen.findByText('输入指纹：4-old');
+  finished = true;
+  await act(async () => emitProgress(streams.at(-1), { status: 'succeeded', processed: 2 }));
+  await user.click(screen.getByRole('button', { name: '查看商品 #3 依据' }));
+  expect(screen.queryByText('输入指纹：3-old')).not.toBeInTheDocument();
+  expect(calls.filter(call => call.path.endsWith('/tag-results/3'))).toHaveLength(2);
+  if (order === 'expand-first') {
+    await act(async () => pending['3']());
+    expect(screen.getByText('输入指纹：3-final')).toBeInTheDocument();
+    await act(async () => pending['4']());
+  } else {
+    await act(async () => pending['4']());
+    expect(screen.getByText('正在读取商品依据…')).toBeInTheDocument();
+    await act(async () => pending['3']());
+  }
+  expect(screen.getByText('输入指纹：3-final')).toBeInTheDocument();
+  expect(screen.queryByText('商品最终发布审计尚未生成。')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '查看商品 #3 依据' })).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('相同结果版本切换或收起再展开复用依据缓存，关闭展开项刷新后可重读', async () => {
+  const calls = installApi({ state: 'running', handle(call) {
+    if (/tag-results\/[34]$/.test(call.path)) return Response.json({
+      member: { fingerprint: call.path.split('/').at(-1) }, batches: [],
+    });
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  for (const id of ['3', '4', '3']) {
+    await user.click(await screen.findByRole('button', { name: `查看商品 #${id} 依据` }));
+    expect(screen.getByText(`输入指纹：${id}`)).toBeInTheDocument();
+  }
+  await user.click(screen.getByRole('button', { name: '查看商品 #3 依据' }));
+  await user.click(screen.getByRole('button', { name: '查看商品 #3 依据' }));
+  expect(screen.getByText('输入指纹：3')).toBeInTheDocument();
+  expect(calls.filter(call => /tag-results\/[34]$/.test(call.path))).toHaveLength(2);
+  await user.click(screen.getByRole('button', { name: '查看商品 #3 依据' }));
+  await user.click(screen.getByRole('button', { name: '刷新详情' }));
+  expect(screen.queryByText('输入指纹：3')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '查看商品 #3 依据' }));
+  expect(screen.getByText('输入指纹：3')).toBeInTheDocument();
+  expect(calls.filter(call => call.path.endsWith('/tag-results/3'))).toHaveLength(2);
+});
+
+test('新结果轮次尚未发起依据读取时，旧版本的展开响应也不能写缓存', async () => {
+  const streams = installStreams();
+  let refreshing = false;
+  let finishSnapshot;
+  let finishOldAudit;
+  installApi({ state: 'running', handle(call, job) {
+    if (refreshing && call.path.endsWith('/jobs/8')) return new Promise(resolve => {
+      finishSnapshot = () => resolve(Response.json({ job, progress: { rawProductCount: 2, processed: 1 } }));
+    });
+    if (call.path.endsWith('/tag-results/3')) {
+      const data = { member: { fingerprint: refreshing ? 'current-version' : 'old-version' }, batches: [] };
+      return refreshing ? Response.json(data) : new Promise(resolve => {
+        finishOldAudit = () => resolve(Response.json(data));
+      });
+    }
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
+  refreshing = true;
+  await act(async () => streams.at(-1).dispatchEvent(new Event('open')));
+  await act(async () => finishOldAudit());
+  expect(screen.queryByText('输入指纹：old-version')).not.toBeInTheDocument();
+  expect(screen.getByText('正在读取商品依据…')).toBeInTheDocument();
+  await act(async () => finishSnapshot());
+  expect(screen.getByText('输入指纹：current-version')).toBeInTheDocument();
+});
+
+test('刷新依据延迟时切走再切回同一商品，保留较新展开请求的当前版本依据', async () => {
+  const streams = installStreams();
+  let refreshing = false;
+  let finishOldRefresh;
+  let refreshReads = 0;
+  installApi({ state: 'running', handle(call) {
+    if (/tag-results\/[34]$/.test(call.path)) {
+      const id = call.path.split('/').at(-1);
+      const data = { member: { fingerprint: `${id}-${refreshing ? 'current' : 'old'}` }, batches: [] };
+      if (refreshing && id === '4' && ++refreshReads === 1) return new Promise(resolve => {
+        finishOldRefresh = () => resolve(Response.json({ member: { fingerprint: 'stale-refresh' }, batches: [] }));
+      });
+      return Response.json(data);
+    }
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
+  await user.click(screen.getByRole('button', { name: '查看商品 #4 依据' }));
+  refreshing = true;
+  await act(async () => streams.at(-1).dispatchEvent(new Event('open')));
+  await user.click(screen.getByRole('button', { name: '查看商品 #3 依据' }));
+  await user.click(screen.getByRole('button', { name: '查看商品 #4 依据' }));
+  expect(screen.getByText('输入指纹：4-current')).toBeInTheDocument();
+  await act(async () => finishOldRefresh());
+  expect(screen.getByText('输入指纹：4-current')).toBeInTheDocument();
+  expect(screen.queryByText('输入指纹：stale-refresh')).not.toBeInTheDocument();
+});
+
+test('终态刷新后的最终依据不会被先前展开请求的未发布响应覆盖', async () => {
+  const streams = installStreams();
+  let finished = false;
+  let finishOldAudit;
+  const calls = installApi({ state: 'running', handle(call, job) {
+    if (call.path.endsWith('/jobs/8')) return Response.json({ job: { ...job, status: finished ? 'succeeded' : 'running' },
+      progress: { rawProductCount: 2, processed: finished ? 2 : 0 } });
+    if (call.path.endsWith('/tag-results/3')) {
+      if (!finished) return new Promise(resolve => {
+        finishOldAudit = () => resolve(Response.json({ member: { status: 'processing', fingerprint: 'old-audit' }, batches: [] }));
+      });
+      return Response.json({ member: { fingerprint: 'final-audit',
+        output: { outcome: 'updated', acceptedTags: [], rejectedTags: [], diff: [] } }, batches: [] });
+    }
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
+  finished = true;
+  await act(async () => emitProgress(streams.at(-1), { status: 'succeeded', processed: 2 }));
+  expect(screen.getByText('输入指纹：final-audit')).toBeInTheDocument();
+  await act(async () => finishOldAudit());
+  expect(screen.getByText('输入指纹：final-audit')).toBeInTheDocument();
+  expect(screen.queryByText('商品最终发布审计尚未生成。')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '查看商品 #3 依据' })).toHaveAttribute('aria-expanded', 'true');
+  expect(calls.filter(call => call.path.endsWith('/tag-results/3'))).toHaveLength(2);
+});
+
+test.each([false, true])('终态刷新丢弃旧的未加载分页并保留游标可重试（尾随刷新：%s）', async trailing => {
+  const streams = installStreams();
+  let finished = false;
+  let slowSnapshot = false;
+  let finishSnapshot;
+  let finishOldPage;
+  const calls = installApi({ state: 'running', handle(call, job) {
+    if (call.path.endsWith('/jobs/8')) {
+      const data = { job: { ...job, status: finished ? 'succeeded' : 'running' },
+        progress: { rawProductCount: 2, processed: finished ? 2 : 0 } };
+      if (slowSnapshot) {
+        slowSnapshot = false;
+        return new Promise(resolve => { finishSnapshot = () => resolve(Response.json(data)); });
+      }
+      return Response.json(data);
+    }
+    if (call.path.endsWith('/tag-results')) {
+      if (!call.query.has('cursor')) return Response.json({ items: [{ id: '3', name: '首页商品' }], nextCursor: 'page-2' });
+      if (!finished) return new Promise(resolve => {
+        finishOldPage = () => resolve(Response.json({ items: [{ id: '4', name: '第二页旧商品', status: 'processing' }], nextCursor: null }));
+      });
+      return Response.json({ items: [{ id: '4', name: '第二页最终商品', outcome: 'updated' }], nextCursor: null });
+    }
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await screen.findByText('首页商品');
+  const source = streams.at(-1);
+  if (trailing) {
+    slowSnapshot = true;
+    await act(async () => source.dispatchEvent(new Event('open')));
+  }
+  await user.click(screen.getByRole('button', { name: '加载更多商品结果' }));
+  finished = true;
+  await act(async () => emitProgress(source, { status: 'succeeded', processed: 2 }));
+  if (trailing) await act(async () => finishSnapshot());
+  expect(screen.getByText('处理结束')).toBeInTheDocument();
+  await act(async () => finishOldPage());
+  expect(screen.queryByText('第二页旧商品')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '加载更多商品结果' }));
+  expect(screen.getByText('第二页最终商品')).toBeInTheDocument();
+  expect(calls.filter(call => call.query.get('cursor') === 'page-2')).toHaveLength(2);
+  await user.click(screen.getByRole('button', { name: '刷新详情' }));
+  expect(screen.getByText('第二页最终商品')).toBeInTheDocument();
+});
+
+test('详情进度立即合并，密集事件限频且慢结果刷新单飞并尾随最后一次事件', async () => {
+  const streams = installStreams();
+  let slow = false;
+  const pending = [];
+  let revision = 0;
+  const calls = installApi({ state: 'running', handle(call, job) {
+    if (call.path.endsWith('/jobs/8')) return Response.json({ job, progress: { rawProductCount: 10, processed: revision } });
+    if (call.path.endsWith('/tag-results')) {
+      const result = { items: [{ id: '3', name: `商品版本${revision}`, status: 'processing' }] };
+      return slow ? new Promise(resolve => pending.push(() => resolve(Response.json(result)))) : Response.json(result);
+    }
+  } });
+  const user = userEvent.setup();
+  const view = render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await screen.findByText('商品版本0');
+  vi.useFakeTimers();
+  try {
+    slow = true;
+    const source = streams.at(-1);
+    const before = calls.length;
+    await act(async () => {
+      for (let processed = 1; processed <= 3; processed++) emitProgress(source, { status: 'running', processed, rawProductCount: 10 });
+    });
+    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '3');
+    expect(calls).toHaveLength(before);
+    revision = 3;
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(pending).toHaveLength(1);
+    revision = 4;
+    await act(async () => emitProgress(source, { status: 'running', processed: 4 }));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(pending).toHaveLength(1);
+    await act(async () => pending[0]());
+    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '4');
+    expect(pending).toHaveLength(2);
+    await act(async () => pending[1]());
+    expect(screen.getByText('商品版本4')).toBeInTheDocument();
+    expect(streams).toHaveLength(1);
+  } finally { view.unmount(); vi.useRealTimers(); }
+});
+
+test('重连、筛选 effect 重建和最终事件刷新保留商品分页及展开依据', async () => {
+  const streams = installStreams();
+  let phase = 'running';
+  let revision = 0;
+  const calls = installApi({ state: 'running', handle(call, job) {
+    if (call.path.endsWith('/jobs/8')) return Response.json({ job: { ...job, status: phase },
+      progress: { rawProductCount: 10, processed: revision } });
+    if (call.path.endsWith('/tag-results')) return Response.json({
+      items: [{ id: call.query.has('cursor') ? '4' : '3', name: call.query.has('cursor') ? '第二页商品' : `第一页版本${revision}` }],
+      nextCursor: call.query.has('cursor') ? null : 'more',
+    });
+  } });
+  const user = userEvent.setup();
+  const view = render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await user.click(await screen.findByRole('button', { name: '加载更多商品结果' }));
+  await user.click(screen.getByRole('button', { name: '查看商品 #3 依据' }));
+  await screen.findByText('一个月');
+  await act(async () => streams.at(-1).dispatchEvent(new Event('open')));
+  expect(screen.getByText('第二页商品')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '查看商品 #3 依据' })).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByText('一个月')).toBeInTheDocument();
+  vi.useFakeTimers();
+  try {
+    revision = 1;
+    await act(async () => emitProgress(streams.at(-1), { status: 'running', processed: 1 }));
+    // Queue filters rebuild the stream; the scheduled result refresh must survive.
+    fireEvent.change(screen.getByRole('combobox', { name: '任务筛选' }), { target: { value: 'attention' } });
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(screen.getByText('第一页版本1')).toBeInTheDocument();
+    expect(screen.getByText('第二页商品')).toBeInTheDocument();
+    phase = 'succeeded'; revision = 10;
+    await act(async () => emitProgress(streams.at(-1), { status: 'succeeded', processed: 10 }));
+    expect(screen.getByText('第一页版本10')).toBeInTheDocument();
+    expect(screen.getByText('第二页商品')).toBeInTheDocument();
+    expect(screen.getByText('一个月')).toBeInTheDocument();
+    const count = calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(calls).toHaveLength(count);
+  } finally { view.unmount(); vi.useRealTimers(); }
+});
+
+test('终态事件在慢刷新期间尾随读取最终结果，卸载后不继续读分页或依据', async () => {
+  const streams = installStreams();
+  let slow = false;
+  let finished = false;
+  const pending = [];
+  const calls = installApi({ state: 'running', handle(call, job) {
+    if (call.path.endsWith('/jobs/8')) {
+      const data = { job: { ...job, status: finished ? 'succeeded' : 'running' }, progress: { rawProductCount: 2, processed: finished ? 2 : 0 } };
+      return slow ? new Promise(resolve => pending.push(() => resolve(Response.json(data)))) : Response.json(data);
+    }
+    if (call.path.endsWith('/tag-results')) return Response.json({ items: [{ id: '3', name: finished ? '最终商品' : '旧商品' }], nextCursor: 'more' });
+  } });
+  const user = userEvent.setup();
+  const view = render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await screen.findByText('旧商品');
+  slow = true;
+  await act(async () => streams.at(-1).dispatchEvent(new Event('open')));
+  finished = true;
+  await act(async () => emitProgress(streams.at(-1), { status: 'succeeded', processed: 2 }));
+  expect(pending).toHaveLength(1);
+  await act(async () => pending[0]());
+  expect(pending).toHaveLength(2);
+  await act(async () => pending[1]());
+  expect(screen.getByRole('progressbar')).toHaveAttribute('value', '2');
+  expect(screen.getByText('最终商品')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '加载更多商品结果' }));
+  await user.click(screen.getByRole('button', { name: '刷新详情' }));
+  view.unmount();
+  const count = calls.length;
+  await act(async () => pending[2]());
+  expect(calls).toHaveLength(count);
+});
+
+test('后台刷新等待依据时加载下一页，不把新增分页重置回首页', async () => {
+  const streams = installStreams();
+  let slowAudit = false;
+  let finishAudit;
+  installApi({ state: 'running', handle(call) {
+    if (call.path.endsWith('/tag-results')) return Response.json({
+      items: [{ id: call.query.has('cursor') ? '4' : '3', name: call.query.has('cursor') ? '新增第二页' : '首页商品' }],
+      nextCursor: call.query.has('cursor') ? null : 'more',
+    });
+    if (call.path.endsWith('/tag-results/3') && slowAudit) return new Promise(resolve => {
+      finishAudit = () => resolve(Response.json({ member: { fingerprint: 'refreshed-audit' }, batches: [] }));
+    });
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
+  await screen.findByText('一个月');
+  slowAudit = true;
+  await act(async () => streams.at(-1).dispatchEvent(new Event('open')));
+  await user.click(screen.getByRole('button', { name: '加载更多商品结果' }));
+  expect(screen.getByText('新增第二页')).toBeInTheDocument();
+  slowAudit = false;
+  await act(async () => finishAudit());
+  expect(screen.getByText('新增第二页')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '查看商品 #3 依据' })).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('换任务和卸载丢弃旧刷新及尾随任务，新任务不等待旧请求', async () => {
+  const streams = installStreams();
+  let slow = false;
+  const pending = [];
+  const onChanged = vi.fn();
+  const calls = installApi({ state: 'running', handle(call) {
+    if (call.path.endsWith('task-queue')) return Response.json({ items: [{ id: '8' }, { id: '9' }] });
+    if (slow && call.path.endsWith('/jobs/8')) return new Promise(resolve => pending.push(() =>
+      resolve(Response.json({ job: { id: '8', status: 'running', model: 'STALE' } }))));
+  } });
+  const user = userEvent.setup();
+  const view = render(<TagExtractionPanel shops={shops} view="history" onProductsChanged={onChanged} />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await screen.findByRole('button', { name: '查看商品 #3 依据' });
+  slow = true;
+  const oldSource = streams.at(-1);
+  await act(async () => oldSource.dispatchEvent(new Event('open')));
+  await act(async () => oldSource.dispatchEvent(new Event('open')));
+  await user.click(screen.getByRole('button', { name: '关闭标签任务详情' }));
+  await user.click(screen.getByRole('button', { name: '查看标签任务 #9' }));
+  await screen.findByRole('button', { name: '暂停标签任务' });
+  const count = calls.length;
+  const notifications = onChanged.mock.calls.length;
+  await act(async () => pending.forEach(finish => finish()));
+  expect(calls).toHaveLength(count);
+  expect(onChanged).toHaveBeenCalledTimes(notifications);
+  expect(screen.queryByText(/STALE/)).not.toBeInTheDocument();
+  vi.useFakeTimers();
+  try {
+    await act(async () => emitProgress(streams.at(-1), { status: 'running', processed: 1 }));
+    view.unmount();
+    const after = calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(calls).toHaveLength(after);
+  } finally { view.unmount(); vi.useRealTimers(); }
+});
+
+test('旧筛选队列慢响应不会压住新筛选的请求和后续轮询', async () => {
+  let finishOld;
+  const calls = installApi({ handle(call) {
+    if (!call.path.endsWith('task-queue')) return;
+    if (call.query.get('status') === 'all') return new Promise(resolve => {
+      finishOld = () => resolve(Response.json({ items: [{ id: 'old' }] }));
+    });
+    return Response.json({ items: [{ id: '9' }] });
+  } });
+  vi.useFakeTimers();
+  const view = render(<TagExtractionPanel shops={shops} view="history" />);
+  try {
+    fireEvent.change(screen.getByRole('combobox', { name: '任务筛选' }), { target: { value: 'attention' } });
+    await act(async () => {});
+    expect(screen.getByRole('button', { name: '查看标签任务 #9' })).toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTimeAsync(10000));
+    expect(calls.filter(call => call.query.get('status') === 'attention')).toHaveLength(2);
+    await act(async () => finishOld());
+    expect(screen.queryByRole('button', { name: '查看标签任务 #old' })).not.toBeInTheDocument();
+  } finally { view.unmount(); vi.useRealTimers(); }
+});
+
+test('终态推送关闭流后仍显示结果刷新错误，手动刷新可恢复', async () => {
+  const streams = installStreams();
+  let failed = false;
+  installApi({ state: 'running', handle(call) {
+    if (failed && call.path.endsWith('/tag-results')) return Response.json({ message: '最终结果暂不可用' }, { status: 503 });
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await screen.findByRole('button', { name: '查看商品 #3 依据' });
+  failed = true;
+  await act(async () => emitProgress(streams.at(-1), { status: 'succeeded', processed: 2 }));
+  expect(screen.getByRole('alert')).toHaveTextContent('最终结果暂不可用');
+  failed = false;
+  await user.click(screen.getByRole('button', { name: '刷新详情' }));
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '查看商品 #3 依据' })).toBeInTheDocument();
+});
+
+test('刷新结果保留当前展开依据并使收起的旧依据缓存失效', async () => {
+  const streams = installStreams();
+  let revision = 0;
+  installApi({ state: 'running', handle(call) {
+    if (/tag-results\/[34]$/.test(call.path)) return Response.json({
+      member: { fingerprint: `audit-${call.path.split('/').at(-1)}-${revision}` }, batches: [],
+    });
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
+  await screen.findByText('输入指纹：audit-3-0');
+  await user.click(screen.getByRole('button', { name: '查看商品 #4 依据' }));
+  await screen.findByText('输入指纹：audit-4-0');
+  revision = 1;
+  await act(async () => streams.at(-1).dispatchEvent(new Event('open')));
+  expect(screen.getByText('输入指纹：audit-4-1')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '查看商品 #3 依据' }));
+  expect(await screen.findByText('输入指纹：audit-3-1')).toBeInTheDocument();
+});
 
 test('标签抽取首页只展示监控与最近任务，三步流程和结果统计不重复', async () => {
   const calls = installApi({ handle(call, job) {

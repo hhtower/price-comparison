@@ -181,6 +181,7 @@ export default function AiWorkbench({ shops, onProductsChanged }) {
   const [queue, setQueue] = useState(null);
   const [queueError, setQueueError] = useState('');
   const queueRequestRef = useRef(0);
+  const queuePendingRef = useRef(null);
   const historyRequestRef = useRef(0);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -254,6 +255,7 @@ export default function AiWorkbench({ shops, onProductsChanged }) {
 
   const loadQueue = useCallback(async () => {
     const request = ++queueRequestRef.current;
+    queuePendingRef.current = request;
     const query = new URLSearchParams({ limit: '1', status: 'unfinished' });
     try {
       const data = await requestJson('/api/admin/ai/task-queue?' + query);
@@ -261,6 +263,7 @@ export default function AiWorkbench({ shops, onProductsChanged }) {
       setQueue(data);
       setQueueError('');
     } catch (reason) { if (request === queueRequestRef.current) setQueueError(reason.message); }
+    finally { if (queuePendingRef.current === request) queuePendingRef.current = null; }
   }, []);
 
   async function changeHistoryPage(page = historyPageRef.current) {
@@ -294,12 +297,12 @@ export default function AiWorkbench({ shops, onProductsChanged }) {
     if (!isStandardizationView) return undefined;
     let active = true;
     Promise.all([loadHistory(), loadQueue()]).catch(reason => active && setError(reason.message));
-    return () => { active = false; queueRequestRef.current++; historyRequestRef.current++; };
+    return () => { active = false; queueRequestRef.current++; queuePendingRef.current = null; historyRequestRef.current++; };
   }, [isStandardizationView, loadHistory, loadQueue]);
 
   useEffect(() => {
     if (busy || !isStandardizationView) return undefined;
-    const timer = setInterval(() => { if (!document.hidden) void loadQueue(); }, 10000);
+    const timer = setInterval(() => { if (!document.hidden && queuePendingRef.current === null) void loadQueue(); }, 10000);
     return () => clearInterval(timer);
   }, [busy, isStandardizationView, loadQueue]);
 
