@@ -8,11 +8,11 @@
   简体中文 · <a href="README.en.md">English</a>
 </p>
 
-一个自部署的 AI 商品比价站，支持商铺采集、报价比较、标准商品归类、价格历史和管理后台。使用 React、NestJS / Fastify、PostgreSQL 和 Redis；AI 自动化流程将采集后的商品依次进行身份识别、独立复核与标准化归类，并提取和复核购买属性标签，汇总到统一目录用于跨商铺比价。
+知途 · 拾价聚合卡网、发卡站的 ChatGPT / Codex、Claude / Claude Code、Gemini、Grok、Cursor 等订阅与账号报价，覆盖代充、成品号、共享账号、兑换码，以及邮箱、接码、住宅 IP 等配套服务。对比各商铺的价格、库存、使用期限、独享 / 共享和售后范围，并提供价格走势、官方地区价参考及 AI / IP 检测。
 
 ![商品处理架构：自动采集、AI 身份识别与复核、归类发布、标签处理及跨商铺比价](docs/images/product-pipeline.svg)
 
-以下为界面示例，截图中的报价不代表当前价格或商铺推荐。
+同款订阅，多家报价。按平台、交付方式、使用期限和质保条件筛选，集中对比各商铺的价格与库存。
 
 ![商品目录](docs/screenshots/catalog.png)
 

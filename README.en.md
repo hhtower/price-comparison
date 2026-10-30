@@ -8,11 +8,11 @@
   <a href="README.md">简体中文</a> · English
 </p>
 
-A self-hosted price comparison site for AI products, with shop crawling, quote comparison, product normalization, price history, and an admin dashboard. Built with React, NestJS / Fastify, PostgreSQL, and Redis. An automated AI pipeline identifies crawled products, independently reviews and publishes their standard classifications, and extracts and reviews purchase attributes to support cross-shop comparison in a shared catalog.
+知途 · 拾价 aggregates subscription and account offers for ChatGPT / Codex, Claude / Claude Code, Gemini, Grok, Cursor, and more from digital goods shops and automated storefronts. Listings cover top-up services, ready-to-use accounts, shared accounts, redemption codes, and related services such as email accounts, SMS verification, and residential IPs. Compare prices, availability, access duration, dedicated or shared access, and after-sales terms, with price history, official regional pricing references, and AI / IP testing tools.
 
 ![Product pipeline: automatic collection, AI identification and review, publication, attribute extraction and cross-shop comparison](docs/images/product-pipeline.en.svg)
 
-Screenshots illustrate the interface; displayed quotes are not current prices or shop endorsements.
+The same subscription, multiple offers. Filter by platform, delivery method, access duration, and warranty terms to compare prices and availability across shops.
 
 ![Product catalog](docs/screenshots/catalog.png)
 
