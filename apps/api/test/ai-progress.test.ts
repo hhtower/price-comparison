@@ -1,8 +1,75 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DummyDriver, Kysely, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler, type CompiledQuery, type DatabaseConnection } from 'kysely';
+import type { DatabaseSchema } from '../src/database/types.js';
 import { recordAiTiming } from '../src/observability/ai-metrics.js';
 import { MetricsRegistry } from '../src/observability/metrics.js';
-import { extractionProgressDelta, progressSnapshotFromRow } from '../src/ai/ai-progress.repository.js';
+import { extractionProgressDelta, getJobProgress, incrementJobProgress, progressSnapshotFromRow } from '../src/ai/ai-progress.repository.js';
+
+function progressDatabase() {
+  const queries: CompiledQuery[] = [];
+  class Driver extends DummyDriver {
+    async acquireConnection(): Promise<DatabaseConnection> {
+      return {
+        async executeQuery<R>(query: CompiledQuery) {
+          queries.push(query);
+          const rows = query.sql.includes('from ai_job_progress p')
+            ? [{ job_id: 9n, version: 4n, status: 'running', total: 12n }] : [];
+          return { rows: rows as R[], numAffectedRows: 1n };
+        },
+        async *streamQuery<R>(): AsyncIterableIterator<{ rows: R[] }> { throw new Error('Unexpected streaming query in progress test'); },
+      };
+    }
+  }
+  const database = new Kysely<DatabaseSchema>({ dialect: {
+    createAdapter: () => new PostgresAdapter(), createDriver: () => new Driver(),
+    createIntrospector: db => new PostgresIntrospector(db), createQueryCompiler: () => new PostgresQueryCompiler(),
+  } });
+  return { database, queries };
+}
+
+test('progress writes update every counter and notify without aggregating job data', async () => {
+  const f = progressDatabase();
+  try {
+    const result = await incrementJobProgress(f.database, {
+      jobId: 9n, queued: -3, running: -2, processed: 3, succeeded: 2, failed: 1,
+    });
+    assert.equal(f.queries.length, 2, 'only the counter upsert and notification may execute');
+    const [write, notify] = f.queries;
+    assert.match(write!.sql, /insert into ai_job_progress/);
+    assert.deepEqual(write!.parameters, [9n, 9n, -3n, -2n, 3n, 2n, 1n]);
+    for (const counter of ['queued', 'running', 'processed', 'succeeded', 'failed']) {
+      assert.ok(write!.sql.includes(`${counter} = greatest(0, ai_job_progress.${counter} + excluded.${counter})`));
+    }
+    assert.match(write!.sql, /version = ai_job_progress.version \+ 1/);
+    assert.match(notify!.sql, /pg_notify\('ai_job_progress_changed'/);
+    assert.deepEqual(notify!.parameters, ['9']);
+    assert.equal(result, undefined);
+  } finally { await f.database.destroy(); }
+});
+
+test('progress writes without deltas still advance the version and notify', async () => {
+  const f = progressDatabase();
+  try {
+    await incrementJobProgress(f.database, { jobId: 9n });
+    assert.equal(f.queries.length, 2);
+    assert.deepEqual(f.queries[0]!.parameters, [9n, 9n, 0n, 0n, 0n, 0n, 0n]);
+    assert.match(f.queries[0]!.sql, /version = ai_job_progress.version \+ 1/);
+    assert.match(f.queries[1]!.sql, /pg_notify/);
+  } finally { await f.database.destroy(); }
+});
+
+test('explicit progress reads retain aggregates and the version filter', async () => {
+  const f = progressDatabase();
+  try {
+    const result = await getJobProgress(f.database, 9n, 3n);
+    assert.equal(result?.version, '4');
+    assert.equal(result?.total, '12');
+    assert.equal(f.queries.length, 1);
+    assert.match(f.queries[0]!.sql, /left join lateral/);
+    assert.deepEqual(f.queries[0]!.parameters, [9n, 3n]);
+  } finally { await f.database.destroy(); }
+});
 
 test('AI timing writes bounded Redis hash counters and 48h expiry', async () => {
   const calls: string[] = [];

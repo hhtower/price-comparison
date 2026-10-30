@@ -43,40 +43,62 @@ export async function loadCandidateDisplayNames(
     [row.name, ...(namesByStandard.get(String(row.id)) ?? [])].join(' / ')]));
 }
 
-async function aliasRows(database: CatalogDatabase) {
-  // Historical migrations also refresh the candidate index before the aliases
-  // column exists. Row JSON gives them an empty array without a second schema.
-  return (await sql<{ standard_product_id: bigint; aliases: string[]; active: boolean }>`
-    select sp.id as standard_product_id, coalesce(to_jsonb(sp)->'aliases', '[]'::jsonb) as aliases,
+interface CatalogAliasRow {
+  standard_product_id: bigint;
+  aliases: string[];
+  active: boolean;
+}
+
+export async function loadCatalogAliasRows(database: CatalogDatabase, ids?: readonly bigint[]): Promise<CatalogAliasRow[]> {
+  if (ids?.length === 0) return [];
+  return (await sql<CatalogAliasRow>`
+    select sp.id as standard_product_id, sp.aliases,
       (sp.merged_into_id is null and sp.verification_state = 'verified') as active
     from standard_products sp
-    where coalesce(to_jsonb(sp)->'aliases', '[]'::jsonb) <> '[]'::jsonb
+    where sp.aliases <> '{}'::text[]
+      -- Keep global ownership checks, but return no aliases when the targets have none.
+      ${ids === undefined ? sql`` : sql`and exists (
+        select 1 from standard_products target
+        where target.id in (${sql.join(ids)})
+          and target.aliases <> '{}'::text[]
+      )`}
     order by sp.id
   `.execute(database)).rows;
 }
 
 /** Search hints never establish identity; ambiguous aliases are not AI hints. */
-export async function loadCatalogAliases(database: CatalogDatabase, ids?: readonly bigint[]): Promise<CatalogAlias[]> {
+export async function loadCatalogAliases(
+  database: CatalogDatabase,
+  ids?: readonly bigint[],
+  snapshot?: readonly CatalogAliasRow[],
+): Promise<CatalogAlias[]> {
   if (ids?.length === 0) return [];
-  const rows = (await aliasRows(database)).filter(row => row.active);
-  const aliases = rows.flatMap(row => normalizeCatalogAliases(row.aliases).map(alias => ({
-    standard_product_id: row.standard_product_id, alias, normalized_alias: compactSearchText(alias),
-  })));
-  const owners = new Map<string, Set<bigint>>();
-  for (const alias of aliases) {
-    const values = owners.get(alias.normalized_alias) ?? new Set<bigint>();
-    values.add(alias.standard_product_id);
-    owners.set(alias.normalized_alias, values);
-  }
+  const rows = snapshot ?? await loadCatalogAliasRows(database, ids);
   const allowed = ids && new Set(ids.map(String));
-  return aliases.filter(alias => owners.get(alias.normalized_alias)!.size === 1
-    && (!allowed || allowed.has(String(alias.standard_product_id))));
+  const aliases: CatalogAlias[] = [];
+  const owners = new Map<string, Set<bigint>>();
+  for (const row of rows) {
+    if (!row.active) continue;
+    const include = !allowed || allowed.has(String(row.standard_product_id));
+    for (const alias of normalizeCatalogAliases(row.aliases)) {
+      const key = compactSearchText(alias);
+      const values = owners.get(key) ?? new Set<bigint>();
+      values.add(row.standard_product_id);
+      owners.set(key, values);
+      if (include) aliases.push({ standard_product_id: row.standard_product_id, alias, normalized_alias: key });
+    }
+  }
+  return aliases.filter(alias => owners.get(alias.normalized_alias)!.size === 1);
 }
 
 /** Refresh both owners when an alias becomes ambiguous or loses an owner. */
-export async function relatedCatalogAliasOwners(database: CatalogDatabase, ids: readonly bigint[]): Promise<bigint[]> {
+export async function relatedCatalogAliasOwners(
+  database: CatalogDatabase,
+  ids: readonly bigint[],
+  snapshot?: readonly CatalogAliasRow[],
+): Promise<bigint[]> {
   if (!ids.length) return [];
-  const rows = await aliasRows(database);
+  const rows = snapshot ?? await loadCatalogAliasRows(database, ids);
   const selected = new Set(ids.map(String));
   const keys = new Set(rows.filter(row => selected.has(String(row.standard_product_id)))
     .flatMap(row => row.aliases.map(compactSearchText)));

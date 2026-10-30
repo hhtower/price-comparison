@@ -32,7 +32,7 @@ export function extractionProgressDelta(transition: 'initialize' | 'cached' | 'o
 
 type ProgressDb = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 
-export async function incrementJobProgress(tx: ProgressDb, input: ProgressDeltas): Promise<ProgressSnapshot> {
+export async function incrementJobProgress(tx: ProgressDb, input: ProgressDeltas): Promise<void> {
   await sql`
     insert into ai_job_progress (job_id,total,queued,running,processed,succeeded,failed,version,updated_at)
     values (${input.jobId}, coalesce((select total from ai_jobs where id = ${input.jobId}), 0), ${BigInt(input.queued ?? 0)},
@@ -43,7 +43,6 @@ export async function incrementJobProgress(tx: ProgressDb, input: ProgressDeltas
       failed = greatest(0, ai_job_progress.failed + excluded.failed), version = ai_job_progress.version + 1, updated_at = clock_timestamp()
   `.execute(tx);
   await sql`select pg_notify('ai_job_progress_changed', ${input.jobId.toString()})`.execute(tx);
-  return readProgress(tx, input.jobId);
 }
 
 export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigint): Promise<ProgressSnapshot | null> {
@@ -113,12 +112,6 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
     where p.job_id=${jobId} ${since === undefined ? sql`` : sql`and p.version > ${since}`} limit 1
   `.execute(db);
   return row.rows[0] ? progressSnapshotFromRow(row.rows[0]) : null;
-}
-
-async function readProgress(db: ProgressDb, jobId: bigint): Promise<ProgressSnapshot> {
-  const result = await getJobProgress(db, jobId);
-  if (!result) throw new Error('AI job progress row missing');
-  return result;
 }
 
 export function progressSnapshotFromRow(row: Record<string, unknown>): ProgressSnapshot {

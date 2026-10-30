@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { before, after, test } from 'node:test';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql, type Transaction } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { reconcileNameConsensus } from '../src/standardization/name-consensus-repair.js';
 import { chooseNameConsensus, readNameConsensusMembers, compatibleNameConsensus } from '../src/standardization/name-consensus.js';
+import { recordManualDecisions } from '../src/standardization/decision-history.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
 before(async () => {
@@ -16,7 +17,7 @@ before(async () => {
   await admin.query(`create schema "${schema}"`);
   process.env.PG_SCHEMA = schema;
   db = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({ pool: new Pool({
-    connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path="${schema}",public`,
+    connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path="${schema}",public`, statement_timeout: 5000,
   }) }) });
   await migrateToLatest(db);
 });
@@ -47,6 +48,26 @@ async function product(name: string, standardId: bigint, options: { source?: str
   return row;
 }
 
+function duringPreview(productId: bigint, write: (writer: Transaction<DatabaseSchema>) => Promise<void>) {
+  let writes = 0;
+  return {
+    get writes() { return writes; },
+    database: db.withPlugin({
+      transformQuery: args => args.node,
+      async transformResult(args) {
+        if (!writes && args.result.rows.some(row => row.id === productId && Object.hasOwn(row, 'standard_product_id'))) {
+          writes++;
+          await db.transaction().execute(async writer => {
+            await sql`set local lock_timeout = '300ms'`.execute(writer);
+            await write(writer);
+          });
+        }
+        return args.result;
+      },
+    }),
+  };
+}
+
 test('repair changes minority AI members but preserves human decisions and persistent locks', async () => {
   const a = await standard('outlook');
   const b = await standard('outlook_account');
@@ -54,10 +75,10 @@ test('repair changes minority AI members but preserves human decisions and persi
   const name = '微软邮箱长效 Outlook Hotmail OAuth2 双令牌';
   for (let n = 0; n < 4; n++) await product(name, a.id);
   const changed = await product(name, b.id);
-  const human = await product(name, b.id, { source: 'human' });
-  const locked = await product(name, b.id, { locked: true });
+  await product(name, b.id, { source: 'human' });
+  await product(name, b.id, { locked: true });
   const unrelated = await product('另外一款 Hotmail 邮箱商品', b.id);
-  const excluded = [];
+  const excluded: { id: bigint }[] = [];
   for (let n = 0; n < 5; n++) {
     excluded.push(await product(name, b.id, { deleted: true }));
     excluded.push(await product(name, b.id, { enabled: false }));
@@ -85,6 +106,11 @@ test('repair changes minority AI members but preserves human decisions and persi
   assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().orderBy('product_id').execute(), membershipsBefore);
   await assert.rejects(reconcileNameConsensus(db, { apply: true, beforeApply: async () => { throw new Error('backup failed'); } }), /backup failed/);
   assert.deepEqual(await db.selectFrom('products').selectAll().orderBy('id').execute(), productsBefore);
+  assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().orderBy('product_id').execute(), membershipsBefore);
+  assert.deepEqual(await db.selectFrom('product_tags').selectAll().execute(), tags);
+  assert.deepEqual(await db.selectFrom('offers').selectAll().execute(), offers);
+  assert.deepEqual(await db.selectFrom('ai_standardization_results').selectAll().execute(), results);
+  assert.equal((await db.selectFrom('catalog_cache_versions').select('version').where('id', '=', 1).executeTakeFirstOrThrow()).version, version);
   const applied = await reconcileNameConsensus(db, { apply: true, beforeApply: async plan => { assert.deepEqual(plan, preview); } });
   assert.equal(applied.changes.length, 1);
   const memberships = await db.selectFrom('standard_product_members').selectAll().orderBy('product_id').execute();
@@ -162,14 +188,24 @@ test('identical ambiguous mailbox copy never proves a subscription through histo
 });
 
 test('an existing writer aborts repair immediately before backup or mutation', async () => {
-  const row = await db.selectFrom('products').select('id').orderBy('id').executeTakeFirstOrThrow();
+  const winner = await standard('outlook');
+  const minority = await standard('outlook_account');
+  const name = 'Outlook Hotmail OAuth2 writer conflict account';
+  await product(name, winner.id);
+  await product(name, winner.id);
+  const row = await product(name, minority.id);
+  assert.ok((await reconcileNameConsensus(db)).changes.some(change => change.productId === row.id));
+  const products = await db.selectFrom('products').selectAll().orderBy('id').execute();
   const before = await db.selectFrom('standard_product_members').selectAll().orderBy('product_id').execute();
+  const versions = await db.selectFrom('catalog_cache_versions').selectAll().execute();
   await db.transaction().execute(async writer => {
     await writer.selectFrom('products').select('id').where('id', '=', row.id).forUpdate().execute();
     await assert.rejects(reconcileNameConsensus(db, { apply: true, beforeApply: async () => { assert.fail('writer conflict precedes backup'); } }),
       (error: unknown) => (error as { code?: string }).code === '55P03');
   });
+  assert.deepEqual(await db.selectFrom('products').selectAll().orderBy('id').execute(), products);
   assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().orderBy('product_id').execute(), before);
+  assert.deepEqual(await db.selectFrom('catalog_cache_versions').selectAll().execute(), versions);
 });
 
 test('unassigned products recover from consensus or explicit rules without AI history or tasks', async () => {
@@ -210,4 +246,89 @@ test('rule fallback holds unassigned Team accounts with actual commercial confli
   const preview = await reconcileNameConsensus(db);
   assert.equal(preview.changes.find(row => row.productId === conflict.id), undefined);
   assert.equal(preview.changes.find(row => row.productId === clean.id)?.method, 'identity_rule');
+});
+
+for (const apply of [false, true] as const) {
+  test(`no-op ${apply ? 'apply' : 'preview'} allows later ordinary writes while planning is still open`, async () => {
+    await reconcileNameConsensus(db, { apply: true, beforeApply: async () => {} });
+    const target = await standard('outlook');
+    const row = await product(`Outlook Hotmail OAuth2 no-op ${apply} account`, target.id);
+    const url = `https://${randomUUID()}.invalid/updated`;
+    const observed = duringPreview(row.id, async writer => {
+      const locks = await admin.query(`select c.relname from pg_locks l
+        join pg_class c on c.oid = l.relation join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = $1 and l.mode = 'ExclusiveLock' and l.granted`, [schema]);
+      assert.deepEqual(locks.rows, [], 'planning must not hold maintenance table locks');
+      await writer.updateTable('products').set({ url }).where('id', '=', row.id).execute();
+      await writer.updateTable('shops').set({ name: 'Written while consensus planning' })
+        .where('id', 'in', writer.selectFrom('products').select('shop_id').where('id', '=', row.id)).execute();
+    });
+    const plan = await reconcileNameConsensus(observed.database, apply
+      ? { apply: true, beforeApply: async () => assert.fail('no-op backup') } : { apply: false });
+    assert.equal(observed.writes, 1);
+    assert.deepEqual(plan.changes, []);
+    assert.equal((await db.selectFrom('products').select('url').where('id', '=', row.id).executeTakeFirstOrThrow()).url, url);
+  });
+}
+
+test('locked apply recomputes the winner and source version after a writer commits during preview', async () => {
+  const original = await standard('outlook');
+  const minority = await standard('outlook_account');
+  const current = await standard('outlook');
+  const name = 'Outlook Hotmail OAuth2 replan after preview account';
+  const voters = [await product(name, original.id), await product(name, original.id)];
+  const row = await product(name, minority.id);
+  const observed = duringPreview(row.id, async writer => {
+    await writer.updateTable('standard_product_members').set({ standard_product_id: current.id })
+      .where('product_id', 'in', voters.map(voter => voter.id)).execute();
+    await writer.updateTable('products').set({
+      content_version: 4n, content_fingerprint: 'new-source-hash', standardization_revision: 7n,
+    }).where('id', '=', row.id).execute();
+  });
+  let backups = 0;
+  const plan = await reconcileNameConsensus(observed.database, { apply: true, beforeApply: async fresh => {
+    backups++;
+    assert.deepEqual(fresh.changes.filter(change => change.productId === row.id).map(change => [
+      change.fromStandardProductId, change.toStandardProductId, change.previousRevision, change.contentVersion,
+    ]), [[minority.id, current.id, 7n, 4n]]);
+    assert.equal((await db.selectFrom('standard_product_members').select('standard_product_id')
+      .where('product_id', '=', row.id).executeTakeFirstOrThrow()).standard_product_id, minority.id);
+  } });
+  assert.equal(observed.writes, 1);
+  assert.equal(backups, 1);
+  assert.equal(plan.changes.find(change => change.productId === row.id)?.toStandardProductId, current.id);
+  assert.equal((await db.selectFrom('standard_product_members').select('standard_product_id')
+    .where('product_id', '=', row.id).executeTakeFirstOrThrow()).standard_product_id, current.id);
+  const updated = await db.selectFrom('products').select(['standardization_revision', 'content_version', 'content_fingerprint'])
+    .where('id', '=', row.id).executeTakeFirstOrThrow();
+  assert.deepEqual(updated, { standardization_revision: 8n, content_version: 4n, content_fingerprint: 'new-source-hash' });
+});
+
+test('locked apply respects a manual decision for new evidence committed during preview', async () => {
+  const winner = await standard('outlook');
+  const minority = await standard('outlook_account');
+  const name = 'Outlook Hotmail OAuth2 manual decision after preview account';
+  await product(name, winner.id);
+  await product(name, winner.id);
+  const row = await product(name, minority.id);
+  assert.ok((await reconcileNameConsensus(db)).changes.some(change => change.productId === row.id));
+  const observed = duringPreview(row.id, async writer => {
+    await writer.updateTable('products').set({ content_version: 2n, content_fingerprint: 'reviewed-source-hash' })
+      .where('id', '=', row.id).execute();
+    await recordManualDecisions(writer, [row.id], { action: 'assign', standardProductId: minority.id, reason: 'Reviewed new source evidence' });
+  });
+  const plan = await reconcileNameConsensus(observed.database, {
+    apply: true, beforeApply: async () => assert.fail('manual decision must eliminate the stale change'),
+  });
+  assert.equal(observed.writes, 1);
+  assert.deepEqual(plan.changes, []);
+  assert.equal((await db.selectFrom('standard_product_members').select('standard_product_id')
+    .where('product_id', '=', row.id).executeTakeFirstOrThrow()).standard_product_id, minority.id);
+  const manual = await db.selectFrom('product_standardization_decisions').selectAll()
+    .where('product_id', '=', row.id).executeTakeFirstOrThrow();
+  assert.equal(manual.content_version, 2n);
+  assert.equal(manual.content_fingerprint, 'reviewed-source-hash');
+  assert.equal(manual.evidence_known, true);
+  assert.equal((await db.selectFrom('products').select('standardization_revision')
+    .where('id', '=', row.id).executeTakeFirstOrThrow()).standardization_revision, manual.standardization_revision);
 });

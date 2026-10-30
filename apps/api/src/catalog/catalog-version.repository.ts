@@ -5,7 +5,7 @@ import { CATALOG_CACHE_TTL_MS } from '../cache/cache.module.js';
 import { DATABASE } from '../database/database.providers.js';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../database/types.js';
 import type { CandidateDocument } from '../standardization/candidate-index.js';
-import { loadCandidateDisplayNames, loadCatalogAliases, relatedCatalogAliasOwners } from '../standardization/catalog-aliases.js';
+import { loadCandidateDisplayNames, loadCatalogAliasRows, loadCatalogAliases, relatedCatalogAliasOwners } from '../standardization/catalog-aliases.js';
 
 export type CatalogDatabase = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 
@@ -65,7 +65,8 @@ export async function recordCandidateCatalogChanges(
   `.execute(database);
   const version = versionResult.rows[0];
   if (!version) throw new Error('standardization catalog version row is missing');
-  ids = await relatedCatalogAliasOwners(database, ids);
+  const aliasSnapshot = await loadCatalogAliasRows(database, ids);
+  ids = await relatedCatalogAliasOwners(database, ids, aliasSnapshot);
 
   const standards = await database.selectFrom('standard_products as sp')
     .select([
@@ -86,7 +87,7 @@ export async function recordCandidateCatalogChanges(
     .where('sp.id', 'in', ids)
     .orderBy('sp.id')
     .execute();
-  const aliases = await loadCatalogAliases(database, ids);
+  const aliases = await loadCatalogAliases(database, ids, aliasSnapshot);
   const displayNames = await loadCandidateDisplayNames(database, standards);
   const aliasesByStandard = new Map<string, string[]>();
   for (const alias of aliases) {

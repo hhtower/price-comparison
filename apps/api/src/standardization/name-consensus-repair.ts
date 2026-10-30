@@ -128,15 +128,18 @@ type RepairOptions = { apply?: false } | { apply: true; beforeApply: (plan: Name
 
 /** A serializable transaction aborts concurrent changes instead of overwriting them. */
 export async function reconcileNameConsensus(database: Kysely<DatabaseSchema>, options: RepairOptions = {}): Promise<NameConsensusRepairPlan> {
+  const preview = await database.transaction().setIsolationLevel('repeatable read').setAccessMode('read only').execute(planRepair);
+  if (!options.apply || !preview.changes.length) return preview;
+
   return database.transaction().setIsolationLevel('serializable').execute(async tx => {
     // Live crawler/publication writes also advance the shared cache versions.
     // Acquire all maintenance locks before taking a snapshot; ordinary reads
     // remain available, and an existing writer makes this fail immediately.
-    if (options.apply) await sql`lock table shops, products, standard_products, standard_product_members,
+    await sql`lock table shops, products, standard_products, standard_product_members,
       catalog_cache_versions, standardization_catalog_versions, catalog_index_changes
       in exclusive mode nowait`.execute(tx);
     const plan = await planRepair(tx);
-    if (!options.apply || !plan.changes.length) return plan;
+    if (!plan.changes.length) return plan;
     const standardIds = [...new Set(plan.changes.flatMap(change => change.fromStandardProductId === null ? [change.toStandardProductId] : [change.fromStandardProductId, change.toStandardProductId]))];
     await tx.selectFrom('standard_products').select('id').where('id', 'in', standardIds).orderBy('id').forUpdate().execute();
     // Do not hold all product descriptions in the backup; only membership and
