@@ -22,3 +22,5 @@
 .seo-document dd { margin: 6px 0 16px; line-height: 1.7; }
 .seo-document [id] { scroll-margin-top: 24px; }
 .seo-document a:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.catalog-pagination { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin: 20px 0; }
+.catalog-pagination a { color: var(--accent, #147d76); }

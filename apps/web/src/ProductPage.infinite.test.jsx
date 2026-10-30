@@ -45,7 +45,8 @@ test('compact product page hides site navigation and appends quotes until all ar
   expect(screen.queryByRole('link', { name: '检测工具' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '提交商铺' })).not.toBeInTheDocument();
   expect(screen.queryByText(/本站展示第三方/)).not.toBeInTheDocument();
-  expect(screen.queryByRole('navigation', { name: '报价分页' })).not.toBeInTheDocument();
+  expect(screen.getByRole('navigation', { name: '报价分页' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: '下一页报价' })).toHaveAttribute('href', '/products/42?page=2');
   expect(calls.some(({ url }) => url.pathname === '/api/catalog/coverage')).toBe(false);
   await act(async () => virtual.endReached());
   await screen.findByText('报价12');
@@ -111,6 +112,68 @@ test('old page bookmarks start from the first batch while keeping search and sor
   await screen.findByText('筛选0');
   await waitFor(() => expect(calls.some(({ url }) => url.searchParams.get('detailPage') === '0')).toBe(true));
   expect(screen.getByRole('combobox', { name: '报价排序' })).toHaveValue('updated');
+});
+
+test('crawlable quote page starts at the requested batch and resets pagination on search', async () => {
+  const calls = mockApi();
+  window.history.replaceState({}, '', '/products/42?page=2');
+  render(<App />);
+  await screen.findByText('报价12');
+  expect(screen.queryByText('报价0')).not.toBeInTheDocument();
+  expect(calls.find(({ url }) => url.searchParams.has('detailKind')).url.searchParams.get('detailPage')).toBe('1');
+  expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/products/42?page=2');
+  expect(screen.getByRole('link', { name: '上一页报价' })).toHaveAttribute('href', '/products/42');
+  expect(screen.getByRole('link', { name: '下一页报价' })).toHaveAttribute('href', '/products/42?page=3');
+  await act(async () => virtual.endReached());
+  await screen.findByText('报价24');
+  expect(screen.getByText('已显示本页起的全部 13 条报价')).toBeInTheDocument();
+  fireEvent.change(screen.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '筛选' } });
+  fireEvent.submit(screen.getByRole('form', { name: '详情查询' }));
+  await screen.findByText('筛选0');
+  expect(new URLSearchParams(window.location.search).has('page')).toBe(false);
+  expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/products/42');
+});
+
+test('canonical first product page ignores saved newcomer mode unless explicitly requested', async () => {
+  const calls = mockApi();
+  localStorage.setItem('catalog-browsing-mode', 'newcomer');
+  render(<App />);
+  await screen.findByText('报价0');
+  expect(calls.find(({ url }) => url.searchParams.has('detailKind')).url.searchParams.get('newcomer')).toBe('false');
+  expect(screen.getByRole('link', { name: '下一页报价' })).toHaveAttribute('href', '/products/42?page=2');
+});
+
+test.each(['0', '-1', 'abc', '1.5', '4', '2&page=3'])('invalid or missing quote page %s stays a noindex error after rendering', async page => {
+  mockApi();
+  window.history.replaceState({}, '', '/products/42?page=' + page);
+  render(<App />);
+  await screen.findByRole('heading', { level: 1, name: '商品分页不存在' });
+  expect(document.querySelector('meta[name="robots"]').content).toContain('noindex');
+  expect(document.querySelector('#page-structured-data')).toBeNull();
+  expect(screen.queryByRole('heading', { level: 1, name: product.name })).not.toBeInTheDocument();
+  expect(new URLSearchParams(window.location.search).get('page')).toBe(page.split('&')[0]);
+});
+
+test('an out-of-range page keeps its noindex error when a visibility refresh fails', async () => {
+  mockApi();
+  const base = globalThis.fetch;
+  let failRefresh = false;
+  let resolveRefresh;
+  globalThis.fetch = vi.fn((input, options) => {
+    if (failRefresh && new URL(input, 'http://localhost').pathname === '/api/catalog') {
+      return new Promise(resolve => { resolveRefresh = resolve; });
+    }
+    return base(input, options);
+  });
+  window.history.replaceState({}, '', '/products/42?page=4');
+  render(<App />);
+  await screen.findByRole('heading', { name: '商品分页不存在' });
+  failRefresh = true;
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+  expect(resolveRefresh).toBeTypeOf('function');
+  await act(async () => resolveRefresh(new Response(null, { status: 503 })));
+  expect(screen.getByRole('heading', { name: '商品分页不存在' })).toBeInTheDocument();
+  expect(document.querySelector('meta[name="robots"]').content).toContain('noindex');
 });
 
 test.each(['offers', 'shops'])('one-click reset keeps the current %s scope and removes URL filters immediately', async kind => {

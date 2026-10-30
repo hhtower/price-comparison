@@ -1,4 +1,4 @@
-import { DEFAULT_SITE_URL, PAGE_METADATA, SITE_NAME, pageSchema, productPageMetadata } from '../../api/src/seo/page-metadata.ts';
+import { DEFAULT_SITE_URL, PAGE_METADATA, SITE_NAME, catalogPageMetadata, pageSchema, productPageMetadata, productPageSchema } from '../../api/src/seo/page-metadata.ts';
 
 function setMeta(attribute, name, content) {
   let element = document.head.querySelector('meta[' + attribute + '="' + name + '"]');
@@ -10,9 +10,10 @@ function setMeta(attribute, name, content) {
   element.content = content;
 }
 
-export function updatePageMetadata(kind, product) {
+export function updatePageMetadata(kind, product, offers, pageNumber = 1) {
   const page = kind === 'product-error' ? { path: '/products/' + product.id, title: product.name + ' - ' + SITE_NAME,
-    description: product.name + '。请返回商品列表或稍后重试。' } : product ? productPageMetadata(product) : PAGE_METADATA[kind];
+    description: product.name + '。请返回商品列表或稍后重试。' } : product ? productPageMetadata(product, pageNumber)
+      : kind === 'public' ? catalogPageMetadata(new URLSearchParams(window.location.search).get('cursor')) : PAGE_METADATA[kind];
   let canonical = document.head.querySelector('link[rel="canonical"]');
   const origin = new URL(canonical?.href || DEFAULT_SITE_URL).origin;
   if (!canonical) {
@@ -30,9 +31,16 @@ export function updatePageMetadata(kind, product) {
   setMeta('name', 'twitter:card', 'summary');
   setMeta('name', 'twitter:title', page.title);
   setMeta('name', 'twitter:description', page.description);
-  const data = product && kind !== 'product-error' ? { '@context': 'https://schema.org', '@type': 'Product', name: product.name, url: canonical.href }
-    : kind === 'product-error' ? null : pageSchema(kind, origin);
   let script = document.getElementById('page-structured-data');
+  // Keep the server quote snapshot until the matching client request completes.
+  if (product && kind !== 'product-error' && offers === undefined && script) {
+    try {
+      const existing = JSON.parse(script.textContent);
+      if (existing['@type'] === 'Product' && existing.url === canonical.href) return;
+    } catch { /* Replace malformed metadata with the current product. */ }
+  }
+  const data = product && kind !== 'product-error' ? productPageSchema(product, origin, offers, pageNumber)
+    : kind === 'product-error' ? null : pageSchema(kind, origin, page);
   if (!data) { script?.remove(); return; }
   if (!script) {
     script = document.createElement('script');

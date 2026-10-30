@@ -5,6 +5,7 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { JSDOM } from 'jsdom';
 import { registerPublicPages } from '../src/seo/public-pages.js';
 import type { CatalogPage } from '../src/catalog/catalog.repository.js';
+import { encodeCatalogCursor } from '../src/catalog/catalog.repository.js';
 
 const page: CatalogPage = { total: 1, platformFacets: ['openai'], items: [{
   id: '42', standardProductId: '42', name: 'ChatGPT Plus', platform: 'openai',
@@ -154,7 +155,7 @@ test('product HTML has canonical metadata, paginated real quotes and verified st
   let query: unknown;
   const response = await setup(t, { getCatalog: async (input: unknown) => { query = input; return { ...page, items: [{ ...page.items[0]!, offers: [{ ...page.items[0]!.offers[0]!, priceStatus: 'verified' }] }] }; } }).inject('/products/42?utm_source=test');
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(query, { standardProductId: '42', detailKind: 'offers', detailPage: 0, detailPageSize: 20, currency: 'CNY', offerSort: 'price' });
+  assert.deepEqual(query, { standardProductId: '42', detailKind: 'offers', detailPage: 0, detailPageSize: 12, currency: 'CNY', offerSort: 'price' });
   const document = new JSDOM(response.body).window.document;
   assert.match(document.title, /ChatGPT Plus/);
   assert.equal(document.querySelector('h1')?.textContent, 'ChatGPT Plus');
@@ -212,6 +213,66 @@ test('public product without a valid price keeps its page and never emits a fals
   const empty = await setup(t, { getCatalog: async () => ({ items: [], total: 0, platformFacets: [] }) }).inject('/products/42');
   assert.equal(empty.statusCode, 200);
   assert.match(empty.body, /暂无可用报价/);
+});
+
+test('payment-method estimates and unavailable prices never become structured offers', async t => {
+  const single = page.items[0]!.offers[0]!;
+  for (const change of [
+    { paymentMethod: '支付价（预估：售价）' }, { stale: true }, { inStock: false },
+    { price: '' }, { price: ' ' }, { priceExpiresAt: '2000-01-01T00:00:00Z' },
+    { inventoryExpiresAt: '2000-01-01T00:00:00Z' },
+  ]) {
+    const response = await setup(t, { getCatalog: async () => ({ ...page, items: [{ ...page.items[0]!, offers: [{ ...single, ...change }] }] }) }).inject('/products/42');
+    const document = new JSDOM(response.body).window.document;
+    assert.equal(JSON.parse(document.querySelector('#page-structured-data')!.textContent!).offers, undefined, JSON.stringify(change));
+  }
+});
+
+test('product quote pages have unique canonicals and crawlable previous and next links', async t => {
+  let query: any;
+  const server = setup(t, { getCatalog: async (input: any) => {
+    query = input;
+    const offer = { ...page.items[0]!.offers[0]!, name: '报价页' + input.detailPage };
+    return { ...page, items: [{ ...page.items[0]!, detail: { kind: 'offers', entries: [offer], page: input.detailPage, pageSize: 12, total: 30 } }] };
+  } });
+  for (const [path, current, previous, next] of [
+    ['/products/42', 0, null, '/products/42?page=2'],
+    ['/products/42?page=2&utm_source=test', 1, '/products/42', '/products/42?page=3'],
+    ['/products/42?page=3', 2, '/products/42?page=2', null],
+  ] as const) {
+    const response = await server.inject(path);
+    assert.equal(response.statusCode, 200);
+    assert.equal(query.detailPage, current);
+    const document = new JSDOM(response.body).window.document;
+    assert.equal(document.querySelector('link[rel="canonical"]')!.getAttribute('href'), 'https://price.yufu.pub/products/42' + (current ? '?page=' + (current + 1) : ''));
+    assert.match(document.querySelector('main')!.textContent!, new RegExp('报价页' + current));
+    assert.equal(document.querySelector('a[rel="prev"]')?.getAttribute('href') ?? null, previous);
+    assert.equal(document.querySelector('a[rel="next"]')?.getAttribute('href') ?? null, next);
+  }
+  assert.equal((await server.inject('/products/42?page=4')).statusCode, 404);
+  for (const value of ['0', '-1', 'abc', '1.5', '99999999999999999', '2&page=3']) {
+    assert.equal((await server.inject('/products/42?page=' + value)).statusCode, 404, value);
+  }
+});
+
+test('home cursor pages expose subsequent products with their own canonical and next link', async t => {
+  const cursor = encodeCatalogCursor({ sortOrder: 0n, standardProductId: 42n });
+  let query: any;
+  const server = setup(t, { getCatalog: async (input: any) => {
+    query = input;
+    return input?.cursor ? { ...page, items: [{ ...page.items[0]!, id: '43', name: '下一页商品' }] } : { ...page, nextCursor: cursor };
+  } });
+  const first = new JSDOM((await server.inject('/')).body).window.document;
+  const next = first.querySelector('a[rel="next"]')!.getAttribute('href')!;
+  assert.equal(next, '/?cursor=' + cursor);
+  const response = await server.inject(next + '&utm_source=test');
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(query, { cursor, limit: 20 });
+  const document = new JSDOM(response.body).window.document;
+  assert.equal(document.querySelector('link[rel="canonical"]')!.getAttribute('href'), 'https://price.yufu.pub' + next);
+  assert.ok(document.querySelector('a[href="/products/43"]'));
+  assert.equal(document.querySelector('a[rel="next"]'), null);
+  assert.equal((await server.inject('/?cursor=invalid')).statusCode, 404);
 });
 
 test('product pages distinguish missing, merged and unavailable products; sitemap failure is retryable', async t => {

@@ -9,7 +9,7 @@ test('known machine names describe products and explicit purposes without changi
     ['openai / chatgpt / pro_500', 'ChatGPT Pro 500'],
     ['anthropic / claude / max_20x', 'Claude Max 20x'], ['google / gemini / ultra_5x', 'Gemini Ultra 5x'],
     ['cursor / cursor / plugin_access', 'Cursor 插件访问'], ['google / google_sms / standard', 'Google 手机接码'],
-    ['独家人工名称', '独家人工名称'], ['人工品牌/自定义产品/保修方案', '人工品牌/自定义产品/保修方案'], ['unknown / widget / free', 'unknown / widget / free'],
+    ['独家人工名称', '独家人工名称'], ['人工品牌/自定义产品/保修方案', '人工品牌/自定义产品/保修方案'], ['unknown / widget / free', 'unknown widget 免费版'],
     ['openai / chatgpt / constructor', 'openai / chatgpt / constructor'],
     ['xai / grok / super', 'Grok·X·Cursor Super（统一订阅）'], ['xai / grok / super_plus', 'Grok Super Plus'], ['openai / codex / credits', 'Codex 积分'],
   ]) assert.equal(standardProductDisplayName(input!), expected);
@@ -70,15 +70,57 @@ test('existing ChatGPT Pro market names display the amount tier and remain searc
   ] as const) for (const alias of aliases) assert.ok(CATALOG_DISPLAY_SEARCH_LABELS.tiers[tier].includes(alias), alias);
 });
 
-test('unrecognized identities and human-authored names are not guessed or overwritten', () => {
+test('unknown machine names keep distinct identity details in readable form', () => {
+  for (const [input, expected] of [
+    ['火影忍者 / data_account / standard', '火影忍者 数据账号'],
+    ['software / ai麦爆直播助手 / standard', 'ai麦爆直播助手'],
+    ['keylink / balance_recharge / standard', 'keylink 余额充值'],
+    ['欢乐防线 / 代挂服务 / standard', '欢乐防线 代挂服务'],
+    ['unknown / widget / free', 'unknown widget 免费版'],
+    ['OpenAI / 人工绑卡服务 / Free', 'OpenAI 人工绑卡服务 免费版'],
+    ['OpenAI / 人工绑卡服务 / standard', 'OpenAI 人工绑卡服务'],
+    ['new_vendor / widget_one / standard', 'new vendor widget one'],
+    ['new_vendor / widget_two / standard', 'new vendor widget two'],
+    ['other_vendor / widget_one / standard', 'other vendor widget one'],
+    ['new_vendor / widget_one / custom_30_days', 'new vendor widget one custom 30 天'],
+    ['generic / custom_tool / standard', 'custom tool'],
+    ['service / custom_tool / standard', 'custom tool'],
+    [' New_Vendor / Widget_One / CUSTOM_30_DAYS ', 'New Vendor Widget One CUSTOM 30 天'],
+    ['google / custom_tool / standard', 'Google custom tool'],
+  ] as const) {
+    const [family, product, tier] = input.split('/');
+    assert.equal(canonicalProductDisplayName({ family: family!, product: product!, tier: tier! }), expected, input);
+    assert.equal(standardProductDisplayName(input), expected, input);
+    assert.equal(standardProductDisplayName(expected), expected);
+  }
+});
+
+test('friendly names, conflicting identities and unsafe or malformed machine names stay untouched', () => {
   for (const name of [
     '人工品牌/自定义产品/保修方案', 'ChatGPT 绑卡服务（人工说明）',
-    'OpenAI / 人工绑卡服务 / Free', 'OpenAI / 人工绑卡服务 / standard',
+    '火影忍者 数据账号（人工说明）', '品牌 / 定制产品 / 保修方案',
     'anthropic / chatgpt_card_binding_service / standard',
-    'unknown / widget / free', 'openai / constructor / standard',
+    'anthropic / chatgpt / plus', 'openai / chatgpt / custom_tier',
+    'unknown / widget_sms / standard', 'openai / chatgpt_sms / plus',
+    'openai / constructor / standard', 'openai / __proto__ / standard',
+    'openai / prototype / standard', 'openai / toString / standard',
     'openai / chatgpt / constructor', 'openai / chatgpt_card_binding_service / __proto__',
+    'unknown / widget / prototype', 'unknown / widget / toString',
     'openai / chatgpt_card_binding_service /', 'openai/chatgpt/plus/extra',
   ]) assert.equal(standardProductDisplayName(name), name);
+});
+
+test('unknown identities remain other even when their readable names end in navigation labels', () => {
+  for (const identity of [
+    { family: 'unknown', product: 'widget', tier: 'standard' },
+    { family: 'unknown', product: 'widget', tier: 'free' },
+    { family: 'unknown', product: 'widget', tier: 'sms' },
+    { family: 'unknown', product: 'widget', tier: 'tutorial' },
+    { family: 'unknown', product: 'widget', tier: 'plugin_access' },
+    { family: 'unknown', product: '定制手机接码', tier: 'standard' },
+    { family: 'unknown', product: '定制教程', tier: 'standard' },
+    { family: 'software', product: '定制插件访问', tier: 'standard' },
+  ]) assert.equal(standardProductKind(identity), '其他');
 });
 
 test('offer names keep their SKU meaning while losing ad and contact noise', () => {

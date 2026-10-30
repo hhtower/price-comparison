@@ -1,8 +1,11 @@
 import { PURCHASE_GUIDE_CONTENT as guide, PURCHASE_GUIDE_FIELDS, PURCHASE_GUIDE_GROUPS } from '@price-comparison/catalog/purchase-guide-content';
+import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import type { FastifyAdapter } from '@nestjs/platform-fastify';
+import { decodeCatalogCursor } from '../catalog/catalog.repository.js';
 import type { CatalogOffer, CatalogPage, PublicCatalogProduct, PublicCatalogProducts } from '../catalog/catalog.repository.js';
 import type { CatalogQueryInput } from '../catalog/catalog.service.js';
-import { DEFAULT_SITE_URL, PAGE_METADATA, SITE_NAME, pageSchema, productPageMetadata, type PageKind } from './page-metadata.js';
+import { DEFAULT_SITE_URL, PAGE_METADATA, SITE_NAME, PRODUCT_PAGE_SIZE, catalogPageMetadata, pageSchema, productPageMetadata,
+  productPagePath, productPageSchema, publicPageNumber, publicSourceUrl, type PageKind } from './page-metadata.js';
 
 export interface PublicPagesOptions {
   readonly template: string;
@@ -26,15 +29,8 @@ function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/gu, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 }
 
-function sourceUrl(value: string): string | null {
-  try {
-    const url = new URL(value);
-    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;
-  } catch { return null; }
-}
-
 function renderOffer(offer: CatalogOffer): string {
-  const source = sourceUrl(offer.productUrl);
+  const source = publicSourceUrl(offer.productUrl);
   const date = new Date(offer.capturedAt);
   const captured = Number.isNaN(date.getTime()) ? '更新时间未知' : '<time datetime="' + date.toISOString() + '">' + date.toISOString() + '</time>';
   const name = escapeHtml(offer.name);
@@ -53,10 +49,11 @@ function catalogContent(page: CatalogPage): string {
   return '<h1>AI 商品价格比较</h1><p>' + escapeHtml(PAGE_METADATA.public.description) + '</p>'
     + '<p>本站提供第三方报价信息，不参与交易；价格和库存以来源商铺为准，商品规格与售后以商家说明为准。</p>'
     + '<p class="purchase-guide-brief">第一次购买？<a href="/guide">查看选购说明 →</a></p>'
-    + (page.items.length ? page.items.map(item => '<article><h2><a href="/products/' + escapeHtml(item.id) + '">' + escapeHtml(item.name) + '</a></h2><p>平台：'
+    + (page.items.length ? page.items.map(item => '<article><h2><a href="/products/' + escapeHtml(item.id) + '">' + escapeHtml(standardProductDisplayName(item.name)) + '</a></h2><p>平台：'
       + escapeHtml(item.platform) + '</p><ul>' + item.offers.map(renderOffer).join('') + '</ul></article>').join('')
       : '<p>暂无可用报价，请稍后再试。</p>')
-    + '<p>以上为首页报价摘要。启用 JavaScript 可搜索、筛选及加载更多商品和报价。</p>';
+    + (page.nextCursor ? '<nav aria-label="商品分页"><a rel="next" href="' + escapeHtml(catalogPageMetadata(page.nextCursor).path) + '">下一页商品</a></nav>' : '')
+    + '<p>以上为商品报价摘要。启用 JavaScript 可搜索、筛选及加载更多商品和报价。</p>';
 }
 
 function guideContent(): string {
@@ -95,7 +92,7 @@ function renderPage(template: string, kind: PageKind, origin: string, content: s
   const page = custom?.page ?? PAGE_METADATA[kind];
   const noindex = kind === 'admin' || unavailable;
   const canonical = origin + page.path;
-  const schema = noindex ? null : custom ? custom.schema : pageSchema(kind, origin);
+  const schema = noindex ? null : custom?.schema ?? pageSchema(kind, origin, page);
   const metadata = '<meta name="description" content="' + escapeHtml(page.description) + '">'
     + '<meta name="robots" content="' + (noindex ? 'noindex, nofollow' : 'index, follow, max-image-preview:large') + '">'
     + '<link rel="canonical" href="' + escapeHtml(canonical) + '">'
@@ -108,7 +105,7 @@ function renderPage(template: string, kind: PageKind, origin: string, content: s
   const navigation = kind === 'guide'
     ? ''
     : '<nav aria-label="网站导航"><a href="/">知途 · 拾价</a> · <a href="/tools">检测工具</a>'
-      + (kind === 'public' && !custom && !unavailable ? '' : ' · <a href="/guide">新手指南</a>') + '</nav>';
+      + (kind === 'public' && !page.path.startsWith('/products/') && !unavailable ? '' : ' · <a href="/guide">新手指南</a>') + '</nav>';
   const body = '<main class="seo-document' + (kind === 'guide' ? ' purchase-guide-page' : '') + '">' + navigation + content + '</main>';
   return template.replace(/<title>[\s\S]*?<\/title>/u, () => '<title>' + escapeHtml(page.title) + '</title>')
     .replace(/<meta\s+name="description"[^>]*>/u, '')
@@ -149,25 +146,30 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
   });
   server.get('/products/:id', async (request, reply) => {
     const id = (request.params as { id: string }).id;
+    const pageNumber = publicPageNumber((request.query as Record<string, unknown>).page);
     reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-cache');
-    const missing = () => reply.code(404).header('X-Robots-Tag', 'noindex, nofollow')
-      .send(renderPage(options.template, 'public', origin, '<h1>商品不存在</h1>', true));
+    const missing = (message = '商品不存在') => reply.code(404).header('X-Robots-Tag', 'noindex, nofollow')
+      .send(renderPage(options.template, 'public', origin, '<h1>' + message + '</h1>', true));
+    if (!pageNumber) return missing('商品分页不存在');
     if (!/^[1-9][0-9]{0,18}$/u.test(id) || BigInt(id) >= 2n ** 63n) return missing();
     try {
       const product = await options.getProduct(id);
       if (!product) return missing();
-      if (product.mergedIntoId) return reply.code(308).redirect('/products/' + product.mergedIntoId);
-      const catalog = await options.getCatalog({ standardProductId: id, detailKind: 'offers', detailPage: 0, detailPageSize: 20, currency: 'CNY', offerSort: 'price' });
+      if (product.mergedIntoId) return reply.code(308).redirect(productPagePath(product.mergedIntoId, pageNumber));
+      const catalog = await options.getCatalog({ standardProductId: id, detailKind: 'offers', detailPage: pageNumber - 1, detailPageSize: PRODUCT_PAGE_SIZE, currency: 'CNY', offerSort: 'price' });
       const item = catalog.items[0];
       const offers = item?.detail?.kind === 'offers' ? item.detail.entries : item?.offers ?? [];
-      const page = productPageMetadata(product);
-      const verified = offers.filter(offer => (offer.settlementQuantity ?? 1) === 1 && offer.priceStatus === 'verified' && offer.price !== null
-        && Number.isFinite(Number(offer.price)) && Number(offer.price) >= 0 && sourceUrl(offer.productUrl));
-      const schema = { '@context': 'https://schema.org', '@type': 'Product', name: product.name, url: origin + page.path,
-        ...(verified.length ? { offers: verified.map(offer => ({ '@type': 'Offer', price: offer.price, priceCurrency: offer.currency,
-          url: sourceUrl(offer.productUrl), seller: { '@type': 'Organization', name: offer.shop } })) } : {}) };
-      const content = '<h1>' + escapeHtml(product.name) + '</h1><p>' + escapeHtml(page.description) + '</p>'
-        + (offers.length ? '<ul>' + offers.map(renderOffer).join('') + '</ul>' : '<p>暂无可用报价，请稍后再试。</p>');
+      if (pageNumber > 1 && !offers.length) return missing('商品分页不存在');
+      const total = item?.detail?.total ?? offers.length;
+      if (pageNumber > 1 && (pageNumber - 1) * PRODUCT_PAGE_SIZE >= total) return missing('商品分页不存在');
+      const page = productPageMetadata(product, pageNumber);
+      const schema = productPageSchema(product, origin, offers, pageNumber);
+      const content = '<h1>' + escapeHtml(standardProductDisplayName(product.name)) + '</h1><p>' + escapeHtml(page.description) + '</p>'
+        + (offers.length ? '<ul>' + offers.map(renderOffer).join('') + '</ul>' : '<p>暂无可用报价，请稍后再试。</p>')
+        + '<nav aria-label="报价分页">'
+        + (pageNumber > 1 ? '<a rel="prev" href="' + productPagePath(id, pageNumber - 1) + '">上一页报价</a> · ' : '')
+        + '<span>第' + pageNumber + '页</span>'
+        + (pageNumber * PRODUCT_PAGE_SIZE < total ? ' · <a rel="next" href="' + productPagePath(id, pageNumber + 1) + '">下一页报价</a>' : '') + '</nav>';
       return reply.send(renderPage(options.template, 'public', origin, content, false, { page, schema }));
     } catch {
       request.log.warn('public product HTML unavailable');
@@ -177,10 +179,22 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
   });
   server.get('/', async (request, reply) => {
     reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-cache');
+    const cursor = (request.query as Record<string, unknown>).cursor;
+    if (cursor !== undefined) {
+      try {
+        if (typeof cursor !== 'string' || cursor.length > 1024 || decodeCatalogCursor(cursor).sort) throw new Error();
+      } catch {
+        return reply.code(404).header('X-Robots-Tag', 'noindex, nofollow')
+          .send(renderPage(options.template, 'public', origin, '<h1>商品分页不存在</h1>', true));
+      }
+    }
     try {
       // Reuses CatalogService's bounded summary and existing versioned cache; no bot-specific content.
-      const catalog = await options.getCatalog();
-      return reply.send(renderPage(options.template, 'public', origin, catalogContent(catalog)));
+      const catalog = await options.getCatalog(cursor ? { cursor: cursor as string, limit: 20 } : undefined);
+      if (cursor && !catalog.items.length) return reply.code(404).header('X-Robots-Tag', 'noindex, nofollow')
+        .send(renderPage(options.template, 'public', origin, '<h1>商品分页不存在</h1>', true));
+      return reply.send(renderPage(options.template, 'public', origin, catalogContent(catalog), false,
+        { page: catalogPageMetadata(cursor as string | undefined) }));
     } catch {
       request.log.warn('public catalog HTML unavailable');
       return reply.code(503).header('Retry-After', '60').header('X-Robots-Tag', 'noindex, nofollow')

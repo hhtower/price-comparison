@@ -14,6 +14,7 @@ import { consumeRapidSearchTerms, normalizePurchaseTag, parseCatalogSearch, purc
 import { DurationFilterOptions, WarrantyFilter, isValidWarrantyMinimum } from './components/PurchasePeriodFilters.jsx';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { updatePageMetadata } from './page-metadata.js';
+import { PRODUCT_PAGE_SIZE, catalogPageMetadata, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
 import { formatMoney } from './money.js';
 import PriceHistory from './PriceHistory.jsx';
 import { displayPurchaseTagText, displayPurchaseTagValue } from './purchase-tag-values.js';
@@ -75,9 +76,10 @@ function readCatalogLocation(params = new URLSearchParams(window.location.search
     || !warranty && key === warrantyType);
   return { query: (params.get('q') || '').slice(0, 500), platform: normalizeCatalogPlatform(params.get('platform') || '') || '全部',
     sort: ['price', 'updated'].includes(params.get('sort')) ? params.get('sort') : 'default',
-    tags: new Set(selectedTags), warranty, product: params.get('standardProductId') || '',
+    tags: new Set(selectedTags), warranty, product: params.get('standardProductId') || '', cursor: params.get('cursor') || '',
     newcomer: explicitMode ? params.get('newcomer') === 'true'
-      : typeof window.history.state?.catalogNewcomer === 'boolean' ? window.history.state.catalogNewcomer : mode === 'newcomer' };
+      : params.has('cursor') || window.location.pathname.startsWith('/products/') ? false
+        : typeof window.history.state?.catalogNewcomer === 'boolean' ? window.history.state.catalogNewcomer : mode === 'newcomer' };
 }
 
 function navigateProduct(event, id, newcomer) {
@@ -554,15 +556,14 @@ function readDetailSearch(params) {
 
 function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCompare, onOpenComparison, desktop, standalone = false }) {
   const initial = { keyword: '', tags: [], warranty: '', shopId: '', shopName: '', priceMin: '', priceMax: '', currency: 'CNY',
-    pageSize: 12, offerSort: 'price', kind: detail.kind, scrollTop: 0 };
+    pageSize: PRODUCT_PAGE_SIZE, page: 1, offerSort: 'price', kind: detail.kind, scrollTop: 0 };
   const [state, setState] = useState(() => {
     if (!standalone) return { ...initial, ...readDetailSearch(new URLSearchParams(detail.query)) };
     const params = new URLSearchParams(window.location.search);
-    const pageSize = Number(params.get('detailPageSize') || 12);
     return { ...initial, ...readDetailSearch(params),
       priceMin: params.get('priceMin') || '', priceMax: params.get('priceMax') || '',
       shopId: params.get('shopId') || '',
-      pageSize: [12, 24, 48].includes(pageSize) ? pageSize : 12,
+      page: publicPageNumber(params.getAll('page')) ?? 1,
       kind: params.get('detailKind') === 'shops' ? 'shops' : 'offers', offerSort: ['price', 'priceDesc', 'updated'].includes(params.get('offerSort')) ? params.get('offerSort') : 'price' };
   });
   const [draft, setDraft] = useState(() => ({ ...state, tags: new Set(state.tags) }));
@@ -610,18 +611,20 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   }
   const params = queryFor(state);
   params.set('limit', '1');
-  params.set('detailKind', state.kind); params.set('detailPage', '0');
+  params.set('detailKind', state.kind); params.set('detailPage', String(state.page - 1));
   params.set('detailPageSize', String(state.pageSize)); params.set('offerSort', state.offerSort);
   const url = '/api/catalog?' + params;
   useEffect(() => {
     if (!standalone) return;
     const next = new URLSearchParams(url.split('?')[1]);
     for (const name of ['standardProductId', 'limit', 'platform', 'detailPage', 'detailPageSize']) next.delete(name);
+    next.delete('page');
+    if (state.page > 1) next.set('page', String(state.page));
     if (!next.get('q')) next.delete('q');
     window.history.replaceState(window.history.state, '', window.location.pathname + '?' + next);
   }, [standalone, url]);
   const detailQuery = useInfiniteQuery({ queryKey: ['details', url],
-    initialPageParam: 0,
+    initialPageParam: state.page - 1,
     queryFn: ({ signal, pageParam }) => {
       const next = new URLSearchParams(params);
       next.set('detailPage', String(pageParam));
@@ -638,6 +641,19 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     return { ...pages[0], items: pages.flatMap(page => page.items || []), nextExpiryAt: expiries.length ? new Date(Math.min(...expiries)).toISOString() : null };
   }, [detailQuery.data]);
   const priceRevision = usePriceExpiry(detailData, detailQuery.refetch);
+  const firstDetailItem = detailQuery.data?.pages[0]?.items?.find(item => item.id === detail.item.id);
+  const missingPage = standalone && state.page > 1 && detailQuery.data !== undefined
+    && (!firstDetailItem?.detail?.entries?.length || (state.page - 1) * state.pageSize >= firstDetailItem.detail.total);
+  useEffect(() => {
+    if (!standalone) return;
+    if (missingPage) {
+      updatePageMetadata('product-error', { id: detail.item.id, name: '商品分页不存在' });
+      return;
+    }
+    const quotes = firstDetailItem?.detail?.kind === 'offers' ? firstDetailItem.detail.entries
+      : firstDetailItem?.offers ?? (detailQuery.isSuccess || detailQuery.isError ? [] : undefined);
+    updatePageMetadata('product', detail.item, quotes, state.page);
+  }, [standalone, detail.item, firstDetailItem, detailQuery.isSuccess, detailQuery.isError, state.page, priceRevision, missingPage]);
   const facetParams = queryFor(state).toString();
   const facets = useQuery({ queryKey: ['detail-facets', facetParams], enabled: filterOpen,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog/facets?' + facetParams, signal) });
@@ -665,7 +681,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     restoreScroll.current = null;
     if (standalone) window.scrollTo(0, 0);
     else if (scrollElement) scrollElement.scrollTop = 0;
-    setState(current => ({ ...current, scrollTop: 0, ...patch }));
+    setState(current => ({ ...current, scrollTop: 0, page: 1, ...patch }));
   };
   useEffect(() => {
     if (keyword.trim() === state.keyword) return undefined;
@@ -690,7 +706,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     restoreScroll.current = patch.scrollTop ?? null;
     if (standalone) window.scrollTo(0, 0);
     else if (scrollElement) scrollElement.scrollTop = patch.scrollTop ?? 0;
-    const values = { ...state, scrollTop: 0, ...patch };
+    const values = { ...state, scrollTop: 0, page: 1, ...patch };
     setState(values); setKeyword(values.keyword); setDraft({ ...values, tags: new Set(values.tags) }); setRangeError(''); setFilterOpen(false);
   }
   const field = (name, value) => { setDraft(current => ({ ...current, [name]: value })); setRangeError(''); };
@@ -705,6 +721,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
       <span className="catalog-shop-identity"><span className="offer-rank">{rank}</span><span className="catalog-shop-copy"><strong><span className="catalog-shop-name">{entry.name}</span><ShopScore offer={entry.offer} /><ShopBadge offer={entry.offer} /></strong><span>{entry.count} 条报价</span></span></span><strong className="catalog-shop-price"><OfferPrice offer={entry.offer} /> →</strong>
     </button> : <OfferCard key={offerIdentity(entry, index)} offer={entry} item={detail.item} rank={rank} best={state.offerSort === 'price' && rank === 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} showHistory />;
   }
+  if (missingPage) return <section className="product-route-state" role="alert"><h1>商品分页不存在</h1><a href={productPagePath(detail.item.id)}>返回商品首页</a><a href="/" onClick={returnToCatalog}>返回商品列表</a></section>;
   const Container = standalone ? 'section' : ModalDialog;
   const Controls = standalone ? 'div' : React.Fragment;
   return <Container {...(standalone ? {} : { open: true, onClose })} className={standalone ? 'product-page-details' : 'catalog-detail-dialog'} aria-labelledby="catalog-detail-title">
@@ -734,7 +751,14 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     <div className="detail-scroll" ref={setScrollElement}>
       <PriceHistory key={`${detail.item.id}:${state.currency}`} standardProductId={detail.item.id} currency={state.currency} />
       {loading ? <p role="status" className="detail-loading">正在加载{label}…</p> : error ? <div role="alert" className="catalog-error"><span>报价加载失败，请重试</span><button type="button" onClick={() => detailQuery.refetch()}>重试</button></div> : !visible.length ? <p className="detail-empty">没有匹配的{label}</p> : standalone || scrollElement ? <Virtuoso key={url} useWindowScroll={standalone} customScrollParent={standalone ? undefined : scrollElement} data={rows} computeItemKey={(_index, row) => isShops ? row[0].key : offerIdentity(row[0])} increaseViewportBy={CATALOG_OVERSCAN} totalListHeightChanged={onHeightChanged} endReached={loadNextPage} itemContent={(index, row) => <div className={isShops ? 'product-shop-row' : 'product-offer-row'}>{row.map((entry, column) => renderEntry(entry, index * columns + column))}</div>} /> : null}
-      {detailQuery.isFetchingNextPage ? <p className="catalog-infinite-end" role="status">正在加载更多{label}…</p> : detailQuery.isError && visible.length ? <div className="catalog-error" role="alert"><span>{detailQuery.isFetchNextPageError ? `更多${label}加载失败` : `${label}刷新失败`}</span><button type="button" onClick={() => detailQuery.isFetchNextPageError ? detailQuery.fetchNextPage() : detailQuery.refetch()}>重试加载</button></div> : detailQuery.hasNextPage ? <button type="button" className="text-button product-load-more" disabled={detailQuery.isFetching} onClick={() => detailQuery.fetchNextPage()}>加载更多{label}</button> : visible.length ? <p className="catalog-infinite-end">已显示全部 {total} {isShops ? '家商铺' : '条报价'}</p> : null}
+      {detailQuery.isFetchingNextPage ? <p className="catalog-infinite-end" role="status">正在加载更多{label}…</p> : detailQuery.isError && visible.length ? <div className="catalog-error" role="alert"><span>{detailQuery.isFetchNextPageError ? `更多${label}加载失败` : `${label}刷新失败`}</span><button type="button" onClick={() => detailQuery.isFetchNextPageError ? detailQuery.fetchNextPage() : detailQuery.refetch()}>重试加载</button></div> : detailQuery.hasNextPage ? <button type="button" className="text-button product-load-more" disabled={detailQuery.isFetching} onClick={() => detailQuery.fetchNextPage()}>加载更多{label}</button> : visible.length ? <p className="catalog-infinite-end">{state.page > 1 ? '已显示本页起的全部 ' + visible.length : '已显示全部 ' + total} {isShops ? '家商铺' : '条报价'}</p> : null}
+      {standalone && !isShops && !state.keyword && !state.tags.length && !state.warranty && !state.shopId
+        && !state.priceMin && !state.priceMax && !state.newcomer && state.offerSort === 'price' && total > 0
+        ? <nav className="catalog-pagination" aria-label="报价分页">
+          {state.page > 1 ? <a rel="prev" href={productPagePath(detail.item.id, state.page - 1)}>上一页报价</a> : null}
+          <span>第{state.page}页</span>
+          {state.page * PRODUCT_PAGE_SIZE < total ? <a rel="next" href={productPagePath(detail.item.id, state.page + 1)}>下一页报价</a> : null}
+        </nav> : null}
       {standalone ? <p className="product-trade-note">报价仅供比较参考，下单前请以商家页面的实际价格和交易条件为准。本站不参与交易，交易与售后请联系商家。</p> : null}
     </div>
   </Container>;
@@ -773,6 +797,8 @@ const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDe
 
 function PublicCatalog({ productId }) {
   usePageAnalytics('catalog');
+  const requestedProductPage = publicPageNumber(new URLSearchParams(window.location.search).getAll('page'));
+  const invalidProductPage = Boolean(productId && requestedProductPage === null);
   const [initial] = useState(readCatalogLocation);
   const [newcomer, setNewcomer] = useState(initial.newcomer);
   useEffect(() => {
@@ -784,6 +810,7 @@ function PublicCatalog({ productId }) {
   const [search, setSearch] = useState(initial.query);
   const [platform, setPlatform] = useState(initial.platform);
   const [sort, setSort] = useState(initial.sort);
+  const [cursor, setCursor] = useState(initial.cursor);
   const [selectedProduct, setSelectedProduct] = useState(initial.product);
   const [draftProduct, setDraftProduct] = useState(initial.product);
   const [listMeasured, setListMeasured] = useState(false);
@@ -850,22 +877,29 @@ function PublicCatalog({ productId }) {
   });
   const request = useMemo(() => catalogParams(search, platform, selectedTags, warrantyDaysMin, selectedProduct, newcomer).toString(), [search, platform, selectedTags, warrantyDaysMin, selectedProduct, newcomer]);
   const lookupProductId = productId || selectedProduct;
-  const productQuery = useQuery({ queryKey: ['product', lookupProductId], enabled: Boolean(lookupProductId), queryFn: ({ signal }) => fetchCatalog('/api/catalog/products/' + encodeURIComponent(lookupProductId), signal) });
+  const productQuery = useQuery({ queryKey: ['product', lookupProductId], enabled: Boolean(lookupProductId) && !invalidProductPage, queryFn: ({ signal }) => fetchCatalog('/api/catalog/products/' + encodeURIComponent(lookupProductId), signal) });
   useEffect(() => {
     if (!productId) return;
+    if (invalidProductPage) {
+      updatePageMetadata('product-error', { id: productId, name: '商品分页不存在' });
+      return;
+    }
     const product = productQuery.data;
     if (product?.mergedIntoId) {
       window.history.replaceState(window.history.state, '', '/products/' + encodeURIComponent(product.mergedIntoId) + window.location.search);
       window.dispatchEvent(new PopStateEvent('popstate')); return;
     }
-    if (product) updatePageMetadata('product', product);
-    else if (productQuery.isError) updatePageMetadata('product-error', { id: productId, name: productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载' });
-  }, [productId, productQuery.data, productQuery.isError, productQuery.error]);
+    if (productQuery.isError) updatePageMetadata('product-error', { id: productId, name: productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载' });
+  }, [productId, productQuery.data, productQuery.isError, productQuery.error, invalidProductPage]);
   const locationReady = useRef(false);
+  const unfilteredCatalog = !search && platform === '全部' && !selectedTags.size && !warrantyDaysMin && !selectedProduct && !newcomer && sort === 'default';
+  const startCursor = unfilteredCatalog ? cursor : '';
   useEffect(() => {
     if (productId || window.location.pathname !== '/') return;
     const next = new URL(window.location.href);
-    for (const key of ['q', 'platform', 'tag', 'warrantyDaysMin', 'sort', 'standardProductId', 'newcomer']) next.searchParams.delete(key);
+    for (const key of ['q', 'platform', 'tag', 'warrantyDaysMin', 'sort', 'standardProductId', 'newcomer', 'cursor']) next.searchParams.delete(key);
+    if (startCursor) next.searchParams.set('cursor', startCursor);
+    if (!unfilteredCatalog && cursor) setCursor('');
     for (const [key, value] of new URLSearchParams(request)) if (value) next.searchParams.append(key, value);
     if (sort !== 'default') next.searchParams.set('sort', sort);
     if (newcomer || new URLSearchParams(window.location.search).has('newcomer')) next.searchParams.set('newcomer', String(newcomer));
@@ -876,7 +910,8 @@ function PublicCatalog({ productId }) {
       window.history.replaceState(historyState, '', next);
     }
     locationReady.current = true;
-  }, [request, sort, productId, newcomer]);
+    updatePageMetadata('public');
+  }, [request, sort, productId, newcomer, startCursor, unfilteredCatalog, cursor]);
   useEffect(() => {
     const restore = () => {
       const value = readCatalogLocation();
@@ -884,18 +919,19 @@ function PublicCatalog({ productId }) {
       setQuery(value.query); setSearch(value.query); setPlatform(value.platform); setSort(value.sort);
       setSelectedTags(value.tags); setDraftTags(new Set(value.tags)); setWarrantyDaysMin(value.warranty); setDraftWarrantyDaysMin(value.warranty);
       setNewcomer(value.newcomer);
+      setCursor(value.cursor);
       setCatalogDetail(null); setFilterOpen(false);
     };
     window.addEventListener('popstate', restore);
     return () => window.removeEventListener('popstate', restore);
   }, []);
   const catalogQuery = useInfiniteQuery({
-    queryKey: ['catalog', request, sort],
+    queryKey: ['catalog', request, sort, startCursor],
     enabled: !productId,
     // platformFacets do not depend on the platform param (global navigation),
     // so keep the previous page rendered while a switched request loads.
     placeholderData: keepPreviousData,
-    initialPageParam: null,
+    initialPageParam: startCursor || null,
     queryFn: ({ signal, pageParam }) => {
       const params = new URLSearchParams(request);
       params.set('limit', '20'); params.set('sort', sort);
@@ -1050,8 +1086,8 @@ function PublicCatalog({ productId }) {
         </div>
       </header> : null}
       {productId ? <div className="product-page-content">
-        {productQuery.isPending || productQuery.isError ? <a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a> : null}
-        {productQuery.isPending ? <p role="status">正在加载商品…</p> : productQuery.isError ? <section className="product-route-state" role="alert"><h1>{productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载'}</h1>{productQuery.error?.status !== 404 ? <button type="button" className="primary-button" onClick={() => productQuery.refetch()}>重试</button> : null}</section> : productDetail && !productQuery.data.mergedIntoId ? <>
+        {invalidProductPage || productQuery.isPending || productQuery.isError ? <a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a> : null}
+        {invalidProductPage ? <section className="product-route-state" role="alert"><h1>商品分页不存在</h1></section> : productQuery.isPending ? <p role="status">正在加载商品…</p> : productQuery.isError ? <section className="product-route-state" role="alert"><h1>{productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载'}</h1>{productQuery.error?.status !== 404 ? <button type="button" className="primary-button" onClick={() => productQuery.refetch()}>重试</button> : null}</section> : productDetail && !productQuery.data.mergedIntoId ? <>
           <CatalogDetailDialog key={productId} standalone desktop={desktopFilters} detail={productDetail} onOfferDetails={openOfferDetails} comparison={comparison} onCompare={toggleComparison} onOpenComparison={() => setComparisonOpen(true)} />
         </> : null}
       </div> : <>
@@ -1081,6 +1117,7 @@ function PublicCatalog({ productId }) {
         {error ? <div className="catalog-error" role="alert"><span>{error}</span><button type="button" onClick={() => catalogQuery.isFetchNextPageError ? catalogQuery.fetchNextPage() : catalogQuery.refetch()}>重新加载</button></div> : null}
         {loading && !visibleItems.length ? <CatalogSkeleton /> : null}
         <section className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={newcomer} /></section>
+        {unfilteredCatalog && data.nextCursor ? <nav className="catalog-pagination" aria-label="商品分页"><a rel="next" href={catalogPageMetadata(data.nextCursor).path}>下一页商品</a></nav> : null}
         {!catalogQuery.hasNextPage && visibleItems.length ? <p className="catalog-infinite-end">逛到这里，好价就这么多啦</p> : null}
         <section className="empty-state" hidden={Boolean(data.items?.length) || loading || Boolean(error)}><strong>{hasRecognizedIntent || selectedCount ? '没有同时满足这些条件的报价' : '还没有匹配结果'}</strong><span>{hasRecognizedIntent ? '可以移除一个条件，或换个关键词继续找。' : selectedCount ? '清除部分筛选，或换个关键词试试。' : '试试其他关键词或商品平台。'}</span>{hasRecognizedIntent ? <button type="button" className="primary-button" onClick={() => { setQuery(parseCatalogSearch(query).text); }}>清除已识别条件</button> : selectedCount ? <button type="button" className="primary-button" onClick={clearFilters}>清除筛选</button> : null}</section>
       </div>

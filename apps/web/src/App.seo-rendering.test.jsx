@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { VirtuosoMockContext } from 'react-virtuoso';
 import { registerPublicPages } from '../../api/src/seo/public-pages.ts';
@@ -88,4 +88,83 @@ test('guide client and no-script HTML have identical text and anchors without fe
   expect(normalize(container.querySelector('main').textContent)).toBe(expectedText);
   expect([...container.querySelectorAll('main [id]')].map(node => node.id)).toEqual(expectedIds);
   expect(fetch).not.toHaveBeenCalled();
+});
+
+test('product client retains server structured offers and removes them when quotes expire', async () => {
+  const product = { id: '42', name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅' };
+  const offer = { shopId: '7', productId: '9', shop: '示例商铺', name: '月付报价', price: '12.50', settlementQuantity: 1,
+    currency: 'CNY', priceStatus: 'verified', priceExpiresAt: '2099-01-01T00:00:00Z', inventoryExpiresAt: '2099-01-01T00:00:00Z',
+    productUrl: 'https://shop.example/product/9', capturedAt: '2026-10-30T00:00:00Z', inStock: true, tags: [] };
+  const catalog = () => ({ items: [{ ...product, standardProductId: '42', offers: [offer],
+    detail: { kind: 'offers', entries: [offer], total: 1, page: 0, pageSize: 12 } }], total: 1, platformFacets: [] });
+  const adapter = new FastifyAdapter();
+  registerPublicPages(adapter, { template: '<html><head><title>Site</title></head><body><div id="root"></div></body></html>',
+    getCatalog: async () => catalog(), getProducts: async () => ({ items: [product] }), getProduct: async () => product });
+  let html;
+  try { html = (await adapter.getInstance().inject('/products/42')).body; }
+  finally { await adapter.getInstance().close(); }
+  const parsed = new DOMParser().parseFromString(html, 'text/html');
+  document.head.innerHTML = parsed.head.innerHTML;
+  const expected = JSON.parse(document.querySelector('#page-structured-data').textContent);
+  expect(expected.offers).toHaveLength(1);
+  window.history.replaceState({}, '', '/products/42');
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname === '/api/catalog/products/42') return Response.json(product);
+    if (url.pathname === '/api/catalog') return Response.json(catalog());
+    return new Response(null, { status: 204 });
+  }));
+  render(<VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 300 }}><App /></VirtuosoMockContext.Provider>);
+  await screen.findByRole('heading', { level: 1, name: product.name });
+  await screen.findByText('月付报价');
+  expect(JSON.parse(document.querySelector('#page-structured-data').textContent)).toEqual(expected);
+  offer.priceExpiresAt = '2000-01-01T00:00:00Z';
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+  await waitFor(() => expect(JSON.parse(document.querySelector('#page-structured-data').textContent).offers).toBeUndefined());
+});
+
+test('home client keeps cursor pagination and resets it when searching', async () => {
+  const cursor = 'eyJ2IjoyLCJzIjoiMCIsInNwIjoiNDIifQ';
+  const nextCursor = 'eyJ2IjoyLCJzIjoiMCIsInNwIjoiNDMifQ';
+  const calls = [];
+  window.history.replaceState({}, '', '/?cursor=' + cursor);
+  localStorage.setItem('catalog-browsing-mode', 'newcomer');
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname !== '/api/catalog') return new Response(null, { status: 204 });
+    calls.push(url);
+    const searching = Boolean(url.searchParams.get('q'));
+    return Response.json({ total: 60, platformFacets: [], nextCursor: searching ? undefined : nextCursor,
+      items: [{ id: searching ? '44' : '43', name: searching ? '搜索结果' : '续页商品', platform: 'openai', offers: [] }] });
+  }));
+  render(<VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 300 }}><App /></VirtuosoMockContext.Provider>);
+  await screen.findByRole('link', { name: '续页商品' });
+  expect(calls[0].searchParams.get('cursor')).toBe(cursor);
+  expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/?cursor=' + cursor);
+  expect(screen.getByRole('link', { name: '下一页商品' })).toHaveAttribute('href', '/?cursor=' + nextCursor);
+  const search = screen.getByRole('textbox', { name: '搜索商品' });
+  fireEvent.change(search, { target: { value: '搜索' } });
+  fireEvent.keyDown(search, { key: 'Enter' });
+  await screen.findByRole('link', { name: '搜索结果' });
+  expect(calls.at(-1).searchParams.has('cursor')).toBe(false);
+  expect(new URLSearchParams(window.location.search).has('cursor')).toBe(false);
+  expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/');
+});
+
+test.each([503, 200])('completed quote loading with no visible offers clears the server offers (HTTP %s)', async status => {
+  const product = { id: '42', name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅' };
+  document.head.insertAdjacentHTML('beforeend', '<link rel="canonical" href="https://price.yufu.pub/products/42">'
+    + '<script id="page-structured-data" type="application/ld+json">'
+    + JSON.stringify({ '@context': 'https://schema.org', '@type': 'Product', name: product.name,
+      url: 'https://price.yufu.pub/products/42', offers: [{ '@type': 'Offer', price: '12.50', priceCurrency: 'CNY' }] }) + '</script>');
+  window.history.replaceState({}, '', '/products/42');
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname === '/api/catalog/products/42') return Response.json(product);
+    if (url.pathname === '/api/catalog') return status === 200 ? Response.json({ items: [], total: 0, platformFacets: [] }) : new Response(null, { status });
+    return new Response(null, { status: 204 });
+  }));
+  render(<App />);
+  await screen.findByText(status === 200 ? '没有匹配的报价' : '报价加载失败，请重试');
+  expect(JSON.parse(document.querySelector('#page-structured-data').textContent).offers).toBeUndefined();
 });

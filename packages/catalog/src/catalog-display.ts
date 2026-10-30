@@ -43,7 +43,7 @@ const SERVICES: Record<string, readonly [string, string]> = {
   super_grok_and_x_premium_bundle: ['bundle', 'SuperGrok 与 X Premium 组合套餐'],
 };
 const PURPOSES: Record<string, string> = {
-  account: '账号', buyer_account: '买家账号', email: '邮箱', 'edu email': '教育邮箱', alumni_email: '校友邮箱',
+  account: '账号', data_account: '数据账号', balance_recharge: '余额充值', buyer_account: '买家账号', email: '邮箱', 'edu email': '教育邮箱', alumni_email: '校友邮箱',
   email_pool: '邮箱池', privacy_mailbox: '隐私邮箱', membership: '会员',
   card: '卡片', physical_card: '实体卡', virtual_card: '虚拟卡', payment_task_card: '支付任务卡',
   student_verification: '学生认证', student_verification_service: '学生认证服务',
@@ -122,7 +122,7 @@ export function canonicalProductDisplayName(identity: ProductDisplayIdentity): s
   const purpose = ownValue(PURPOSES, product);
   const fallback = `${identity.family} / ${identity.product} / ${identity.tier}`;
   if ((known && known[0] !== family) || (service && service[0] !== family) || (sms && (!known || tier !== 'standard'))
-    || ['constructor', '__proto__', 'prototype', 'tostring'].includes(tier)) return fallback;
+    || ['constructor', '__proto__', 'prototype', 'tostring'].some(key => key === product || key === tier)) return fallback;
   if (family === 'xai' && product === 'grok' && ['plus', 'premium', 'super', 'ultra'].includes(tier))
     return `Grok·X·Cursor ${TIERS[tier]}（统一订阅）`;
   if (family === 'xai' && product === 'grok' && ['supergrok', 'heavy'].includes(tier))
@@ -131,10 +131,10 @@ export function canonicalProductDisplayName(identity: ProductDisplayIdentity): s
     return `X ${TIERS[tier]}（旧版）`;
   const familyLabel = GENERIC_FAMILIES.has(family) ? '' : ownValue(FAMILIES, family) ?? identity.family.trim().replace(/_/gu, ' ');
   if (purpose === '账号' && tier === 'free') return [familyLabel, TIERS.free].filter(Boolean).join(' ');
-  const label = known?.[1] ?? service?.[1] ?? (purpose
-    ? [familyLabel, purpose].filter(Boolean).join(' ') : undefined);
+  const label = known?.[1] ?? service?.[1]
+    ?? [familyLabel, purpose ?? identity.product.trim().replace(/_/gu, ' ')].filter(Boolean).join(' ');
   if (!label || (known && !Object.hasOwn(TIERS, tier))) return fallback;
-  const tierLabel = sms ? '手机接码' : purpose && tier === 'free' ? '免费版' : ownValue(TIERS, tier)
+  const tierLabel = sms ? '手机接码' : !known && tier === 'free' ? '免费版' : ownValue(TIERS, tier)
     ?? identity.tier.trim().split(/[_\s]+/u).map(term => ownValue(TIER_TERMS, term.toLowerCase()) ?? term).join(' ');
   return [label, tierLabel].filter(Boolean).join(' ');
 }
@@ -158,12 +158,14 @@ export function standardProductDisplayName(name: string): string {
 
 export function standardProductKind(identity: ProductDisplayIdentity): string {
   const name = canonicalProductDisplayName(identity);
-  if (name.includes(' / ')) return '其他';
+  const product = identity.product.trim().toLowerCase();
+  if (name.includes(' / ') || !(ownValue(PRODUCTS, product.replace(/_sms$/u, ''))
+    || ownValue(SERVICES, product) || ownValue(PURPOSES, product))) return '其他';
   if (name.endsWith('手机接码')) return '手机接码';
   if (name.endsWith('教程')) return '教程';
   if (name.endsWith('插件访问')) return '插件访问';
   if (['credits', 'kyc', 'refund_service', 'account_manager'].includes(identity.tier.trim().toLowerCase())) return '其他';
-  return Object.hasOwn(PRODUCTS, identity.product.trim().toLowerCase()) ? '账号与订阅' : '其他';
+  return Object.hasOwn(PRODUCTS, product) ? '账号与订阅' : '其他';
 }
 
 // Crawler titles carry shop ads and contact handles; offers display the cleaned
