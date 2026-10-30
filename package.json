@@ -1,6 +1,6 @@
 {
   "name": "product-price-comparison",
-  "version": "2026.10.3001",
+  "version": "2026.11.1",
   "type": "module",
   "scripts": {
     "start": "node dist/server/main.js",
