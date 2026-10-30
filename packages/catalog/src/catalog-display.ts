@@ -78,6 +78,7 @@ const FAMILIES: Record<string, string> = {
   wechat: '微信', qq: 'QQ', xiaohongshu: '小红书', netease: '网易', edu: '教育',
   nvidia: 'NVIDIA', android: 'Android', onnx: 'ONNX', vmos: 'VMOS', ucla: 'UCLA',
   gcash: 'GCash', upi: 'UPI', kakao_pay: 'Kakao Pay', giffgaff: 'giffgaff',
+  gopay: 'GoPay', ebay: 'eBay', qianwen: '千问', suno: 'Suno',
   one_nz: 'One NZ', ultra_mobile: 'Ultra Mobile', telecom: '电信', identity_v: '第五人格',
 };
 const GENERIC_FAMILIES = new Set(['generic', 'service', 'software', 'bundle', 'card', 'email', 'phone', 'network', 'server', 'logistics', 'courier', 'pet_care', 'student_verification']);
@@ -89,7 +90,7 @@ const TIERS: Record<string, string> = {
   refund_service: '退款服务', account_manager: '账号管理工具', ultra: 'Ultra', heavy: 'Heavy',
   super: 'Super', supergrok: 'SuperGrok', super_plus: 'Super Plus', super_lite: 'Super Lite',
   pro_plus: 'Pro Plus', max: 'Max', premium: 'Premium', premium_plus: 'Premium Plus',
-  basic: '基础版', personal: '个人版', business: '商业版', family: '家庭版', individual: '个人版',
+  basic: '基础版', personal: '个人版', business: '商业版', family: '家庭版', individual: '个人版', premier: 'Premier',
   vip: 'VIP', svip: 'SVIP', gvip: 'GVIP', trial: '体验版', student: '学生版',
   top_up: '充值', prepaid: '预付费', permanent: '永久版', registered: '已注册', aged: '老号', account: '账号',
 };
@@ -104,6 +105,7 @@ function ownValue<T>(values: Record<string, T>, key: string): T | undefined {
 
 export const CATALOG_DISPLAY_SEARCH_LABELS = {
   products: { ...PURPOSES,
+    ...Object.fromEntries(Object.entries(FAMILIES).map(([key, name]) => [`${key}_sms`, `${name} 手机接码`])),
     ...Object.fromEntries(Object.entries(PRODUCTS).flatMap(([key, [, name]]) => [[key, name], [`${key}_sms`, `${name} 手机接码`]])),
     ...Object.fromEntries(Object.entries(SERVICES).map(([key, [, name]]) => [key, name])) },
   families: FAMILIES,
@@ -117,11 +119,12 @@ export function canonicalProductDisplayName(identity: ProductDisplayIdentity): s
   const product = identity.product.trim().toLowerCase();
   const tier = identity.tier.trim().toLowerCase();
   const sms = product.endsWith('_sms');
-  const known = ownValue(PRODUCTS, sms ? product.slice(0, -4) : product);
+  const platform = sms ? product.slice(0, -4) : product;
+  const known = ownValue(PRODUCTS, platform);
   const service = ownValue(SERVICES, product);
   const purpose = ownValue(PURPOSES, product);
   const fallback = `${identity.family} / ${identity.product} / ${identity.tier}`;
-  if ((known && known[0] !== family) || (service && service[0] !== family) || (sms && (!known || tier !== 'standard'))
+  if ((known && known[0] !== family) || (service && service[0] !== family) || (sms && (tier !== 'standard' || (!known && platform !== family)))
     || ['constructor', '__proto__', 'prototype', 'tostring'].some(key => key === product || key === tier)) return fallback;
   if (family === 'xai' && product === 'grok' && ['plus', 'premium', 'super', 'ultra'].includes(tier))
     return `Grok·X·Cursor ${TIERS[tier]}（统一订阅）`;
@@ -130,11 +133,12 @@ export function canonicalProductDisplayName(identity: ProductDisplayIdentity): s
   if (family === 'x' && product === 'premium_membership' && ['premium', 'premium_plus'].includes(tier))
     return `X ${TIERS[tier]}（旧版）`;
   const familyLabel = GENERIC_FAMILIES.has(family) ? '' : ownValue(FAMILIES, family) ?? identity.family.trim().replace(/_/gu, ' ');
+  if (sms) return (known?.[1] ?? (familyLabel || identity.family.trim().replace(/_/gu, ' '))) + ' 手机接码';
   if (purpose === '账号' && tier === 'free') return [familyLabel, TIERS.free].filter(Boolean).join(' ');
   const label = known?.[1] ?? service?.[1]
     ?? [familyLabel, purpose ?? identity.product.trim().replace(/_/gu, ' ')].filter(Boolean).join(' ');
-  if (!label || (known && !Object.hasOwn(TIERS, tier))) return fallback;
-  const tierLabel = sms ? '手机接码' : !known && tier === 'free' ? '免费版' : ownValue(TIERS, tier)
+  if (!label) return fallback;
+  const tierLabel = !known && tier === 'free' ? '免费版' : ownValue(TIERS, tier)
     ?? identity.tier.trim().split(/[_\s]+/u).map(term => ownValue(TIER_TERMS, term.toLowerCase()) ?? term).join(' ');
   return [label, tierLabel].filter(Boolean).join(' ');
 }
@@ -159,7 +163,9 @@ export function standardProductDisplayName(name: string): string {
 export function standardProductKind(identity: ProductDisplayIdentity): string {
   const name = canonicalProductDisplayName(identity);
   const product = identity.product.trim().toLowerCase();
-  if (name.includes(' / ') || !(ownValue(PRODUCTS, product.replace(/_sms$/u, ''))
+  if (name.includes(' / ')) return '其他';
+  if (product.endsWith('_sms')) return '手机接码';
+  if (!(ownValue(PRODUCTS, product)
     || ownValue(SERVICES, product) || ownValue(PURPOSES, product))) return '其他';
   if (name.endsWith('手机接码')) return '手机接码';
   if (name.endsWith('教程')) return '教程';

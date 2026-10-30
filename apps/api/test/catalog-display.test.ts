@@ -87,6 +87,8 @@ test('unknown machine names keep distinct identity details in readable form', ()
     ['service / custom_tool / standard', 'custom tool'],
     [' New_Vendor / Widget_One / CUSTOM_30_DAYS ', 'New Vendor Widget One CUSTOM 30 天'],
     ['google / custom_tool / standard', 'Google custom tool'],
+    ['suno / suno / premier', 'Suno Premier'],
+    ['openai / chatgpt / custom_tier', 'ChatGPT custom tier'],
   ] as const) {
     const [family, product, tier] = input.split('/');
     assert.equal(canonicalProductDisplayName({ family: family!, product: product!, tier: tier! }), expected, input);
@@ -100,7 +102,7 @@ test('friendly names, conflicting identities and unsafe or malformed machine nam
     '人工品牌/自定义产品/保修方案', 'ChatGPT 绑卡服务（人工说明）',
     '火影忍者 数据账号（人工说明）', '品牌 / 定制产品 / 保修方案',
     'anthropic / chatgpt_card_binding_service / standard',
-    'anthropic / chatgpt / plus', 'openai / chatgpt / custom_tier',
+    'anthropic / chatgpt / plus',
     'unknown / widget_sms / standard', 'openai / chatgpt_sms / plus',
     'openai / constructor / standard', 'openai / __proto__ / standard',
     'openai / prototype / standard', 'openai / toString / standard',
@@ -108,6 +110,31 @@ test('friendly names, conflicting identities and unsafe or malformed machine nam
     'unknown / widget / prototype', 'unknown / widget / toString',
     'openai / chatgpt_card_binding_service /', 'openai/chatgpt/plus/extra',
   ]) assert.equal(standardProductDisplayName(name), name);
+});
+
+test('platform SMS services display consistently without a product whitelist', () => {
+  for (const [family, label] of [
+    ['gopay', 'GoPay'], ['paypal', 'PayPal'], ['instagram', 'Instagram'],
+    ['ebay', 'eBay'], ['qianwen', '千问'], ['microsoft', 'Microsoft'],
+    ['twitter', 'X/Twitter'], ['new_platform', 'new platform'],
+  ]) {
+    const identity = { family: family!, product: family + '_sms', tier: 'standard' };
+    const expected = label + ' 手机接码';
+    assert.equal(canonicalProductDisplayName(identity), expected);
+    assert.equal(standardProductDisplayName(`${family} / ${family}_sms / standard`), expected);
+    assert.equal(standardProductDisplayName(expected), expected);
+    assert.equal(standardProductKind(identity), '手机接码');
+    if (family !== 'new_platform') assert.equal(CATALOG_DISPLAY_SEARCH_LABELS.products[family + '_sms'], expected);
+  }
+  assert.equal(standardProductDisplayName(' GOPAY / GOPAY_SMS / STANDARD '), 'GoPay 手机接码');
+  for (const identity of [
+    { family: 'gopay', product: 'paypal_sms', tier: 'standard' },
+    { family: 'gopay', product: 'gopay_sms', tier: 'plus' },
+    { family: 'unknown', product: 'widget_sms', tier: 'standard' },
+  ]) {
+    assert.equal(canonicalProductDisplayName(identity), `${identity.family} / ${identity.product} / ${identity.tier}`);
+    assert.equal(standardProductKind(identity), '其他');
+  }
 });
 
 test('unknown identities remain other even when their readable names end in navigation labels', () => {
