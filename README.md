@@ -8,7 +8,17 @@
   简体中文 · <a href="README.en.md">English</a>
 </p>
 
-知途 · 拾价聚合卡网、发卡站的 ChatGPT / Codex、Claude / Claude Code、Gemini、Grok、Cursor 等订阅与账号报价，覆盖代充、成品号、共享账号、兑换码，以及邮箱、接码、住宅 IP 等配套服务。对比各商铺的价格、库存、使用期限、独享 / 共享和售后范围，并提供价格走势、官方地区价参考及 AI / IP 检测。
+**用一句话描述需求，让 AI 帮你挑选和比较报价。**
+
+知途 · 拾价是一个带有 AI 导购助手的订阅与账号比价平台，聚合卡网、发卡站的 ChatGPT / Codex、Claude / Claude Code、Gemini、Grok、Cursor 等报价，覆盖代充、成品号、共享账号、兑换码，以及邮箱、接码、住宅 IP 等配套服务。支持对话式选购、跨商铺比价、价格走势、官方地区价参考及 AI / IP 检测。
+
+## ✨ AI 导购助手
+
+说出需求与预算，AI 导购助手帮你筛选、比较站内商家报价，并说明充值渠道、质保和购买条件。你可以继续追问，逐步找到适合自己的商品。
+
+> 已有 GPT 账号，想找 Plus 代充，每月预算 100 元以内，优先有质保的。
+
+## 商品聚合与比价
 
 ![商品处理架构：自动采集、AI 身份识别与复核、归类发布、标签处理及跨商铺比价](docs/images/product-pipeline.svg)
 
@@ -37,6 +47,8 @@ npm start
 PowerShell 使用 `Copy-Item .env.example .env` 复制配置。替换示例管理密码；`PUBLIC_SITE_URL` 为站点的 HTTPS origin。默认访问 `http://localhost:3000`，管理后台为 `/admin`。新安装不包含业务数据，需在后台添加并审核商铺，再采集商品。
 
 开发模式运行 `npm run dev`，访问终端显示的前端地址。配置项见 [.env.example](.env.example)，worker 和部署说明见 [WORKFLOW.md](WORKFLOW.md)。AI 默认关闭，启用后会向配置的模型服务发送商品证据并可能产生费用。
+
+AI 导购助手需单独启用并运行对应 worker，配置与启动方式见 [开发与部署流程](WORKFLOW.md)。启用后会向配置的模型服务发送对话需求与候选商品资料。
 
 ### Docker 安装
 

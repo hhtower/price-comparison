@@ -8,7 +8,17 @@
   <a href="README.md">简体中文</a> · English
 </p>
 
-知途 · 拾价 aggregates subscription and account offers for ChatGPT / Codex, Claude / Claude Code, Gemini, Grok, Cursor, and more from digital goods shops and automated storefronts. Listings cover top-up services, ready-to-use accounts, shared accounts, redemption codes, and related services such as email accounts, SMS verification, and residential IPs. Compare prices, availability, access duration, dedicated or shared access, and after-sales terms, with price history, official regional pricing references, and AI / IP testing tools.
+**Describe what you need, and let AI help you find and compare offers.**
+
+知途 · 拾价 is a subscription and account price comparison platform with an AI shopping assistant. It aggregates offers for ChatGPT / Codex, Claude / Claude Code, Gemini, Grok, Cursor, and more from digital goods shops and automated storefronts. Listings cover top-up services, ready-to-use accounts, shared accounts, redemption codes, and related services such as email accounts, SMS verification, and residential IPs. Features include conversational shopping, cross-shop comparison, price history, official regional pricing references, and AI / IP testing tools.
+
+## ✨ Meet the AI shopping assistant
+
+Describe your needs and budget. The AI shopping assistant helps you find and compare catalog offers, explaining recharge channels, warranty coverage, and purchase conditions. Ask follow-up questions to narrow down your choices.
+
+> I already have a GPT account and want a Plus top-up under CNY 100 per month, preferably with warranty coverage.
+
+## Product aggregation and comparison
 
 ![Product pipeline: automatic collection, AI identification and review, publication, attribute extraction and cross-shop comparison](docs/images/product-pipeline.en.svg)
 
@@ -37,6 +47,8 @@ npm start
 In PowerShell, copy the configuration with `Copy-Item .env.example .env`. Replace the example admin password and set `PUBLIC_SITE_URL` to your site's HTTPS origin. Open `http://localhost:3000`; the admin dashboard is at `/admin`. A fresh installation has no business data: add and approve shops in the dashboard before crawling products.
 
 For development, run `npm run dev` and open the frontend address printed in the terminal. See [.env.example](.env.example) for settings and [WORKFLOW.md](WORKFLOW.md) for worker and deployment details. AI is disabled by default; enabling it sends product evidence to your configured provider and may incur charges.
+
+The AI shopping assistant requires a separate feature switch and worker; see the [deployment workflow](WORKFLOW.md) for setup. When enabled, it sends shopping conversations and candidate product evidence to the configured model provider.
 
 ### Install with Docker
 
