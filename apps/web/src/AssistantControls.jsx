@@ -54,9 +54,13 @@ export function AssistantHeader({ title = '选购', labels = [], recognizeFilter
         }}>清空对话</button>
       </div>}
     </div>
-    {onCollapse && <button type="button" className="assistant-icon-button assistant-collapse" aria-label="收起导购助手" title="收起"
-      onClick={onCollapse}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg></button>}
+    <AssistantCollapseButton onCollapse={onCollapse} />
   </header>;
+}
+
+export function AssistantCollapseButton({ onCollapse }) {
+  return onCollapse && <button type="button" className="assistant-icon-button assistant-collapse" aria-label="收起导购助手" title="收起"
+    onClick={onCollapse}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg></button>;
 }
 
 export function AssistantSendIcon() {

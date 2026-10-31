@@ -7,7 +7,7 @@ import {
   ASSISTANT_LIMITS, emptyShoppingNeeds, isTurnTerminal, validateAssistantReply,
 } from '@price-comparison/catalog/assistant-contract';
 import Brand from './Brand.jsx';
-import { assistantApi, assistantListLink } from './assistant-api.js';
+import { assistantApi } from './assistant-api.js';
 import { displayPurchaseTagText } from './purchase-tag-values.js';
 import { formatMoney } from './money.js';
 import { AssistantHeader, AssistantWelcome, AssistantPlatformChip, AssistantSendIcon, ASSISTANT_STARTERS, selectedAssistantPlatform } from './AssistantControls.jsx';
@@ -15,7 +15,7 @@ import './assistant.css';
 
 const STORAGE_KEY = 'shopping-assistant';
 const ConversationContext = createContext(null);
-const PHASES = { queued: '正在排队', understanding: '正在理解需求', searching: '正在查找真实报价', explaining: '正在整理推荐依据' };
+const PHASES = { queued: '正在排队', understanding: '正在理解需求', searching: '正在查找报价', explaining: '正在整理推荐' };
 const PREFERENCES = { lower_price: '价格优先', simple_setup: '操作简单', longer_warranty: '质保优先' };
 
 function needsLabels(needs) {
@@ -67,26 +67,26 @@ function Message() {
   const role = useAuiState(state => state.message.role);
   const reply = useAuiState(state => state.message.metadata.custom?.reply);
   const last = useAuiState(state => state.message.isLast);
+  const running = useAuiState(state => state.message.status?.type === 'running');
   const { sendOption, blocked } = useContext(ConversationContext);
+  if (running) return null;
   return <MessagePrimitive.Root className={'assistant-message assistant-message-' + role}>
-    <span className="assistant-speaker">{role === 'user' ? '你' : '拾价助手'}</span>
     {!reply?.cards.length && <MessagePrimitive.Parts />}
     {reply && <div className="assistant-cards">{reply.cards.map(card =>
       <article className="assistant-card" key={card.productId}>
-        <h2>{card.title}</h2><p className="assistant-price">{formatMoney(card.price, card.currency)} <small>{card.currency}</small></p>
-        {card.reasons[0] && <p className="assistant-card-reason">{card.reasons[0]}</p>}
-        {card.caveats.map(caveat => <p className="assistant-caveat" key={caveat}>{caveat}</p>)}
+        <div className="assistant-card-heading">
+          <h2>{card.title}</h2><p className="assistant-price">{formatMoney(card.price, card.currency)} <small>{card.currency}</small></p>
+        </div>
         {Date.parse(card.priceExpiresAt) <= Date.now() && <p className="assistant-caveat">报价已过期，请重新核对</p>}
-        <details className="assistant-evidence"><summary>报价依据</summary>
-          {card.reasons.length > 1 && <ul>{card.reasons.slice(1).map(reason => <li key={reason}>{reason}</li>)}</ul>}
+        <details className="assistant-purchase-notes"><summary>购买须知</summary>
+          {card.caveats.map(caveat => <p className="assistant-caveat" key={caveat}>{caveat}</p>)}
           <p>采集于 <time dateTime={card.capturedAt}>{new Date(card.capturedAt).toLocaleString('zh-CN')}</time></p>
         </details>
         {/^(?:\/products\/[1-9][0-9]*)$/u.test(card.detailPath)
           && <a href={card.detailPath}>查看商品详情<span className="assistant-card-title">：{card.title}</span></a>}
       </article>)}</div>}
-    {Boolean(reply?.cards.length) && (reply.kind === 'comparison'
-      ? <div className="assistant-comparison"><MessagePrimitive.Parts /></div>
-      : <details className="assistant-explanation"><summary>推荐说明</summary><MessagePrimitive.Parts /></details>)}
+    {Boolean(reply?.cards.length) && reply.kind === 'comparison'
+      && <div className="assistant-comparison"><MessagePrimitive.Parts /></div>}
     {reply && last && reply.options.length > 0 && <div className="assistant-options" aria-label="快捷回答">
       {reply.options.map(option => <button type="button" key={option} disabled={blocked} onClick={() => sendOption(option)}>{option}</button>)}
     </div>}
@@ -261,13 +261,10 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     if (focusInput) input.current?.focus({ preventScroll: true });
   }, [focusInput]);
   const blocked = busy || uncertain || locked;
-  const link = assistantListLink(needs);
   const labels = needsLabels(needs);
   const platform = recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null;
   const purpose = needs.purpose || topic;
   const title = purpose || '选购';
-  const hasListFilters = Boolean(new URL(link.href, window.location.origin).searchParams.get('platform')
-    || needs.requiredTags.length || needs.warrantyDaysMin);
   function messageWithContext(text) {
     if (blocked || !text.trim()) return null;
     const selected = recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null;
@@ -302,12 +299,13 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
         {!started && <AssistantWelcome disabled={blocked} onStart={sendOption} />}
         <ThreadPrimitive.Viewport className="assistant-viewport" turnAnchor="top">
           <ThreadPrimitive.Messages components={{ UserMessage: Message, AssistantMessage: Message }} />
+          {busy && <div role="status" aria-live="polite" className="assistant-message assistant-run-status">
+            <span className="assistant-spinner" aria-hidden="true" />
+            {stopping ? '正在停止' : PHASES[phase] ?? '正在同步会话'}
+          </div>}
         </ThreadPrimitive.Viewport>
-        <div role="status" aria-live="polite" className="assistant-progress">{busy ? PHASES[phase] ?? '正在同步会话' : ''}</div>
         {error && <div role="alert" className="assistant-error"><p>{error}</p>
           <button type="button" disabled={busy} onClick={() => void reconnect()}>重新连接</button></div>}
-        {hasListFilters && <details className="assistant-list-link"><summary>浏览更多商品</summary>
-          <a href={link.href}>按条件浏览商品</a><p>预算、用途与偏好未带入</p></details>}
         {draftError && <p role="alert" className="assistant-draft-error">{draftError}</p>}
         <ComposerPrimitive.Root className="assistant-composer" onSubmit={sendDraft}>
           <AssistantPlatformChip platform={platform} disabled={blocked} onRemove={() => { onRecognizeFilters(false); setDraftError(''); }} />
@@ -320,8 +318,8 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
               onKeyDown={event => {
                 if (blocked && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) event.preventDefault();
               }} />
-            {busy && <button type="button" className="assistant-stop" onClick={() => void stop()} disabled={stopping}>{stopping ? '停止中' : '停止'}</button>}
-            <ComposerPrimitive.Send disabled={blocked} aria-label="发送" title="发送" className="assistant-send" onClick={sendDraft}><AssistantSendIcon /></ComposerPrimitive.Send>
+            {busy ? <button type="button" className="assistant-stop" onClick={() => void stop()} disabled={stopping}>{stopping ? '停止中' : '停止'}</button>
+              : <ComposerPrimitive.Send disabled={blocked} aria-label="发送" title="发送" className="assistant-send" onClick={sendDraft}><AssistantSendIcon /></ComposerPrimitive.Send>}
           </div>
         </ComposerPrimitive.Root>
         <p className="assistant-input-note">内容由AI生成，仅供参考</p>
@@ -423,7 +421,10 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
               setState({ loading: true }); setGeneration(value => value + 1);
             }}>重试连接</button>
           </div>}
-          {state.loading && <span role="status" className="assistant-progress">连接中…</span>}
+          {state.loading && <div role="status" className="assistant-run-status assistant-loading-status">
+            <span className="assistant-spinner" aria-hidden="true" />
+            <span>正在连接，可以先写下需求</span>
+          </div>}
           <div className="assistant-composer">
             <AssistantPlatformChip platform={recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null}
               disabled={confirmClear || clearing} onRemove={() => setRecognizeFilters(false)} />

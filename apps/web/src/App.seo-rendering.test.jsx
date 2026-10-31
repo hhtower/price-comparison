@@ -9,6 +9,32 @@ import App from './App.jsx';
 const originalHead = document.head.innerHTML;
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); document.head.innerHTML = originalHead; window.history.replaceState({}, '', '/'); });
 
+test.each([true, false, 'error'])('homepage icon navigation follows assistant status (%s)', async enabled => {
+  let resolveStatus;
+  const status = new Promise(resolve => { resolveStatus = resolve; });
+  const fetch = vi.fn((input, options) => {
+    if (input === '/api/assistant/status' && options?.method === 'GET') return status;
+    return Promise.resolve(Response.json({ items: [], platformFacets: [], tagFacets: [] }));
+  });
+  vi.stubGlobal('fetch', fetch);
+  window.history.replaceState({}, '', '/');
+  const { container } = render(<App />);
+  expect(container.querySelector('a[href="/assistant"]')).toBeNull();
+  await act(async () => { resolveStatus(enabled === 'error' ? new Response(null, { status: 503 }) : Response.json({ enabled })); });
+  const header = container.querySelector('.public-header-actions');
+  const assistant = header.querySelector('a[href="/assistant"]');
+  expect(Boolean(assistant)).toBe(enabled === true);
+  expect(Boolean(screen.queryByRole('button', { name: '打开导购助手' }))).toBe(enabled === true);
+  for (const name of ['检测工具', 'GitHub 开源仓库', 'QQ 交流群', ...(enabled === true ? ['导购助手'] : [])]) {
+    const icon = header.querySelector(`[aria-label="${name}"]`);
+    expect(icon).not.toBeNull();
+    expect(icon.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    expect(icon.textContent).toBe('');
+  }
+  expect(screen.getByRole('link', { name: '检测工具' })).toHaveAttribute('href', '/tools');
+  expect(fetch.mock.calls.filter(([input]) => input === '/api/assistant/status')).toHaveLength(1);
+});
+
 // This fixture interprets the emitted single wildcard group using robots longest-match rules.
 function allowedByRobots(text, url) {
   const matches = text.split('\n').flatMap(line => {

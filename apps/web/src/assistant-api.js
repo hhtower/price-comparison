@@ -1,7 +1,6 @@
 import {
-  ASSISTANT_LIMITS, isTurnTerminal, validateTurnSnapshot, validateSessionSnapshot, validateShoppingNeeds,
+  ASSISTANT_LIMITS, isTurnTerminal, validateTurnSnapshot, validateSessionSnapshot,
 } from '@price-comparison/catalog/assistant-contract';
-import { normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
 
 const ROOT = '/api/assistant';
 function publicError(status) {
@@ -147,13 +146,3 @@ export function createAssistantApi(fetcher = (...args) => fetch(...args)) {
   };
 }
 export const assistantApi = createAssistantApi();
-
-export function assistantListLink(value) {
-  const needs = validateShoppingNeeds(value);
-  const params = new URLSearchParams({ newcomer: 'false' });
-  const platform = normalizeCatalogPlatform(needs.platform || '');
-  if (platform) params.set('platform', platform);
-  for (const tag of needs.requiredTags) params.append('tag', JSON.stringify(tag));
-  if (needs.warrantyDaysMin) params.set('warrantyDaysMin', String(needs.warrantyDaysMin));
-  return { href: '/?' + params, note: '仅带入列表支持的平台、标签与质保硬条件。预算、用途与偏好未带入，请在列表中自行核对。' };
-}

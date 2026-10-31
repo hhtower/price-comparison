@@ -137,27 +137,27 @@ test('real assistant-ui composer sends only current text and quick options as th
   expect(sessionStorage.getItem('shopping-assistant')).not.toMatch(/写代码|预算|needs|revision/);
 });
 
-test('refresh restores server history and safe product cards without reading catalog query filters', async () => {
+test.each(['recommendation', 'comparison'])('refresh restores compact %s cards and preserves explicit comparisons', async kind => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   window.history.replaceState({}, '', '/assistant?q=secret&newcomer=true');
   const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
     price: '49.00', currency: 'CNY', capturedAt: '2020-01-01T00:00:00Z', priceExpiresAt: '2020-01-02T00:00:00Z',
     detailPath: '/products/42', reasons: ['本次候选中价格较低', '补充报价依据'], caveats: ['下单前确认库存'], evidenceIds: ['e1'] };
   const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(),
-    turns: [{ ...done, reply: { ...reply, kind: 'recommendation', text: '本次推荐的完整说明', options: [], cards: [card] } }] })) });
+    turns: [{ ...done, reply: { ...reply, kind, text: '本次回复的完整说明', options: [], cards: [card] } }] })) });
   render(<AssistantPage api={api} />);
   await screen.findByRole('textbox', { name: '告诉助手你的需求' });
   expect(screen.getByText('写代码', { selector: 'span' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: /查看商品详情/ })).toHaveAttribute('href', '/products/42');
   expect(screen.getByText(/¥49/)).toBeInTheDocument();
-  expect(screen.getByText('下单前确认库存')).toBeVisible();
+  expect(screen.getByText('下单前确认库存')).not.toBeVisible();
   expect(screen.getByText('报价已过期，请重新核对')).toBeVisible();
-  expect(screen.getByText('补充报价依据')).not.toBeVisible();
-  expect(screen.getByText('本次推荐的完整说明')).not.toBeVisible();
-  fireEvent.click(screen.getByText('报价依据'));
-  expect(screen.getByText('补充报价依据')).toBeVisible();
-  fireEvent.click(screen.getByText('推荐说明'));
-  expect(screen.getByText('本次推荐的完整说明')).toBeVisible();
+  expect(screen.queryByText('补充报价依据')).not.toBeInTheDocument();
+  if (kind === 'comparison') expect(screen.getByText('本次回复的完整说明')).toBeVisible();
+  else expect(screen.queryByText('本次回复的完整说明')).not.toBeInTheDocument();
+  expect(screen.queryByText('推荐说明')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText('购买须知'));
+  expect(screen.getByText('下单前确认库存')).toBeVisible();
   expect(screen.queryByRole('link', { name: '按条件浏览商品' })).not.toBeInTheDocument();
   expect(api.sendTurn).not.toHaveBeenCalled();
 });
@@ -345,10 +345,38 @@ test('confirmed needs stay visible without a separate modify action', async () =
   await screen.findByRole('textbox', { name: '告诉助手你的需求' });
   expect(screen.queryByRole('button', { name: '修改需求' })).not.toBeInTheDocument();
   expect(screen.getByLabelText('已确认条件')).toHaveTextContent('每月 ≤ ¥50');
-  fireEvent.click(screen.getByText('浏览更多商品'));
-  expect(screen.getByRole('link', { name: '按条件浏览商品' }).getAttribute('href')).toContain('platform=');
-  expect(screen.getByText('预算、用途与偏好未带入')).toBeInTheDocument();
+  expect(screen.queryByText('浏览更多商品')).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: '按条件浏览商品' })).not.toBeInTheDocument();
   expect(api.sendTurn).not.toHaveBeenCalled();
+});
+
+test.each([false, true])('running progress stays in the reply area, including restored sessions (%s)', async restored => {
+  let update, finish;
+  const active = turn({ status: 'running', phase: 'searching' });
+  if (restored) sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const api = mockApi({
+    readSession: vi.fn(async () => ({ id: sessionId, revision: 0, needs: emptyShoppingNeeds(), turns: [active] })),
+    subscribeTurn: vi.fn((_credentials, _turn, onSnapshot) => new Promise(resolve => { update = onSnapshot; finish = resolve; })),
+  });
+  render(<AssistantPage api={api} />);
+  await screen.findByRole('textbox');
+  if (!restored) fireEvent.click(screen.getByRole('button', { name: '写代码', exact: true }));
+  await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalled());
+  act(() => update(active));
+  const progress = screen.getByRole('status');
+  expect(progress).toHaveTextContent('正在查找报价');
+  expect(progress.closest('.assistant-viewport')).not.toBeNull();
+  expect(document.querySelector('.assistant-message-assistant')).toBeNull();
+  expect(screen.queryByText('拾价助手')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '发送' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '停止' })).toBeEnabled();
+  act(() => update({ ...active, phase: 'explaining', eventVersion: 2 }));
+  expect(progress).toHaveTextContent('正在整理推荐');
+  await act(async () => finish(done));
+  expect(await screen.findByText('预算大概是多少？')).toBeVisible();
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '发送' })).toBeInTheDocument();
+  if (restored) expect(api.sendTurn).not.toHaveBeenCalled();
 });
 
 test('while a reply is pending users can prepare a draft but cannot submit another turn', async () => {

@@ -4,6 +4,7 @@ import PurchaseGuidePage from './PurchaseGuidePage.jsx';
 import QualityToolsPage from './QualityToolsPage.jsx';
 import OfficialReference from './OfficialReference.jsx';
 import AssistantWidget from './AssistantWidget.jsx';
+import AssistantLoading from './AssistantLoading.jsx';
 import { logoUrl } from './Brand.jsx';
 import { updatePageMetadata } from './page-metadata.js';
 import './styles.css';
@@ -38,6 +39,7 @@ function currentRoute() {
 
 export default function App() {
   const [route, setRoute] = useState(currentRoute);
+  const [assistantEnabled, setAssistantEnabled] = useState(false);
   const [catalogPlatform, setCatalogPlatform] = useState(() => new URLSearchParams(window.location.search).get('platform'));
   useEffect(() => {
     const onPopState = () => setRoute(currentRoute());
@@ -56,11 +58,11 @@ export default function App() {
     favicon.setAttribute('href', logoUrl);
   }, [route]);
   if (route === 'admin') return <AdminRouteBoundary><Suspense fallback={<main className="route-state" role="status">正在加载管理端…</main>}><AdminPage /></Suspense></AdminRouteBoundary>;
-  if (route === 'assistant') return <Suspense fallback={<main className="route-state" role="status">正在加载导购助手…</main>}><AssistantPage /></Suspense>;
+  if (route === 'assistant') return <Suspense fallback={<AssistantLoading />}><AssistantPage /></Suspense>;
   return <>
     {route === 'guide' ? <PurchaseGuidePage /> : route === 'tools' ? <QualityToolsPage />
-      : <PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} onPlatformChange={setCatalogPlatform} />}
+      : <PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} onPlatformChange={setCatalogPlatform} assistantEnabled={assistantEnabled} />}
     {route !== 'guide' && <OfficialReference />}
-    <AssistantWidget catalogPlatform={route === 'public' ? catalogPlatform : null} />
+    <AssistantWidget catalogPlatform={route === 'public' ? catalogPlatform : null} onEnabledChange={setAssistantEnabled} />
   </>;
 }

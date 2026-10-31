@@ -1,10 +1,11 @@
 import React, { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { assistantApi } from './assistant-api.js';
+import AssistantLoading from './AssistantLoading.jsx';
 import './assistant.css';
 
 const AssistantPage = lazy(() => import('./AssistantPage.jsx'));
 const MOBILE = '(max-width: 600px)';
-export default function AssistantWidget({ api = assistantApi, catalogPlatform }) {
+export default function AssistantWidget({ api = assistantApi, catalogPlatform, onEnabledChange }) {
   const [enabled, setEnabled] = useState(false);
   const [open, setOpen] = useState(false);
   const [visited, setVisited] = useState(false);
@@ -18,13 +19,16 @@ export default function AssistantWidget({ api = assistantApi, catalogPlatform })
   useEffect(() => {
     const controller = new AbortController();
     api.status(controller.signal).then(status => {
-      if (!controller.signal.aborted) setEnabled(status.enabled);
+      if (!controller.signal.aborted) {
+        setEnabled(status.enabled);
+        onEnabledChange?.(status.enabled);
+      }
     }).catch(() => {});
     const media = window.matchMedia?.(MOBILE);
     const resize = () => setMobile(media.matches);
     media?.addEventListener('change', resize);
     return () => { controller.abort(); media?.removeEventListener('change', resize); };
-  }, [api]);
+  }, [api, onEnabledChange]);
   useLayoutEffect(() => {
     const panel = dialog.current;
     if (!panel) return;
@@ -59,12 +63,7 @@ export default function AssistantWidget({ api = assistantApi, catalogPlatform })
         event.preventDefault(); event.stopPropagation(); collapse();
       } }}>
       {/* Keep the runtime mounted while collapsed, including its draft and read subscription. */}
-      {visited && <Suspense fallback={<div className="assistant-module-loading">
-        <button type="button" className="assistant-icon-button" aria-label="收起导购助手" title="收起" onClick={collapse}>
-          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
-        </button>
-        <p role="status">正在加载…</p>
-      </div>}>
+      {visited && <Suspense fallback={<AssistantLoading embedded onCollapse={collapse} />}>
         <AssistantPage api={api} embedded enabled focusInput={open && !mobile} onActivity={setActivity}
           onCollapse={collapse} catalogPlatform={catalogPlatform} />
       </Suspense>}

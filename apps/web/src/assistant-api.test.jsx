@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { emptyShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
-import { createAssistantApi, assistantListLink } from './assistant-api.js';
+import { createAssistantApi } from './assistant-api.js';
 
 const sessionId = '11111111-1111-4111-8111-111111111111';
 const credentials = { sessionId, accessToken: 'secret' };
@@ -97,18 +97,4 @@ test('public errors never render backend secrets and a send is never automatical
     clientMessageId: messageId, expectedRevision: 0, text: '写代码',
   })).rejects.toThrow(/版本|同步/);
   expect(fetcher).toHaveBeenCalledTimes(1);
-});
-
-test('list link carries only supported hard requirements and opts out of newcomer defaults', () => {
-  const needs = { ...emptyShoppingNeeds(), purpose: '论文', platform: 'openai',
-    budget: { amount: '50', currency: 'CNY', basis: 'month' }, preferences: ['lower_price'],
-    requiredTags: [{ name: 'access', value: 'dedicated' }], warrantyDaysMin: 30 };
-  const link = assistantListLink(needs);
-  const params = new URL(link.href, 'https://local.example').searchParams;
-  expect([...params.keys()].sort()).toEqual(['newcomer', 'platform', 'tag', 'warrantyDaysMin']);
-  expect(params.get('newcomer')).toBe('false');
-  expect(JSON.parse(params.get('tag'))).toEqual({ name: 'access', value: 'dedicated' });
-  expect(link.note).toMatch(/预算/);
-  expect(link.note).toMatch(/用途/);
-  expect(link.note).toMatch(/偏好/);
 });
