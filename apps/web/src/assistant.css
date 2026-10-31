@@ -49,18 +49,21 @@
 .assistant-card-heading{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:4px 12px;margin-bottom:4px}
 .assistant-card h2{font-size:15px;line-height:1.4;margin:0;font-weight:650}
 .assistant-card p{margin:8px 0}
-.assistant-card .assistant-price{margin:0;color:var(--assistant-accent);font-size:23px;font-weight:750;line-height:1.3;white-space:nowrap}
-.assistant-price small{font-size:11px;font-weight:400;color:var(--assistant-muted)}
+.assistant-card .assistant-price{margin:0;color:var(--assistant-accent);font-size:21px;font-weight:700;line-height:1.3;white-space:nowrap}
 .assistant-caveat{font-size:12px;color:#80531f;padding-left:8px;border-left:2px solid #e5c89c}
 .assistant-card>.assistant-caveat{grid-column:1/-1}
 .assistant-purchase-notes{grid-column:1;font-size:12px;color:var(--assistant-muted);min-width:0}
 .assistant-purchase-notes>summary{min-height:44px}
 .assistant-purchase-notes[open]{grid-column:1/-1}
+.assistant-purchase-notes summary small{margin-left:8px;color:#80531f;font-size:11px}
+.assistant-purchase-notes dl{margin:0 0 4px;padding-top:8px;border-top:1px solid #edf1f1}
+.assistant-purchase-notes dl>div{display:flex;align-items:baseline;margin:0 0 6px}
+.assistant-purchase-notes dt{flex-shrink:0}
+.assistant-purchase-notes dd{margin:0;min-width:0;color:#34484e;overflow-wrap:anywhere}
 .assistant-card>.assistant-offer-details{grid-column:2;min-height:44px;font-size:13px;font-weight:650;border:0;padding:8px 0;background:transparent}
-.assistant-card>.offer-facts,.assistant-card-reasons,.assistant-card>.assistant-offer-shop{grid-column:1/-1}
-.assistant-card>.assistant-offer-shop{font-size:12px;color:var(--assistant-muted);margin:4px 0}
+.assistant-offer-meta{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:0 10px;font-size:12px;color:var(--assistant-muted);margin:2px 0}
+.assistant-offer-meta>span+span{color:#456b66}
 .assistant-card-reasons{margin:10px 0 0;padding-left:18px;font-size:12px;color:var(--assistant-muted)}
-.assistant-card .offer-facts{min-width:0}
 .assistant-quote-note{font-size:12px;color:var(--assistant-muted)}
 .assistant-options{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .assistant-options button{font-size:13px;background:#f0f8f5;border-color:#cfe1dc}

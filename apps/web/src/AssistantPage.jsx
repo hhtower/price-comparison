@@ -6,11 +6,12 @@ import {
 import {
   ASSISTANT_LIMITS, emptyShoppingNeeds, isTurnTerminal, validateAssistantReply,
 } from '@price-comparison/catalog/assistant-contract';
+import { normalizePurchaseTag, purchaseWarrantyLabel } from '@price-comparison/catalog/purchase-attributes';
 import Brand from './Brand.jsx';
 import { assistantApi } from './assistant-api.js';
 import { displayPurchaseTagText } from './purchase-tag-values.js';
 import { formatMoney } from './money.js';
-import OfferTagDetails, { OfferFacts } from './OfferTagDetails.jsx';
+import OfferTagDetails, { offerConditions } from './OfferTagDetails.jsx';
 import AssistantLoading from './AssistantLoading.jsx';
 import { AssistantHeader, AssistantWelcome, AssistantPlatformChip, AssistantSendIcon, ASSISTANT_STARTERS, selectedAssistantPlatform } from './AssistantControls.jsx';
 import './assistant.css';
@@ -84,21 +85,38 @@ function QuoteCard({ card }) {
   const [open, setOpen] = useState(false);
   const offer = card.offer ?? { name: card.title, shop: `商铺 #${card.shopId}`, tags: [] };
   const expired = Date.parse(card.priceExpiresAt) <= Date.now();
-  const price = <p className="assistant-price">{formatMoney(card.price, card.currency)} <small>{card.currency}</small></p>;
-  const notes = <>
-    {card.reasons.length > 0 && <ul className="assistant-card-reasons">{card.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
+  const price = <p className="assistant-price">{formatMoney(card.price, card.currency)}</p>;
+  const facts = offerConditions(offer);
+  const summary = facts.filter(fact => ['delivery', 'access'].includes(fact.name) || /^duration(?:_|$)/u.test(fact.name))
+    .map(fact => displayPurchaseTagText(fact, fact.value)).join(' · ');
+  const warrantyTags = offer.tags.flatMap(normalizePurchaseTag)
+    .filter(tag => !['warranty_terms', 'warranty_exclusion'].includes(tag.name));
+  const conflictingWarranty = warrantyTags.some(tag => tag.name.startsWith('warranty')
+    && warrantyTags.some(other => other.name === tag.name && other.value !== tag.value));
+  const warranty = conflictingWarranty ? '资料冲突，需核实'
+    : purchaseWarrantyLabel(warrantyTags).replace(/^质保/u, '');
+  const channel = facts.filter(fact => fact.name === 'payment_platform').map(fact => fact.value).join(' / ');
+  const conditions = facts.filter(fact => fact.displayGroup === 'requirements' && !['subscription_override', 'payment_platform'].includes(fact.name));
+  const warnings = facts.filter(fact => ['warranty_exclusion', 'subscription_override'].includes(fact.name))
+    .map(fact => displayPurchaseTagText(fact, fact.value));
+  if (facts.some(fact => fact.name === 'warranty_terms')) warnings.push('售后条款见详情');
+  const rows = [['充值渠道', channel], ['质保', warranty], ['购买条件', conditions.map(fact => displayPurchaseTagText(fact, fact.value)).join('；')],
+    ['注意事项', [...new Set(warnings)].join('；')]].filter(([, value]) => value);
+  const fullNotes = <>
+    {card.reasons.length > 0 && <ul className="assistant-card-reasons">{card.reasons.filter(reason => !card.caveats.includes(reason)).map(reason => <li key={reason}>{reason}</li>)}</ul>}
     {card.caveats.map(caveat => <p className="assistant-caveat" key={caveat}>{caveat}</p>)}
     <p>采集于 <time dateTime={card.capturedAt}>{new Date(card.capturedAt).toLocaleString('zh-CN')}</time></p>
   </>;
   return <article className="assistant-card">
     <div className="assistant-card-heading"><h2>{card.title}</h2>{price}</div>
-    <p className="assistant-offer-shop">{offer.shop}</p>
-    <OfferFacts tags={offer.tags} settlementQuantity={1} />
+    <div className="assistant-offer-meta"><span>{offer.shop}</span>{summary && <span>{summary}</span>}</div>
     {expired && <p className="assistant-caveat">报价已过期，请重新核对</p>}
-    <details className="assistant-purchase-notes"><summary>推荐依据与购买须知</summary>{notes}</details>
+    {rows.length > 0 && <details className="assistant-purchase-notes"><summary>购买须知{conditions.some(fact => fact.name === 'usage_restriction') && <small>有使用限制</small>}</summary>
+      <dl>{rows.map(([label, value]) => <div key={label}><dt>{label}：</dt><dd>{value}</dd></div>)}</dl>
+    </details>}
     <button type="button" className="assistant-offer-details" aria-haspopup="dialog" onClick={() => setOpen(true)}>查看报价详情</button>
     {open && <OfferTagDetails offer={offer} item={{ name: card.title }} onClose={() => setOpen(false)}>
-      {price}{expired && <p className="assistant-caveat">报价已过期，请重新核对</p>}{notes}
+      {price}{expired && <p className="assistant-caveat">报价已过期，请重新核对</p>}{fullNotes}
       <p className="assistant-quote-note">这是本次推荐的报价快照，下单前请到商家核对价格、库存和完整条款。</p>
       {offer.productUrl && <p><a href={offer.productUrl} target="_blank" rel="noopener noreferrer">前往商家核对报价</a></p>}
     </OfferTagDetails>}

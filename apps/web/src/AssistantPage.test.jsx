@@ -61,6 +61,84 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
   }
 });
 
+test('quote cards show compact facts and grouped purchase notes without repeating warranty prose', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const warranty = '商家质保说明：质保30天（仅保掉订阅；附售后条款；不保封号）；具体限制以该报价的售后条款为准。';
+  const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
+    price: '64.90', currency: 'CNY', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
+    detailPath: '/products/42', reasons: [warranty], caveats: [warranty, '不保事项：不保封号'], evidenceIds: ['e1'],
+    offer: { name: 'Plus 优惠代充', shop: '测试商家', spec: '', productUrl: '', tags: [
+      { name: 'delivery', value: 'top_up' }, { name: 'duration', value: '1 month' },
+      { name: 'warranty', value: 'covered' }, { name: 'warranty_window', value: '30 days' },
+      { name: 'warranty_scope', value: 'subscription' }, { name: 'warranty_exclusion', value: 'ban' },
+      { name: 'usage_restriction', value: '需半价资格号' },
+      { name: 'warranty_terms', value: '掉订阅按剩余天数退款' },
+    ] } };
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
+  const article = (await screen.findByRole('heading', { name: 'ChatGPT Plus' })).closest('article');
+  expect(within(article).getByText('测试商家')).toBeVisible();
+  expect(within(article).getByText('¥64.9')).toBeVisible();
+  expect(within(article).getByText('代充 · 1个月')).toBeVisible();
+  expect(within(article).queryByRole('group', { name: '商品标签' })).not.toBeInTheDocument();
+  expect(article).not.toHaveTextContent('CNY');
+  expect(article).not.toHaveTextContent('另 5 个标签');
+  fireEvent.click(within(article).getByText('购买须知'));
+  const notes = article.querySelector('.assistant-purchase-notes');
+  expect(notes).toHaveTextContent('质保：30天（仅保掉订阅）');
+  expect(notes).toHaveTextContent('购买条件：需半价资格号');
+  expect(notes).toHaveTextContent('注意事项：不保封号');
+  expect(within(notes).getAllByText(/不保封号/)).toHaveLength(1);
+  expect(notes).not.toHaveTextContent('商家质保说明');
+  expect(notes).not.toHaveTextContent('采集于');
+  expect(notes).not.toHaveTextContent('具体限制以');
+  fireEvent.click(within(article).getByRole('button', { name: '查看报价详情' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('掉订阅按剩余天数退款');
+});
+
+test.each([
+  [[{ name: 'warranty', value: 'none' }], '无质保'],
+  [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_window', value: '24 hours' }], '仅保首登（24小时内）'],
+  [[{ name: 'warranty_days', value: '30' }, { name: 'warranty_days', value: '60' }], '资料冲突，需核实'],
+])('compact warranty retains negative, limited and conflicting facts: %s', async (tags, expected) => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
+    price: '49', currency: 'USD', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
+    detailPath: '/products/42', reasons: ['商家报价'], caveats: ['下单前核对'], evidenceIds: ['e1'],
+    offer: { name: '方案', shop: '店铺', spec: '', productUrl: '', tags } };
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
+  fireEvent.click(await screen.findByText('购买须知'));
+  expect(screen.getByText(expected)).toBeVisible();
+  expect(screen.getByText('$49')).toBeVisible();
+});
+
+test.each([
+  [[{ name: 'payment_platform', value: 'ios' }], 'iOS'],
+  [[{ name: 'payment_platform', value: 'android' }], '安卓'],
+  [[{ name: 'payment_platform', value: 'web' }, { name: 'payment_platform', value: 'ios' }], '网页 / iOS'],
+  [[{ name: 'device_platform', value: 'ios' }, { name: 'payment_method', value: 'apple_pay' }], null],
+])('purchase notes show recharge channels separately from devices and payment methods: %s', async (tags, expected) => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
+    price: '49', currency: 'CNY', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
+    detailPath: '/products/42', reasons: ['商家报价'], caveats: ['下单前核对'], evidenceIds: ['e1'],
+    offer: { name: '方案', shop: '店铺', spec: '', productUrl: '', tags: [{ name: 'delivery', value: 'top_up' }, ...tags] } };
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
+  fireEvent.click(await screen.findByText('购买须知'));
+  if (expected) {
+    const channel = screen.getByText('充值渠道：').closest('div');
+    expect(channel).toHaveTextContent(`充值渠道：${expected}`);
+    expect(channel).toBeVisible();
+  } else {
+    expect(screen.queryByText('充值渠道：')).not.toBeInTheDocument();
+  }
+  expect(screen.queryByText('质保：')).not.toBeInTheDocument();
+  expect(screen.queryByText('未说明')).not.toBeInTheDocument();
+  expect(screen.queryByText(/(?:iOS|安卓|网页)充值/)).not.toBeInTheDocument();
+});
+
 test('new conversation stays on the skeleton until the empty session is confirmed', async () => {
   let connect;
   const api = mockApi({ createSession: vi.fn(() => new Promise(resolve => { connect = resolve; })) });
@@ -203,15 +281,16 @@ test.each(['recommendation', 'comparison'])('refresh restores compact %s cards a
   expect(screen.getByText(/¥49/)).toBeInTheDocument();
   expect(screen.queryByText('月度订阅')).not.toBeInTheDocument();
   expect(screen.queryByText('完整规格描述')).not.toBeInTheDocument();
-  expect(screen.getByText('下单前确认库存')).not.toBeVisible();
+  expect(screen.queryByText('下单前确认库存')).not.toBeInTheDocument();
   expect(screen.getByText('报价已过期，请重新核对')).toBeVisible();
-  expect(screen.getByText('补充报价依据')).not.toBeVisible();
+  expect(screen.queryByText('补充报价依据')).not.toBeInTheDocument();
   expect(screen.getByText('本次回复的完整说明')).toBeVisible();
   expect(screen.queryByText('推荐说明')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByText('推荐依据与购买须知'));
-  expect(screen.getByText('下单前确认库存')).toBeVisible();
-  expect(screen.getByText('补充报价依据')).toBeVisible();
+  expect(screen.queryByText('购买须知')).not.toBeInTheDocument();
+  expect(screen.queryByText('未说明')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /查看报价详情/ }));
+  expect(within(screen.getByRole('dialog')).getByText('下单前确认库存')).toBeVisible();
+  expect(within(screen.getByRole('dialog')).getByText('补充报价依据')).toBeVisible();
   expect(screen.getByText(/完整规格描述/)).toBeVisible();
   expect(screen.queryByRole('link', { name: '按条件浏览商品' })).not.toBeInTheDocument();
   expect(api.sendTurn).not.toHaveBeenCalled();

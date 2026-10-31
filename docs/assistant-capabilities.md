@@ -129,9 +129,15 @@ are retained; conflicting or attribute-only names trigger clarification. Empty
 results use a short message without listing unrelated filtering rules.
 
 Recommendation cards carry an optional exact-offer snapshot (merchant, offer name,
-specification, tags and validated HTTP(S) merchant URL). The UI reuses homepage
-offer tags and opens that snapshot in the offer detail dialog, not the standard
-product aggregate page. Legacy cards still display their stored price and notes.
+specification, tags and validated HTTP(S) merchant URL). Cards show the standard
+product, price and shop, with delivery, access and duration on one compact line.
+Purchase notes group structured facts into recharge channel, warranty, purchase
+conditions and cautions; warranty scope and exclusions stay explicit. Recharge
+channels use the explicit payment platform, never inferred from supported devices
+or payment methods. Missing facts are omitted without placeholders; purchase notes
+are hidden when no rows remain. Full terms, evidence and
+capture time remain in the exact-offer detail dialog. The UI reuses the catalog's
+tag formatting without repeating its tag badges or additional-tag counter.
 Each snapshot is bounded to 12 KiB; oversized terms are replaced with an explicit
 request to verify complete merchant terms, never a truncated warranty promise.
 Snapshots are excluded from model history to preserve conversational context.
