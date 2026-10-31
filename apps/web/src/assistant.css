@@ -15,11 +15,12 @@
 .assistant-needs>span{overflow-wrap:anywhere}
 .assistant-needs summary{padding:4px 6px}
 .assistant-needs details p{position:absolute;z-index:4;top:100%;left:0;right:0;padding:12px;border:1px solid var(--assistant-line);border-radius:8px;background:#fff;box-shadow:0 8px 24px #183b4214;overflow-wrap:anywhere}
-.assistant-toolbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px;flex-shrink:0}
-.assistant-toolbar-actions>button{border:0;background:transparent;padding:6px 8px;font-size:12px}
-.assistant-help>summary{padding:6px 8px}
-.assistant-help>div{position:absolute;box-sizing:border-box;right:0;top:100%;z-index:5;width:min(290px,100%);padding:12px;border:1px solid var(--assistant-line);border-radius:10px;background:#fff;box-shadow:0 8px 24px #183b4214}
-.assistant-help p{font-size:12px;line-height:1.6;color:var(--assistant-muted)}
+.assistant-menu{margin-left:auto;flex-shrink:0}
+.assistant-menu>summary{padding:6px 8px}
+.assistant-menu>div{position:absolute;box-sizing:border-box;right:0;top:100%;z-index:5;width:min(220px,100%);padding:8px;border:1px solid var(--assistant-line);border-radius:10px;background:#fff;box-shadow:0 8px 24px #183b4214}
+.assistant-menu label{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 8px;font-size:13px;cursor:pointer}
+.assistant-menu input[type="checkbox"]{width:16px;height:16px;margin:0;accent-color:var(--assistant-accent)}
+.assistant-menu button{width:100%;border:0;background:transparent;text-align:left;color:#9b3c2a;font-size:13px}
 .assistant-thread{display:flex;flex-direction:column;min-height:0;height:clamp(420px,70dvh,760px);background:#fff;border:1px solid var(--assistant-line);border-radius:12px;padding:16px}
 .assistant-viewport{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 .assistant-welcome{padding:clamp(24px,8vh,72px) 4px 32px}

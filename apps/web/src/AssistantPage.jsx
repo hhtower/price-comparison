@@ -114,7 +114,9 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
   const [phase, setPhase] = useState(active.current?.phase ?? '');
   const [needs, setNeeds] = useState(initialSession.needs);
   const [completed, setCompleted] = useState(null);
+  const [recognizeFilters, setRecognizeFilters] = useState(true);
   const input = useRef(null);
+  const menu = useRef(null);
 
   function acceptSnapshot(turn) {
     active.current = turn;
@@ -190,14 +192,6 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     },
   }), [api, credentials]);
   const runtime = useLocalRuntime(adapter, { initialMessages: historyMessages(initialSession), maxSteps: 1 });
-  useEffect(() => {
-    if (!embedded || initialSession.turns.length || credentials.pendingMessageId || window.location.pathname !== '/') return;
-    const selected = new URLSearchParams(window.location.search).get('platform')?.trim().toLowerCase();
-    const platform = CATALOG_PLATFORMS.find(item => item.id === selected || item.aliases.includes(selected));
-    if (platform && !runtime.thread.composer.getState().text) {
-      runtime.thread.composer.setText(`我想看 ${platform.label} 的商品`);
-    }
-  }, [runtime, embedded, initialSession, credentials]);
   const importHistory = () => runtime.thread.import(ExportedMessageRepository.fromArray(historyMessages(session.current)));
   useEffect(() => runtime.thread.subscribe(() => {
     if (syncOnIdle.current && !runtime.thread.getState().isRunning) {
@@ -277,23 +271,45 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     runtime.thread.composer.setText(next);
     input.current?.focus();
   }
+  function messageWithContext(text) {
+    if (blocked || !text.trim()) return null;
+    const selected = embedded && recognizeFilters && window.location.pathname === '/'
+      ? new URLSearchParams(window.location.search).get('platform')?.trim().toLowerCase() : null;
+    const platform = CATALOG_PLATFORMS.find(item => item.id === selected || item.aliases.includes(selected));
+    const message = platform ? `当前页面筛选：${platform.label}\n${text}` : text;
+    if (message.length > ASSISTANT_LIMITS.userTextMaxChars) {
+      setDraftError('包含筛选信息后最多 2,000 字，请缩短内容或取消识别当前筛选。');
+      return null;
+    }
+    setDraftError('');
+    return message;
+  }
+  function sendDraft(event) {
+    event.preventDefault();
+    const text = messageWithContext(runtime.thread.composer.getState().text);
+    if (!text) return;
+    runtime.thread.composer.setText(text);
+    runtime.thread.composer.send();
+  }
   return <AssistantRuntimeProvider runtime={runtime}>
     <ConversationContext.Provider value={{ blocked, sendOption: text => {
-      if (!blocked) runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] });
+      const message = messageWithContext(text);
+      if (message) runtime.thread.append({ role: 'user', content: [{ type: 'text', text: message }] });
     } }}>
       <div className="assistant-toolbar">
         {labels.length > 0 && <div className="assistant-needs" aria-label="已确认条件">
           <span>{labels.slice(0, 2).join(' · ')}</span>
           {labels.length > 2 && <details><summary>+{labels.length - 2}</summary><p>{labels.slice(2).join(' · ')}</p></details>}
         </div>}
-        <div className="assistant-toolbar-actions">
-          <details className="assistant-help"><summary>说明</summary>
-            <div><p>仅比较本站候选报价，不参与交易。价格、库存与售后请在下单前核对。</p>
-              <p>新对话会将当前平台填入草稿，可修改后发送。已有对话不随筛选变化。</p>
-              <p>收起后继续处理。请勿输入密码或支付信息。</p></div>
-          </details>
-          <button type="button" aria-label="清空对话" disabled={busy || stopping || locked} onClick={event => onNew(event.currentTarget)}>清空</button>
-        </div>
+        <details className="assistant-menu" ref={menu}><summary>对话选项</summary>
+          <div>
+            <label><input type="checkbox" checked={recognizeFilters} disabled={blocked}
+              onChange={event => { setRecognizeFilters(event.target.checked); setDraftError(''); }} />识别当前筛选</label>
+            <button type="button" disabled={busy || stopping || locked} onClick={() => {
+              menu.current.open = false; onNew(menu.current.querySelector('summary'));
+            }}>清空对话</button>
+          </div>
+        </details>
       </div>
       <ThreadPrimitive.Root className="assistant-thread">
         <ThreadPrimitive.Viewport className="assistant-viewport" turnAnchor="top">
@@ -309,7 +325,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
         {hasListFilters && <details className="assistant-list-link"><summary>浏览更多商品</summary>
           <a href={link.href}>按条件浏览商品</a><p>预算、用途与偏好未带入</p></details>}
         {draftError && <p role="alert" className="assistant-draft-error">{draftError}</p>}
-        <ComposerPrimitive.Root className="assistant-composer" onSubmit={event => { if (blocked) event.preventDefault(); }}>
+        <ComposerPrimitive.Root className="assistant-composer" onSubmit={sendDraft}>
           <ComposerPrimitive.Input ref={input} aria-label="告诉助手你的需求" placeholder="用途、预算，或想买的商品…"
             maxLength={ASSISTANT_LIMITS.userTextMaxChars} disabled={uncertain || locked} addAttachmentOnPaste={false}
             cancelOnEscape={false} unstable_focusOnRunStart={false} unstable_focusOnScrollToBottom={false}
@@ -319,7 +335,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
               if (blocked && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) event.preventDefault();
             }} />
           {busy && <button type="button" className="assistant-stop" onClick={() => void stop()} disabled={stopping}>{stopping ? '停止中' : '停止'}</button>}
-          <ComposerPrimitive.Send disabled={blocked} aria-label="发送">发送</ComposerPrimitive.Send>
+          <ComposerPrimitive.Send disabled={blocked} aria-label="发送" onClick={sendDraft}>发送</ComposerPrimitive.Send>
         </ComposerPrimitive.Root>
         <p className="assistant-input-note">内容由AI生成，仅供参考</p>
       </ThreadPrimitive.Root>

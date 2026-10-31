@@ -171,10 +171,12 @@ test('clearing a conversation requires confirmation before deleting its session'
   const api = mockApi();
   render(<AssistantPage api={api} />);
   await screen.findByRole('textbox');
+  fireEvent.click(screen.getByText('对话选项'));
   fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
   expect(api.deleteSession).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: '取消' }));
   expect(api.deleteSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText('对话选项'));
   fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
   fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
   await waitFor(() => expect(api.deleteSession).toHaveBeenCalledWith(expect.objectContaining(credentials)));
@@ -253,11 +255,12 @@ test('starter choices preserve a near-limit draft instead of appending beyond th
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
-test('cancelling clear returns focus to the clear button when input autofocus is off', async () => {
+test('cancelling clear returns focus to the options menu when input autofocus is off', async () => {
   render(<AssistantPage api={mockApi()} focusInput={false} />);
   await screen.findByRole('textbox');
-  const menu = screen.getByRole('button', { name: '清空对话' });
+  const menu = screen.getByText('对话选项');
 
+  fireEvent.click(screen.getByText('对话选项'));
   fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
   expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
   fireEvent.click(screen.getByRole('button', { name: '取消' }));
@@ -318,6 +321,7 @@ test('failed clearing preserves history and allows retrying the deletion', async
   api.deleteSession.mockRejectedValueOnce(new Error('连接中断'));
   render(<AssistantPage api={api} />);
   await screen.findByText('预算大概是多少？');
+  fireEvent.click(screen.getByText('对话选项'));
   fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
   fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('连接中断');
@@ -361,24 +365,32 @@ test('version conflict restores authoritative history and allows a new message a
 });
 
 
-test('new embedded conversation carries the selected platform in an editable first draft', async () => {
+test('new embedded conversation defaults to checked platform context without filling the draft', async () => {
   window.history.replaceState({}, '', '/?platform=anthropic');
   const api = mockApi();
   render(<AssistantPage api={api} embedded />);
   const input = await screen.findByRole('textbox');
-  expect(input).toHaveValue('我想看 Claude 的商品');
+  expect(input).toHaveValue('');
+  fireEvent.click(screen.getByText('对话选项'));
+  expect(screen.getByRole('checkbox', { name: '识别当前筛选' })).toBeChecked();
   expect(api.sendTurn).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: '写代码用' }));
-  expect(input).toHaveValue('我想看 Claude 的商品\n我想选适合写代码的 AI 商品');
+  expect(input).toHaveValue('我想选适合写代码的 AI 商品');
   fireEvent.click(screen.getByRole('button', { name: '发送' }));
   await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
   expect(api.sendTurn.mock.calls[0][1].text).toContain('Claude');
   expect(await screen.findByText('预算大概是多少？')).toBeInTheDocument();
   expect(input).toHaveValue('');
+  fireEvent.click(screen.getByText('对话选项'));
+  expect(screen.getByRole('checkbox', { name: '识别当前筛选' })).toBeChecked();
+  fireEvent.change(input, { target: { value: '预算50元' } });
+  fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+  await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(2));
+  expect(api.sendTurn.mock.calls[1][1].text).toBe('当前页面筛选：Claude\n预算50元');
   expect(screen.getByText('内容由AI生成，仅供参考')).toBeVisible();
-  expect(screen.queryByText('对话选项')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByText('说明'));
-  expect(screen.getByText(/仅比较本站候选报价/)).toBeVisible();
+  expect(screen.getByText('对话选项')).toBeVisible();
+  expect(screen.queryByText('说明')).not.toBeInTheDocument();
+
 });
 
 test('restored conversation ignores catalog platform and clearing reads the current platform', async () => {
@@ -389,9 +401,63 @@ test('restored conversation ignores catalog platform and clearing reads the curr
   render(<AssistantPage api={api} embedded />);
   expect(await screen.findByRole('textbox')).toHaveValue('');
   window.history.replaceState({}, '', '/?platform=google');
+  fireEvent.click(screen.getByText('对话选项'));
   fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
   fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
-  await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('我想看 Gemini / Google 的商品'));
+  await screen.findByRole('button', { name: '写代码用' });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '找报价' } });
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', code: 'Enter' });
+  await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
+  expect(api.sendTurn.mock.calls[0][1].text).toBe('当前页面筛选：Gemini / Google\n找报价');
+  expect(screen.getByRole('textbox')).toHaveValue('');
+});
+
+test.each(['click', 'enter'])('unchecked platform context is omitted on %s send', async method => {
+  window.history.replaceState({}, '', '/?platform=anthropic');
+  const api = mockApi();
+  render(<AssistantPage api={api} embedded />);
+  const input = await screen.findByRole('textbox');
+  fireEvent.click(screen.getByText('对话选项'));
+  fireEvent.click(screen.getByRole('checkbox', { name: '识别当前筛选' }));
+  fireEvent.change(input, { target: { value: '帮我选写代码的商品' } });
+  if (method === 'enter') fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+  else fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
+  expect(api.sendTurn.mock.calls[0][1].text).toBe('帮我选写代码的商品');
+});
+
+test('context exceeding the request limit preserves draft and can be disabled to send it', async () => {
+  window.history.replaceState({}, '', '/?platform=anthropic');
+  const api = mockApi();
+  render(<AssistantPage api={api} embedded />);
+  const input = await screen.findByRole('textbox');
+  const draft = '字'.repeat(2000);
+  fireEvent.change(input, { target: { value: draft } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  expect(api.sendTurn).not.toHaveBeenCalled();
+  expect(input).toHaveValue(draft);
+  expect(screen.getByRole('alert')).toHaveTextContent('2,000');
+  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
+  expect(api.sendTurn.mock.calls[0][1].text).toBe(draft);
+});
+
+test('checked context reads the latest platform at send time and reconnect reuses the original request', async () => {
+  window.history.replaceState({}, '', '/?platform=anthropic');
+  const api = mockApi();
+  api.sendTurn.mockRejectedValueOnce(new Error('连接中断'));
+  render(<AssistantPage api={api} embedded />);
+  const input = await screen.findByRole('textbox');
+  fireEvent.change(input, { target: { value: '帮我选' } });
+  window.history.replaceState({}, '', '/?platform=google');
+  fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+  await screen.findByRole('button', { name: '重新连接' });
+  expect(api.sendTurn.mock.calls[0][1].text).toBe('当前页面筛选：Gemini / Google\n帮我选');
+  window.history.replaceState({}, '', '/?platform=anthropic');
+  fireEvent.click(screen.getByRole('button', { name: '重新连接' }));
+  await screen.findByText('预算大概是多少？');
+  expect(api.sendTurn.mock.calls[1][1]).toEqual(api.sendTurn.mock.calls[0][1]);
 });
 
 test.each(['/?platform=other', '/?platform=unknown', '/guide?platform=anthropic', '/products/42?platform=anthropic'])(
@@ -399,5 +465,7 @@ test.each(['/?platform=other', '/?platform=unknown', '/guide?platform=anthropic'
     window.history.replaceState({}, '', path);
     render(<AssistantPage api={mockApi()} embedded />);
     expect(await screen.findByRole('textbox')).toHaveValue('');
+    fireEvent.click(screen.getByText('对话选项'));
+  expect(screen.getByRole('checkbox', { name: '识别当前筛选' })).toBeChecked();
   },
 );
