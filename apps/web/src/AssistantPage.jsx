@@ -10,7 +10,7 @@ import Brand from './Brand.jsx';
 import { assistantApi, assistantListLink } from './assistant-api.js';
 import { displayPurchaseTagText } from './purchase-tag-values.js';
 import { formatMoney } from './money.js';
-import { AssistantHeader, AssistantWelcome, AssistantPlatformChip, ASSISTANT_STARTERS, selectedAssistantPlatform } from './AssistantControls.jsx';
+import { AssistantHeader, AssistantWelcome, AssistantPlatformChip, AssistantSendIcon, ASSISTANT_STARTERS, selectedAssistantPlatform } from './AssistantControls.jsx';
 import './assistant.css';
 
 const STORAGE_KEY = 'shopping-assistant';
@@ -265,7 +265,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
   const labels = needsLabels(needs);
   const platform = recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null;
   const purpose = needs.purpose || topic;
-  const title = purpose ? purpose === '比较报价' ? purpose : `${purpose}选购` : '帮你选购';
+  const title = purpose || '选购';
   const hasListFilters = Boolean(new URL(link.href, window.location.origin).searchParams.get('platform')
     || needs.requiredTags.length || needs.warrantyDaysMin);
   function messageWithContext(text) {
@@ -296,7 +296,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     <ConversationContext.Provider value={{ blocked, sendOption }}>
       <AssistantHeader title={title} labels={labels} recognizeFilters={recognizeFilters}
         onRecognizeFilters={value => { onRecognizeFilters(value); setDraftError(''); }} blocked={blocked}
-        clearDisabled={busy || stopping || locked} onClear={onNew} onCollapse={onCollapse} />
+        clearDisabled={busy || stopping || locked || (!started && !uncertain)} onClear={onNew} onCollapse={onCollapse} />
       {notice}
       <ThreadPrimitive.Root className={'assistant-thread' + (!started ? ' assistant-thread-empty' : '')}>
         {!started && <AssistantWelcome disabled={blocked} onStart={sendOption} />}
@@ -309,18 +309,20 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
         {hasListFilters && <details className="assistant-list-link"><summary>浏览更多商品</summary>
           <a href={link.href}>按条件浏览商品</a><p>预算、用途与偏好未带入</p></details>}
         {draftError && <p role="alert" className="assistant-draft-error">{draftError}</p>}
-        <AssistantPlatformChip platform={platform} disabled={blocked} onRemove={() => onRecognizeFilters(false)} />
         <ComposerPrimitive.Root className="assistant-composer" onSubmit={sendDraft}>
-          <ComposerPrimitive.Input ref={input} aria-label="告诉助手你的需求" placeholder={started ? '用途、预算，或想买的商品…' : '也可以直接说说你的需求…'}
-            maxLength={ASSISTANT_LIMITS.userTextMaxChars} disabled={uncertain || locked} addAttachmentOnPaste={false}
-            cancelOnEscape={false} unstable_focusOnRunStart={false} unstable_focusOnScrollToBottom={false}
-            unstable_focusOnThreadSwitched={false}
-            onChange={() => setDraftError('')}
-            onKeyDown={event => {
-              if (blocked && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) event.preventDefault();
-            }} />
-          {busy && <button type="button" className="assistant-stop" onClick={() => void stop()} disabled={stopping}>{stopping ? '停止中' : '停止'}</button>}
-          <ComposerPrimitive.Send disabled={blocked} aria-label="发送" onClick={sendDraft}>发送</ComposerPrimitive.Send>
+          <AssistantPlatformChip platform={platform} disabled={blocked} onRemove={() => { onRecognizeFilters(false); setDraftError(''); }} />
+          <div className="assistant-composer-row">
+            <ComposerPrimitive.Input ref={input} aria-label="告诉助手你的需求" placeholder="说说你的需求…" minRows={1} maxRows={4}
+              maxLength={ASSISTANT_LIMITS.userTextMaxChars} disabled={uncertain || locked} addAttachmentOnPaste={false}
+              cancelOnEscape={false} unstable_focusOnRunStart={false} unstable_focusOnScrollToBottom={false}
+              unstable_focusOnThreadSwitched={false}
+              onChange={() => setDraftError('')}
+              onKeyDown={event => {
+                if (blocked && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) event.preventDefault();
+              }} />
+            {busy && <button type="button" className="assistant-stop" onClick={() => void stop()} disabled={stopping}>{stopping ? '停止中' : '停止'}</button>}
+            <ComposerPrimitive.Send disabled={blocked} aria-label="发送" title="发送" className="assistant-send" onClick={sendDraft}><AssistantSendIcon /></ComposerPrimitive.Send>
+          </div>
         </ComposerPrimitive.Root>
         <p className="assistant-input-note">内容由AI生成，仅供参考</p>
       </ThreadPrimitive.Root>
@@ -408,7 +410,7 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
       catalogPlatform={catalogPlatform} initialDraft={connectingDraft} notice={confirmation} />
       : <>
         <AssistantHeader recognizeFilters={recognizeFilters} onRecognizeFilters={setRecognizeFilters}
-          blocked={confirmClear || clearing} clearDisabled={state.loading || confirmClear || clearing}
+          blocked={confirmClear || clearing} clearDisabled={state.loading || state.disabled || confirmClear || clearing}
           onClear={onNew} onCollapse={onCollapse} />
         {confirmation}
         {state.disabled ? <section className="assistant-fallback">
@@ -421,13 +423,20 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
               setState({ loading: true }); setGeneration(value => value + 1);
             }}>重试连接</button>
           </div>}
-          <AssistantPlatformChip platform={recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null}
-            disabled={confirmClear || clearing} onRemove={() => setRecognizeFilters(false)} />
+          {state.loading && <span role="status" className="assistant-progress">连接中…</span>}
           <div className="assistant-composer">
-            <textarea aria-label="先写下需求" placeholder="也可以直接说说你的需求…" rows={2}
-              maxLength={ASSISTANT_LIMITS.userTextMaxChars} value={connectingDraft} disabled={confirmClear || clearing}
-              onChange={event => setConnectingDraft(event.target.value)} />
-            <button type="button" aria-label="发送" disabled>{state.loading ? <span role="status">连接中</span> : '发送'}</button>
+            <AssistantPlatformChip platform={recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null}
+              disabled={confirmClear || clearing} onRemove={() => setRecognizeFilters(false)} />
+            <div className="assistant-composer-row">
+              <textarea aria-label="先写下需求" placeholder="说说你的需求…" rows={1}
+                maxLength={ASSISTANT_LIMITS.userTextMaxChars} value={connectingDraft} disabled={confirmClear || clearing}
+                onChange={event => {
+                  event.target.style.height = 'auto';
+                  event.target.style.height = `${event.target.scrollHeight}px`;
+                  setConnectingDraft(event.target.value);
+                }} />
+              <button type="button" aria-label="发送" title="发送" className="assistant-send" disabled><AssistantSendIcon /></button>
+            </div>
           </div>
           <p className="assistant-input-note">内容由AI生成，仅供参考</p>
         </div>}

@@ -55,7 +55,7 @@ test('launcher opens an accessible dialog and Escape collapses it with focus ret
   const dialog = await screen.findByRole('dialog', { name: '导购助手' });
   await within(dialog).findByRole('textbox', { name: '告诉助手你的需求' });
   expect(within(dialog).getAllByRole('heading', { level: 1 })).toHaveLength(1);
-  expect(within(dialog).getByRole('heading', { name: '帮你选购' })).toBeVisible();
+  expect(within(dialog).getByRole('heading', { name: '选购' })).toBeVisible();
   expect(within(dialog).queryByText('对话选项')).not.toBeInTheDocument();
   expect(screen.getByRole('textbox')).toHaveFocus();
   expect(launcher).toHaveAttribute('aria-expanded', 'true');
@@ -79,7 +79,7 @@ test('collapse and reopen preserve runtime, draft and completed conversation', a
   expect(await screen.findByText(reply.text)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '收起导购助手' }));
   fireEvent.click(launcher);
-  expect(screen.getByText('读论文')).toBeInTheDocument();
+  expect(screen.getByText('读论文', { selector: 'span' })).toBeInTheDocument();
   expect(screen.getByText(reply.text)).toBeInTheDocument();
   expect(api.createSession).toHaveBeenCalledTimes(1);
   expect(api.sendTurn).toHaveBeenCalledTimes(1);
@@ -142,7 +142,7 @@ test('App mounts a single launcher on public routes and omits it on admin and st
   await screen.findByText('管理正文');
   window.history.pushState({}, '', '/assistant');
   fireEvent(window, new PopStateEvent('popstate'));
-  await screen.findByRole('heading', { name: '帮你选购' });
+  await screen.findByRole('heading', { name: '选购' });
   expect(screen.queryByRole('button', { name: '打开导购助手' })).not.toBeInTheDocument();
   view.unmount();
 });

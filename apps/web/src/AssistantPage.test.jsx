@@ -147,7 +147,7 @@ test('refresh restores server history and safe product cards without reading cat
     turns: [{ ...done, reply: { ...reply, kind: 'recommendation', text: '本次推荐的完整说明', options: [], cards: [card] } }] })) });
   render(<AssistantPage api={api} />);
   await screen.findByRole('textbox', { name: '告诉助手你的需求' });
-  expect(screen.getByText('写代码')).toBeInTheDocument();
+  expect(screen.getByText('写代码', { selector: 'span' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: /查看商品详情/ })).toHaveAttribute('href', '/products/42');
   expect(screen.getByText(/¥49/)).toBeInTheDocument();
   expect(screen.getByText('下单前确认库存')).toBeVisible();
@@ -213,7 +213,8 @@ test('uncertain acceptance blocks new sends and retries the identical UUID, inpu
 
 test('clearing a conversation requires confirmation before deleting its session', async () => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
-  const api = mockApi();
+  const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [done] })) });
   render(<AssistantPage api={api} />);
   await screen.findByRole('textbox', { name: '告诉助手你的需求' });
   fireEvent.click(screen.getByRole('button', { name: '设置' }));
@@ -233,7 +234,7 @@ test('assistant route applies client noindex and its own title', async () => {
   window.history.replaceState({}, '', '/assistant/');
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ enabled: false })));
   render(<App />);
-  expect(await screen.findByRole('heading', { name: '帮你选购' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: '选购' })).toBeInTheDocument();
   expect(document.title).toMatch(/导购助手/);
   expect(document.querySelector('meta[name="robots"]')).toHaveAttribute('content', 'noindex, nofollow');
 });
@@ -278,7 +279,7 @@ test('starter choices send a short message immediately and update the conversati
   fireEvent.click(screen.getByRole('button', { name: '写代码', exact: true }));
   await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
   expect(api.sendTurn.mock.calls[0][1].text).toBe('写代码');
-  expect(screen.getByRole('heading', { name: '写代码选购' })).toBeVisible();
+  expect(screen.getByRole('heading', { name: '写代码' })).toBeVisible();
   expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
 });
 
@@ -302,6 +303,8 @@ test('starter shortcut does not overwrite an existing draft', async () => {
 test('cancelling clear returns focus to the options menu when input autofocus is off', async () => {
   render(<AssistantPage api={mockApi()} focusInput={false} />);
   await screen.findByRole('textbox', { name: '告诉助手你的需求' });
+  fireEvent.click(screen.getByRole('button', { name: '写代码', exact: true }));
+  await screen.findByText('预算大概是多少？');
   const menu = screen.getByRole('button', { name: '设置' });
 
   fireEvent.click(screen.getByRole('button', { name: '设置' }));
@@ -309,6 +312,27 @@ test('cancelling clear returns focus to the options menu when input autofocus is
   expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
   fireEvent.click(screen.getByRole('button', { name: '取消' }));
   expect(menu).toHaveFocus();
+});
+
+test('empty conversation disables clearing and settings dismisses outside or on Escape', async () => {
+  const onCollapse = vi.fn();
+  render(<AssistantPage api={mockApi()} embedded catalogPlatform="anthropic" onCollapse={onCollapse} />);
+  const input = await screen.findByRole('textbox', { name: '告诉助手你的需求' });
+  expect(input).toHaveAttribute('placeholder', '说说你的需求…');
+  expect(input.closest('.assistant-composer')).toContainElement(screen.getByRole('button', { name: '不参考 Claude' }));
+  expect(screen.getByRole('button', { name: '日常办公' })).toBeVisible();
+  const settings = screen.getByRole('button', { name: '设置' });
+  fireEvent.click(settings);
+  expect(screen.getByRole('button', { name: '清空对话' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox', { name: '识别当前筛选' }));
+  expect(settings).toHaveAttribute('aria-expanded', 'true');
+  fireEvent.pointerDown(input);
+  expect(settings).toHaveAttribute('aria-expanded', 'false');
+  fireEvent.click(settings);
+  fireEvent.keyDown(screen.getByRole('checkbox', { name: '识别当前筛选' }), { key: 'Escape' });
+  expect(settings).toHaveAttribute('aria-expanded', 'false');
+  expect(settings).toHaveFocus();
+  expect(onCollapse).not.toHaveBeenCalled();
 });
 
 test('confirmed needs stay visible without a separate modify action', async () => {
