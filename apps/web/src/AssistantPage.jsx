@@ -10,6 +10,7 @@ import Brand from './Brand.jsx';
 import { assistantApi, assistantListLink } from './assistant-api.js';
 import { displayPurchaseTagText } from './purchase-tag-values.js';
 import { formatMoney } from './money.js';
+import { CATALOG_PLATFORMS } from '@price-comparison/catalog/platform-groups';
 import './assistant.css';
 
 const STORAGE_KEY = 'shopping-assistant';
@@ -97,7 +98,7 @@ function Message() {
   </MessagePrimitive.Root>;
 }
 
-function Conversation({ api, credentials, initialSession, onNew, locked, focusInput, onActivity }) {
+function Conversation({ api, credentials, initialSession, onNew, locked, focusInput, onActivity, embedded }) {
   const session = useRef(initialSession);
   const pending = useRef(null);
   const active = useRef(initialSession.turns.find(turn => !isTurnTerminal(turn.status)) ?? null);
@@ -114,7 +115,6 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
   const [needs, setNeeds] = useState(initialSession.needs);
   const [completed, setCompleted] = useState(null);
   const input = useRef(null);
-  const menu = useRef(null);
 
   function acceptSnapshot(turn) {
     active.current = turn;
@@ -190,6 +190,14 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     },
   }), [api, credentials]);
   const runtime = useLocalRuntime(adapter, { initialMessages: historyMessages(initialSession), maxSteps: 1 });
+  useEffect(() => {
+    if (!embedded || initialSession.turns.length || credentials.pendingMessageId || window.location.pathname !== '/') return;
+    const selected = new URLSearchParams(window.location.search).get('platform')?.trim().toLowerCase();
+    const platform = CATALOG_PLATFORMS.find(item => item.id === selected || item.aliases.includes(selected));
+    if (platform && !runtime.thread.composer.getState().text) {
+      runtime.thread.composer.setText(`我想看 ${platform.label} 的商品`);
+    }
+  }, [runtime, embedded, initialSession, credentials]);
   const importHistory = () => runtime.thread.import(ExportedMessageRepository.fromArray(historyMessages(session.current)));
   useEffect(() => runtime.thread.subscribe(() => {
     if (syncOnIdle.current && !runtime.thread.getState().isRunning) {
@@ -277,13 +285,15 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
         {labels.length > 0 && <div className="assistant-needs" aria-label="已确认条件">
           <span>{labels.slice(0, 2).join(' · ')}</span>
           {labels.length > 2 && <details><summary>+{labels.length - 2}</summary><p>{labels.slice(2).join(' · ')}</p></details>}
-          <button type="button" disabled={blocked} aria-label="修改需求" onClick={() => fillDraft('我想修改需求：')}>修改</button>
         </div>}
-        <details className="assistant-menu" ref={menu}><summary aria-label="对话选项">对话选项</summary>
-          <div><button type="button" disabled={busy || stopping || locked} onClick={() => { menu.current.open = false; onNew(menu.current.querySelector('summary')); }}>清空对话</button>
-            <details><summary>使用说明</summary><p>仅比较本站候选报价，不参与交易。价格、库存与售后请在下单前核对。</p>
-              <p>本对话独立于页面筛选。收起后继续处理，记录仅在当前标签页恢复。</p></details></div>
-        </details>
+        <div className="assistant-toolbar-actions">
+          <details className="assistant-help"><summary>说明</summary>
+            <div><p>仅比较本站候选报价，不参与交易。价格、库存与售后请在下单前核对。</p>
+              <p>新对话会将当前平台填入草稿，可修改后发送。已有对话不随筛选变化。</p>
+              <p>收起后继续处理。请勿输入密码或支付信息。</p></div>
+          </details>
+          <button type="button" aria-label="清空对话" disabled={busy || stopping || locked} onClick={event => onNew(event.currentTarget)}>清空</button>
+        </div>
       </div>
       <ThreadPrimitive.Root className="assistant-thread">
         <ThreadPrimitive.Viewport className="assistant-viewport" turnAnchor="top">
@@ -311,7 +321,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
           {busy && <button type="button" className="assistant-stop" onClick={() => void stop()} disabled={stopping}>{stopping ? '停止中' : '停止'}</button>}
           <ComposerPrimitive.Send disabled={blocked} aria-label="发送">发送</ComposerPrimitive.Send>
         </ComposerPrimitive.Root>
-        <p className="assistant-input-note">请勿输入密码或支付信息</p>
+        <p className="assistant-input-note">内容由AI生成，仅供参考</p>
       </ThreadPrimitive.Root>
     </ConversationContext.Provider>
   </AssistantRuntimeProvider>;
@@ -388,7 +398,7 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
         <button type="button" disabled={clearing} onClick={() => void newConversation()}>{clearing ? '正在清空' : '确认清空'}</button></div>
     </section>}
     {state.loading ? <p role="status">正在连接导购服务…</p>
-      : state.session ? <Conversation key={generation} api={api} credentials={credentials.current} initialSession={state.session}
+      : state.session ? <Conversation key={generation} api={api} credentials={credentials.current} initialSession={state.session} embedded={embedded}
         onNew={opener => { clearOpener.current = opener; setConfirmClear(true); }} locked={confirmClear || clearing} focusInput={focusInput && !confirmClear} onActivity={onActivity} />
         : <section className="assistant-fallback">
           <h2>{state.disabled ? '导购助手暂未启用' : '暂时无法连接导购助手'}</h2>

@@ -171,12 +171,10 @@ test('clearing a conversation requires confirmation before deleting its session'
   const api = mockApi();
   render(<AssistantPage api={api} />);
   await screen.findByRole('textbox');
-  fireEvent.click(screen.getByText('对话选项'));
   fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
   expect(api.deleteSession).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: '取消' }));
   expect(api.deleteSession).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByText('对话选项'));
   fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
   fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
   await waitFor(() => expect(api.deleteSession).toHaveBeenCalledWith(expect.objectContaining(credentials)));
@@ -255,26 +253,26 @@ test('starter choices preserve a near-limit draft instead of appending beyond th
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
-test('cancelling clear returns focus to the menu when input autofocus is off', async () => {
+test('cancelling clear returns focus to the clear button when input autofocus is off', async () => {
   render(<AssistantPage api={mockApi()} focusInput={false} />);
   await screen.findByRole('textbox');
-  const menu = screen.getByText('对话选项');
-  fireEvent.click(menu);
+  const menu = screen.getByRole('button', { name: '清空对话' });
+
   fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
   expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
   fireEvent.click(screen.getByRole('button', { name: '取消' }));
   expect(menu).toHaveFocus();
 });
 
-test('confirmed needs can be edited as a draft without prematurely changing the summary', async () => {
+test('confirmed needs stay visible without a separate modify action', async () => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   const needs = { ...emptyShoppingNeeds(), platform: 'OpenAI', purpose: '写代码',
     budget: { amount: '50', currency: 'CNY', basis: 'month' } };
   const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs,
     turns: [{ ...done, reply: { ...reply, needs } }] })) });
   render(<AssistantPage api={api} />);
-  fireEvent.click(await screen.findByRole('button', { name: '修改需求' }));
-  expect(screen.getByRole('textbox').value).toContain('我想修改需求：');
+  await screen.findByRole('textbox');
+  expect(screen.queryByRole('button', { name: '修改需求' })).not.toBeInTheDocument();
   expect(screen.getByLabelText('已确认条件')).toHaveTextContent('每月 ≤ ¥50');
   fireEvent.click(screen.getByText('浏览更多商品'));
   expect(screen.getByRole('link', { name: '按条件浏览商品' }).getAttribute('href')).toContain('platform=');
@@ -320,7 +318,6 @@ test('failed clearing preserves history and allows retrying the deletion', async
   api.deleteSession.mockRejectedValueOnce(new Error('连接中断'));
   render(<AssistantPage api={api} />);
   await screen.findByText('预算大概是多少？');
-  fireEvent.click(screen.getByText('对话选项'));
   fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
   fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('连接中断');
@@ -348,7 +345,6 @@ test('unknown pending UUID without server input never invents a replay after rel
   expect(screen.getByRole('textbox')).toBeDisabled();
   expect(api.sendTurn).not.toHaveBeenCalled();
   expect(api.createSession).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByText('对话选项'));
   expect(screen.getByRole('button', { name: '清空对话' })).not.toBeDisabled();
 });
 
@@ -363,3 +359,45 @@ test('version conflict restores authoritative history and allows a new message a
   expect(screen.getByRole('textbox')).not.toBeDisabled();
   expect(api.sendTurn).toHaveBeenCalledTimes(1);
 });
+
+
+test('new embedded conversation carries the selected platform in an editable first draft', async () => {
+  window.history.replaceState({}, '', '/?platform=anthropic');
+  const api = mockApi();
+  render(<AssistantPage api={api} embedded />);
+  const input = await screen.findByRole('textbox');
+  expect(input).toHaveValue('我想看 Claude 的商品');
+  expect(api.sendTurn).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '写代码用' }));
+  expect(input).toHaveValue('我想看 Claude 的商品\n我想选适合写代码的 AI 商品');
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
+  expect(api.sendTurn.mock.calls[0][1].text).toContain('Claude');
+  expect(await screen.findByText('预算大概是多少？')).toBeInTheDocument();
+  expect(input).toHaveValue('');
+  expect(screen.getByText('内容由AI生成，仅供参考')).toBeVisible();
+  expect(screen.queryByText('对话选项')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText('说明'));
+  expect(screen.getByText(/仅比较本站候选报价/)).toBeVisible();
+});
+
+test('restored conversation ignores catalog platform and clearing reads the current platform', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  window.history.replaceState({}, '', '/?platform=anthropic');
+  const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [done] })) });
+  render(<AssistantPage api={api} embedded />);
+  expect(await screen.findByRole('textbox')).toHaveValue('');
+  window.history.replaceState({}, '', '/?platform=google');
+  fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
+  fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
+  await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('我想看 Gemini / Google 的商品'));
+});
+
+test.each(['/?platform=other', '/?platform=unknown', '/guide?platform=anthropic', '/products/42?platform=anthropic'])(
+  'does not invent a platform context for %s', async path => {
+    window.history.replaceState({}, '', path);
+    render(<AssistantPage api={mockApi()} embedded />);
+    expect(await screen.findByRole('textbox')).toHaveValue('');
+  },
+);
