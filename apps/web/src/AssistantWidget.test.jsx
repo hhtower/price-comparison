@@ -54,6 +54,7 @@ test('launcher opens an accessible dialog and Escape collapses it with focus ret
   await act(async () => { fireEvent.click(launcher); });
   const dialog = await screen.findByRole('dialog', { name: '导购助手' });
   await within(dialog).findByRole('textbox');
+  expect(screen.getByRole('textbox')).toHaveFocus();
   expect(launcher).toHaveAttribute('aria-expanded', 'true');
   fireEvent.keyDown(dialog, { key: 'Escape' });
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -98,10 +99,13 @@ test('collapsing inflight chat leaves its subscription alive and completion is v
   fireEvent.click(screen.getByRole('button', { name: '发送' }));
   await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalled());
   fireEvent.click(screen.getByRole('button', { name: '收起导购助手' }));
+  expect(launcher).toHaveTextContent('正在查找');
   expect(signal.aborted).toBe(false);
   expect(api.cancelTurn).not.toHaveBeenCalled();
   await act(async () => finish());
+  expect(launcher).toHaveTextContent('有新回复');
   fireEvent.click(launcher);
+  expect(launcher).not.toHaveTextContent('有新回复');
   expect(screen.getByText(reply.text)).toBeInTheDocument();
   expect(api.sendTurn).toHaveBeenCalledTimes(1);
 });
@@ -114,6 +118,7 @@ test('mobile opens in the native modal top layer while desktop uses a nonmodal s
   await act(async () => { fireEvent.click(launcher); });
   const dialog = await screen.findByRole('dialog', { name: '导购助手' });
   await within(dialog).findByRole('textbox');
+  expect(screen.getByRole('textbox')).not.toHaveFocus();
   expect(dialog).toHaveAttribute('aria-modal', 'true');
   expect(modal).toHaveBeenCalled();
   fireEvent(dialog, new Event('cancel', { cancelable: true }));

@@ -9,6 +9,9 @@ export default function AssistantWidget({ api = assistantApi }) {
   const [open, setOpen] = useState(false);
   const [visited, setVisited] = useState(false);
   const [mobile, setMobile] = useState(() => window.matchMedia?.(MOBILE).matches ?? false);
+  const [activity, setActivity] = useState({ busy: false, attention: false, completed: null });
+  const [unread, setUnread] = useState(false);
+  const lastCompleted = useRef(null);
   const launcher = useRef(null);
   const dialog = useRef(null);
   const id = useId();
@@ -28,19 +31,26 @@ export default function AssistantWidget({ api = assistantApi }) {
     if (!open) { if (panel.open) panel.close(); return; }
     if (mobile) panel.showModal();
     else panel.show();
-    panel.querySelector('button')?.focus();
+    (mobile ? panel.querySelector('button') : panel.querySelector('textarea:not(:disabled)') ?? panel.querySelector('button'))?.focus({ preventScroll: true });
     return () => {
       if (panel.open) panel.close();
       launcher.current?.focus({ preventScroll: true });
     };
   }, [open, mobile]);
+  useEffect(() => {
+    if (open) setUnread(false);
+    else if (activity.completed && activity.completed !== lastCompleted.current) setUnread(true);
+    lastCompleted.current = activity.completed;
+  }, [activity.completed, open]);
   if (!enabled) return null;
   const collapse = () => setOpen(false);
   return <div className="assistant-widget">
     <button type="button" className="assistant-launcher" ref={launcher}
       aria-label="打开导购助手" aria-expanded={open} aria-controls={id} aria-haspopup="dialog"
       onClick={() => { setVisited(true); setOpen(value => !value); }}>
-      <span aria-hidden="true">聊</span><span>导购助手</span>
+      <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3v-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" /><path d="M7 9h10M7 13h6" /></svg>
+      <span>导购助手</span>
+      <span className="assistant-launcher-status" role="status">{activity.busy ? '正在查找' : activity.attention ? '连接中断' : unread ? '有新回复' : ''}</span>
     </button>
     <dialog id={id} ref={dialog} className="assistant-widget-panel" aria-label="导购助手"
       aria-modal={mobile ? 'true' : 'false'}
@@ -48,11 +58,11 @@ export default function AssistantWidget({ api = assistantApi }) {
       onKeyDown={event => { if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
         event.preventDefault(); event.stopPropagation(); collapse();
       } }}>
-      <div className="assistant-widget-heading"><div><strong>导购助手</strong><span>聊聊需求，看看真实报价</span></div>
+      <div className="assistant-widget-heading"><strong>导购助手</strong>
         <button type="button" aria-label="收起导购助手" onClick={collapse}>收起 <span aria-hidden="true">↓</span></button></div>
       {/* Keep the runtime mounted while collapsed, including its draft and read subscription. */}
       {visited && <Suspense fallback={<p role="status">正在加载导购助手…</p>}>
-        <AssistantPage api={api} embedded enabled />
+        <AssistantPage api={api} embedded enabled focusInput={open && !mobile} onActivity={setActivity} />
       </Suspense>}
     </dialog>
   </div>;

@@ -85,7 +85,7 @@ test('real assistant-ui composer sends only current text and quick options as th
   fireEvent.change(input, { target: { value: '写代码' } });
   fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
   expect(await screen.findByText('预算大概是多少？')).toBeInTheDocument();
-  expect(screen.queryByRole('heading', { name: '你想用 AI 做些什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想选什么？' })).not.toBeInTheDocument();
   expect(api.sendTurn.mock.calls[0][1]).toEqual({ clientMessageId: expect.any(String), expectedRevision: 0, text: '写代码' });
   fireEvent.click(screen.getByRole('button', { name: '50元以内' }));
   await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(2));
@@ -97,16 +97,23 @@ test('refresh restores server history and safe product cards without reading cat
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   window.history.replaceState({}, '', '/assistant?q=secret&newcomer=true');
   const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
-    price: '49.00', currency: 'CNY', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-01-01T00:00:00Z',
-    detailPath: '/products/42', reasons: ['本次候选中价格较低'], caveats: ['下单前确认库存'], evidenceIds: ['e1'] };
+    price: '49.00', currency: 'CNY', capturedAt: '2020-01-01T00:00:00Z', priceExpiresAt: '2020-01-02T00:00:00Z',
+    detailPath: '/products/42', reasons: ['本次候选中价格较低', '补充报价依据'], caveats: ['下单前确认库存'], evidenceIds: ['e1'] };
   const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(),
-    turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [card] } }] })) });
+    turns: [{ ...done, reply: { ...reply, kind: 'recommendation', text: '本次推荐的完整说明', options: [], cards: [card] } }] })) });
   render(<AssistantPage api={api} />);
   expect(await screen.findByText('写代码')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: /查看商品详情/ })).toHaveAttribute('href', '/products/42');
-  expect(screen.getByText(/49.00/)).toBeInTheDocument();
-  expect(screen.getByText('下单前确认库存')).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: '在商品列表中查看' }).getAttribute('href')).not.toMatch(/secret|newcomer=true/);
+  expect(screen.getByText(/¥49/)).toBeInTheDocument();
+  expect(screen.getByText('下单前确认库存')).toBeVisible();
+  expect(screen.getByText('报价已过期，请重新核对')).toBeVisible();
+  expect(screen.getByText('补充报价依据')).not.toBeVisible();
+  expect(screen.getByText('本次推荐的完整说明')).not.toBeVisible();
+  fireEvent.click(screen.getByText('报价依据'));
+  expect(screen.getByText('补充报价依据')).toBeVisible();
+  fireEvent.click(screen.getByText('推荐说明'));
+  expect(screen.getByText('本次推荐的完整说明')).toBeVisible();
+  expect(screen.queryByRole('link', { name: '按条件浏览商品' })).not.toBeInTheDocument();
   expect(api.sendTurn).not.toHaveBeenCalled();
 });
 
@@ -159,12 +166,19 @@ test('uncertain acceptance blocks new sends and retries the identical UUID, inpu
   expect(api.sendTurn.mock.calls[1][1]).toEqual(api.sendTurn.mock.calls[0][1]);
 });
 
-test('new conversation deletes old server session before replacing its credentials', async () => {
+test('clearing a conversation requires confirmation before deleting its session', async () => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   const api = mockApi();
   render(<AssistantPage api={api} />);
   await screen.findByRole('textbox');
-  fireEvent.click(screen.getByRole('button', { name: '新对话' }));
+  fireEvent.click(screen.getByText('对话选项'));
+  fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
+  expect(api.deleteSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '取消' }));
+  expect(api.deleteSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText('对话选项'));
+  fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
+  fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
   await waitFor(() => expect(api.deleteSession).toHaveBeenCalledWith(expect.objectContaining(credentials)));
   await waitFor(() => expect(api.createSession).toHaveBeenCalled());
   expect(api.deleteSession.mock.invocationCallOrder[0]).toBeLessThan(api.createSession.mock.invocationCallOrder[0]);
@@ -208,7 +222,112 @@ test('restored no-match keeps the authoritative hard budget and displays no inve
   render(<AssistantPage api={api} />);
   expect(await screen.findByText('当前没有符合条件的报价。')).toBeInTheDocument();
   expect(screen.queryByRole('link', { name: /查看商品详情/ })).not.toBeInTheDocument();
-  expect(screen.getByText(/预算、用途与偏好未带入/)).toBeInTheDocument();
+  expect(screen.getByLabelText('已确认条件')).toHaveTextContent('每月 ≤ ¥50');
+  expect(screen.queryByRole('link', { name: '按条件浏览商品' })).not.toBeInTheDocument();
+});
+
+test('starter choices fill an editable draft without making a model request', async () => {
+  const api = mockApi();
+  render(<AssistantPage api={api} />);
+  fireEvent.click(await screen.findByRole('button', { name: '写代码用' }));
+  expect(screen.getByRole('textbox')).toHaveValue('我想选适合写代码的 AI 商品');
+  expect(screen.getByRole('textbox')).toHaveFocus();
+  expect(api.sendTurn).not.toHaveBeenCalled();
+});
+
+test('standalone mobile page does not automatically focus the input', async () => {
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+  render(<AssistantPage api={mockApi()} />);
+  expect(await screen.findByRole('textbox')).not.toHaveFocus();
+});
+
+test('starter choices preserve a near-limit draft instead of appending beyond the input limit', async () => {
+  const api = mockApi();
+  render(<AssistantPage api={api} />);
+  const input = await screen.findByRole('textbox');
+  const draft = '字'.repeat(1999);
+  fireEvent.change(input, { target: { value: draft } });
+  fireEvent.click(screen.getByRole('button', { name: '写代码用' }));
+  expect(input).toHaveValue(draft);
+  expect(screen.getByRole('alert')).toHaveTextContent('2,000');
+  expect(api.sendTurn).not.toHaveBeenCalled();
+  fireEvent.change(input, { target: { value: '短草稿' } });
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+test('cancelling clear returns focus to the menu when input autofocus is off', async () => {
+  render(<AssistantPage api={mockApi()} focusInput={false} />);
+  await screen.findByRole('textbox');
+  const menu = screen.getByText('对话选项');
+  fireEvent.click(menu);
+  fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
+  expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
+  fireEvent.click(screen.getByRole('button', { name: '取消' }));
+  expect(menu).toHaveFocus();
+});
+
+test('confirmed needs can be edited as a draft without prematurely changing the summary', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const needs = { ...emptyShoppingNeeds(), platform: 'OpenAI', purpose: '写代码',
+    budget: { amount: '50', currency: 'CNY', basis: 'month' } };
+  const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs,
+    turns: [{ ...done, reply: { ...reply, needs } }] })) });
+  render(<AssistantPage api={api} />);
+  fireEvent.click(await screen.findByRole('button', { name: '修改需求' }));
+  expect(screen.getByRole('textbox').value).toContain('我想修改需求：');
+  expect(screen.getByLabelText('已确认条件')).toHaveTextContent('每月 ≤ ¥50');
+  fireEvent.click(screen.getByText('浏览更多商品'));
+  expect(screen.getByRole('link', { name: '按条件浏览商品' }).getAttribute('href')).toContain('platform=');
+  expect(screen.getByText('预算、用途与偏好未带入')).toBeInTheDocument();
+  expect(api.sendTurn).not.toHaveBeenCalled();
+});
+
+test('while a reply is pending users can prepare a draft but cannot submit another turn', async () => {
+  let finish;
+  const api = mockApi({ subscribeTurn: vi.fn((_credentials, active) => new Promise(resolve => {
+    finish = () => resolve({ ...done, clientMessageId: active.clientMessageId });
+  })) });
+  render(<AssistantPage api={api} />);
+  const input = await screen.findByRole('textbox');
+  fireEvent.change(input, { target: { value: '写代码' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalled());
+  expect(input).not.toBeDisabled();
+  fireEvent.change(input, { target: { value: '预算每月50元' } });
+  fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+  fireEvent.submit(input.closest('form'));
+  expect(api.sendTurn).toHaveBeenCalledTimes(1);
+  await act(async () => finish());
+  expect(input).toHaveValue('预算每月50元');
+});
+
+test('initialization retry restores the existing conversation without deleting it', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const api = mockApi();
+  api.readSession.mockRejectedValueOnce(new Error('连接中断'));
+  render(<AssistantPage api={api} />);
+  fireEvent.click(await screen.findByRole('button', { name: '重试连接' }));
+  await screen.findByRole('textbox');
+  expect(api.readSession).toHaveBeenCalledTimes(2);
+  expect(api.deleteSession).not.toHaveBeenCalled();
+  expect(api.createSession).not.toHaveBeenCalled();
+});
+
+test('failed clearing preserves history and allows retrying the deletion', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [done] })) });
+  api.deleteSession.mockRejectedValueOnce(new Error('连接中断'));
+  render(<AssistantPage api={api} />);
+  await screen.findByText('预算大概是多少？');
+  fireEvent.click(screen.getByText('对话选项'));
+  fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
+  fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('连接中断');
+  expect(screen.getByText('预算大概是多少？')).toBeInTheDocument();
+  expect(JSON.parse(sessionStorage.getItem('shopping-assistant'))).toEqual(credentials);
+  fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
+  await waitFor(() => expect(api.createSession).toHaveBeenCalled());
 });
 
 test('refresh recovers a pending accepted message by UUID without sending again', async () => {
@@ -229,6 +348,8 @@ test('unknown pending UUID without server input never invents a replay after rel
   expect(screen.getByRole('textbox')).toBeDisabled();
   expect(api.sendTurn).not.toHaveBeenCalled();
   expect(api.createSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText('对话选项'));
+  expect(screen.getByRole('button', { name: '清空对话' })).not.toBeDisabled();
 });
 
 test('version conflict restores authoritative history and allows a new message at its revision', async () => {
