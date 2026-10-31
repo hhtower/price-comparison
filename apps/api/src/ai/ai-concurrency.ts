@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { sleep } from '../common/sleep.js';
 
-export type AiStage = 'standardization' | 'quality';
+export type AiStage = 'standardization' | 'quality' | 'assistant';
 
 export interface AiConcurrencyRedis {
   eval(script: string, numberOfKeys: number, ...args: string[]): Promise<unknown>;

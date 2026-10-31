@@ -3,6 +3,7 @@ import PublicPage from './PublicPage.jsx';
 import PurchaseGuidePage from './PurchaseGuidePage.jsx';
 import QualityToolsPage from './QualityToolsPage.jsx';
 import OfficialReference from './OfficialReference.jsx';
+import AssistantWidget from './AssistantWidget.jsx';
 import { logoUrl } from './Brand.jsx';
 import { updatePageMetadata } from './page-metadata.js';
 import './styles.css';
@@ -12,6 +13,7 @@ import './seo-document.css';
 import './purchase-guide.css';
 
 const AdminPage = lazy(() => import('./AdminPage.jsx'));
+const AssistantPage = lazy(() => import('./AssistantPage.jsx'));
 
 class AdminRouteBoundary extends React.Component {
   state = { failed: false };
@@ -28,6 +30,7 @@ function currentRoute() {
   const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
   if (pathname === '/guide') return 'guide';
   if (pathname === '/admin') return 'admin';
+  if (pathname === '/assistant') return 'assistant';
   if (pathname === '/tools' || pathname.startsWith('/tools/')) return 'tools';
   if (pathname.startsWith('/products/')) return pathname;
   return 'public';
@@ -41,7 +44,7 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
   useEffect(() => {
-    document.body.className = route === 'admin' ? 'admin-shell' : route === 'tools' ? 'tools-shell' : route === 'guide' ? 'guide-shell' : 'public-shell';
+    document.body.className = route === 'admin' ? 'admin-shell' : route === 'assistant' ? 'assistant-shell' : route === 'tools' ? 'tools-shell' : route === 'guide' ? 'guide-shell' : 'public-shell';
     if (!route.startsWith('/products/')) updatePageMetadata(route);
     let favicon = document.querySelector('link[rel="icon"]');
     if (!favicon) {
@@ -52,7 +55,11 @@ export default function App() {
     favicon.setAttribute('href', logoUrl);
   }, [route]);
   if (route === 'admin') return <AdminRouteBoundary><Suspense fallback={<main className="route-state" role="status">正在加载管理端…</main>}><AdminPage /></Suspense></AdminRouteBoundary>;
-  if (route === 'guide') return <PurchaseGuidePage />;
-  if (route === 'tools') return <><QualityToolsPage /><OfficialReference /></>;
-  return <><PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} /><OfficialReference /></>;
+  if (route === 'assistant') return <Suspense fallback={<main className="route-state" role="status">正在加载导购助手…</main>}><AssistantPage /></Suspense>;
+  return <>
+    {route === 'guide' ? <PurchaseGuidePage /> : route === 'tools' ? <QualityToolsPage />
+      : <PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} />}
+    {route !== 'guide' && <OfficialReference />}
+    <AssistantWidget />
+  </>;
 }

@@ -506,6 +506,8 @@ export interface ProductReportTable {
 }
 
 export interface DatabaseSchema {
+  assistant_sessions: AssistantSessionTable;
+  assistant_turns: AssistantTurnTable;
   ai_tag_job_requests: {request_id:string;job_id:bigint};
   shops: ShopTable;
   products: ProductTable;
@@ -538,4 +540,39 @@ export interface DatabaseSchema {
   ai_job_progress: AiJobProgressTable;
   standardization_catalog_versions: StandardizationCatalogVersionTable;
   catalog_index_changes: CatalogIndexChangeTable;
+}
+
+export interface AssistantSessionTable {
+  id: string;
+  access_hash: string;
+  revision: Generated<number>;
+  needs: JsonbColumn;
+  created_at: GeneratedTimestamp;
+  expires_at: Timestamp;
+}
+
+export interface AssistantTurnTable {
+  id: Generated<bigint>;
+  session_id: string;
+  client_message_id: string;
+  expected_revision: number;
+  input_text: string;
+  status: Generated<'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'>;
+  phase: Generated<'queued' | 'understanding' | 'searching' | 'explaining'>;
+  event_version: Generated<number>;
+  reply: NullableJsonbColumn;
+  requests_started: Generated<number>;
+  request_in_flight: Generated<boolean>;
+  model: string | null;
+  usage: GeneratedJsonbColumn;
+  error_code: string | null;
+  attempts: Generated<bigint>;
+  available_at: GeneratedTimestamp;
+  claimed_by: string | null;
+  claim_token: string | null;
+  lease_until: NullableTimestamp;
+  created_at: GeneratedTimestamp;
+  started_at: NullableTimestamp;
+  finished_at: NullableTimestamp;
+  deadline_at: Timestamp;
 }

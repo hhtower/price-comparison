@@ -17,10 +17,10 @@ export interface WorkerRuntimeService {
   claimAvailable?(queue: QueueName, workerId: string, limit: number, leaseMs?: number): Promise<ReadonlyArray<ClaimedJob>>;
   waitForWork?(channel: string, signal: AbortSignal): Promise<void>;
   queueDepth?(kind: QueueKind): Promise<number>;
-  heartbeat(kind: QueueKind, id: bigint, workerId: string, leaseMs?: number): Promise<void>;
+  heartbeat(kind: QueueKind, id: bigint, workerId: string, leaseMs?: number, claimToken?: string): Promise<void>;
   complete(kind: QueueKind, id: bigint, workerId: string): Promise<void>;
-  fail(kind: QueueKind, id: bigint, workerId: string, error: string, options?: { retry?: boolean; backoffMs?: number; retryClass?: string | null }): Promise<void>;
-  requeue(kind: QueueKind, id: bigint, workerId: string, backoffMs?: number): Promise<void>;
+  fail(kind: QueueKind, id: bigint, workerId: string, error: string, options?: { retry?: boolean; backoffMs?: number; retryClass?: string | null; claimToken?: string }): Promise<void>;
+  requeue(kind: QueueKind, id: bigint, workerId: string, backoffMs?: number, claimToken?: string): Promise<void>;
   /** Synchronous local cleanup after all execution/state-transition attempts have ended. */
   onSettled?(kind: QueueKind, id: bigint, workerId: string): void;
 }
@@ -193,7 +193,7 @@ export class WorkerRuntime {
   }
 
   private async abandonClaim(job: ClaimedJob): Promise<void> {
-    try { await this.options.service.requeue(this.options.kind, job.id, this.options.workerId, 0); }
+    try { await this.options.service.requeue(this.options.kind, job.id, this.options.workerId, 0, job.row.claim_token as string | undefined); }
     catch (error) { this.options.logger?.warn?.('worker.unstarted_requeue_failed', error); }
     finally { this.settle(job); }
   }
@@ -201,7 +201,7 @@ export class WorkerRuntime {
   private launch(job: ClaimedJob): void {
     const controller = new AbortController();
     const heartbeat = setInterval(() => {
-      void this.options.service.heartbeat(this.options.kind, job.id, this.options.workerId, this.options.leaseMs).catch((error) => {
+      void this.options.service.heartbeat(this.options.kind, job.id, this.options.workerId, this.options.leaseMs, job.row.claim_token as string | undefined).catch((error) => {
         controller.abort(error);
       });
     }, this.options.heartbeatMs);
@@ -237,7 +237,7 @@ export class WorkerRuntime {
           await this.options.handler(job, controller.signal, lease ? { aiLease: lease } : undefined);
           phase = 'complete';
           if (controller.signal.aborted) {
-            await this.options.service.requeue(this.options.kind, job.id, this.options.workerId, 0);
+            await this.options.service.requeue(this.options.kind, job.id, this.options.workerId, 0, job.row.claim_token as string | undefined);
             this.recordWorker('requeued', startedAt);
             this.logWorker('worker.requeued', startedAt);
           } else {
@@ -249,7 +249,7 @@ export class WorkerRuntime {
           const message = error instanceof Error ? error.message : String(error);
           if (controller.signal.aborted) {
             try {
-              await this.options.service.requeue(this.options.kind, job.id, this.options.workerId, 0);
+              await this.options.service.requeue(this.options.kind, job.id, this.options.workerId, 0, job.row.claim_token as string | undefined);
             } catch (failure) {
               this.logWorker('worker.requeue_failed', startedAt, 'warn', failure);
             }
@@ -278,6 +278,8 @@ export class WorkerRuntime {
               retry,
               backoffMs: retry ? delay : 0,
               retryClass,
+              ...(this.options.kind === 'assistant_turn' && typeof job.row.claim_token === 'string'
+                ? { claimToken: job.row.claim_token } : {}),
             });
             this.recordWorker(retry ? 'requeued' : 'failed', startedAt);
             this.logWorker('worker.failed', startedAt, 'error', { error });
@@ -358,7 +360,11 @@ function readStructuredFailure(error: unknown): { retryClass: string; retryable:
 }
 
 function queueName(kind: QueueKind): QueueName {
-  return kind === 'fetch_run' ? 'fetch' : 'ai_standardization';
+  switch (kind) {
+    case 'fetch_run': return 'fetch';
+    case 'ai_batch': return 'ai_standardization';
+    case 'assistant_turn': return 'assistant';
+  }
 }
 
 function waitChannel(kind: QueueKind): string {

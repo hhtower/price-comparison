@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import concurrently from 'concurrently';
 import { readAiStandardizationRuntimeStatus } from '../apps/api/src/ai/ai-standardization-features.js';
 import { readOfficialReferenceConfig } from '../apps/api/src/official-reference/official-reference.config.js';
+import { readAssistantConfig } from '../apps/api/src/assistant/assistant.config.js';
 
 export function createDevPlan(environment: NodeJS.ProcessEnv = process.env) {
   const runtime = readAiStandardizationRuntimeStatus(environment);
@@ -21,10 +22,13 @@ export function createDevPlan(environment: NodeJS.ProcessEnv = process.env) {
   }
   const reference = readOfficialReferenceConfig(environment);
   if (reference.enabled && reference.proxyUrl) commands.push({ name: 'official-reference', command: 'tsx watch apps/api/src/workers/official-reference.worker.ts' });
+  const assistant = readAssistantConfig(environment);
+  if (assistant.enabled) commands.push({ name: 'assistant', command: 'tsx watch apps/api/src/workers/assistant.worker.ts' });
   const aiNotice = runtime.configured
     ? `AI 任务处理已加入开发启动${runtime.incrementalEnabled ? '（含增量处理）' : ''}，将消费已有队列；模型请求按当前服务商计费。`
     : 'AI 标准化未启用，仅启动网页和 API；启用请设置 AI_STANDARDIZATION_ENABLED=true 并配置模型。';
-  const notice = aiNotice + (reference.enabled && reference.proxyUrl ? ' 官网正价参考采集已加入启动，复用现有代理。' : ' 官网正价参考采集未启动，请配置 AI_PROXY_URL（或检查专用开关）。');
+  const notice = aiNotice + (reference.enabled && reference.proxyUrl ? ' 官网正价参考采集已加入启动，复用现有代理。' : ' 官网正价参考采集未启动，请配置 AI_PROXY_URL（或检查专用开关）。')
+    + (assistant.enabled ? ' AI 导购 worker 已加入启动，将按当前服务商配置调用模型并可能产生费用。' : ' AI 导购助手未启用。');
   return { commands, notice };
 }
 

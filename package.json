@@ -10,6 +10,8 @@
     "build": "npm run build:shared && tsc -p apps/api/tsconfig.json && vite build --config apps/web/vite.config.js",
     "db:migrate": "tsx apps/api/scripts/migrate.ts",
     "worker:ai": "tsx apps/api/src/workers/ai.worker.ts",
+    "worker:assistant": "tsx apps/api/src/workers/assistant.worker.ts",
+    "assistant:cleanup": "tsx apps/api/src/workers/assistant.worker.ts --cleanup",
     "worker:crawler": "tsx apps/api/src/workers/crawler.worker.ts",
     "worker:official-reference": "tsx apps/api/src/workers/official-reference.worker.ts",
     "worker:standardization": "tsx apps/api/src/workers/standardization-entrypoint.ts",

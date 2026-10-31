@@ -43,8 +43,9 @@ test('real client retains readable quotes after replacing server HTML under its 
   expect(serverGuide.querySelector('ol')).toBeNull();
   expect(container.querySelectorAll('a[href="/guide"]')).toHaveLength(1);
   window.history.replaceState({}, '', '/');
-  vi.stubGlobal('fetch', vi.fn(async input => {
+  vi.stubGlobal('fetch', vi.fn(async (input, options) => {
     const url = String(input);
+    if (url === '/api/assistant/status' && options?.method === 'GET') return Response.json({ enabled: false });
     if (!allowedByRobots(robots, url)) throw new Error('Blocked by robots.txt');
     if (url.startsWith('/api/catalog?')) return Response.json(catalog);
     throw new Error('Unexpected request');
@@ -69,7 +70,7 @@ test('real client retains readable quotes after replacing server HTML under its 
   expect(allowedByRobots(robots, '/api/catalog/products-private')).toBe(false);
 });
 
-test('guide client and no-script HTML have identical text and anchors without fetching data', async () => {
+test.each([false, true])('guide preserves no-script content and requests only assistant status GET (enabled=%s)', async enabled => {
   const adapter = new FastifyAdapter();
   const noData = async () => { throw new Error('guide must not request data'); };
   registerPublicPages(adapter, { template: '<html><head><title>Site</title></head><body><div id="root"></div></body></html>',
@@ -81,13 +82,28 @@ test('guide client and no-script HTML have identical text and anchors without fe
   const normalize = value => value.replace(/\s+/gu, ' ').trim();
   const expectedText = normalize(parsed.querySelector('main').textContent);
   const expectedIds = [...parsed.querySelectorAll('main [id]')].map(node => node.id);
-  const fetch = vi.fn(() => { throw new Error('no fetch'); });
+  let resolveStatus;
+  const status = new Promise(resolve => { resolveStatus = resolve; });
+  const fetch = vi.fn((input, options) => {
+    if (input === '/api/assistant/status' && options?.method === 'GET') return status;
+    throw new Error('guide must request only assistant status GET');
+  });
   vi.stubGlobal('fetch', fetch);
   window.history.replaceState({}, '', '/guide#duration');
   const { container } = render(<App />);
   expect(normalize(container.querySelector('main').textContent)).toBe(expectedText);
   expect([...container.querySelectorAll('main [id]')].map(node => node.id)).toEqual(expectedIds);
-  expect(fetch).not.toHaveBeenCalled();
+  expect(document.title).toBe(parsed.title);
+  expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/guide');
+  expect(screen.queryByRole('button', { name: '打开导购助手' })).not.toBeInTheDocument();
+  await act(async () => { resolveStatus(Response.json({ enabled })); });
+  expect(Boolean(screen.queryByRole('button', { name: '打开导购助手' }))).toBe(enabled);
+  expect(normalize(container.querySelector('main').textContent)).toBe(expectedText);
+  expect([...container.querySelectorAll('main [id]')].map(node => node.id)).toEqual(expectedIds);
+  expect(document.title).toBe(parsed.title);
+  expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/guide');
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch).toHaveBeenCalledWith('/api/assistant/status', expect.objectContaining({ method: 'GET', cache: 'no-store' }));
 });
 
 test('product client retains server structured offers and removes them when quotes expire', async () => {
@@ -108,8 +124,9 @@ test('product client retains server structured offers and removes them when quot
   const expected = JSON.parse(document.querySelector('#page-structured-data').textContent);
   expect(expected.offers).toHaveLength(1);
   window.history.replaceState({}, '', '/products/42');
-  vi.stubGlobal('fetch', vi.fn(async input => {
+  vi.stubGlobal('fetch', vi.fn(async (input, options) => {
     const url = new URL(input, 'http://localhost');
+    if (url.pathname === '/api/assistant/status' && options?.method === 'GET') return Response.json({ enabled: false });
     if (url.pathname === '/api/catalog/products/42') return Response.json(product);
     if (url.pathname === '/api/catalog') return Response.json(catalog());
     return new Response(null, { status: 204 });
@@ -129,8 +146,9 @@ test('home client keeps cursor pagination and resets it when searching', async (
   const calls = [];
   window.history.replaceState({}, '', '/?cursor=' + cursor);
   localStorage.setItem('catalog-browsing-mode', 'newcomer');
-  vi.stubGlobal('fetch', vi.fn(async input => {
+  vi.stubGlobal('fetch', vi.fn(async (input, options) => {
     const url = new URL(input, 'http://localhost');
+    if (url.pathname === '/api/assistant/status' && options?.method === 'GET') return Response.json({ enabled: false });
     if (url.pathname !== '/api/catalog') return new Response(null, { status: 204 });
     calls.push(url);
     const searching = Boolean(url.searchParams.get('q'));
@@ -158,8 +176,9 @@ test.each([503, 200])('completed quote loading with no visible offers clears the
     + JSON.stringify({ '@context': 'https://schema.org', '@type': 'Product', name: product.name,
       url: 'https://price.yufu.pub/products/42', offers: [{ '@type': 'Offer', price: '12.50', priceCurrency: 'CNY' }] }) + '</script>');
   window.history.replaceState({}, '', '/products/42');
-  vi.stubGlobal('fetch', vi.fn(async input => {
+  vi.stubGlobal('fetch', vi.fn(async (input, options) => {
     const url = new URL(input, 'http://localhost');
+    if (url.pathname === '/api/assistant/status' && options?.method === 'GET') return Response.json({ enabled: false });
     if (url.pathname === '/api/catalog/products/42') return Response.json(product);
     if (url.pathname === '/api/catalog') return status === 200 ? Response.json({ items: [], total: 0, platformFacets: [] }) : new Response(null, { status });
     return new Response(null, { status: 204 });

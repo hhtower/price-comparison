@@ -1,6 +1,6 @@
 import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { CACHE, type Cache } from '../cache/cache.js';
-import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQuery, type CatalogSort, type CatalogTag } from './catalog.repository.js';
+import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQuery, type CatalogSort, type CatalogTag, type PublicCatalogProduct, type PublicProductIdentity } from './catalog.repository.js';
 import { DomainValidationError } from '../common/errors.js';
 import { normalizePurchaseTag, parseCatalogSearch } from '@price-comparison/catalog/purchase-attributes';
 import { normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
@@ -141,6 +141,12 @@ export class CatalogService {
   ) {}
 
   getProducts() { return this.repository.publicProducts(); }
+
+  resolvePublicProductIdentity(identity: PublicProductIdentity): Promise<PublicCatalogProduct | null> {
+    if (!identity || ![identity.platform, identity.product, identity.tier]
+      .every(value => typeof value === 'string' && value.length > 0 && value.length <= 250)) return Promise.resolve(null);
+    return this.repository.resolvePublicProductIdentity(identity);
+  }
 
   getCoverage() {
     return this.cache.wrap('catalog:coverage:v1', () => this.repository.coverage(), 300_000);

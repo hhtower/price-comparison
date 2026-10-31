@@ -100,6 +100,24 @@ test('admin and API responses opt out of indexing', async t => {
   }
 });
 
+test('assistant direct refresh is private, independent from catalog and excluded from sitemap', async t => {
+  const server = setup(t, { getCatalog: async () => { throw new Error('must not query'); } });
+  const response = await server.inject('/assistant');
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['cache-control'], 'no-store');
+  assert.match(String(response.headers['x-robots-tag']), /noindex/);
+  const document = new JSDOM(response.body).window.document;
+  assert.match(document.title, /导购助手/);
+  assert.match(document.querySelector('meta[name="robots"]')!.getAttribute('content')!, /noindex/);
+  assert.equal(document.querySelector('link[rel="canonical"]')!.getAttribute('href'), 'https://price.yufu.pub/assistant');
+  assert.equal(document.querySelector('script[type="application/ld+json"]'), null);
+  assert.ok(document.querySelector('a[href="/guide"]'));
+  assert.doesNotMatch((await server.inject('/sitemap.xml')).body, /\/assistant/);
+  const redirect = await server.inject('/assistant/?utm_source=test');
+  assert.equal(redirect.statusCode, 308);
+  assert.equal(redirect.headers.location, '/assistant?utm_source=test');
+});
+
 test('trailing slashes redirect and unknown URLs retain real 404 status', async t => {
   const server = setup(t);
   for (const path of ['/tools/', '/admin/']) {

@@ -13,15 +13,17 @@ import { STANDARDIZATION_PROMPT_VERSION } from '../ai/standardization-request.js
 import { PIPELINE_VERSIONS } from '../ai/pipeline-versions.js';
 import { readCrawlerConfig } from '../config/env.js';
 import { readAiStandardizationFeatures } from '../ai/ai-standardization-features.js';
+import { claimAssistantTurns, completeAssistantTurn, failAssistantTurn, heartbeatAssistantTurn } from './assistant-queue.js';
 
 export const QUEUE_TABLES = {
   fetch_run: 'fetch_runs',
   ai_batch: 'ai_job_batches',
+  assistant_turn: 'assistant_turns',
 } as const;
 export type QueueKind = keyof typeof QUEUE_TABLES;
 
 /** Stable queue names used by the worker resource budget. */
-export type QueueName = 'fetch' | 'ai_standardization';
+export type QueueName = 'fetch' | 'ai_standardization' | 'assistant';
 
 export interface ClaimedJob {
   readonly kind: QueueKind;
@@ -36,6 +38,7 @@ export interface FailOptions {
   readonly retry?: boolean;
   readonly backoffMs?: number;
   readonly retryClass?: string | null;
+  readonly claimToken?: string;
 }
 
 async function fairFetchClaimIds(transaction: Transaction<DatabaseSchema>, limit: number): Promise<bigint[]> {
@@ -151,6 +154,7 @@ export class JobsRepository {
     if (!workerId.trim()) throw new Error('workerId is required');
     if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('limit must be positive');
     if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) throw new Error('leaseMs must be positive');
+    if (queue === 'assistant') return claimAssistantTurns(this.database, workerId, limit, leaseMs);
     const table = queue === 'fetch' ? 'fetch_runs' : 'ai_job_batches';
     const windowSize = queue === 'ai_standardization' ? readAiConcurrency() : 0;
     const parentFilter = queue === 'ai_standardization'
@@ -252,7 +256,7 @@ export class JobsRepository {
   }
 
   async claimNext(kind: QueueKind, workerId: string, leaseMs: number): Promise<ClaimedJob | null> {
-    return (await this.claimAvailable(kind === 'fetch_run' ? 'fetch' : 'ai_standardization', workerId, 1, leaseMs))[0] ?? null;
+    return (await this.claimAvailable(kind === 'assistant_turn' ? 'assistant' : kind === 'fetch_run' ? 'fetch' : 'ai_standardization', workerId, 1, leaseMs))[0] ?? null;
   }
 
   async queueDepth(kind: QueueKind): Promise<number> {
@@ -294,8 +298,9 @@ export class JobsRepository {
     };
   }
 
-  async heartbeat(kind: QueueKind, id: bigint, workerId: string, leaseMs = 30_000): Promise<void> {
+  async heartbeat(kind: QueueKind, id: bigint, workerId: string, leaseMs = 30_000, claimToken?: string): Promise<void> {
     if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new Error('leaseMs must be positive');
+    if (kind === 'assistant_turn') return heartbeatAssistantTurn(this.database, id, workerId, leaseMs, claimToken);
     const result = await sql`
       update ${sql.raw(QUEUE_TABLES[kind])}
       set lease_until = now() + (${leaseMs} * interval '1 millisecond')
@@ -305,6 +310,7 @@ export class JobsRepository {
   }
 
   async complete(kind: QueueKind, id: bigint, workerId: string): Promise<void> {
+    if (kind === 'assistant_turn') return completeAssistantTurn(this.database, id, workerId);
     if (kind === 'ai_batch') return this.completeStandardizationBatch(id, workerId);
     await this.database.transaction().execute(async (transaction) => {
       const result = await transaction.updateTable('fetch_runs')
@@ -345,6 +351,7 @@ export class JobsRepository {
   }
 
   async fail(kind: QueueKind, id: bigint, workerId: string, error: string, options: FailOptions = {}): Promise<void> {
+    if (kind === 'assistant_turn') return failAssistantTurn(this.database, id, workerId, error, options);
     const retry = options.retry ?? false;
     const backoffMs = Math.max(0, options.backoffMs ?? 0);
     if (kind === 'ai_batch') return this.failStandardizationBatch(id, workerId, error, options, backoffMs);
@@ -421,8 +428,8 @@ export class JobsRepository {
     });
   }
 
-  requeue(kind: QueueKind, id: bigint, workerId: string, backoffMs = 0): Promise<void> {
-    return this.fail(kind, id, workerId, 'requeued', { retry: true, retryClass: 'interrupted', backoffMs });
+  requeue(kind: QueueKind, id: bigint, workerId: string, backoffMs = 0, claimToken?: string): Promise<void> {
+    return this.fail(kind, id, workerId, 'requeued', { retry: true, retryClass: 'interrupted', backoffMs, claimToken });
   }
 
 }

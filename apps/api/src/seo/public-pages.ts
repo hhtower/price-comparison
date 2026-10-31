@@ -90,7 +90,7 @@ function toolsContent(): string {
 function renderPage(template: string, kind: PageKind, origin: string, content: string, unavailable = false,
   custom?: { readonly page: ReturnType<typeof productPageMetadata>; readonly schema?: Record<string, unknown> }): string {
   const page = custom?.page ?? PAGE_METADATA[kind];
-  const noindex = kind === 'admin' || unavailable;
+  const noindex = kind === 'admin' || kind === 'assistant' || unavailable;
   const canonical = origin + page.path;
   const schema = noindex ? null : custom?.schema ?? pageSchema(kind, origin, page);
   const metadata = '<meta name="description" content="' + escapeHtml(page.description) + '">'
@@ -123,7 +123,7 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
     '/api/catalog/products$', '/api/catalog/products?', '/api/catalog/products/', '/api/quality/catalog$'];
   server.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0]!;
-    if (/^\/(?:admin|api|v1)(?:\/|$)/u.test(path) || ['/metrics', '/ready', '/health'].includes(path)) {
+    if (/^\/(?:admin|assistant|api|v1)(?:\/|$)/u.test(path) || ['/metrics', '/ready', '/health'].includes(path)) {
       reply.header('X-Robots-Tag', 'noindex, nofollow');
     }
   });
@@ -207,7 +207,9 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
     .send(renderPage(options.template, 'tools', origin, toolsContent())));
   server.get('/admin', async (_request, reply) => reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-store')
     .send(renderPage(options.template, 'admin', origin, '<h1>管理端</h1><p>请启用 JavaScript 并登录。</p>')));
-  for (const path of ['/tools', '/admin', '/guide']) server.get(path + '/', async (request, reply) => {
+  server.get('/assistant', async (_request, reply) => reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-store')
+    .send(renderPage(options.template, 'assistant', origin, '<h1>导购助手</h1><p>启用 JavaScript 后查看服务状态并开始独立对话。</p><p><a href="/guide">查看选购指南</a> · <a href="/">返回商品列表</a></p>')));
+  for (const path of ['/tools', '/admin', '/guide', '/assistant']) server.get(path + '/', async (request, reply) => {
     const queryIndex = request.url.indexOf('?');
     return reply.code(308).redirect(path + (queryIndex < 0 ? '' : request.url.slice(queryIndex)));
   });

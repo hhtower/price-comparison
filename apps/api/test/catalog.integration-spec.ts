@@ -513,8 +513,8 @@ describe('catalog SQL read model', () => {
     await database.updateTable('standard_products').set({ name: 'openai / codex / sms', canonical_family: 'openai', canonical_product: 'codex', canonical_tier: 'sms' }).where('id', '=', standardOne).execute();
     await database.deleteFrom('offers').execute();
     assert.deepEqual(await repository.publicProducts(), { items: [
-      { id: String(standardOne), name: 'Codex 手机接码', platform: 'Alpha', kind: '手机接码' },
-      { id: String(standardTwo), name: 'Widget Two', platform: 'Alpha', kind: '其他' },
+      { id: String(standardOne), name: 'Codex 手机接码', platform: 'Alpha', platformGroup: 'other', kind: '手机接码' },
+      { id: String(standardTwo), name: 'Widget Two', platform: 'Alpha', platformGroup: 'other', kind: '其他' },
     ] });
     assert.equal((await repository.publicProduct(String(standardOne)))?.name, 'Codex 手机接码');
     await database.updateTable('standard_product_members').set({ publication_state: 'provisional' }).where('standard_product_id', '=', standardOne).execute();

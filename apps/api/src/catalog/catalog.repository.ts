@@ -13,8 +13,9 @@ import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './qu
 import { CATALOG_DISPLAY_SEARCH_LABELS, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { PriceHistoryRepository } from './price-history.repository.js';
 
-export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly kind: string; readonly mergedIntoId?: string }
+export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly kind: string; readonly mergedIntoId?: string }
 export interface PublicCatalogProducts { readonly items: readonly PublicCatalogProduct[] }
+export interface PublicProductIdentity { readonly platform: string; readonly product: string; readonly tier: string }
 export interface CatalogCoverage { readonly shopCount: number; readonly productCount: number }
 
 function publicStandard(alias: string): RawBuilder<boolean> {
@@ -25,8 +26,8 @@ function publicStandard(alias: string): RawBuilder<boolean> {
       and m.publication_state = 'published' and p.deleted_at is null and sh.deleted_at is null and sh.enabled = true)`;
 }
 
-function productMetadata(row: { id: string; name: string; platform: string; family: string | null; product: string | null; tier: string | null; merged_into_id: string | null }): PublicCatalogProduct {
-  return { id: row.id, name: standardProductDisplayName(row.name), platform: row.platform,
+function productMetadata(row: { id: string; name: string; platform: string; platform_group: string; family: string | null; product: string | null; tier: string | null; merged_into_id: string | null }): PublicCatalogProduct {
+  return { id: row.id, name: standardProductDisplayName(row.name), platform: row.platform, platformGroup: row.platform_group,
     kind: standardProductKind({ family: row.family ?? '', product: row.product ?? '', tier: row.tier ?? '' }),
     ...(row.merged_into_id ? { mergedIntoId: row.merged_into_id } : {}) };
 }
@@ -201,6 +202,7 @@ export class CatalogRepository {
 
   async publicProducts(): Promise<PublicCatalogProducts> {
     const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform,
+      ${catalogPlatformGroup()} as platform_group,
       sp.canonical_family as family, sp.canonical_product as product, sp.canonical_tier as tier, null::text as merged_into_id
       from standard_products sp where ${publicStandard('sp')} order by ${catalogOrderRank()}, sp.sort_order, sp.id limit 10001`.execute(this.database);
     // ponytail: bounded navigation; add cursor pagination if the public catalog exceeds 10000 products.
@@ -210,10 +212,22 @@ export class CatalogRepository {
 
   async publicProduct(id: string): Promise<PublicCatalogProduct | null> {
     const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform,
+      ${catalogPlatformGroup()} as platform_group,
       sp.canonical_family as family, sp.canonical_product as product, sp.canonical_tier as tier, sp.merged_into_id::text
       from standard_products sp where sp.id = ${id}::bigint and (${publicStandard('sp')}
         or (sp.merged_into_id is not null and exists (select 1 from standard_products target where target.id = sp.merged_into_id and ${publicStandard('target')})))`.execute(this.database);
     return result.rows[0] ? productMetadata(result.rows[0]) : null;
+  }
+
+  async resolvePublicProductIdentity(identity: PublicProductIdentity): Promise<PublicCatalogProduct | null> {
+    const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform,
+      ${catalogPlatformGroup()} as platform_group,
+      sp.canonical_family as family, sp.canonical_product as product, sp.canonical_tier as tier,
+      null::text as merged_into_id
+      from standard_products sp where sp.canonical_platform = ${identity.platform}
+        and sp.canonical_product = ${identity.product} and sp.canonical_tier = ${identity.tier}
+        and ${publicStandard('sp')} order by sp.id limit 2`.execute(this.database);
+    return result.rows.length === 1 ? productMetadata(result.rows[0]!) : null;
   }
 
   async search(input: CatalogQuery): Promise<CatalogPage> {

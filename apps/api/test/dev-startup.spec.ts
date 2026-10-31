@@ -40,3 +40,14 @@ test('已启用 AI 却缺少模型配置时阻止不完整的开发启动', () =
     assert.throws(() => createDevPlan({ ...configured, [key]: ' ' }), /AI_BASE_URL、AI_API_KEY 和 AI_MODEL/);
   }
 });
+
+test('导购助手可独立于商品标准化启动，默认不运行', () => {
+  const plan = createDevPlan({
+    AI_BASE_URL: 'http://127.0.0.1:9999/v1', AI_API_KEY: 'local-only',
+    ASSISTANT_ENABLED: 'true', ASSISTANT_MODEL: 'mock-assistant',
+  });
+  assert.deepEqual(plan.commands.map(command => command.name), ['api', 'web', 'assistant']);
+  assert.equal(plan.commands.at(-1)?.command, 'tsx watch apps/api/src/workers/assistant.worker.ts');
+  assert.match(plan.notice, /导购/u);
+  assert.throws(() => createDevPlan({ ASSISTANT_ENABLED: 'true' }), /ASSISTANT_MODEL/u);
+});

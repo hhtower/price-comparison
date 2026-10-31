@@ -1070,6 +1070,7 @@ function PublicCatalog({ productId }) {
         <div className="brand-block"><div className="public-brand-row"><Brand /><CatalogCoverage data={coverageQuery.data} /></div><p className="brand-disclaimer"><span>本站展示第三方商铺报价，信息仅供比较参考。价格、库存、商品内容及交易条件可能变化，请在下单前以商家页面的实际信息为准。</span><span>本站不参与交易，交易与售后请联系商家。发现价格不符、链接失效或可疑商品，可在对应报价下方举报。</span></p></div>
         <div className="public-header-actions">
           <a className="quality-tools-link" href="/tools">检测工具</a>
+          <a className="quality-tools-link" href="/assistant">导购助手 · 查看启用状态</a>
           <span className="community-links">
             <a className="community-trigger" href="https://github.com/hhtower/price-comparison" target="_blank" rel="noopener noreferrer" aria-label="GitHub 开源仓库">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">

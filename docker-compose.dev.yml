@@ -96,6 +96,14 @@ services:
       disable: true
     stop_grace_period: 90s
 
+  worker-assistant:
+    <<: *app
+    profiles: ["assistant"]
+    command: ["node", "dist/server/workers/assistant.worker.js"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s
+
 volumes:
   postgres-data:
   redis-data:

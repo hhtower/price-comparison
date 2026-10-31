@@ -40,6 +40,7 @@ import {
     { provide: APP_GUARD, useExisting: RateLimitGuard },
   ],
   exports: [
+    RATE_LIMIT_STORE,
     MetricsRegistry,
     MetricsService,
     StructuredLogger,

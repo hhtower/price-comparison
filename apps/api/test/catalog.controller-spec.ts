@@ -23,6 +23,16 @@ test('public product endpoints return metadata, preserve merges and return real 
   await assert.rejects(() => controller.getProducts(), error => (error as { getStatus(): number }).getStatus() === 503);
 });
 
+test('internal platform groups do not change the public product metadata response', async () => {
+  const product = { id: '42', name: '邮箱', platform: 'google', kind: '账号与订阅' };
+  const controller = new CatalogController({
+    getProducts: async () => ({ items: [{ ...product, platformGroup: 'email' }] }),
+    getProduct: async () => ({ ...product, platformGroup: 'email' }),
+  } as unknown as CatalogService);
+  assert.deepEqual(await controller.getProducts(), { items: [product] });
+  assert.deepEqual(await controller.getProduct('42'), product);
+});
+
 test('facet endpoint normalizes only filters and never fetches a product page', async () => {
   let actual: unknown;
   const facets = { tagFacets: [{ name: 'access', value: 'dedicated', priority: 1 }] };

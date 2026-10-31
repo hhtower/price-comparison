@@ -25,7 +25,7 @@ export function updatePageMetadata(kind, product, offers, pageNumber = 1) {
   // QualityToolsPage owns its active AI/IP tab title.
   if (kind !== 'tools') document.title = page.title;
   setMeta('name', 'description', page.description);
-  setMeta('name', 'robots', kind === 'admin' || kind === 'product-error' ? 'noindex, nofollow' : 'index, follow, max-image-preview:large');
+  setMeta('name', 'robots', kind === 'admin' || kind === 'assistant' || kind === 'product-error' ? 'noindex, nofollow' : 'index, follow, max-image-preview:large');
   for (const [name, value] of Object.entries({ 'og:type': product ? 'product' : 'website', 'og:locale': 'zh_CN', 'og:site_name': SITE_NAME,
     'og:title': page.title, 'og:description': page.description, 'og:url': canonical.href })) setMeta('property', name, value);
   setMeta('name', 'twitter:card', 'summary');

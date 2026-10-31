@@ -32,7 +32,10 @@ export class CatalogController {
 
   @Get('products')
   async getProducts() {
-    try { return await this.service.getProducts(); }
+    try {
+      const result = await this.service.getProducts();
+      return { ...result, items: result.items.map(({ platformGroup: _group, ...product }) => product) };
+    }
     catch (error) { throw new ServiceUnavailableException('商品目录暂时不可用', { cause: error }); }
   }
 
@@ -42,7 +45,8 @@ export class CatalogController {
       throw new ServiceUnavailableException('商品信息暂时不可用', { cause: error });
     });
     if (!product) throw new NotFoundException('商品不存在');
-    return product;
+    const { platformGroup: _group, ...publicProduct } = product;
+    return publicProduct;
   }
 
   @Get('products/:id/price-history')

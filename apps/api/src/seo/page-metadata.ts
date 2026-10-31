@@ -15,6 +15,7 @@ export const PAGE_METADATA = {
   },
   guide: { path: '/guide', title: '新手选购指南 - 知途 · 拾价', description: '给已有账号开通或续费，还是买一个账号使用？按自己的需求挑商品，用报价示例看懂独享共享、使用期限和售后范围，下单前问清费用与使用条件。' },
   admin: { path: '/admin', title: '知途 · 拾价 · 管理端', description: '知途 · 拾价管理端。' },
+  assistant: { path: '/assistant', title: '导购助手 - 知途 · 拾价', description: '说说你的用途和购买要求，通过独立对话了解选购条件与本站真实报价。' },
 } as const;
 export type PageKind = keyof typeof PAGE_METADATA;
 
@@ -65,7 +66,7 @@ export function productPageSchema(product: { readonly id: string; readonly name:
 }
 
 export function pageSchema(kind: PageKind, origin: string, page: { path: string; title: string; description: string } = PAGE_METADATA[kind]): Record<string, unknown> | null {
-  if (kind === 'admin') return null;
+  if (kind === 'admin' || kind === 'assistant') return null;
   return {
     '@context': 'https://schema.org',
     '@graph': [
