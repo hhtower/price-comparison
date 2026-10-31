@@ -30,7 +30,7 @@ beforeEach(() => {
   virtualListEvents.autoEndReached = false;
 });
 
-test('shows IP instead of Microsoft and Apple navigation and requests the IP product group', async () => {
+test('shows IP navigation, requests its product group and reports the active platform', async () => {
   const user = userEvent.setup();
   const calls = [];
   vi.stubGlobal('fetch', vi.fn(async input => {
@@ -40,13 +40,15 @@ test('shows IP instead of Microsoft and Apple navigation and requests the IP pro
     return jsonResponse({ total: 1, platformFacets: ['microsoft', 'apple', 'ip', 'email'], tagFacets: [],
       items: [{ id: 'ip-product', name: '住宅 IP', platform: 'network', offers: [] }] });
   }));
-  render(<PublicPage />);
+  const onPlatformChange = vi.fn();
+  render(<PublicPage onPlatformChange={onPlatformChange} />);
   await screen.findByRole('heading', { name: /住宅 IP/ });
   const tabs = within(screen.getByRole('group', { name: '商品平台' }));
   expect(tabs.queryByRole('button', { name: 'Microsoft' })).not.toBeInTheDocument();
   expect(tabs.queryByRole('button', { name: 'Apple' })).not.toBeInTheDocument();
   expect(tabs.getByRole('button', { name: '邮箱' })).toBeInTheDocument();
   await user.click(tabs.getByRole('button', { name: 'IP', exact: true }));
+  await waitFor(() => expect(onPlatformChange).toHaveBeenLastCalledWith('ip'));
   await waitFor(() => expect(calls.some(url => url.pathname === '/api/catalog' && url.searchParams.get('platform') === 'ip')).toBe(true));
   expect(tabs.getByRole('button', { name: 'IP', exact: true })).toHaveAttribute('aria-pressed', 'true');
 });

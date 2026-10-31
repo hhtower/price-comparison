@@ -53,7 +53,10 @@ test('launcher opens an accessible dialog and Escape collapses it with focus ret
   expect(api.createSession).not.toHaveBeenCalled();
   await act(async () => { fireEvent.click(launcher); });
   const dialog = await screen.findByRole('dialog', { name: '导购助手' });
-  await within(dialog).findByRole('textbox');
+  await within(dialog).findByRole('textbox', { name: '告诉助手你的需求' });
+  expect(within(dialog).getAllByRole('heading', { level: 1 })).toHaveLength(1);
+  expect(within(dialog).getByRole('heading', { name: '帮你选购' })).toBeVisible();
+  expect(within(dialog).queryByText('对话选项')).not.toBeInTheDocument();
   expect(screen.getByRole('textbox')).toHaveFocus();
   expect(launcher).toHaveAttribute('aria-expanded', 'true');
   fireEvent.keyDown(dialog, { key: 'Escape' });
@@ -68,7 +71,7 @@ test('collapse and reopen preserve runtime, draft and completed conversation', a
   render(<AssistantWidget api={api} />);
   const launcher = await screen.findByRole('button', { name: '打开导购助手' });
   await act(async () => { fireEvent.click(launcher); });
-  fireEvent.change(await screen.findByRole('textbox'), { target: { value: '读论文' } });
+  fireEvent.change(await screen.findByRole('textbox', { name: '告诉助手你的需求' }), { target: { value: '读论文' } });
   fireEvent.click(screen.getByRole('button', { name: '收起导购助手' }));
   fireEvent.click(launcher);
   expect(screen.getByRole('textbox')).toHaveValue('读论文');
@@ -95,7 +98,7 @@ test('collapsing inflight chat leaves its subscription alive and completion is v
   render(<AssistantWidget api={api} />);
   const launcher = await screen.findByRole('button', { name: '打开导购助手' });
   await act(async () => { fireEvent.click(launcher); });
-  fireEvent.change(await screen.findByRole('textbox'), { target: { value: '写代码' } });
+  fireEvent.change(await screen.findByRole('textbox', { name: '告诉助手你的需求' }), { target: { value: '写代码' } });
   fireEvent.click(screen.getByRole('button', { name: '发送' }));
   await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalled());
   fireEvent.click(screen.getByRole('button', { name: '收起导购助手' }));
@@ -117,7 +120,7 @@ test('mobile opens in the native modal top layer while desktop uses a nonmodal s
   const launcher = await screen.findByRole('button', { name: '打开导购助手' });
   await act(async () => { fireEvent.click(launcher); });
   const dialog = await screen.findByRole('dialog', { name: '导购助手' });
-  await within(dialog).findByRole('textbox');
+  await within(dialog).findByRole('textbox', { name: '告诉助手你的需求' });
   expect(screen.getByRole('textbox')).not.toHaveFocus();
   expect(dialog).toHaveAttribute('aria-modal', 'true');
   expect(modal).toHaveBeenCalled();
@@ -139,7 +142,7 @@ test('App mounts a single launcher on public routes and omits it on admin and st
   await screen.findByText('管理正文');
   window.history.pushState({}, '', '/assistant');
   fireEvent(window, new PopStateEvent('popstate'));
-  await screen.findByRole('heading', { name: '导购助手' });
+  await screen.findByRole('heading', { name: '帮你选购' });
   expect(screen.queryByRole('button', { name: '打开导购助手' })).not.toBeInTheDocument();
   view.unmount();
 });

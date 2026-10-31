@@ -4,7 +4,7 @@ import './assistant.css';
 
 const AssistantPage = lazy(() => import('./AssistantPage.jsx'));
 const MOBILE = '(max-width: 600px)';
-export default function AssistantWidget({ api = assistantApi }) {
+export default function AssistantWidget({ api = assistantApi, catalogPlatform }) {
   const [enabled, setEnabled] = useState(false);
   const [open, setOpen] = useState(false);
   const [visited, setVisited] = useState(false);
@@ -31,7 +31,7 @@ export default function AssistantWidget({ api = assistantApi }) {
     if (!open) { if (panel.open) panel.close(); return; }
     if (mobile) panel.showModal();
     else panel.show();
-    (mobile ? panel.querySelector('button') : panel.querySelector('textarea:not(:disabled)') ?? panel.querySelector('button'))?.focus({ preventScroll: true });
+    (mobile ? panel.querySelector('[aria-label="收起导购助手"]') : panel.querySelector('textarea:not(:disabled)') ?? panel.querySelector('[aria-label="收起导购助手"]'))?.focus({ preventScroll: true });
     return () => {
       if (panel.open) panel.close();
       launcher.current?.focus({ preventScroll: true });
@@ -58,11 +58,15 @@ export default function AssistantWidget({ api = assistantApi }) {
       onKeyDown={event => { if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
         event.preventDefault(); event.stopPropagation(); collapse();
       } }}>
-      <div className="assistant-widget-heading"><strong>导购助手</strong>
-        <button type="button" aria-label="收起导购助手" onClick={collapse}>收起 <span aria-hidden="true">↓</span></button></div>
       {/* Keep the runtime mounted while collapsed, including its draft and read subscription. */}
-      {visited && <Suspense fallback={<p role="status">正在加载导购助手…</p>}>
-        <AssistantPage api={api} embedded enabled focusInput={open && !mobile} onActivity={setActivity} />
+      {visited && <Suspense fallback={<div className="assistant-module-loading">
+        <button type="button" className="assistant-icon-button" aria-label="收起导购助手" title="收起" onClick={collapse}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+        </button>
+        <p role="status">正在加载…</p>
+      </div>}>
+        <AssistantPage api={api} embedded enabled focusInput={open && !mobile} onActivity={setActivity}
+          onCollapse={collapse} catalogPlatform={catalogPlatform} />
       </Suspense>}
     </dialog>
   </div>;

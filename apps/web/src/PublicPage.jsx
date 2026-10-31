@@ -795,7 +795,7 @@ const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDe
   return <Virtuoso useWindowScroll data={items} computeItemKey={catalogItemKey} itemContent={renderItem} endReached={onEndReached} totalListHeightChanged={onHeightChanged} increaseViewportBy={CATALOG_OVERSCAN} />;
 });
 
-function PublicCatalog({ productId }) {
+function PublicCatalog({ productId, onPlatformChange }) {
   usePageAnalytics('catalog');
   const requestedProductPage = publicPageNumber(new URLSearchParams(window.location.search).getAll('page'));
   const invalidProductPage = Boolean(productId && requestedProductPage === null);
@@ -809,6 +809,7 @@ function PublicCatalog({ productId }) {
   const [query, setQuery] = useState(initial.query);
   const [search, setSearch] = useState(initial.query);
   const [platform, setPlatform] = useState(initial.platform);
+  useEffect(() => { onPlatformChange?.(productId || platform === '全部' ? null : platform); }, [platform, productId, onPlatformChange]);
   const [sort, setSort] = useState(initial.sort);
   const [cursor, setCursor] = useState(initial.cursor);
   const [selectedProduct, setSelectedProduct] = useState(initial.product);
@@ -1136,10 +1137,10 @@ function PublicCatalog({ productId }) {
 }
 
 
-export default function PublicPage({ productId }) {
+export default function PublicPage({ productId, onPlatformChange }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: {
     staleTime: 30_000, gcTime: 300_000, retry: false, refetchOnWindowFocus: false,
   } } }));
   useEffect(() => () => client.clear(), [client]);
-  return <QueryClientProvider client={client}><PublicCatalog key={productId || 'catalog'} productId={productId} /></QueryClientProvider>;
+  return <QueryClientProvider client={client}><PublicCatalog key={productId || 'catalog'} productId={productId} onPlatformChange={onPlatformChange} /></QueryClientProvider>;
 }

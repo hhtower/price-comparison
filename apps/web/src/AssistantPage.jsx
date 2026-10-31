@@ -10,17 +10,12 @@ import Brand from './Brand.jsx';
 import { assistantApi, assistantListLink } from './assistant-api.js';
 import { displayPurchaseTagText } from './purchase-tag-values.js';
 import { formatMoney } from './money.js';
-import { CATALOG_PLATFORMS } from '@price-comparison/catalog/platform-groups';
+import { AssistantHeader, AssistantWelcome, AssistantPlatformChip, ASSISTANT_STARTERS, selectedAssistantPlatform } from './AssistantControls.jsx';
 import './assistant.css';
 
 const STORAGE_KEY = 'shopping-assistant';
 const ConversationContext = createContext(null);
 const PHASES = { queued: '正在排队', understanding: '正在理解需求', searching: '正在查找真实报价', explaining: '正在整理推荐依据' };
-const STARTERS = [
-  ['写代码用', '我想选适合写代码的 AI 商品'],
-  ['读论文用', '我想选适合读论文的 AI 商品'],
-  ['比较报价', '我想比较报价，目标商品是：'],
-];
 const PREFERENCES = { lower_price: '价格优先', simple_setup: '操作简单', longer_warranty: '质保优先' };
 
 function needsLabels(needs) {
@@ -98,7 +93,8 @@ function Message() {
   </MessagePrimitive.Root>;
 }
 
-function Conversation({ api, credentials, initialSession, onNew, locked, focusInput, onActivity, embedded }) {
+function Conversation({ api, credentials, initialSession, onNew, locked, focusInput, onActivity, embedded,
+  onCollapse, recognizeFilters, onRecognizeFilters, catalogPlatform, initialDraft, notice }) {
   const session = useRef(initialSession);
   const pending = useRef(null);
   const active = useRef(initialSession.turns.find(turn => !isTurnTerminal(turn.status)) ?? null);
@@ -114,9 +110,12 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
   const [phase, setPhase] = useState(active.current?.phase ?? '');
   const [needs, setNeeds] = useState(initialSession.needs);
   const [completed, setCompleted] = useState(null);
-  const [recognizeFilters, setRecognizeFilters] = useState(true);
+  const [started, setStarted] = useState(initialSession.turns.length > 0);
+  const [topic, setTopic] = useState(() => {
+    const text = initialSession.turns[0]?.inputText.split('\n').at(-1);
+    return ASSISTANT_STARTERS.includes(text) ? text : '';
+  });
   const input = useRef(null);
-  const menu = useRef(null);
 
   function acceptSnapshot(turn) {
     active.current = turn;
@@ -192,6 +191,13 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     },
   }), [api, credentials]);
   const runtime = useLocalRuntime(adapter, { initialMessages: historyMessages(initialSession), maxSteps: 1 });
+  const draftRestored = useRef(false);
+  useEffect(() => {
+    if (!draftRestored.current) {
+      draftRestored.current = true;
+      if (initialDraft) runtime.thread.composer.setText(initialDraft);
+    }
+  }, [runtime, initialDraft]);
   const importHistory = () => runtime.thread.import(ExportedMessageRepository.fromArray(historyMessages(session.current)));
   useEffect(() => runtime.thread.subscribe(() => {
     if (syncOnIdle.current && !runtime.thread.getState().isRunning) {
@@ -257,32 +263,27 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
   const blocked = busy || uncertain || locked;
   const link = assistantListLink(needs);
   const labels = needsLabels(needs);
+  const platform = recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null;
+  const purpose = needs.purpose || topic;
+  const title = purpose ? purpose === '比较报价' ? purpose : `${purpose}选购` : '帮你选购';
   const hasListFilters = Boolean(new URL(link.href, window.location.origin).searchParams.get('platform')
     || needs.requiredTags.length || needs.warrantyDaysMin);
-  function fillDraft(text) {
-    const draft = runtime.thread.composer.getState().text;
-    const next = draft ? draft + '\n' + text : text;
-    if (next.length > ASSISTANT_LIMITS.userTextMaxChars) {
-      setDraftError('最多 2,000 字，请先缩短草稿。');
-      input.current?.focus();
-      return;
-    }
-    setDraftError('');
-    runtime.thread.composer.setText(next);
-    input.current?.focus();
-  }
   function messageWithContext(text) {
     if (blocked || !text.trim()) return null;
-    const selected = embedded && recognizeFilters && window.location.pathname === '/'
-      ? new URLSearchParams(window.location.search).get('platform')?.trim().toLowerCase() : null;
-    const platform = CATALOG_PLATFORMS.find(item => item.id === selected || item.aliases.includes(selected));
-    const message = platform ? `当前页面筛选：${platform.label}\n${text}` : text;
+    const selected = recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null;
+    const message = selected ? `当前页面筛选：${selected.label}\n${text}` : text;
     if (message.length > ASSISTANT_LIMITS.userTextMaxChars) {
       setDraftError('包含筛选信息后最多 2,000 字，请缩短内容或取消识别当前筛选。');
       return null;
     }
     setDraftError('');
+    if (!started && ASSISTANT_STARTERS.includes(text)) setTopic(text);
+    setStarted(true);
     return message;
+  }
+  function sendOption(text) {
+    const message = messageWithContext(text);
+    if (message) runtime.thread.append({ role: 'user', content: [{ type: 'text', text: message }] });
   }
   function sendDraft(event) {
     event.preventDefault();
@@ -292,31 +293,14 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     runtime.thread.composer.send();
   }
   return <AssistantRuntimeProvider runtime={runtime}>
-    <ConversationContext.Provider value={{ blocked, sendOption: text => {
-      const message = messageWithContext(text);
-      if (message) runtime.thread.append({ role: 'user', content: [{ type: 'text', text: message }] });
-    } }}>
-      <div className="assistant-toolbar">
-        {labels.length > 0 && <div className="assistant-needs" aria-label="已确认条件">
-          <span>{labels.slice(0, 2).join(' · ')}</span>
-          {labels.length > 2 && <details><summary>+{labels.length - 2}</summary><p>{labels.slice(2).join(' · ')}</p></details>}
-        </div>}
-        <details className="assistant-menu" ref={menu}><summary>对话选项</summary>
-          <div>
-            <label><input type="checkbox" checked={recognizeFilters} disabled={blocked}
-              onChange={event => { setRecognizeFilters(event.target.checked); setDraftError(''); }} />识别当前筛选</label>
-            <button type="button" disabled={busy || stopping || locked} onClick={() => {
-              menu.current.open = false; onNew(menu.current.querySelector('summary'));
-            }}>清空对话</button>
-          </div>
-        </details>
-      </div>
-      <ThreadPrimitive.Root className="assistant-thread">
+    <ConversationContext.Provider value={{ blocked, sendOption }}>
+      <AssistantHeader title={title} labels={labels} recognizeFilters={recognizeFilters}
+        onRecognizeFilters={value => { onRecognizeFilters(value); setDraftError(''); }} blocked={blocked}
+        clearDisabled={busy || stopping || locked} onClear={onNew} onCollapse={onCollapse} />
+      {notice}
+      <ThreadPrimitive.Root className={'assistant-thread' + (!started ? ' assistant-thread-empty' : '')}>
+        {!started && <AssistantWelcome disabled={blocked} onStart={sendOption} />}
         <ThreadPrimitive.Viewport className="assistant-viewport" turnAnchor="top">
-          <ThreadPrimitive.Empty><div className="assistant-welcome"><h2>想选什么？</h2>
-            <div className="assistant-starters">{STARTERS.map(([label, text]) =>
-              <button type="button" key={label} disabled={blocked} onClick={() => fillDraft(text)}>{label}</button>)}</div>
-          </div></ThreadPrimitive.Empty>
           <ThreadPrimitive.Messages components={{ UserMessage: Message, AssistantMessage: Message }} />
         </ThreadPrimitive.Viewport>
         <div role="status" aria-live="polite" className="assistant-progress">{busy ? PHASES[phase] ?? '正在同步会话' : ''}</div>
@@ -325,8 +309,9 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
         {hasListFilters && <details className="assistant-list-link"><summary>浏览更多商品</summary>
           <a href={link.href}>按条件浏览商品</a><p>预算、用途与偏好未带入</p></details>}
         {draftError && <p role="alert" className="assistant-draft-error">{draftError}</p>}
+        <AssistantPlatformChip platform={platform} disabled={blocked} onRemove={() => onRecognizeFilters(false)} />
         <ComposerPrimitive.Root className="assistant-composer" onSubmit={sendDraft}>
-          <ComposerPrimitive.Input ref={input} aria-label="告诉助手你的需求" placeholder="用途、预算，或想买的商品…"
+          <ComposerPrimitive.Input ref={input} aria-label="告诉助手你的需求" placeholder={started ? '用途、预算，或想买的商品…' : '也可以直接说说你的需求…'}
             maxLength={ASSISTANT_LIMITS.userTextMaxChars} disabled={uncertain || locked} addAttachmentOnPaste={false}
             cancelOnEscape={false} unstable_focusOnRunStart={false} unstable_focusOnScrollToBottom={false}
             unstable_focusOnThreadSwitched={false}
@@ -344,12 +329,14 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
 }
 
 export default function AssistantPage({ api = assistantApi, embedded = false, enabled = false,
-  focusInput = !embedded && !window.matchMedia?.('(max-width: 600px)').matches, onActivity }) {
+  focusInput = !embedded && !window.matchMedia?.('(max-width: 600px)').matches, onActivity, onCollapse, catalogPlatform }) {
   const [state, setState] = useState({ loading: true });
   const [generation, setGeneration] = useState(0);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState('');
+  const [recognizeFilters, setRecognizeFilters] = useState(true);
+  const [connectingDraft, setConnectingDraft] = useState('');
   const cancelClear = useRef(null);
   const clearOpener = useRef(null);
   const credentials = useRef(null);
@@ -395,6 +382,8 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
       }
       sessionStorage.removeItem(STORAGE_KEY);
       credentials.current = null;
+      setConnectingDraft('');
+      setRecognizeFilters(true);
       setConfirmClear(false);
       setState({ loading: true });
       setGeneration(value => value + 1);
@@ -402,26 +391,46 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
     finally { setClearing(false); }
   }
   const Container = embedded ? 'div' : 'main';
-  return <Container className={'assistant-page' + (embedded ? ' assistant-embedded' : '')}>
-    {!embedded && <><header className="assistant-header"><Brand /><a href="/guide">选购指南</a></header>
-      <div className="assistant-heading"><h1>导购助手</h1></div></>}
-    {confirmClear && <section className="assistant-clear" aria-label="清空当前对话">
+  const onNew = opener => { clearOpener.current = opener; setConfirmClear(true); };
+  const confirmation = confirmClear && <section className="assistant-clear" aria-label="清空当前对话">
       <p>清空后无法恢复这段对话。</p>
       {clearError && <p role="alert">{clearError}</p>}
       <div><button ref={cancelClear} type="button" disabled={clearing} onClick={() => {
         setConfirmClear(false); setClearError('');
       }}>取消</button>
         <button type="button" disabled={clearing} onClick={() => void newConversation()}>{clearing ? '正在清空' : '确认清空'}</button></div>
-    </section>}
-    {state.loading ? <p role="status">正在连接导购服务…</p>
-      : state.session ? <Conversation key={generation} api={api} credentials={credentials.current} initialSession={state.session} embedded={embedded}
-        onNew={opener => { clearOpener.current = opener; setConfirmClear(true); }} locked={confirmClear || clearing} focusInput={focusInput && !confirmClear} onActivity={onActivity} />
-        : <section className="assistant-fallback">
-          <h2>{state.disabled ? '导购助手暂未启用' : '暂时无法连接导购助手'}</h2>
-          {state.error && <p role="alert">{state.error}</p>}
-          <a href="/guide">查看选购指南</a><a href="/">返回商品列表</a>
-          {state.error && <><button type="button" disabled={confirmClear} onClick={() => { setState({ loading: true }); setGeneration(value => value + 1); }}>重试连接</button>
-            <button type="button" disabled={confirmClear} onClick={event => { clearOpener.current = event.currentTarget; setConfirmClear(true); }}>清空对话</button></>}
-        </section>}
+    </section>;
+  return <Container className={'assistant-page' + (embedded ? ' assistant-embedded' : '')}>
+    {!embedded && <header className="assistant-header"><Brand /><a href="/guide">选购指南</a></header>}
+    {state.session ? <Conversation key={generation} api={api} credentials={credentials.current} initialSession={state.session} embedded={embedded}
+      onNew={onNew} locked={confirmClear || clearing} focusInput={focusInput && !confirmClear} onActivity={onActivity}
+      onCollapse={onCollapse} recognizeFilters={recognizeFilters} onRecognizeFilters={setRecognizeFilters}
+      catalogPlatform={catalogPlatform} initialDraft={connectingDraft} notice={confirmation} />
+      : <>
+        <AssistantHeader recognizeFilters={recognizeFilters} onRecognizeFilters={setRecognizeFilters}
+          blocked={confirmClear || clearing} clearDisabled={state.loading || confirmClear || clearing}
+          onClear={onNew} onCollapse={onCollapse} />
+        {confirmation}
+        {state.disabled ? <section className="assistant-fallback">
+          <h2>导购助手暂未启用</h2><a href="/guide">查看选购指南</a><a href="/">返回商品列表</a>
+        </section> : <div className="assistant-thread assistant-thread-empty">
+          <AssistantWelcome disabled />
+          {state.error && <div className="assistant-error">
+            <p role="alert">{state.error}</p>
+            <button type="button" disabled={confirmClear} onClick={() => {
+              setState({ loading: true }); setGeneration(value => value + 1);
+            }}>重试连接</button>
+          </div>}
+          <AssistantPlatformChip platform={recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null}
+            disabled={confirmClear || clearing} onRemove={() => setRecognizeFilters(false)} />
+          <div className="assistant-composer">
+            <textarea aria-label="先写下需求" placeholder="也可以直接说说你的需求…" rows={2}
+              maxLength={ASSISTANT_LIMITS.userTextMaxChars} value={connectingDraft} disabled={confirmClear || clearing}
+              onChange={event => setConnectingDraft(event.target.value)} />
+            <button type="button" aria-label="发送" disabled>{state.loading ? <span role="status">连接中</span> : '发送'}</button>
+          </div>
+          <p className="assistant-input-note">内容由AI生成，仅供参考</p>
+        </div>}
+      </>}
   </Container>;
 }

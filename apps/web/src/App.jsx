@@ -38,6 +38,7 @@ function currentRoute() {
 
 export default function App() {
   const [route, setRoute] = useState(currentRoute);
+  const [catalogPlatform, setCatalogPlatform] = useState(() => new URLSearchParams(window.location.search).get('platform'));
   useEffect(() => {
     const onPopState = () => setRoute(currentRoute());
     window.addEventListener('popstate', onPopState);
@@ -58,8 +59,8 @@ export default function App() {
   if (route === 'assistant') return <Suspense fallback={<main className="route-state" role="status">正在加载导购助手…</main>}><AssistantPage /></Suspense>;
   return <>
     {route === 'guide' ? <PurchaseGuidePage /> : route === 'tools' ? <QualityToolsPage />
-      : <PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} />}
+      : <PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} onPlatformChange={setCatalogPlatform} />}
     {route !== 'guide' && <OfficialReference />}
-    <AssistantWidget />
+    <AssistantWidget catalogPlatform={route === 'public' ? catalogPlatform : null} />
   </>;
 }
