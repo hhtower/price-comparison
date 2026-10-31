@@ -6,7 +6,29 @@ import {
   validateShoppingNeeds, validateTurnSnapshot,
   type AssistantReply, type TurnSnapshot,
 } from '@price-comparison/catalog/assistant-contract';
-import { applyNeedsPatch, parseUnderstanding } from '../src/assistant/assistant.schemas.js';
+import { applyNeedsPatch, parseUnderstanding, separateProductAttributes } from '../src/assistant/assistant.schemas.js';
+
+test('product attribute separation preserves constraints, deduplicates tags and never broadens an attribute-only request', () => {
+  const needs = { ...emptyShoppingNeeds(), product: 'ChatGPT Plus 代充 1个月 质保至少30天',
+    requiredTags: [{ name: 'delivery', value: 'top_up' }, { name: 'access', value: 'dedicated' }],
+    warrantyDaysMin: 60, budget: { amount: '80', currency: 'CNY', basis: 'purchase' as const } };
+  const before = structuredClone(needs);
+  const result = separateProductAttributes(needs);
+  assert.ok(result);
+  assert.equal(result.product, 'chatgpt plus');
+  assert.equal(result.warrantyDaysMin, 60);
+  assert.deepEqual(result.budget, needs.budget);
+  assert.deepEqual(result.requiredTags, [...needs.requiredTags,
+    { name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'period' }, { name: 'duration', value: '1 month' }]);
+  assert.deepEqual(needs, before);
+  for (const product of ['代充', 'ChatGPT Plus 代充 成品账号']) {
+    assert.equal(separateProductAttributes({ ...emptyShoppingNeeds(), product }), null);
+  }
+  for (const product of [undefined, 'ChatGPT Plus', 'ChatGPT 商业版', 'ChatGPT Pro 5x']) {
+    const plain = { ...emptyShoppingNeeds(), ...(product ? { product } : {}) };
+    assert.deepEqual(separateProductAttributes(plain), plain);
+  }
+});
 
 const sessionId = '12345678-1234-4234-8234-123456789abc';
 const clientMessageId = '22345678-1234-4234-8234-123456789abc';

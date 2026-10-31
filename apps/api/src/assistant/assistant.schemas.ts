@@ -3,6 +3,7 @@ import {
   emptyShoppingNeeds, validateAssistantInput, validateAssistantReply, validateNeedsPatch, validateShoppingNeeds,
   type NeedsPatch, type ShoppingNeeds, type Understanding,
 } from '@price-comparison/catalog/assistant-contract';
+import { parseCatalogSearch } from '@price-comparison/catalog/purchase-attributes';
 
 function invalid(field: string): never {
   throw new Error(`Invalid assistant understanding ${field}`);
@@ -64,4 +65,21 @@ export function parseUnderstanding(value: unknown, userText: string): Understand
 
 export function applyNeedsPatch(current: ShoppingNeeds, patch: NeedsPatch): ShoppingNeeds {
   return validateShoppingNeeds({ ...validateShoppingNeeds(current), ...validateNeedsPatch(patch) });
+}
+
+export function separateProductAttributes(needs: ShoppingNeeds): ShoppingNeeds | null {
+  if (!needs.product) return needs;
+  const parsed = parseCatalogSearch(needs.product);
+  if (!parsed.tags.length) return needs;
+  // An attribute-only phrase must not broaden the request to arbitrary products.
+  if (!parsed.text) return null;
+  const tags = [...needs.requiredTags, ...parsed.tags.filter(tag =>
+    !(parsed.warrantyDaysMin !== undefined && tag.name === 'warranty_days'))];
+  try {
+    return validateShoppingNeeds({ ...needs, product: parsed.text,
+      requiredTags: tags.filter((tag, index) => tags.findIndex(other => other.name === tag.name && other.value === tag.value) === index),
+      warrantyDaysMin: parsed.warrantyDaysMin === undefined ? needs.warrantyDaysMin
+        : Math.max(needs.warrantyDaysMin ?? 0, parsed.warrantyDaysMin),
+    });
+  } catch { return null; }
 }

@@ -87,6 +87,35 @@ test('sorts ties stably, deduplicates offers and returns at most three candidate
   assert.deepEqual(selectCandidates(candidates, { ...needs, platform: 'another' }, now), []);
 });
 
+test('explicit product matches standard names, never merchant names or offer marketing', () => {
+  const products = ['ChatGPT Go', 'ChatGPT Plus', 'ChatGPT Pro', 'Claude Pro', 'ChatGPT PlusPlus'];
+  const candidates = products.map((name, index) => ({
+    ...fixture(String(index + 1), { shop: 'PLUSAI', name: 'ChatGPT Plus / Go / Pro 充值' }),
+    standardProduct: { id: String(index + 1), name, platform: index === 3 ? 'anthropic' : 'openai', kind: 'subscription' },
+  }));
+  for (const product of ['ChatGPT Plus', 'gpt plus', 'ＰＬＵＳ', 'chatgpt-plus']) {
+    assert.deepEqual(selectCandidates(candidates, { ...needs, purpose: null, platform: 'openai', product }, now)
+      .map(candidate => candidate.standardProduct.name), ['ChatGPT Plus'], product);
+  }
+  assert.deepEqual(selectCandidates(candidates, { ...needs, purpose: null, product: 'Claude Pro' }, now)
+    .map(candidate => candidate.standardProduct.name), ['Claude Pro']);
+  assert.deepEqual(selectCandidates(candidates, { ...needs, purpose: null, product: 'ChatGPT Business' }, now), []);
+});
+
+test('explicit products also match canonical identities and standard aliases behind display names', () => {
+  const candidates = [
+    { ...fixture('1'), standardProduct: { id: '1', name: 'ChatGPT 商业版', platform: 'openai', kind: 'subscription',
+      identityNames: ['openai / chatgpt / business', 'ChatGPT 企业版'] } },
+    { ...fixture('2'), standardProduct: { id: '2', name: 'ChatGPT Pro 100', platform: 'openai', kind: 'subscription',
+      identityNames: ['ChatGPT Pro 5x', 'openai chatgpt pro_5x'] } },
+  ];
+  for (const [product, id] of [['ChatGPT Business', '1'], ['ChatGPT 企业版', '1'], ['ChatGPT Pro 5x', '2'], ['ChatGPT Pro 100', '2']]) {
+    assert.deepEqual(selectCandidates(candidates, { ...needs, purpose: null, product }, now)
+      .map(candidate => candidate.standardProduct.id), [id], product);
+  }
+  assert.deepEqual(selectCandidates(candidates, { ...needs, purpose: null, product: 'ChatGPT Plus' }, now), []);
+});
+
 test('beginner defaults pair warranty with top-up or ready accounts unless users specify otherwise', () => {
   const bare = fixture('1', { price: '1.00' });
   const topup = fixture('2', { tags: [...bare.offer.tags, { name: 'delivery', value: 'top_up' }] });

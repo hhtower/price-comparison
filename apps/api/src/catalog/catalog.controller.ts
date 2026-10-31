@@ -34,7 +34,7 @@ export class CatalogController {
   async getProducts() {
     try {
       const result = await this.service.getProducts();
-      return { ...result, items: result.items.map(({ platformGroup: _group, ...product }) => product) };
+      return { ...result, items: result.items.map(({ platformGroup: _group, identityNames: _names, ...product }) => product) };
     }
     catch (error) { throw new ServiceUnavailableException('商品目录暂时不可用', { cause: error }); }
   }
@@ -45,7 +45,7 @@ export class CatalogController {
       throw new ServiceUnavailableException('商品信息暂时不可用', { cause: error });
     });
     if (!product) throw new NotFoundException('商品不存在');
-    const { platformGroup: _group, ...publicProduct } = product;
+    const { platformGroup: _group, identityNames: _names, ...publicProduct } = product;
     return publicProduct;
   }
 

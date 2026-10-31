@@ -13,7 +13,7 @@ import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './qu
 import { CATALOG_DISPLAY_SEARCH_LABELS, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { PriceHistoryRepository } from './price-history.repository.js';
 
-export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly kind: string; readonly mergedIntoId?: string }
+export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly identityNames?: readonly string[]; readonly kind: string; readonly mergedIntoId?: string }
 export interface PublicCatalogProducts { readonly items: readonly PublicCatalogProduct[] }
 export interface PublicProductIdentity { readonly platform: string; readonly product: string; readonly tier: string }
 export interface CatalogCoverage { readonly shopCount: number; readonly productCount: number }
@@ -26,8 +26,9 @@ function publicStandard(alias: string): RawBuilder<boolean> {
       and m.publication_state = 'published' and p.deleted_at is null and sh.deleted_at is null and sh.enabled = true)`;
 }
 
-function productMetadata(row: { id: string; name: string; platform: string; platform_group: string; family: string | null; product: string | null; tier: string | null; merged_into_id: string | null }): PublicCatalogProduct {
+function productMetadata(row: { id: string; name: string; platform: string; platform_group: string; family: string | null; product: string | null; tier: string | null; aliases: string[]; merged_into_id: string | null }): PublicCatalogProduct {
   return { id: row.id, name: standardProductDisplayName(row.name), platform: row.platform, platformGroup: row.platform_group,
+    identityNames: [row.name, [row.family, row.product, row.tier].filter(Boolean).join(' '), ...row.aliases],
     kind: standardProductKind({ family: row.family ?? '', product: row.product ?? '', tier: row.tier ?? '' }),
     ...(row.merged_into_id ? { mergedIntoId: row.merged_into_id } : {}) };
 }
@@ -201,7 +202,7 @@ export class CatalogRepository {
   }
 
   async publicProducts(): Promise<PublicCatalogProducts> {
-    const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform,
+    const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform, sp.aliases,
       ${catalogPlatformGroup()} as platform_group,
       sp.canonical_family as family, sp.canonical_product as product, sp.canonical_tier as tier, null::text as merged_into_id
       from standard_products sp where ${publicStandard('sp')} order by ${catalogOrderRank()}, sp.sort_order, sp.id limit 10001`.execute(this.database);
@@ -211,7 +212,7 @@ export class CatalogRepository {
   }
 
   async publicProduct(id: string): Promise<PublicCatalogProduct | null> {
-    const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform,
+    const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform, sp.aliases,
       ${catalogPlatformGroup()} as platform_group,
       sp.canonical_family as family, sp.canonical_product as product, sp.canonical_tier as tier, sp.merged_into_id::text
       from standard_products sp where sp.id = ${id}::bigint and (${publicStandard('sp')}
@@ -220,7 +221,7 @@ export class CatalogRepository {
   }
 
   async resolvePublicProductIdentity(identity: PublicProductIdentity): Promise<PublicCatalogProduct | null> {
-    const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform,
+    const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform, sp.aliases,
       ${catalogPlatformGroup()} as platform_group,
       sp.canonical_family as family, sp.canonical_product as product, sp.canonical_tier as tier,
       null::text as merged_into_id

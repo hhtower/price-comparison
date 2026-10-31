@@ -88,12 +88,17 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
       const sample = await fixture(`group-${platformGroup}`);
       await database.updateTable('standard_products').set({
         canonical_platform: family, canonical_family: family, canonical_product: product, platform,
+        aliases: ['标准商品别名'],
       }).where('id', '=', sample.standard.id).execute();
       const identity = { ...sample.identity, platform: family, product };
       const resolved = await service.resolvePublicProductIdentity(identity);
       assert.equal(resolved?.platformGroup, platformGroup);
       assert.equal((await service.getProduct(String(sample.standard.id)))?.platformGroup, platformGroup);
       assert.equal((await service.getProducts()).items.find(item => item.id === String(sample.standard.id))?.platformGroup, platformGroup);
+      for (const metadata of [resolved, await service.getProduct(String(sample.standard.id)),
+        (await service.getProducts()).items.find(item => item.id === String(sample.standard.id))]) {
+        assert.deepEqual(metadata?.identityNames, ['Fictional product', `${family} ${product} pro`, '标准商品别名']);
+      }
       await database.insertInto('offers').values({
         product_id: sample.source.id, price: '10.00', settlement_price: '10.00',
         settlement_quantity: 1, settlement_total_amount: '10.00', currency: 'CNY',

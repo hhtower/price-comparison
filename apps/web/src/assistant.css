@@ -57,9 +57,8 @@
 .assistant-purchase-notes>summary{min-height:44px}
 .assistant-purchase-notes[open]{grid-column:1/-1}
 .assistant-card>.assistant-offer-details{grid-column:2;min-height:44px;font-size:13px;font-weight:650;border:0;padding:8px 0;background:transparent}
-.assistant-card>.offer-facts,.assistant-card-reasons,.assistant-card>.assistant-offer-shop,.assistant-card>.assistant-offer-name{grid-column:1/-1}
+.assistant-card>.offer-facts,.assistant-card-reasons,.assistant-card>.assistant-offer-shop{grid-column:1/-1}
 .assistant-card>.assistant-offer-shop{font-size:12px;color:var(--assistant-muted);margin:4px 0}
-.assistant-card>.assistant-offer-name{font-size:13px;margin:0 0 8px}
 .assistant-card-reasons{margin:10px 0 0;padding-left:18px;font-size:12px;color:var(--assistant-muted)}
 .assistant-card .offer-facts{min-width:0}
 .assistant-quote-note{font-size:12px;color:var(--assistant-muted)}

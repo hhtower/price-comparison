@@ -43,6 +43,19 @@ function matchesPlatform(product: PublicCatalogProduct, requested: string): bool
     : product.platform.trim().toLowerCase() === platform;
 }
 
+export function matchesRequestedProduct(product: PublicCatalogProduct, needs: ShoppingNeeds): boolean {
+  if (needs.platform && !matchesPlatform(product, needs.platform)) return false;
+  if (!needs.product) return true;
+  const words = (text: string) => text.normalize('NFKC').toLowerCase().replace(/\bgpt\b/gu, 'chatgpt')
+    .split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const requested = words(needs.product);
+  // Only standard identities establish product matches, never merchant names or offer marketing.
+  return requested.length > 0 && [product.name, ...product.identityNames ?? []].some(name => {
+    const terms = words(name);
+    return requested.every(word => terms.includes(word));
+  });
+}
+
 function money(value: string | null): bigint | undefined {
   if (value === null || !/^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$/u.test(value)) return undefined;
   const [whole, decimal = ''] = value.split('.');
@@ -74,7 +87,7 @@ export function selectCandidates(candidates: AssistantCandidate[], needs: Shoppi
       || offer.tags.some(tag => tag.name === 'minimum_quantity' && tag.value !== '1')
       || !(Date.parse(offer.priceExpiresAt ?? '') > now.getTime())
       || !(Date.parse(offer.inventoryExpiresAt ?? '') > now.getTime())
-      || (needs.platform && !matchesPlatform(standardProduct, needs.platform))
+      || !matchesRequestedProduct(standardProduct, needs)
       || !needs.requiredTags.every(required => required.value !== 'unknown' && tag(candidate, required.name) === required.value)
       || (needs.warrantyDaysMin !== null && (warrantyDays(candidate) ?? -1) < needs.warrantyDaysMin)) return [];
     if (needs.budget) {

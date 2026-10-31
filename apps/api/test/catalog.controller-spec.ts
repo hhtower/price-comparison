@@ -23,11 +23,11 @@ test('public product endpoints return metadata, preserve merges and return real 
   await assert.rejects(() => controller.getProducts(), error => (error as { getStatus(): number }).getStatus() === 503);
 });
 
-test('internal platform groups do not change the public product metadata response', async () => {
+test('internal platform groups and identity names do not change the public product metadata response', async () => {
   const product = { id: '42', name: '邮箱', platform: 'google', kind: '账号与订阅' };
   const controller = new CatalogController({
-    getProducts: async () => ({ items: [{ ...product, platformGroup: 'email' }] }),
-    getProduct: async () => ({ ...product, platformGroup: 'email' }),
+    getProducts: async () => ({ items: [{ ...product, platformGroup: 'email', identityNames: ['google mail'] }] }),
+    getProduct: async () => ({ ...product, platformGroup: 'email', identityNames: ['google mail'] }),
   } as unknown as CatalogService);
   assert.deepEqual(await controller.getProducts(), { items: [product] });
   assert.deepEqual(await controller.getProduct('42'), product);

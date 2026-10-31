@@ -155,8 +155,8 @@ test('follow-up product selection preserves budget and purpose while browsing th
     }),
   ], '我想购买gpt plus，你觉得哪些适合我呢？', needs, {
     ...fixture.catalog, resolvePublicProductIdentity: async () => null, getProduct: async () => product,
+    getProducts: async () => ({ items: [product] }),
     getCatalog: async query => {
-      assert.equal(query.q, 'ChatGPT Plus');
       assert.equal(query.platform, 'openai');
       return fixture.catalog.getCatalog!(query);
     },
@@ -168,6 +168,106 @@ test('follow-up product selection preserves budget and purpose while browsing th
   assert.equal(state.saved?.text, '找到以下报价。');
   assert.match(state.saved?.cards[0]?.caveats.join(' ') ?? '', /报价/u);
   assert.equal(state.saved?.cards[0]?.offer?.shop, '测试商铺');
+});
+
+test('a correction to Plus finds the standard product beyond unrelated search hits and preserves other needs', async () => {
+  const fixture = shoppingFixture();
+  const go = { id: '1', name: 'ChatGPT Go', platform: 'openai', kind: '订阅' };
+  const plus = { ...go, id: '42', name: 'ChatGPT Plus' };
+  const needs = { ...fixture.needs, platform: 'openai', product: 'ChatGPT Go',
+    budget: { amount: '80', currency: 'CNY', basis: 'purchase' as const } };
+  const state = harness([
+    { intent: 'recommend', patch: { product: 'ChatGPT Plus' },
+      evidence: [{ field: 'product', quote: '我要的是plus' }], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
+      selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+    }),
+  ], '我要的是plus', needs, {
+    ...fixture.catalog,
+    getProducts: async () => ({ items: [go, ...Array.from({ length: 5 }, (_, i) => ({ ...go, id: String(i + 2) })), plus] }),
+    getProduct: async id => id === '42' ? plus : { ...go, id },
+    getCatalog: async query => ({ total: 1, platformFacets: [], items: [{
+      ...(query.standardProductId === '42' ? plus : go), standardProductId: query.standardProductId ?? '1',
+      shopCount: 1, productCount: 1, minPrice: '30.00',
+      offers: [{ ...fixture.offer, shop: 'PLUSAI', name: 'Go会员官方直冲' }],
+    }] }),
+  });
+  await state.run();
+  assert.equal(state.saved?.kind, 'recommendation');
+  assert.deepEqual(state.saved?.cards.map(card => card.title), ['ChatGPT Plus']);
+  assert.deepEqual(state.saved?.needs, { ...needs, product: 'ChatGPT Plus' });
+});
+
+for (const resumed of [false, true]) test(`Plus top-up separates delivery from the product name (${resumed ? 'existing needs' : 'observed model output'})`, async () => {
+  const fixture = shoppingFixture();
+  const product = { id: '42', name: 'ChatGPT Plus', platform: 'openai', kind: '订阅' };
+  const topup = { ...fixture.offer, productId: '10', tags: [...fixture.offer.tags, { name: 'delivery', value: 'top_up' }] };
+  const account = { ...fixture.offer, price: '1.00', tags: [...fixture.offer.tags, { name: 'delivery', value: 'account' }] };
+  const initial = { ...emptyShoppingNeeds(), ...(resumed ? { platform: 'openai', product: 'ChatGPT Plus 代充',
+    budget: { amount: '80', currency: 'CNY', basis: 'purchase' as const } } : {}) };
+  const state = harness([
+    { intent: 'recommend', patch: resumed ? {} : { platform: 'openai', product: 'ChatGPT Plus 代充' },
+      evidence: resumed ? [] : [{ field: 'platform', quote: 'gpt' }, { field: 'product', quote: 'plus代充' }], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
+      selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+    }),
+  ], resumed ? '继续帮我找' : '我现在有一个gpt账号了，想要找一个plus代充', initial, {
+    getProducts: async () => ({ items: [product, { ...product, id: '43', name: 'ChatGPT Go' }] }),
+    getProduct: async () => product,
+    getCatalog: async query => {
+      assert.equal(query.standardProductId, '42');
+      assert.deepEqual(query.tags, [{ name: 'delivery', value: 'top_up' }]);
+      return { total: 1, platformFacets: [], items: [{ ...product, standardProductId: '42', shopCount: 1,
+        productCount: 2, minPrice: '1.00', offers: [account, topup] }] };
+    },
+  });
+  await state.run();
+  assert.equal(state.saved?.kind, 'recommendation');
+  assert.deepEqual(state.saved?.cards.map(card => card.productId), ['10']);
+  assert.deepEqual(state.saved?.needs, { ...initial, platform: 'openai', product: 'chatgpt plus',
+    requiredTags: [{ name: 'delivery', value: 'top_up' }] });
+});
+
+for (const clearsTags of [false, true]) test(`follow-ups retain delivery from previous product names (clears tags: ${clearsTags})`, async () => {
+  const needs = { ...emptyShoppingNeeds(), platform: 'openai', product: 'ChatGPT Plus 代充' };
+  const state = harness([
+    { intent: 'recommend', patch: { product: 'ChatGPT Plus', ...(clearsTags ? { requiredTags: [] } : {}) },
+      evidence: [{ field: 'product', quote: 'Plus' }, ...(clearsTags ? [{ field: 'requiredTags', quote: '再找一个' }] : [])],
+      question: null, options: [] },
+  ], 'Plus，再找一个', needs);
+  await state.run();
+  assert.equal(state.saved?.kind, clearsTags ? 'question' : 'no_match');
+  assert.deepEqual(state.saved?.needs.requiredTags, [{ name: 'delivery', value: 'top_up' }]);
+});
+
+test('delivery embedded in product names cannot override an existing conflicting requirement', async () => {
+  const needs = { ...emptyShoppingNeeds(), platform: 'openai', product: 'ChatGPT Plus 代充',
+    requiredTags: [{ name: 'delivery', value: 'account' }] };
+  const state = harness([{ intent: 'recommend', patch: {}, evidence: [], question: null, options: [] }], '继续找', needs, {
+    getProducts: async () => { throw new Error('conflicting requirements must be clarified'); },
+  });
+  await state.run();
+  assert.equal(state.saved?.kind, 'question');
+  assert.deepEqual(state.saved?.needs, needs);
+  assert.equal(state.calls, 1);
+});
+
+test('unavailable Plus never falls back to a Go quote from PLUSAI', async () => {
+  const fixture = shoppingFixture();
+  const go = { id: '42', name: 'ChatGPT Go', platform: 'openai', kind: '订阅' };
+  const state = harness([{ intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
+      selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+    })],
+    '继续推荐', { ...emptyShoppingNeeds(), platform: 'openai', product: 'ChatGPT Plus' }, {
+      ...fixture.catalog, getProducts: async () => ({ items: [go] }), getProduct: async () => go,
+    });
+  await state.run();
+  assert.equal(state.saved?.kind, 'no_match');
+  assert.equal(state.saved?.cards.length, 0);
+  assert.equal(state.saved?.needs.product, 'ChatGPT Plus');
+  assert.equal(state.saved?.text, '暂时没找到符合要求的报价。');
+  assert.equal(state.calls, 1);
 });
 
 test('platform-only browsing reloads authoritative catalog groups instead of guessing from the vendor name', async () => {
@@ -275,6 +375,24 @@ test('a standard product changed to another tier during explanation loses its or
   await state.run();
   assert.equal(state.saved?.kind, 'no_match');
   assert.equal(state.saved?.cards.length, 0);
+  assert.equal(state.calls, 2);
+});
+
+test('a requested Plus product changed to Go during explanation is removed before replying', async () => {
+  const fixture = shoppingFixture();
+  const product = { id: '42', name: 'ChatGPT Plus', platform: 'openai', kind: '订阅' };
+  const state = harness([
+    { intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => {
+      product.name = 'ChatGPT Go';
+      return { selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }] };
+    },
+  ], '请推荐', { ...emptyShoppingNeeds(), platform: 'openai', product: 'ChatGPT Plus' }, {
+    ...fixture.catalog, getProducts: async () => ({ items: [product] }), getProduct: async () => product,
+  });
+  await state.run();
+  assert.equal(state.saved?.kind, 'no_match');
+  assert.deepEqual(state.saved?.cards, []);
   assert.equal(state.calls, 2);
 });
 

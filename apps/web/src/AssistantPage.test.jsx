@@ -45,6 +45,8 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
     needs: emptyShoppingNeeds(), turns: [{ ...done, reply: result }] })) })} />);
   const buttons = await screen.findAllByRole('button', { name: '查看报价详情' });
   expect(screen.queryByRole('link', { name: /查看商品详情/ })).not.toBeInTheDocument();
+  expect(screen.getAllByRole('heading', { name: 'ChatGPT Plus' })).toHaveLength(2);
+  for (const card of cards) expect(screen.queryByText(card.offer.name)).not.toBeInTheDocument();
   for (const [index, button] of buttons.entries()) {
     button.focus(); fireEvent.click(button);
     const dialog = screen.getByRole('dialog', { name: cards[index].offer.name });
@@ -199,7 +201,7 @@ test.each(['recommendation', 'comparison'])('refresh restores compact %s cards a
   expect(screen.getByText('写代码', { selector: 'span' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /查看报价详情/ })).toBeVisible();
   expect(screen.getByText(/¥49/)).toBeInTheDocument();
-  expect(screen.getByText('月度订阅')).toBeVisible();
+  expect(screen.queryByText('月度订阅')).not.toBeInTheDocument();
   expect(screen.queryByText('完整规格描述')).not.toBeInTheDocument();
   expect(screen.getByText('下单前确认库存')).not.toBeVisible();
   expect(screen.getByText('报价已过期，请重新核对')).toBeVisible();

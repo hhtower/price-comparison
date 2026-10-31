@@ -7,9 +7,9 @@ import type { CatalogService } from '../catalog/catalog.service.js';
 import type { PublicCatalogProduct } from '../catalog/catalog.repository.js';
 import type { ClaimedJob } from '../jobs/jobs.repository.js';
 import { AssistantRepository } from './assistant.repository.js';
-import { applyNeedsPatch, parseUnderstanding } from './assistant.schemas.js';
+import { applyNeedsPatch, parseUnderstanding, separateProductAttributes } from './assistant.schemas.js';
 import { selectCapabilities } from './assistant-capabilities.js';
-import { candidateEvidence, selectCandidates, type AssistantCandidate } from './assistant-candidates.js';
+import { candidateEvidence, matchesRequestedProduct, selectCandidates, type AssistantCandidate } from './assistant-candidates.js';
 
 const failure = (code: string) => Object.assign(new Error(code), { retryClass: 'invalid_response', retryable: false });
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
@@ -20,8 +20,11 @@ const understandingPrompt = `你是本站导购的需求理解步骤。只输出
 patch只允许purpose、platform、product、budget、requiredTags、warrantyDaysMin、preferences。
 platform仅表示用户指定的平台，规范值映射：ChatGPT/Codex=openai，Claude=anthropic，Gemini=google，YouTube=youtube，Grok/Cursor=xai，邮箱=email，IP代理=ip；不从用途推断平台。
 purpose、platform、product为字符串或null；product是用户明确指定的商品/套餐检索名，如gpt plus规范为ChatGPT Plus，同时platform=openai。购买商品不是用途，不用它覆盖已有purpose。用户改选平台时同步更新或明确清除旧product。
+用户纠正套餐（如“我要的是plus”）时，结合已有平台和商品将product改为对应完整套餐名，保留其他要求；Plus、Go、Pro是不同套餐，不能互换。不确定属于哪个产品时先澄清。
 pagePlatform是页面筛选的默认平台，用户明确指定的平台或商品优先；未提及的已确认需求、预算、用途继续保留。budget为{amount:"两位小数金额",currency:"三位大写币种",basis:"purchase或month"}或null。
 requiredTags为[{name,value}]，独享是access=dedicated，共享是access=shared；未提到字段保留，数组出现则整体替换，null/[]表示用户明确撤销。
+product只放商品/套餐名，代充、成品账号、兑换码、时长、质保等购买条件放入requiredTags或warrantyDaysMin，不能拼进product。代充=delivery:top_up，成品账号=delivery:account，兑换码=delivery:redemption。
+例如“我现在有一个gpt账号了，想要找一个plus代充”：intent=recommend，product="ChatGPT Plus"，platform="openai"，requiredTags增加{"name":"delivery","value":"top_up"}并保留已有条件。已有账号是用户现状，不是要买成品账号；未提及预算、时长、质保或独享，不得补设要求。
 preferences只能是lower_price、simple_setup、longer_warranty。用途是目的，硬要求必须明确，便宜一点/省心/新手是偏好，不能替用户设预算、独享或30天质保。
 每个patch字段必须有来自本轮原文的evidence，不要从模型常识推断平台、要求或产品能力。不得静默删除已有硬要求；改口/放宽需明确引用。
 信息不足或冲突时intent=clarify，只问一个问题，并给最多4个简短可选答案。只有clarify有question，其他intent的question=null且options=[]。
@@ -72,13 +75,14 @@ export class AssistantService {
     try {
       const pagePlatform = CATALOG_PLATFORMS.find(platform => context.snapshot.inputText.startsWith(`当前页面筛选：${platform.label}\n`));
       const userText = pagePlatform ? context.snapshot.inputText.slice(context.snapshot.inputText.indexOf('\n') + 1) : context.snapshot.inputText;
-      const currentNeeds = pagePlatform && !context.needs.platform && !context.needs.product
-        ? { ...context.needs, platform: pagePlatform.id } : context.needs;
+      const savedNeeds = separateProductAttributes(context.needs) ?? context.needs;
+      const currentNeeds = pagePlatform && !savedNeeds.platform && !savedNeeds.product
+        ? { ...savedNeeds, platform: pagePlatform.id } : savedNeeds;
       // Quote detail snapshots belong in the UI; keep conversation context focused on needs and decisions.
       const history = context.history.map(turn => ({ ...turn, reply: { ...turn.reply,
         cards: turn.reply.cards.map(({ offer: _offer, ...card }) => card) } }));
-      while (history.length && bytes({ needs: context.needs, history }) > ASSISTANT_LIMITS.contextMaxBytes) history.shift();
-      if (bytes({ needs: context.needs, history }) > ASSISTANT_LIMITS.contextMaxBytes) throw failure('INPUT_TOO_LARGE');
+      while (history.length && bytes({ needs: currentNeeds, history }) > ASSISTANT_LIMITS.contextMaxBytes) history.shift();
+      if (bytes({ needs: currentNeeds, history }) > ASSISTANT_LIMITS.contextMaxBytes) throw failure('INPUT_TOO_LARGE');
       await this.repository.setPhase(id, job.claimed_by, claim, 'understanding');
       const tagVocabulary = Object.fromEntries(Object.entries(PRODUCT_TAG_RULES).map(([name, rule]) => [
         name, 'values' in rule ? rule.values : 'pattern' in rule ? rule.pattern : 'text',
@@ -89,11 +93,15 @@ export class AssistantService {
       let understanding;
       try { understanding = parseUnderstanding(raw, userText); }
       catch { throw failure('MODEL_INVALID_RESPONSE'); }
-      const confirmationNeeded = this.removesRequirementWithoutConsent(context.needs, understanding);
-      const needs = confirmationNeeded ? currentNeeds : applyNeedsPatch(currentNeeds, understanding.patch);
+      const confirmationNeeded = this.removesRequirementWithoutConsent(savedNeeds, understanding);
+      const patchedNeeds = confirmationNeeded ? currentNeeds : applyNeedsPatch(currentNeeds, understanding.patch);
+      const separatedNeeds = confirmationNeeded ? patchedNeeds : separateProductAttributes(patchedNeeds);
+      const needs = separatedNeeds ?? patchedNeeds;
       let reply: AssistantReply;
       if (confirmationNeeded) {
         reply = this.reply('question', '你是希望放宽之前的购买要求吗？确认前我会保留已有要求。', needs, ['保留原要求', '我来说明要调整的要求']);
+      } else if (!separatedNeeds) {
+        reply = this.reply('question', '请确认想买的商品和购买方式。', needs);
       } else if (understanding.intent === 'clarify') {
         reply = this.reply('question', understanding.question!, needs, understanding.options);
       } else if (understanding.intent === 'explain' && this.explainConcept(userText)) {
@@ -107,10 +115,10 @@ export class AssistantService {
           : await this.findCandidates(needs, understanding.intent === 'compare' ? previous.map(card => card.standardProductId) : []);
         if (!candidates.length) {
           reply = this.reply('no_match', understanding.intent === 'compare' && !previous.length
-            ? '当前可用历史里没有可比较的候选。可以先让我按你的需求推荐商品，再比较它们的区别。'
+            ? '还没有可比较的商品，请先查找商品。'
             : needs.purpose && !needs.platform && !needs.product && !selectCapabilities(needs.purpose, this.now()).length
-            ? '目前没有足够的已核验资料来判断这一用途适合哪些产品。可以告诉我具体平台，或先查看选购指南；我不会用未核实的能力作推荐。'
-            : '本次查询范围内暂无符合要求的单件有效报价。当前要求保持不变；可以明确调整预算或其他要求，或去商品列表查看更多。月预算暂只比较明确一个月的商品，批量起购、期限不明或过期报价不参与推荐。',
+            ? '暂时无法判断哪些商品适合这个用途，请告诉我想买的商品。'
+            : '暂时没找到符合要求的报价。',
           needs);
         } else {
           await this.repository.setPhase(id, job.claimed_by, claim, 'explaining');
@@ -135,7 +143,7 @@ export class AssistantService {
             return explanation.evidenceIds.every(id => evidence.some(item => item.id === id))
               ? [this.card(candidate, explanation)] : [];
           });
-          if (!reply.cards.length) reply = this.reply('no_match', '候选报价在查询期间已失效，请重新查询。你的要求保持不变。', needs);
+          if (!reply.cards.length) reply = this.reply('no_match', '报价已失效，请重新查询。', needs);
         }
       }
       signal.throwIfAborted();
@@ -184,6 +192,8 @@ export class AssistantService {
     if (previousIds.length) {
       products = (await Promise.all([...new Set(previousIds)].slice(0, 5).map(id => this.catalog.getProduct(id))))
         .filter((product): product is PublicCatalogProduct => Boolean(product));
+    } else if (needs.product) {
+      products = (await this.catalog.getProducts()).items.filter(product => matchesRequestedProduct(product, needs));
     } else if (evidence.length && !needs.platform && !needs.product) {
       products = resolved.map(item => item.product)
         .filter((product): product is PublicCatalogProduct => Boolean(product));
@@ -194,11 +204,12 @@ export class AssistantService {
       products = (await Promise.all(page.items.slice(0, 5).map(item => this.catalog.getProduct(item.id))))
         .filter((product): product is PublicCatalogProduct => Boolean(product));
     }
-    products = products.filter((product, index, all) => all.findIndex(item => item.id === product.id) === index).slice(0, 5);
+    products = products.filter((product, index, all) => matchesRequestedProduct(product, needs)
+      && all.findIndex(item => item.id === product.id) === index).slice(0, 5);
     const candidates: AssistantCandidate[] = [];
     for (const product of products) {
       const page = await this.catalog.getCatalog({
-        standardProductId: product.id, q: needs.product ?? undefined, platform: needs.platform ?? undefined, tags: needs.requiredTags,
+        standardProductId: product.id, platform: needs.platform ?? undefined, tags: needs.requiredTags,
         priceMax: needs.budget?.amount, currency: needs.budget?.currency ?? 'CNY',
         warrantyDaysMin: needs.warrantyDaysMin ?? undefined,
         detailKind: 'offers', detailPage: 0, detailPageSize: 20, offerSort: 'price', limit: 1,
@@ -219,13 +230,13 @@ export class AssistantService {
     const refreshed: AssistantCandidate[] = [];
     for (const candidate of candidates) {
       const product = await this.catalog.getProduct(candidate.standardProduct.id);
-      if (!product || product.mergedIntoId) continue;
+      if (!product || product.mergedIntoId || !matchesRequestedProduct(product, needs)) continue;
       const resolvedEvidence = await Promise.all(candidate.capabilityEvidence.map(async evidence => ({
         evidence, product: await this.catalog.resolvePublicProductIdentity(evidence.identity),
       })));
       const page = await this.catalog.getCatalog({
         standardProductId: candidate.standardProduct.id, shopId: candidate.offer.shopId,
-        q: needs.product ?? undefined, platform: needs.platform ?? undefined,
+        platform: needs.platform ?? undefined,
         tags: needs.requiredTags, priceMax: needs.budget?.amount, currency: needs.budget?.currency ?? 'CNY',
         warrantyDaysMin: needs.warrantyDaysMin ?? undefined,
         detailKind: 'offers', detailPage: 0, detailPageSize: 20, offerSort: 'price', limit: 1,

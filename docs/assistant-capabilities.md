@@ -50,6 +50,15 @@ listing. No live catalog database was consulted during source verification.
   field in repository/service metadata; `CatalogController` must strip it from
   public HTTP responses to preserve the existing API shape.
 - `AssistantCandidate`: `{ standardProduct, offer, capabilityEvidence }`.
+- `matchesRequestedProduct(product, needs)`: checks the requested platform and
+  complete terms in the standard product display name, original name, canonical
+  family/product/tier or standard aliases (NFKC/case normalization,
+  with `gpt` treated as `ChatGPT`). Merchant names and offer marketing are excluded.
+  Explicit product requests filter `getProducts()` before the five-product query
+  limit, then load offers by standard ID. Selection and refresh repeat this check;
+  no matching product returns `no_match` without substituting another tier.
+  The three metadata queries preserve original/canonical names and aliases in
+  internal `identityNames`; the controller strips this field from public responses.
 - `selectCandidates(candidates, needs, now)`: filters, orders, deduplicates source
   offers by shop/product identity, and returns at most three.
 - `candidateEvidence(candidate)`: `{ id, text }[]` containing scoped price,
@@ -110,6 +119,14 @@ platform is a fallback when no platform/product has been selected; explicit user
 choices override it. A separate optional `needs.product` search term persists across
 follow-ups without replacing the purpose or budget. Legacy sessions without this
 field remain valid.
+
+The understanding step keeps product identity separate from purchase attributes:
+an existing GPT account plus a request for Plus top-up means `ChatGPT Plus` with
+`delivery=top_up`, not a new ready account. Before searching, the service also uses
+the shared catalog search parser to separate attributes accidentally embedded in
+`needs.product`, including stored needs from earlier turns. Existing constraints
+are retained; conflicting or attribute-only names trigger clarification. Empty
+results use a short message without listing unrelated filtering rules.
 
 Recommendation cards carry an optional exact-offer snapshot (merchant, offer name,
 specification, tags and validated HTTP(S) merchant URL). The UI reuses homepage

@@ -93,7 +93,6 @@ function QuoteCard({ card }) {
   return <article className="assistant-card">
     <div className="assistant-card-heading"><h2>{card.title}</h2>{price}</div>
     <p className="assistant-offer-shop">{offer.shop}</p>
-    <p className="assistant-offer-name">{offer.name}</p>
     <OfferFacts tags={offer.tags} settlementQuantity={1} />
     {expired && <p className="assistant-caveat">报价已过期，请重新核对</p>}
     <details className="assistant-purchase-notes"><summary>推荐依据与购买须知</summary>{notes}</details>
