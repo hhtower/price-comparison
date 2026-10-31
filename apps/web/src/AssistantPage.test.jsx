@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { emptyShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
 import AssistantPage from './AssistantPage.jsx';
 import App from './App.jsx';
@@ -30,31 +30,79 @@ function mockApi(overrides = {}) {
 }
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.unstubAllGlobals(); });
 
-test('connecting lets users type and retains the draft when the conversation becomes ready', async () => {
+test('each recommendation opens its exact merchant quote and returns focus on close', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const cards = ['9', '10'].map((id, index) => ({
+    standardProductId: '42', productId: id, shopId: String(index + 1), title: 'ChatGPT Plus',
+    price: String(49 + index), currency: 'CNY', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
+    detailPath: '/products/42', reasons: ['商家提供代充'], caveats: ['请核对售后范围'], evidenceIds: ['e1'],
+    offer: { name: `Plus 代充方案${index + 1}`, shop: `测试店铺${index + 1}`, spec: '一个月',
+      productUrl: `https://shop.invalid/items/${id}`, tags: [{ name: 'delivery', value: 'top_up' },
+        { name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'subscription' }] },
+  }));
+  const result = { ...reply, kind: 'recommendation', text: '优先有质保、代充的报价', options: [], cards };
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [{ ...done, reply: result }] })) })} />);
+  const buttons = await screen.findAllByRole('button', { name: '查看报价详情' });
+  expect(screen.queryByRole('link', { name: /查看商品详情/ })).not.toBeInTheDocument();
+  for (const [index, button] of buttons.entries()) {
+    button.focus(); fireEvent.click(button);
+    const dialog = screen.getByRole('dialog', { name: cards[index].offer.name });
+    expect(dialog).toHaveTextContent(cards[index].offer.shop);
+    expect(dialog).toHaveTextContent(`¥${cards[index].price}`);
+    expect(dialog).toHaveTextContent('仅保掉订阅');
+    expect(within(dialog).getByRole('link', { name: '前往商家核对报价' })).toHaveAttribute('href', cards[index].offer.productUrl);
+    expect(within(dialog).queryByRole('button', { name: '举报此报价' })).not.toBeInTheDocument();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(button).toHaveFocus();
+  }
+});
+
+test('new conversation stays on the skeleton until the empty session is confirmed', async () => {
   let connect;
   const api = mockApi({ createSession: vi.fn(() => new Promise(resolve => { connect = resolve; })) });
   render(<AssistantPage api={api} enabled />);
-  const input = screen.getByRole('textbox', { name: '先写下需求' });
-  fireEvent.change(input, { target: { value: '每月50元，写代码用' } });
-  expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
-  expect(screen.getByRole('heading', { name: '想用来做什么？' })).toBeVisible();
+  expect(screen.getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
+  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   await act(async () => connect({ ...credentials, revision: 0 }));
-  expect(await screen.findByRole('textbox', { name: '告诉助手你的需求' })).toHaveValue('每月50元，写代码用');
+  expect(await screen.findByRole('textbox', { name: '告诉助手你的需求' })).toBeVisible();
+  expect(screen.getByRole('heading', { name: '想用来做什么？' })).toBeVisible();
   expect(api.sendTurn).not.toHaveBeenCalled();
 });
 
-test('connection failure preserves draft and the retry stays within the welcome surface', async () => {
+test('failed session restoration keeps the skeleton and retries without showing a new conversation', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   let fail;
-  const api = mockApi({ createSession: vi.fn().mockImplementationOnce(() => new Promise((_resolve, reject) => {
+  const api = mockApi({ readSession: vi.fn().mockImplementationOnce(() => new Promise((_resolve, reject) => {
     fail = reject;
-  })).mockResolvedValue({ ...credentials, revision: 0 }) });
-  render(<AssistantPage api={api} enabled />);
-  fireEvent.change(screen.getByRole('textbox', { name: '先写下需求' }), { target: { value: '预算50元' } });
+  })).mockResolvedValueOnce({ id: sessionId, revision: 0, needs: emptyShoppingNeeds(), turns: [] }) });
+  render(<AssistantPage api={api} />);
+  expect(screen.getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
+  await waitFor(() => expect(api.readSession).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
   await act(async () => fail(new Error('连接失败')));
-  expect(screen.getByRole('textbox', { name: '先写下需求' })).toHaveValue('预算50元');
-  expect(screen.getByRole('heading', { name: '想用来做什么？' })).toBeVisible();
+  expect(screen.getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '重试连接' }));
-  expect(await screen.findByRole('textbox', { name: '告诉助手你的需求' })).toHaveValue('预算50元');
+  expect(await screen.findByRole('textbox', { name: '告诉助手你的需求' })).toBeVisible();
+  expect(api.createSession).not.toHaveBeenCalled();
+});
+
+test('existing conversation stays on the skeleton until history is restored', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  let restore;
+  const api = mockApi({ readSession: vi.fn(() => new Promise(resolve => { restore = resolve; })) });
+  render(<AssistantPage api={api} />);
+  await waitFor(() => expect(api.readSession).toHaveBeenCalledTimes(1));
+  expect(screen.getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
+  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  await act(async () => restore({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(), turns: [done] }));
+  expect(await screen.findByText('预算大概是多少？')).toBeVisible();
+  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
 });
 
 test('platform chip and settings share state, track catalog changes, and control sent context', async () => {
@@ -142,22 +190,27 @@ test.each(['recommendation', 'comparison'])('refresh restores compact %s cards a
   window.history.replaceState({}, '', '/assistant?q=secret&newcomer=true');
   const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
     price: '49.00', currency: 'CNY', capturedAt: '2020-01-01T00:00:00Z', priceExpiresAt: '2020-01-02T00:00:00Z',
-    detailPath: '/products/42', reasons: ['本次候选中价格较低', '补充报价依据'], caveats: ['下单前确认库存'], evidenceIds: ['e1'] };
+    detailPath: '/products/42', offer: { name: '月度订阅', shop: '测试商家', spec: '完整规格描述', productUrl: '', tags: [] },
+    reasons: ['本次候选中价格较低', '补充报价依据'], caveats: ['下单前确认库存'], evidenceIds: ['e1'] };
   const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(),
     turns: [{ ...done, reply: { ...reply, kind, text: '本次回复的完整说明', options: [], cards: [card] } }] })) });
   render(<AssistantPage api={api} />);
   await screen.findByRole('textbox', { name: '告诉助手你的需求' });
   expect(screen.getByText('写代码', { selector: 'span' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: /查看商品详情/ })).toHaveAttribute('href', '/products/42');
+  expect(screen.getByRole('button', { name: /查看报价详情/ })).toBeVisible();
   expect(screen.getByText(/¥49/)).toBeInTheDocument();
+  expect(screen.getByText('月度订阅')).toBeVisible();
+  expect(screen.queryByText('完整规格描述')).not.toBeInTheDocument();
   expect(screen.getByText('下单前确认库存')).not.toBeVisible();
   expect(screen.getByText('报价已过期，请重新核对')).toBeVisible();
-  expect(screen.queryByText('补充报价依据')).not.toBeInTheDocument();
-  if (kind === 'comparison') expect(screen.getByText('本次回复的完整说明')).toBeVisible();
-  else expect(screen.queryByText('本次回复的完整说明')).not.toBeInTheDocument();
+  expect(screen.getByText('补充报价依据')).not.toBeVisible();
+  expect(screen.getByText('本次回复的完整说明')).toBeVisible();
   expect(screen.queryByText('推荐说明')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByText('购买须知'));
+  fireEvent.click(screen.getByText('推荐依据与购买须知'));
   expect(screen.getByText('下单前确认库存')).toBeVisible();
+  expect(screen.getByText('补充报价依据')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: /查看报价详情/ }));
+  expect(screen.getByText(/完整规格描述/)).toBeVisible();
   expect(screen.queryByRole('link', { name: '按条件浏览商品' })).not.toBeInTheDocument();
   expect(api.sendTurn).not.toHaveBeenCalled();
 });
@@ -366,7 +419,7 @@ test.each([false, true])('running progress stays in the reply area, including re
   const progress = screen.getByRole('status');
   expect(progress).toHaveTextContent('正在查找报价');
   expect(progress.closest('.assistant-viewport')).not.toBeNull();
-  expect(document.querySelector('.assistant-message-assistant')).toBeNull();
+  if (!restored) expect(progress.closest('.assistant-message-assistant')).not.toBeNull();
   expect(screen.queryByText('拾价助手')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '发送' })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: '停止' })).toBeEnabled();

@@ -76,7 +76,7 @@ test('preferences are ordered, unknown warranty ranks last and simple setup stay
     selectCandidates([b, a, c], { ...needs, preferences }, now).map(c => c.offer.productId);
   assert.deepEqual(ids(['lower_price', 'longer_warranty']), ['1', '3', '2']);
   assert.deepEqual(ids(['longer_warranty', 'lower_price']), ['3', '2', '1']);
-  assert.deepEqual(ids(['simple_setup']), ['1', '3', '2']);
+  assert.deepEqual(ids(['simple_setup']), ['2', '3', '1']);
 });
 
 test('sorts ties stably, deduplicates offers and returns at most three candidates', () => {
@@ -85,6 +85,36 @@ test('sorts ties stably, deduplicates offers and returns at most three candidate
   assert.deepEqual(selectCandidates(candidates, needs, now).map(c => c.offer.productId), ['1', '2', '3']);
   assert.deepEqual(selectCandidates(candidates.reverse(), needs, now).map(c => c.offer.productId), ['1', '2', '3']);
   assert.deepEqual(selectCandidates(candidates, { ...needs, platform: 'another' }, now), []);
+});
+
+test('beginner defaults pair warranty with top-up or ready accounts unless users specify otherwise', () => {
+  const bare = fixture('1', { price: '1.00' });
+  const topup = fixture('2', { tags: [...bare.offer.tags, { name: 'delivery', value: 'top_up' }] });
+  const covered = fixture('3', { tags: [...bare.offer.tags, { name: 'warranty', value: 'covered' }] });
+  const both = fixture('4', { price: '20.00', tags: [...covered.offer.tags, { name: 'delivery', value: 'top_up' }] });
+  const denied = fixture('5', { tags: [...both.offer.tags, { name: 'warranty', value: 'none' }, { name: 'warranty_days', value: '30' }] });
+  const account = fixture('6', { price: '15.00', tags: [...covered.offer.tags, { name: 'delivery', value: 'account' }] });
+  const candidates = [bare, topup, covered, both, denied, account];
+  assert.deepEqual(selectCandidates(candidates, needs, now).map(c => c.offer.productId), ['6', '4', '3']);
+  assert.deepEqual(selectCandidates(candidates, { ...needs, preferences: ['lower_price'] }, now).map(c => c.offer.productId), ['1', '3', '2']);
+  assert.deepEqual(selectCandidates(candidates, { ...needs, requiredTags: [{ name: 'delivery', value: 'top_up' }] }, now)
+    .map(c => c.offer.productId), ['4', '2', '5']);
+  assert.deepEqual(selectCandidates([bare, topup, covered, both, denied], needs, now).map(c => c.offer.productId), ['4', '3', '2']);
+  assert.deepEqual(selectCandidates([bare, topup, covered, both], { ...needs,
+    budget: { amount: '15', currency: 'CNY', basis: 'purchase' } }, now).map(c => c.offer.productId), ['3', '2', '1']);
+});
+
+test('delivery evidence explains what a beginner receives without inventing setup guarantees', () => {
+  for (const [delivery, expected] of [['top_up', /已有账号/u], ['account', /提供.*账号/u]] as const) {
+    const facts = candidateEvidence(fixture('1', { tags: [{ name: 'delivery', value: delivery }] }));
+    assert.ok(facts.some(fact => expected.test(fact.text)));
+  }
+});
+
+test('an explicit platform can browse quotes without inventing purpose evidence', () => {
+  const candidate = { ...fixture(), capabilityEvidence: [] };
+  assert.equal(selectCandidates([candidate], { ...needs, platform: 'fictional' }, now).length, 1);
+  assert.deepEqual(selectCandidates([candidate], needs, now), []);
 });
 
 test('purpose requires current capability evidence and never silently uses an unrelated product', () => {

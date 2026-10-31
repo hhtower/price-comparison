@@ -92,6 +92,33 @@ not publish `setup_steps`, so current real offers remain tied on that preference
 If operation counts are introduced later, coordinate that tag-policy addition with
 its owner; the assistant does not change the shared policy.
 
+Unless users state otherwise, recommendations assume a beginner audience: prefer
+documented warranty together with `delivery=top_up` or `delivery=account` (equal
+priority), then the existing comparable-price ordering. Explicit preferences come
+first; incomplete matches rank by warranty and then these delivery methods. Warranty denial or
+conflicting warranty values do not qualify as documented coverage. These are soft
+preferences: budgets, required tags and validity checks still apply. This ranking
+is limited to the bounded catalog candidates above. Model explanations cannot omit
+preferred offers or reorder them; omitted explanations use server-generated facts.
+Cards always explain top-up versus ready accounts in plain language and retain
+warranty scope/exclusions, without promising effortless setup or guaranteed safety.
+
+An explicit platform or product selection browses catalog quotes even when purpose
+evidence is unavailable; the reply then states that suitability is unverified.
+Purpose-only recommendations still require verified capability evidence. The page
+platform is a fallback when no platform/product has been selected; explicit user
+choices override it. A separate optional `needs.product` search term persists across
+follow-ups without replacing the purpose or budget. Legacy sessions without this
+field remain valid.
+
+Recommendation cards carry an optional exact-offer snapshot (merchant, offer name,
+specification, tags and validated HTTP(S) merchant URL). The UI reuses homepage
+offer tags and opens that snapshot in the offer detail dialog, not the standard
+product aggregate page. Legacy cards still display their stored price and notes.
+Each snapshot is bounded to 12 KiB; oversized terms are replaced with an explicit
+request to verify complete merchant terms, never a truncated warranty promise.
+Snapshots are excluded from model history to preserve conversational context.
+
 Purpose matching is a bounded vocabulary lookup, not semantic understanding. It does
 not interpret negation, suitability, geographic eligibility or multiple simultaneous
 goals. The understanding/service layer must clarify those cases. Unsupported purposes,

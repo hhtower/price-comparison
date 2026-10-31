@@ -40,7 +40,7 @@
 .assistant-starters button{background:#f5f8f7;font-size:13px}
 .assistant-message{margin:0 0 24px;padding:4px 0;overflow-wrap:anywhere;line-height:1.65;white-space:pre-wrap;font-size:14px}
 .assistant-message-user{background:#edf5f3;margin-left:18%;padding:10px 14px;border-radius:10px}
-.assistant-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px;white-space:normal}
+.assistant-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:10px;white-space:normal;margin-top:12px}
 .assistant-card{display:grid;grid-template-columns:1fr auto;align-content:start;align-items:start;column-gap:12px;border:1px solid var(--assistant-line);border-radius:10px;padding:12px 14px 6px;background:#fff;min-width:0}
 .assistant-card-heading{grid-column:1/-1;display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:4px 12px;margin-bottom:4px}
 .assistant-card h2{font-size:15px;line-height:1.4;margin:0;font-weight:650}
@@ -52,10 +52,13 @@
 .assistant-purchase-notes{grid-column:1;font-size:12px;color:var(--assistant-muted);min-width:0}
 .assistant-purchase-notes>summary{min-height:44px}
 .assistant-purchase-notes[open]{grid-column:1/-1}
-.assistant-card>a{grid-column:2;display:inline-flex;align-items:center;min-height:44px;font-size:13px;font-weight:650;text-decoration:none}
-.assistant-card>a:hover{text-decoration:underline}
-.assistant-card-title{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
-.assistant-comparison{margin-top:12px}
+.assistant-card>.assistant-offer-details{grid-column:2;min-height:44px;font-size:13px;font-weight:650;border:0;padding:8px 0;background:transparent}
+.assistant-card>.offer-facts,.assistant-card-reasons,.assistant-card>.assistant-offer-shop,.assistant-card>.assistant-offer-name{grid-column:1/-1}
+.assistant-card>.assistant-offer-shop{font-size:12px;color:var(--assistant-muted);margin:4px 0}
+.assistant-card>.assistant-offer-name{font-size:13px;margin:0 0 8px}
+.assistant-card-reasons{margin:10px 0 0;padding-left:18px;font-size:12px;color:var(--assistant-muted)}
+.assistant-card .offer-facts{min-width:0}
+.assistant-quote-note{font-size:12px;color:var(--assistant-muted)}
 .assistant-options{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .assistant-options button{font-size:13px;background:#f0f8f5;border-color:#cfe1dc}
 .assistant-progress{flex-shrink:0;padding:8px 0;color:var(--assistant-muted);font-size:12px}

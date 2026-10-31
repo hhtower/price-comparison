@@ -129,6 +129,47 @@ test('comparison without previous candidates does not substitute newly chosen pr
   assert.equal(state.calls, 1);
 });
 
+test('page platform constrains recommendations even when understanding omits it', async () => {
+  const fixture = shoppingFixture();
+  const state = harness([{ intent: 'recommend', patch: { purpose: '写代码' },
+    evidence: [{ field: 'purpose', quote: '写代码' }], question: null, options: [] }],
+  '当前页面筛选：ChatGPT / Codex\n写代码', emptyShoppingNeeds(), fixture.catalog);
+  await state.run();
+  assert.equal(state.saved?.needs.platform, 'openai');
+  assert.equal(state.saved?.cards.length, 0, 'must not substitute Claude for the page platform');
+});
+
+test('follow-up product selection preserves budget and purpose while browsing the requested product', async () => {
+  const fixture = shoppingFixture();
+  const needs = { ...fixture.needs, budget: { amount: '80', currency: 'CNY', basis: 'purchase' as const } };
+  const product = { id: '42', name: 'ChatGPT Plus', platform: 'openai', kind: '订阅' };
+  const state = harness([
+    (input: { needs: ShoppingNeeds; history: unknown[] }) => {
+      assert.equal(input.needs.purpose, '写代码');
+      assert.equal(input.history.length, 1);
+      return { intent: 'recommend', patch: { platform: 'openai', product: 'ChatGPT Plus' },
+        evidence: [{ field: 'platform', quote: 'gpt plus' }, { field: 'product', quote: 'gpt plus' }], question: null, options: [] };
+    },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
+      selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+    }),
+  ], '我想购买gpt plus，你觉得哪些适合我呢？', needs, {
+    ...fixture.catalog, resolvePublicProductIdentity: async () => null, getProduct: async () => product,
+    getCatalog: async query => {
+      assert.equal(query.q, 'ChatGPT Plus');
+      assert.equal(query.platform, 'openai');
+      return fixture.catalog.getCatalog!(query);
+    },
+  }, [{ text: '写代码', reply: { kind: 'question', text: '想买哪个产品？', options: [], cards: [], needs } }]);
+  await state.run();
+  assert.equal(state.saved?.cards[0]?.title, 'ChatGPT Plus');
+  assert.deepEqual(state.saved?.needs.budget, needs.budget);
+  assert.equal(state.saved?.needs.purpose, '写代码');
+  assert.equal(state.saved?.text, '找到以下报价。');
+  assert.match(state.saved?.cards[0]?.caveats.join(' ') ?? '', /报价/u);
+  assert.equal(state.saved?.cards[0]?.offer?.shop, '测试商铺');
+});
+
 test('platform-only browsing reloads authoritative catalog groups instead of guessing from the vendor name', async () => {
   const fixture = shoppingFixture();
   let metadataReads = 0;
@@ -148,6 +189,75 @@ test('platform-only browsing reloads authoritative catalog groups instead of gue
   assert.ok(metadataReads >= 1);
   assert.equal(state.saved?.cards.length, 1);
   assert.equal(state.saved?.cards[0]?.title, '邮箱');
+});
+
+test('explicit platform overrides page context and survives a follow-up with the old page filter', async () => {
+  const fixture = shoppingFixture();
+  const explain = (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
+    selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+  });
+  const first = harness([{ intent: 'recommend', patch: { platform: 'anthropic', product: null },
+    evidence: [{ field: 'platform', quote: 'Claude' }, { field: 'product', quote: '我想买Claude' }], question: null, options: [] }, explain],
+  '当前页面筛选：ChatGPT / Codex\n我想买Claude', { ...fixture.needs, platform: 'openai', product: 'ChatGPT Plus' }, fixture.catalog);
+  await first.run();
+  const next = harness([{ intent: 'recommend', patch: {}, evidence: [], question: null, options: [] }, explain],
+    '当前页面筛选：ChatGPT / Codex\n继续推荐', first.saved!.needs, fixture.catalog);
+  await next.run();
+  assert.equal(next.saved?.needs.platform, 'anthropic');
+  assert.equal(next.saved?.needs.product, null);
+  assert.equal(next.saved?.cards[0]?.title, 'Claude Pro');
+});
+
+test('quote snapshots bound merchant text, preserve terms or mark omissions, and omit unsafe links', async () => {
+  const fixture = shoppingFixture();
+  const explain = (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
+    selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+  });
+  Object.assign(fixture.offer, { name: '商品'.repeat(200), spec: '条款'.repeat(2000), productUrl: 'javascript:alert(1)' });
+  const state = harness([{ intent: 'recommend', patch: {}, evidence: [], question: null, options: [] }, explain],
+    '请推荐', fixture.needs, fixture.catalog);
+  await state.run();
+  assert.ok(state.saved?.cards[0]?.offer?.name.length! <= 240);
+  assert.equal(state.saved?.cards[0]?.offer?.productUrl, '');
+  assert.match(state.saved?.cards[0]?.offer?.spec ?? '', /完整/u);
+});
+
+test('model explanation cannot omit the preferred warranty and top-up quote', async () => {
+  const fixture = shoppingFixture();
+  const preferred = { ...fixture.offer, productId: '10', price: '50.00', tags: [...fixture.offer.tags,
+    { name: 'warranty', value: 'covered' }, { name: 'delivery', value: 'top_up' }] };
+  const state = harness([{ intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => {
+      assert.equal(input.candidates[0]!.productId, '10');
+      const cheap = input.candidates.find(candidate => candidate.productId === '9')!;
+      return { selections: [{ productId: cheap.productId, evidenceIds: [cheap.evidence[0]!.id] }] };
+    }], '请推荐', fixture.needs, { ...fixture.catalog, getCatalog: async query => {
+      const page = await fixture.catalog.getCatalog!(query);
+      return { ...page, items: page.items.map(item => ({ ...item,
+        detail: { kind: 'offers', page: 0, pageSize: 20, total: 2, entries: [fixture.offer, preferred] } })) };
+    } });
+  await state.run();
+  assert.deepEqual(state.saved?.cards.map(card => card.productId), ['10', '9']);
+  assert.match(state.saved?.cards[0]?.reasons.join(' ') ?? '', /给你已有账号充值/u);
+  assert.equal(state.saved?.text, '找到以下报价。');
+  assert.doesNotMatch(state.saved?.text ?? '', /我会先|请结合使用需求确认|下单前请核对/u);
+});
+
+test('beginner delivery instructions and warranty facts fit the card evidence budget', async () => {
+  const fixture = shoppingFixture();
+  fixture.offer.tags.push({ name: 'delivery', value: 'account' }, { name: 'warranty', value: 'covered' },
+    { name: 'warranty_exclusion', value: 'ban' }, { name: 'warranty_terms', value: '联系商家处理' });
+  const state = harness([
+    { intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string; text: string }> }> }) => ({
+      selections: [{ productId: '9', evidenceIds: input.candidates[0]!.evidence
+        .filter(item => !/购买内容|质保|不保事项|售后条款/u.test(item.text)).slice(0, 4).map(item => item.id) }],
+    }),
+  ], '请推荐', fixture.needs, fixture.catalog);
+  await state.run();
+  assert.match(state.saved?.cards[0]?.reasons.join(' ') ?? '', /成品号：商家提供一个账号/u);
+  assert.match(state.saved?.cards[0]?.caveats.join(' ') ?? '', /不保封号/u);
+  assert.ok(state.saved!.cards[0]!.evidenceIds.length <= 8);
 });
 
 test('a standard product changed to another tier during explanation loses its original capability evidence', async () => {
@@ -254,6 +364,15 @@ test('model cannot silently clear an existing hard requirement while changing th
   assert.deepEqual(state.saved?.needs.requiredTags, needs.requiredTags);
   assert.equal(state.saved?.kind, 'question');
   assert.equal(state.calls, 1);
+});
+
+test('follow-up cannot silently drop a product selection on the same platform', async () => {
+  const needs = { ...emptyShoppingNeeds(), platform: 'openai', product: 'ChatGPT Plus' };
+  const state = harness([{ intent: 'recommend', patch: { product: null },
+    evidence: [{ field: 'product', quote: '继续推荐' }], question: null, options: [] }], '继续推荐', needs);
+  await state.run();
+  assert.equal(state.saved?.needs.product, 'ChatGPT Plus');
+  assert.equal(state.saved?.kind, 'question');
 });
 
 test('negated consent never clears an existing hard requirement', async () => {

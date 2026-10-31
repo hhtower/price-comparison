@@ -1,4 +1,4 @@
-import OfferTagDetails, { offerConditions } from './OfferTagDetails.jsx';
+import OfferTagDetails, { OfferFacts } from './OfferTagDetails.jsx';
 import ModalDialog from './components/ModalDialog.jsx';
 import PurchaseGuide from './PurchaseGuide.jsx';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -431,22 +431,6 @@ function offerFact(offer, name) {
     && tag.name === name);
   return [...new Set(facts.map(displayPurchaseValue))].join(' · ');
 }
-const OFFER_SUMMARY_PRIORITY = { warranty: -5, access: -4, delivery: -3, account_type: -2, account_lifecycle: -1 };
-
-function OfferFacts({ tags, settlementQuantity }) {
-  const visibleTags = (tags || []).filter(tag => !(tag.name === 'account_type' && ['personal', 'enterprise'].includes(tag.value)));
-  const facts = offerConditions({ tags: visibleTags, settlementQuantity }, displayPurchaseValue).filter(fact => fact.displayGroup !== 'warranty');
-  const warranty = purchaseWarrantyLabel(tags || []);
-  if (warranty) facts.push({ name: 'warranty', value: warranty, summaryPriority: 30 });
-  const values = facts.sort((a, b) => (OFFER_SUMMARY_PRIORITY[a.name] ?? a.summaryPriority)
-    - (OFFER_SUMMARY_PRIORITY[b.name] ?? b.summaryPriority)).map(fact => ({
-    key: `${fact.name}:${fact.value}`, text: displayPurchaseTagText(fact, fact.value), group: fact.displayGroup, warranty: fact.name === 'warranty',
-  }));
-  return values.length ? <div className="offer-facts" role="group" tabIndex={0} aria-label="商品标签">
-    {values.slice(0, 3).map(value => <span key={value.key} className={value.warranty ? 'offer-warranty' : undefined} data-group={value.group} title={value.text}>{value.text}</span>)}
-    {values.length > 3 ? <small>另 {values.length - 3} 个标签</small> : null}
-  </div> : <div className="offer-facts" aria-hidden="true" />;
-}
 
 function offerIdentity(offer, index) {
   return String(offer.productId || offer.productUrl || `${offer.shopId || offer.shop || 'offer'}-${offer.name || index}`);
@@ -513,7 +497,7 @@ function OfferCard({ offer, item, rank, onOfferDetails, comparison, onCompare, b
           <span className="offer-updated">{formatRelativeTime(offer.capturedAt)}</span>
         </span>
         <strong className="offer-name" title={offer.name || item.name}>{offer.name || item.name}</strong>
-        <OfferFacts tags={offer.tags} settlementQuantity={offer.settlementQuantity} />
+        <OfferFacts formatValue={displayPurchaseValue} tags={offer.tags} settlementQuantity={offer.settlementQuantity} />
         <span className="offer-footer">
           <OfferPrice offer={offer} className={`tile-price ${best && availableOffer(offer) ? 'best' : ''}`} />
           <span className="offer-actions">{onCompare ? <label><input type="checkbox" aria-label={`对比报价 ${offer.name || item.name}`} checked={Boolean(checked)} disabled={!checked && comparison.length >= 3} onChange={() => onCompare(offer, item)} />对比</label> : null}<button type="button" className="offer-details-button" onClick={() => onOfferDetails(offer, item)}>商品说明</button>{offer.productUrl ? <a href={offer.productUrl} target="_blank" rel="noreferrer" onClick={() => trackUsage('outbound')}>去商家</a> : null}</span>

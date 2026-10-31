@@ -30,6 +30,12 @@ function setupSteps(candidate: AssistantCandidate): number | undefined {
     ? Number(value) : undefined;
 }
 
+function hasWarranty(candidate: AssistantCandidate): boolean {
+  if (candidate.offer.tags.some(tag => tag.name === 'warranty' && tag.value !== 'covered')) return false;
+  return tag(candidate, 'warranty') === 'covered' || (warrantyDays(candidate) ?? 0) > 0
+    || ['first_login', 'period', 'subscription', 'first_code', 'activation'].includes(tag(candidate, 'warranty_scope') ?? '');
+}
+
 function matchesPlatform(product: PublicCatalogProduct, requested: string): boolean {
   const platform = normalizeCatalogPlatform(requested);
   const isGroup = platform === 'other' || CATALOG_PLATFORMS.some(group => group.id === platform);
@@ -79,7 +85,7 @@ export function selectCandidates(candidates: AssistantCandidate[], needs: Shoppi
     const capabilityEvidence = candidate.capabilityEvidence.filter(evidence =>
       Date.parse(evidence.checkedAt) <= now.getTime() && Date.parse(evidence.reviewAfter) > now.getTime()
       && (!needs.purpose || capabilitySupportsPurpose(evidence, needs.purpose, now)));
-    if (needs.purpose && capabilityEvidence.length === 0) return [];
+    if (needs.purpose && !needs.platform && !needs.product && capabilityEvidence.length === 0) return [];
     return [{ ...candidate, capabilityEvidence }];
   });
   eligible.sort((a, b) => {
@@ -102,7 +108,10 @@ export function selectCandidates(candidates: AssistantCandidate[], needs: Shoppi
         if (order) return order;
       }
     }
-    return priceOrder(a, b) || compareText(a.standardProduct.id, b.standardProduct.id)
+    return Number(hasWarranty(b)) - Number(hasWarranty(a))
+      || Number(['top_up', 'account'].includes(tag(b, 'delivery') ?? ''))
+        - Number(['top_up', 'account'].includes(tag(a, 'delivery') ?? ''))
+      || priceOrder(a, b) || compareText(a.standardProduct.id, b.standardProduct.id)
       || compareText(a.offer.shopId, b.offer.shopId) || compareText(a.offer.productId, b.offer.productId);
   });
   const seen = new Set<string>();
@@ -135,7 +144,9 @@ export function candidateEvidence(candidate: AssistantCandidate): Array<{ id: st
       : '商家未明确质保时长与保障范围，请在商品详情核实不保事项和售后条款。'),
     ...tags.map(tag => {
       const label = tag.name === 'setup_steps' ? '明确操作步骤数' : PURCHASE_GUIDE_FIELDS[tag.name]?.label ?? tag.name;
-      const value = tag.name === 'warranty_exclusion' && tag.value === 'ban' ? '不保封号' : purchaseTagLabel(tag);
+      const value = tag.name === 'delivery' && tag.value === 'top_up' ? '代充：给你已有账号充值，下单前确认账号条件和充值流程。'
+        : tag.name === 'delivery' && tag.value === 'account' ? '成品号：商家提供一个账号，下单前确认登录方式、是否独享及能否改密。'
+        : tag.name === 'warranty_exclusion' && tag.value === 'ban' ? '不保封号' : purchaseTagLabel(tag);
       return fact(`tag:${tag.name}:${tag.value}`, `${label}：${value}`);
     }),
     ...[...candidate.capabilityEvidence].sort((a, b) => compareText(a.id, b.id))

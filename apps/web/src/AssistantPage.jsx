@@ -10,6 +10,8 @@ import Brand from './Brand.jsx';
 import { assistantApi } from './assistant-api.js';
 import { displayPurchaseTagText } from './purchase-tag-values.js';
 import { formatMoney } from './money.js';
+import OfferTagDetails, { OfferFacts } from './OfferTagDetails.jsx';
+import AssistantLoading from './AssistantLoading.jsx';
 import { AssistantHeader, AssistantWelcome, AssistantPlatformChip, AssistantSendIcon, ASSISTANT_STARTERS, selectedAssistantPlatform } from './AssistantControls.jsx';
 import './assistant.css';
 
@@ -23,6 +25,7 @@ function needsLabels(needs) {
     needs.purpose,
     needs.budget && `${needs.budget.basis === 'month' ? '每月' : '单次'} ≤ ${formatMoney(needs.budget.amount, needs.budget.currency)}`,
     needs.platform,
+    needs.product,
     ...needs.requiredTags.map(tag => displayPurchaseTagText(tag)),
     needs.warrantyDaysMin && `质保至少 ${needs.warrantyDaysMin} 天`,
     ...needs.preferences.map(preference => PREFERENCES[preference]),
@@ -63,30 +66,57 @@ function historyMessages(session) {
     ...(isTurnTerminal(turn.status) ? [{ id: 'assistant-' + turn.id, role: 'assistant', ...turnResult(turn) }] : []),
   ]);
 }
+function RunStatus() {
+  const { phase, stopping } = useContext(ConversationContext);
+  return <div role="status" aria-live="polite" className="assistant-run-status">
+    <span className="assistant-spinner" aria-hidden="true" />
+    {stopping ? '正在停止' : PHASES[phase] ?? '正在同步会话'}
+  </div>;
+}
+
+function RestoredRunStatus() {
+  const running = useAuiState(state => state.thread.isRunning);
+  const { busy } = useContext(ConversationContext);
+  return busy && !running ? <div className="assistant-message assistant-message-assistant"><RunStatus /></div> : null;
+}
+
+function QuoteCard({ card }) {
+  const [open, setOpen] = useState(false);
+  const offer = card.offer ?? { name: card.title, shop: `商铺 #${card.shopId}`, tags: [] };
+  const expired = Date.parse(card.priceExpiresAt) <= Date.now();
+  const price = <p className="assistant-price">{formatMoney(card.price, card.currency)} <small>{card.currency}</small></p>;
+  const notes = <>
+    {card.reasons.length > 0 && <ul className="assistant-card-reasons">{card.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
+    {card.caveats.map(caveat => <p className="assistant-caveat" key={caveat}>{caveat}</p>)}
+    <p>采集于 <time dateTime={card.capturedAt}>{new Date(card.capturedAt).toLocaleString('zh-CN')}</time></p>
+  </>;
+  return <article className="assistant-card">
+    <div className="assistant-card-heading"><h2>{card.title}</h2>{price}</div>
+    <p className="assistant-offer-shop">{offer.shop}</p>
+    <p className="assistant-offer-name">{offer.name}</p>
+    <OfferFacts tags={offer.tags} settlementQuantity={1} />
+    {expired && <p className="assistant-caveat">报价已过期，请重新核对</p>}
+    <details className="assistant-purchase-notes"><summary>推荐依据与购买须知</summary>{notes}</details>
+    <button type="button" className="assistant-offer-details" aria-haspopup="dialog" onClick={() => setOpen(true)}>查看报价详情</button>
+    {open && <OfferTagDetails offer={offer} item={{ name: card.title }} onClose={() => setOpen(false)}>
+      {price}{expired && <p className="assistant-caveat">报价已过期，请重新核对</p>}{notes}
+      <p className="assistant-quote-note">这是本次推荐的报价快照，下单前请到商家核对价格、库存和完整条款。</p>
+      {offer.productUrl && <p><a href={offer.productUrl} target="_blank" rel="noopener noreferrer">前往商家核对报价</a></p>}
+    </OfferTagDetails>}
+  </article>;
+}
+
 function Message() {
   const role = useAuiState(state => state.message.role);
   const reply = useAuiState(state => state.message.metadata.custom?.reply);
   const last = useAuiState(state => state.message.isLast);
   const running = useAuiState(state => state.message.status?.type === 'running');
   const { sendOption, blocked } = useContext(ConversationContext);
-  if (running) return null;
+  if (running) return <MessagePrimitive.Root className="assistant-message assistant-message-assistant"><RunStatus /></MessagePrimitive.Root>;
   return <MessagePrimitive.Root className={'assistant-message assistant-message-' + role}>
-    {!reply?.cards.length && <MessagePrimitive.Parts />}
+    <MessagePrimitive.Parts />
     {reply && <div className="assistant-cards">{reply.cards.map(card =>
-      <article className="assistant-card" key={card.productId}>
-        <div className="assistant-card-heading">
-          <h2>{card.title}</h2><p className="assistant-price">{formatMoney(card.price, card.currency)} <small>{card.currency}</small></p>
-        </div>
-        {Date.parse(card.priceExpiresAt) <= Date.now() && <p className="assistant-caveat">报价已过期，请重新核对</p>}
-        <details className="assistant-purchase-notes"><summary>购买须知</summary>
-          {card.caveats.map(caveat => <p className="assistant-caveat" key={caveat}>{caveat}</p>)}
-          <p>采集于 <time dateTime={card.capturedAt}>{new Date(card.capturedAt).toLocaleString('zh-CN')}</time></p>
-        </details>
-        {/^(?:\/products\/[1-9][0-9]*)$/u.test(card.detailPath)
-          && <a href={card.detailPath}>查看商品详情<span className="assistant-card-title">：{card.title}</span></a>}
-      </article>)}</div>}
-    {Boolean(reply?.cards.length) && reply.kind === 'comparison'
-      && <div className="assistant-comparison"><MessagePrimitive.Parts /></div>}
+      <QuoteCard card={card} key={card.productId} />)}</div>}
     {reply && last && reply.options.length > 0 && <div className="assistant-options" aria-label="快捷回答">
       {reply.options.map(option => <button type="button" key={option} disabled={blocked} onClick={() => sendOption(option)}>{option}</button>)}
     </div>}
@@ -94,7 +124,7 @@ function Message() {
 }
 
 function Conversation({ api, credentials, initialSession, onNew, locked, focusInput, onActivity, embedded,
-  onCollapse, recognizeFilters, onRecognizeFilters, catalogPlatform, initialDraft, notice }) {
+  onCollapse, recognizeFilters, onRecognizeFilters, catalogPlatform, notice }) {
   const session = useRef(initialSession);
   const pending = useRef(null);
   const active = useRef(initialSession.turns.find(turn => !isTurnTerminal(turn.status)) ?? null);
@@ -191,13 +221,6 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     },
   }), [api, credentials]);
   const runtime = useLocalRuntime(adapter, { initialMessages: historyMessages(initialSession), maxSteps: 1 });
-  const draftRestored = useRef(false);
-  useEffect(() => {
-    if (!draftRestored.current) {
-      draftRestored.current = true;
-      if (initialDraft) runtime.thread.composer.setText(initialDraft);
-    }
-  }, [runtime, initialDraft]);
   const importHistory = () => runtime.thread.import(ExportedMessageRepository.fromArray(historyMessages(session.current)));
   useEffect(() => runtime.thread.subscribe(() => {
     if (syncOnIdle.current && !runtime.thread.getState().isRunning) {
@@ -290,7 +313,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     runtime.thread.composer.send();
   }
   return <AssistantRuntimeProvider runtime={runtime}>
-    <ConversationContext.Provider value={{ blocked, sendOption }}>
+    <ConversationContext.Provider value={{ blocked, sendOption, busy, phase, stopping }}>
       <AssistantHeader title={title} labels={labels} recognizeFilters={recognizeFilters}
         onRecognizeFilters={value => { onRecognizeFilters(value); setDraftError(''); }} blocked={blocked}
         clearDisabled={busy || stopping || locked || (!started && !uncertain)} onClear={onNew} onCollapse={onCollapse} />
@@ -299,10 +322,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
         {!started && <AssistantWelcome disabled={blocked} onStart={sendOption} />}
         <ThreadPrimitive.Viewport className="assistant-viewport" turnAnchor="top">
           <ThreadPrimitive.Messages components={{ UserMessage: Message, AssistantMessage: Message }} />
-          {busy && <div role="status" aria-live="polite" className="assistant-message assistant-run-status">
-            <span className="assistant-spinner" aria-hidden="true" />
-            {stopping ? '正在停止' : PHASES[phase] ?? '正在同步会话'}
-          </div>}
+          <RestoredRunStatus />
         </ThreadPrimitive.Viewport>
         {error && <div role="alert" className="assistant-error"><p>{error}</p>
           <button type="button" disabled={busy} onClick={() => void reconnect()}>重新连接</button></div>}
@@ -336,7 +356,6 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState('');
   const [recognizeFilters, setRecognizeFilters] = useState(true);
-  const [connectingDraft, setConnectingDraft] = useState('');
   const cancelClear = useRef(null);
   const clearOpener = useRef(null);
   const credentials = useRef(null);
@@ -382,7 +401,6 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
       }
       sessionStorage.removeItem(STORAGE_KEY);
       credentials.current = null;
-      setConnectingDraft('');
       setRecognizeFilters(true);
       setConfirmClear(false);
       setState({ loading: true });
@@ -400,47 +418,22 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
       }}>取消</button>
         <button type="button" disabled={clearing} onClick={() => void newConversation()}>{clearing ? '正在清空' : '确认清空'}</button></div>
     </section>;
+  if (!state.session && !state.disabled) return <AssistantLoading embedded={embedded} onCollapse={onCollapse} error={state.error}
+    onRetry={() => { setState({ loading: true }); setGeneration(value => value + 1); }} />;
   return <Container className={'assistant-page' + (embedded ? ' assistant-embedded' : '')}>
     {!embedded && <header className="assistant-header"><Brand /><a href="/guide">选购指南</a></header>}
     {state.session ? <Conversation key={generation} api={api} credentials={credentials.current} initialSession={state.session} embedded={embedded}
       onNew={onNew} locked={confirmClear || clearing} focusInput={focusInput && !confirmClear} onActivity={onActivity}
       onCollapse={onCollapse} recognizeFilters={recognizeFilters} onRecognizeFilters={setRecognizeFilters}
-      catalogPlatform={catalogPlatform} initialDraft={connectingDraft} notice={confirmation} />
+      catalogPlatform={catalogPlatform} notice={confirmation} />
       : <>
         <AssistantHeader recognizeFilters={recognizeFilters} onRecognizeFilters={setRecognizeFilters}
-          blocked={confirmClear || clearing} clearDisabled={state.loading || state.disabled || confirmClear || clearing}
+          blocked={confirmClear || clearing} clearDisabled={confirmClear || clearing}
           onClear={onNew} onCollapse={onCollapse} />
         {confirmation}
-        {state.disabled ? <section className="assistant-fallback">
+        <section className="assistant-fallback">
           <h2>导购助手暂未启用</h2><a href="/guide">查看选购指南</a><a href="/">返回商品列表</a>
-        </section> : <div className="assistant-thread assistant-thread-empty">
-          <AssistantWelcome disabled />
-          {state.error && <div className="assistant-error">
-            <p role="alert">{state.error}</p>
-            <button type="button" disabled={confirmClear} onClick={() => {
-              setState({ loading: true }); setGeneration(value => value + 1);
-            }}>重试连接</button>
-          </div>}
-          {state.loading && <div role="status" className="assistant-run-status assistant-loading-status">
-            <span className="assistant-spinner" aria-hidden="true" />
-            <span>正在连接，可以先写下需求</span>
-          </div>}
-          <div className="assistant-composer">
-            <AssistantPlatformChip platform={recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null}
-              disabled={confirmClear || clearing} onRemove={() => setRecognizeFilters(false)} />
-            <div className="assistant-composer-row">
-              <textarea aria-label="先写下需求" placeholder="说说你的需求…" rows={1}
-                maxLength={ASSISTANT_LIMITS.userTextMaxChars} value={connectingDraft} disabled={confirmClear || clearing}
-                onChange={event => {
-                  event.target.style.height = 'auto';
-                  event.target.style.height = `${event.target.scrollHeight}px`;
-                  setConnectingDraft(event.target.value);
-                }} />
-              <button type="button" aria-label="发送" title="发送" className="assistant-send" disabled><AssistantSendIcon /></button>
-            </div>
-          </div>
-          <p className="assistant-input-note">内容由AI生成，仅供参考</p>
-        </div>}
+        </section>
       </>}
   </Container>;
 }

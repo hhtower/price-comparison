@@ -31,6 +31,20 @@ const understanding = (patch: unknown = {}, evidence: unknown = []) => ({
   intent: 'recommend', patch, evidence, question: null, options: [],
 });
 
+test('product choice persists across follow-ups and quote details reject unsafe or malformed data', () => {
+  const selected = applyNeedsPatch(emptyShoppingNeeds(), { product: 'ChatGPT Plus' });
+  assert.equal(applyNeedsPatch(selected, { preferences: ['lower_price'] }).product, 'ChatGPT Plus');
+  const offer = { name: 'Plus 一个月代充', shop: '示例店铺', spec: '一个月',
+    productUrl: 'https://shop.invalid/item/2', tags: [{ name: 'delivery', value: 'top_up' }] };
+  const detailed = { ...reply(), cards: [{ ...card, offer }] };
+  assert.deepEqual(validateAssistantReply(detailed).cards[0]?.offer, offer);
+  for (const patch of [{ productUrl: 'javascript:alert(1)' }, { productUrl: '//evil.invalid' },
+    { tags: [{ name: 'delivery', value: 1 }] }, { name: 'x'.repeat(241) }]) {
+    assert.throws(() => validateAssistantReply({ ...detailed, cards: [{ ...card, offer: { ...offer, ...patch } }] }));
+  }
+  assert.deepEqual(validateAssistantReply(reply()).cards[0], card, 'old stored replies remain readable');
+});
+
 test('empty needs have no implicit hard requirements and no shared mutable arrays', () => {
   const first = emptyShoppingNeeds();
   assert.deepEqual(first, {

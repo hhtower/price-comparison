@@ -49,12 +49,13 @@ export const ASSISTANT_INTENTS = ['clarify', 'recommend', 'compare', 'explain'] 
 export const ASSISTANT_REPLY_KINDS = ['question', 'recommendation', 'comparison', 'explanation', 'no_match'] as const;
 export const ASSISTANT_TURN_STATUSES = ['queued', 'running', 'succeeded', 'failed', 'cancelled'] as const;
 export const ASSISTANT_TURN_PHASES = ['queued', 'understanding', 'searching', 'explaining', 'succeeded', 'failed', 'cancelled'] as const;
-export const SHOPPING_NEEDS_FIELDS = ['purpose', 'platform', 'budget', 'requiredTags', 'warrantyDaysMin', 'preferences'] as const;
+export const SHOPPING_NEEDS_FIELDS = ['purpose', 'platform', 'product', 'budget', 'requiredTags', 'warrantyDaysMin', 'preferences'] as const;
 
 export type Budget = { amount: string; currency: string; basis: 'purchase' | 'month' };
 export type ShoppingNeeds = {
   purpose: string | null;
   platform: string | null;
+  product?: string | null;
   budget: Budget | null;
   requiredTags: Array<{ name: string; value: string }>;
   warrantyDaysMin: number | null;
@@ -86,6 +87,7 @@ export type AssistantReply = {
     reasons: string[];
     caveats: string[];
     evidenceIds: string[];
+    offer?: { name: string; shop: string; spec: string; productUrl: string; tags: Array<{ name: string; value: string }> };
   }>;
 };
 export type TurnStatus = typeof ASSISTANT_TURN_STATUSES[number];
@@ -206,6 +208,7 @@ export function validateNeedsPatch(value: unknown): NeedsPatch {
     switch (field) {
       case 'purpose':
       case 'platform':
+      case 'product':
         patch[field] = entry === null ? null : text(entry, field,
           field === 'purpose' ? ASSISTANT_LIMITS.purposeMaxChars : ASSISTANT_LIMITS.platformMaxChars, field === 'purpose');
         break;
@@ -243,7 +246,8 @@ export function validateNeedsPatch(value: unknown): NeedsPatch {
 }
 
 export function validateShoppingNeeds(value: unknown): ShoppingNeeds {
-  record(value, SHOPPING_NEEDS_FIELDS);
+  const source = record(value, SHOPPING_NEEDS_FIELDS, true);
+  if (SHOPPING_NEEDS_FIELDS.some(field => field !== 'product' && !Object.hasOwn(source, field))) invalid('fields');
   return validateNeedsPatch(value) as ShoppingNeeds;
 }
 
@@ -251,8 +255,28 @@ export function validateAssistantReply(value: unknown): AssistantReply {
   const source = record(value, ['kind', 'text', 'options', 'needs', 'cards']);
   const kind = choice(source.kind, ASSISTANT_REPLY_KINDS, 'kind');
   const cards = list(source.cards, ASSISTANT_LIMITS.cardsMax, value => {
-    const source = record(value, ['standardProductId', 'productId', 'shopId', 'title', 'price', 'currency',
-      'capturedAt', 'priceExpiresAt', 'detailPath', 'reasons', 'caveats', 'evidenceIds']);
+    const keys = ['standardProductId', 'productId', 'shopId', 'title', 'price', 'currency',
+      'capturedAt', 'priceExpiresAt', 'detailPath', 'reasons', 'caveats', 'evidenceIds'];
+    const source = record(value, [...keys, 'offer'], true);
+    if (keys.some(key => !Object.hasOwn(source, key))) invalid('fields');
+    let offer: AssistantReply['cards'][number]['offer'];
+    if (Object.hasOwn(source, 'offer')) {
+      const entry = record(source.offer, ['name', 'shop', 'spec', 'productUrl', 'tags']);
+      const productUrl = entry.productUrl === '' ? '' : text(entry.productUrl, 'product URL', 2048);
+      if (productUrl) {
+        const url = new URL(productUrl);
+        if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) invalid('product URL');
+      }
+      offer = {
+        name: text(entry.name, 'offer name', 240), shop: text(entry.shop, 'shop', 240),
+        spec: entry.spec === '' ? '' : text(entry.spec, 'spec', 2000, true), productUrl,
+        tags: list(entry.tags, 100, value => {
+          const tag = record(value, ['name', 'value']);
+          return { name: text(tag.name, 'tag name', 64), value: text(tag.value, 'tag value', 2000, true) };
+        }),
+      };
+      if (new TextEncoder().encode(JSON.stringify(offer)).length > 12 * 1024) invalid('offer size');
+    }
     const standardProductId = id(source.standardProductId);
     const productId = id(source.productId);
     const capturedAt = timestamp(source.capturedAt);
@@ -269,6 +293,7 @@ export function validateAssistantReply(value: unknown): AssistantReply {
       reasons: notes(source.reasons, 1), caveats: notes(source.caveats),
       evidenceIds: unique(list(source.evidenceIds, ASSISTANT_LIMITS.cardEvidenceMax,
         item => text(item, 'evidence id', ASSISTANT_LIMITS.identifierMaxChars), 1)),
+      ...(offer ? { offer } : {}),
     };
   });
   unique(cards.map(card => card.productId));
