@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { emptyShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
 import AssistantPage from './AssistantPage.jsx';
+import { createAssistantApi } from './assistant-api.js';
 import App from './App.jsx';
 
 const sessionId = '11111111-1111-4111-8111-111111111111';
@@ -28,7 +29,296 @@ function mockApi(overrides = {}) {
     ...overrides,
   };
 }
-afterEach(() => { cleanup(); sessionStorage.clear(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+test('an open SSE connection updates visible reasoning before the final answer arrives', async () => {
+  let stream;
+  let active;
+  const streamingApi = createAssistantApi(async () => new Response(new ReadableStream({ start(controller) { stream = controller; } }),
+    { headers: { 'Content-Type': 'text/event-stream' } }));
+  const api = mockApi({ subscribeTurn: (...args) => { active = args[1]; return streamingApi.subscribeTurn(...args); } });
+  render(<AssistantPage api={api} />);
+  fireEvent.change(await screen.findByRole('textbox'), { target: { value: '写代码' } });
+  fireEvent.click(screen.getByRole('button', { name: '设置', exact: true }));
+  const setting = screen.getByRole('checkbox', { name: '默认展开思考过程' });
+  expect(setting).not.toBeChecked();
+  fireEvent.click(setting);
+  fireEvent.click(screen.getByRole('button', { name: '设置', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: '发送', exact: true }));
+  await waitFor(() => expect(stream).toBeDefined());
+  const emit = (event, data) => stream.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+  for (const text of ['先看预算', '先看预算，再看用途', '先看预算，再看用途，筛选报价']) {
+    await act(async () => emit('reasoning', { turnId: active.id, text }));
+    expect(await screen.findByText(text)).toBeVisible();
+    expect(screen.getByRole('button', { name: '停止', exact: true })).toBeVisible();
+    expect(screen.queryByText(reply.text)).not.toBeInTheDocument();
+  }
+  await act(async () => emit('snapshot', { ...active, ...done, clientMessageId: active.clientMessageId }));
+  expect(await screen.findByText(reply.text)).toBeVisible();
+  expect(screen.getByText('先看预算，再看用途，筛选报价')).toBeVisible();
+});
+
+test('reasoning expands, updates live and remains attached to its completed message', async () => {
+  let update, complete;
+  let sent = 0;
+  const api = mockApi({
+    sendTurn: vi.fn(async (_credentials, input) => ({ snapshot: turn({ id: String(++sent),
+      clientMessageId: input.clientMessageId, inputText: input.text }), created: true })),
+    subscribeTurn: vi.fn((_credentials, active, _onSnapshot, _signal, onReasoning) => {
+    update = onReasoning;
+    return new Promise(resolve => { complete = () => resolve({ ...done, ...active, status: 'succeeded', phase: 'succeeded', reply }); });
+  }) });
+  render(<AssistantPage api={api} />);
+  const input = await screen.findByRole('textbox');
+  fireEvent.change(input, { target: { value: '写代码' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送', exact: true }));
+  await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalled());
+  await act(async () => update('先看预算'));
+  const summary = screen.getByText('思考中');
+  expect(summary.closest('details')).not.toHaveAttribute('open');
+  expect(screen.getByText('先看预算')).not.toBeVisible();
+  fireEvent.click(summary);
+  expect(screen.getByText('先看预算')).toBeVisible();
+  const thought = screen.getByText('先看预算');
+  Object.defineProperties(thought, { scrollHeight: { configurable: true, value: 500 }, clientHeight: { configurable: true, value: 240 } });
+  await act(async () => update('先看预算，再筛选商品。<script>test</script>'));
+  expect(screen.getByText('先看预算，再筛选商品。<script>test</script>')).toBeVisible();
+  expect(thought.scrollTop).toBe(500);
+  thought.scrollTop = 10;
+  fireEvent.scroll(thought);
+  await act(async () => update('正在对比报价'));
+  expect(thought.scrollTop).toBe(10);
+  fireEvent.click(summary);
+  await act(async () => update('先看预算，再筛选商品。<script>test</script>'));
+  expect(summary.closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(summary);
+  await act(async () => complete());
+  expect(await screen.findByText(reply.text)).toBeVisible();
+  expect(screen.getByText('思考过程')).toBeVisible();
+  expect(screen.getByText('先看预算，再筛选商品。<script>test</script>')).toBeInTheDocument();
+  expect(document.querySelector('.assistant-reasoning script')).toBeNull();
+  fireEvent.change(input, { target: { value: '继续找' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送', exact: true }));
+  await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalledTimes(2));
+  expect(screen.queryByText('思考中')).not.toBeInTheDocument();
+  await act(async () => update('第二轮思考'));
+  expect(screen.getByText('第二轮思考')).toBeInTheDocument();
+  expect(screen.getByText('第二轮思考')).not.toBeVisible();
+  expect(screen.getAllByText('先看预算，再筛选商品。<script>test</script>')).toHaveLength(1);
+  await act(async () => complete());
+});
+
+test('restored turns show live reasoning and ignore fragments after cancellation', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  let update;
+  let latest = turn({ status: 'running', phase: 'understanding' });
+  const api = mockApi({
+    readSession: vi.fn(async () => ({ id: sessionId, revision: 0, needs: emptyShoppingNeeds(), turns: [latest] })),
+    subscribeTurn: vi.fn((_credentials, _active, _onSnapshot, signal, onReasoning) => {
+      update = onReasoning;
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('stopped')), { once: true }));
+    }),
+    cancelTurn: vi.fn(async () => {
+      latest = turn({ status: 'cancelled', phase: 'cancelled', eventVersion: 2 });
+      return latest;
+    }),
+  });
+  render(<AssistantPage api={api} />);
+  await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalled());
+  await act(async () => update('恢复后的思考'));
+  expect(screen.getByText('思考中')).toBeVisible();
+  expect(screen.getByText('恢复后的思考')).not.toBeVisible();
+  fireEvent.click(screen.getByText('思考中'));
+  expect(screen.getByText('恢复后的思考')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '停止', exact: true }));
+  expect(await screen.findByText('已停止查找。你可以继续提问。')).toBeVisible();
+  await act(async () => update('取消后的分块'));
+  expect(screen.queryByText('取消后的分块')).not.toBeInTheDocument();
+  expect(screen.getByText('恢复后的思考')).toBeInTheDocument();
+  expect(screen.queryByText('思考中')).not.toBeInTheDocument();
+});
+
+test('reasoning expansion preference survives remount and can be turned off', async () => {
+  const api = mockApi();
+  let view = render(<AssistantPage api={api} />);
+  await screen.findByRole('textbox');
+  fireEvent.click(screen.getByRole('button', { name: '设置', exact: true }));
+  fireEvent.click(screen.getByRole('checkbox', { name: '默认展开思考过程' }));
+  view.unmount();
+  view = render(<AssistantPage api={api} />);
+  await screen.findByRole('textbox');
+  fireEvent.click(screen.getByRole('button', { name: '设置', exact: true }));
+  expect(screen.getByRole('checkbox', { name: '默认展开思考过程' })).toBeChecked();
+  fireEvent.click(screen.getByRole('checkbox', { name: '默认展开思考过程' }));
+  view.unmount();
+  render(<AssistantPage api={api} />);
+  await screen.findByRole('textbox');
+  fireEvent.click(screen.getByRole('button', { name: '设置', exact: true }));
+  expect(screen.getByRole('checkbox', { name: '默认展开思考过程' })).not.toBeChecked();
+});
+
+test('unavailable preference storage does not prevent chatting or changing the setting', async () => {
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function () {
+    if (this === localStorage) throw new Error('Storage blocked');
+    return null;
+  });
+  const originalSetItem = Storage.prototype.setItem;
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (...args) {
+    if (this === localStorage) throw new Error('Storage blocked');
+    return originalSetItem.apply(this, args);
+  });
+  render(<AssistantPage api={mockApi()} />);
+  await screen.findByRole('textbox');
+  fireEvent.click(screen.getByRole('button', { name: '设置', exact: true }));
+  const setting = screen.getByRole('checkbox', { name: '默认展开思考过程' });
+  expect(setting).not.toBeChecked();
+  fireEvent.click(setting);
+  expect(setting).toBeChecked();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+const referencePrice = { country: 'us', countryName: '美国', currency: 'USD', amount: 19.99,
+  cnyAmount: 139.93, capturedAt: '2026-11-01T00:00:00Z', stale: false,
+  sourceUrl: 'https://apps.apple.com/us/app/id6448311069' };
+const referencePlan = { id: 'plus-month', name: 'ChatGPT Plus - Monthly', kind: 'subscription', period: 'P1M', prices: [referencePrice] };
+const referenceCard = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
+  price: '61.68', currency: 'CNY', capturedAt: '2026-11-01T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
+  detailPath: '/products/42', reasons: ['商家报价'], caveats: ['下单前核对'], evidenceIds: ['e1'],
+  offer: { name: 'Plus 代充', shop: 'AI源头', spec: '', productUrl: '', tags: [{ name: 'duration', value: '1 month' }, { name: 'region', value: 'us' }] } };
+async function renderReferenceCards(plans = [referencePlan], cards = [referenceCard]) {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const fetcher = vi.fn(async () => Response.json({ exchangeDate: '2026-11-01',
+    apps: [{ name: 'ChatGPT', plans }] }));
+  vi.stubGlobal('fetch', fetcher);
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards } }] })) })} />);
+  await screen.findAllByRole('button', { name: '查看报价详情' });
+  await waitFor(() => expect(fetcher).toHaveBeenCalled());
+  return fetcher;
+}
+
+test('cards label merchants and show their own region official price without a link', async () => {
+  const india = { ...referencePrice, country: 'in', countryName: '印度', currency: 'INR', amount: 1599,
+    cnyAmount: 130, sourceUrl: 'https://apps.apple.com/in/app/id6448311069' };
+  const fetcher = await renderReferenceCards([{ ...referencePlan, prices: [referencePrice, india,
+    { ...referencePrice, cnyAmount: 1, stale: true }, { ...referencePrice, cnyAmount: null },
+  ] }], [referenceCard, { ...referenceCard, productId: '10', offer: { ...referenceCard.offer,
+    tags: [{ name: 'duration', value: '1 month' }, { name: 'region', value: 'in' }] } }]);
+  const us = (await screen.findByText('官方内购参考 · 美国 · 每月')).closest('article');
+  const indiaCard = screen.getByText('官方内购参考 · 印度 · 每月').closest('article');
+  expect(within(us).getByText(/19.99 USD.*约 ¥139.93/)).toBeVisible();
+  expect(within(indiaCard).getByText(/1599 INR.*约 ¥130/)).toBeVisible();
+  expect(screen.queryByRole('link', { name: /官方内购参考/ })).not.toBeInTheDocument();
+  expect(screen.getAllByText('店铺：AI源头')).toHaveLength(2);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher).toHaveBeenCalledWith('/api/official-reference/catalog', expect.objectContaining({ credentials: 'omit' }));
+  fireEvent.click(within(us).getByRole('button', { name: '查看报价详情' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('同地区、同套餐、同周期');
+});
+
+test.each([
+  ['different plan', [{ ...referencePlan, name: 'ChatGPT Pro' }], referenceCard],
+  ['different period', [{ ...referencePlan, period: 'P1Y' }], referenceCard],
+  ['unavailable country', [referencePlan], { ...referenceCard, offer: { ...referenceCard.offer,
+    tags: [{ name: 'duration', value: '1 month' }, { name: 'region', value: 'in' }] } }],
+  ['thirty days is not one month', [referencePlan], { ...referenceCard, offer: { ...referenceCard.offer,
+    tags: [{ name: 'duration', value: '30 days' }, { name: 'region', value: 'us' }] } }],
+  ['ambiguous SKU', [referencePlan, { ...referencePlan, id: 'other', name: 'ChatGPT Plus - Monthly #2' }], referenceCard],
+  ['ambiguous SKU with unknown duration', [referencePlan, { ...referencePlan, id: 'other', name: 'ChatGPT Plus - Monthly #2' }],
+    { ...referenceCard, offer: { ...referenceCard.offer, tags: [] } }],
+  ['unavailable country with unknown duration', [referencePlan], { ...referenceCard, offer: { ...referenceCard.offer,
+    tags: [{ name: 'region', value: 'in' }] } }],
+  ['stale price', [{ ...referencePlan, prices: [{ ...referencePrice, stale: true }] }], referenceCard],
+  ['missing exchange rate', [{ ...referencePlan, prices: [{ ...referencePrice, cnyAmount: null }] }], referenceCard],
+  ['unsafe source', [{ ...referencePlan, prices: [{ ...referencePrice, sourceUrl: 'javascript:alert(1)' }] }], referenceCard],
+  ['non-subscription', [{ ...referencePlan, kind: 'purchase' }], referenceCard],
+])('does not invent an official comparison for %s', async (_name, plans, card) => {
+  await renderReferenceCards(plans, [card]);
+  expect(screen.queryByText(/官方内购参考/)).not.toBeInTheDocument();
+  expect(screen.getByText('¥61.68')).toBeVisible();
+});
+
+test.each([['12 months', 'P1Y', '每年'], ['1 year', 'P1Y', '每年'], ['1 week', 'P1W', '每周']])(
+  'reference matches equivalent billing durations: %s', async (duration, period, label) => {
+  await renderReferenceCards([{ ...referencePlan, period, name: 'Plus' }],
+    [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'duration', value: duration }, { name: 'region', value: 'us' }] } }]);
+  expect(await screen.findByText(`官方内购参考 · 美国 · ${label}`)).toBeVisible();
+});
+
+test.each([
+  ['missing', []],
+  ['unknown', [{ name: 'duration', value: 'unknown' }]],
+  ['conflicting', [{ name: 'duration', value: '1 month' }, { name: 'duration', value: '12 months' }]],
+])('reference uses the cheapest official billing period when quote duration is %s', async (_name, tags) => {
+  await renderReferenceCards([referencePlan, { ...referencePlan, id: 'plus-year', period: 'P1Y',
+    prices: [{ ...referencePrice, amount: 15, cnyAmount: 105 },
+      { ...referencePrice, country: 'in', countryName: '印度', amount: 1, cnyAmount: 7 }] }],
+  [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [...tags, { name: 'region', value: 'us' }] } }]);
+  expect(await screen.findByText('官方内购参考 · 美国 · 每年')).toBeVisible();
+  expect(screen.getByText(/15 USD.*约 ¥105/)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('报价周期未明确');
+  expect(screen.getByRole('dialog')).not.toHaveTextContent('同周期');
+});
+
+test('reference defaults to the cheapest price when both region and duration are missing', async () => {
+  await renderReferenceCards([{ ...referencePlan, prices: [referencePrice,
+    { ...referencePrice, country: 'ph', countryName: '菲律宾', currency: 'PHP', amount: 999, cnyAmount: 104.29 }] },
+    { ...referencePlan, id: 'plus-year', period: 'P1Y', prices: [{ ...referencePrice, amount: 200, cnyAmount: 1400 }] }],
+  [{ ...referenceCard, offer: { ...referenceCard.offer,
+    tags: [{ name: 'delivery', value: 'top_up' }, { name: 'access', value: 'exclusive' }] } }]);
+  expect(await screen.findByText('官方内购参考 · 菲律宾 · 每月')).toBeVisible();
+  expect(screen.getByText(/999 PHP.*约 ¥104.29/)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('报价地区未明确');
+  expect(screen.getByRole('dialog')).toHaveTextContent('报价周期未明确');
+});
+
+test.each(['US', '美国', '美区', 'usa'])('reference recognizes explicit region alias %s', async region => {
+  await renderReferenceCards([{ ...referencePlan, prices: [referencePrice,
+    { ...referencePrice, country: 'in', countryName: '印度', cnyAmount: 130 }] }], [{ ...referenceCard, offer: { ...referenceCard.offer,
+    tags: [...referenceCard.offer.tags, { name: '地区', value: region }, { name: 'payment_region', value: 'in' }] } }]);
+  expect(await screen.findByText('官方内购参考 · 美国 · 每月')).toBeVisible();
+});
+
+test.each([
+  ['missing region', []],
+  ['unknown region', [{ name: 'region', value: 'unknown' }]],
+  ['global region', [{ name: 'region', value: 'global' }]],
+  ['random region', [{ name: 'region', value: 'random' }]],
+  ['broad region', [{ name: 'region', value: 'eu' }]],
+  ['conflicting regions', [{ name: 'region', value: 'us' }, { name: 'region', value: 'in' }]],
+  ['partially unknown region', [{ name: 'region', value: 'us' }, { name: 'region', value: 'unknown' }]],
+  ['other region fields', ['payment_region', 'registration_region', 'recommended_ip_region', 'region_options']
+    .map(name => ({ name, value: 'us' }))],
+])('reference defaults to the cheapest valid price for %s', async (_name, tags) => {
+  await renderReferenceCards([{ ...referencePlan, prices: [referencePrice,
+    { ...referencePrice, country: 'in', countryName: '印度', currency: 'INR', amount: 1599, cnyAmount: 130 },
+    { ...referencePrice, cnyAmount: 1, stale: true }, { ...referencePrice, cnyAmount: null },
+  ] }], [{ ...referenceCard, offer: { ...referenceCard.offer,
+    tags: [{ name: 'duration', value: '1 month' }, ...tags] } }]);
+  expect(await screen.findByText('官方内购参考 · 印度 · 每月')).toBeVisible();
+  expect(screen.getByText(/1599 INR.*约 ¥130/)).toBeVisible();
+  expect(screen.queryByRole('link', { name: /官方内购参考/ })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('报价地区未明确');
+});
+
+test('stale matching region does not fall back to a fresh foreign price', async () => {
+  await renderReferenceCards([{ ...referencePlan, prices: [{ ...referencePrice, stale: true },
+    { ...referencePrice, country: 'in', countryName: '印度' }] }]);
+  expect(screen.queryByText(/官方内购参考/)).not.toBeInTheDocument();
+});
+
+test('reference catalog failure leaves merchant quotes and details usable', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [referenceCard] } }] })) })} />);
+  fireEvent.click(await screen.findByRole('button', { name: '查看报价详情' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('¥61.68');
+  expect(screen.queryByText(/官方内购参考/)).not.toBeInTheDocument();
+});
 
 test('each recommendation opens its exact merchant quote and returns focus on close', async () => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
@@ -77,7 +367,7 @@ test('quote cards show compact facts and grouped purchase notes without repeatin
   render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
     needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
   const article = (await screen.findByRole('heading', { name: 'ChatGPT Plus' })).closest('article');
-  expect(within(article).getByText('测试商家')).toBeVisible();
+  expect(within(article).getByText('店铺：测试商家')).toBeVisible();
   expect(within(article).getByText('¥64.9')).toBeVisible();
   expect(within(article).getByText('代充 · 1个月')).toBeVisible();
   expect(within(article).queryByRole('group', { name: '商品标签' })).not.toBeInTheDocument();
@@ -282,7 +572,7 @@ test.each(['recommendation', 'comparison'])('refresh restores compact %s cards a
   expect(screen.queryByText('月度订阅')).not.toBeInTheDocument();
   expect(screen.queryByText('完整规格描述')).not.toBeInTheDocument();
   expect(screen.queryByText('下单前确认库存')).not.toBeInTheDocument();
-  expect(screen.getByText('报价已过期，请重新核对')).toBeVisible();
+  expect(screen.queryByText('报价已过期，请重新核对')).not.toBeInTheDocument();
   expect(screen.queryByText('补充报价依据')).not.toBeInTheDocument();
   expect(screen.getByText('本次回复的完整说明')).toBeVisible();
   expect(screen.queryByText('推荐说明')).not.toBeInTheDocument();
@@ -291,6 +581,7 @@ test.each(['recommendation', 'comparison'])('refresh restores compact %s cards a
   fireEvent.click(screen.getByRole('button', { name: /查看报价详情/ }));
   expect(within(screen.getByRole('dialog')).getByText('下单前确认库存')).toBeVisible();
   expect(within(screen.getByRole('dialog')).getByText('补充报价依据')).toBeVisible();
+  expect(screen.queryByText('报价已过期，请重新核对')).not.toBeInTheDocument();
   expect(screen.getByText(/完整规格描述/)).toBeVisible();
   expect(screen.queryByRole('link', { name: '按条件浏览商品' })).not.toBeInTheDocument();
   expect(api.sendTurn).not.toHaveBeenCalled();
@@ -382,9 +673,40 @@ test('expired session asks for a new conversation instead of silently replacing 
   expect(screen.queryByRole('textbox', { name: '告诉助手你的需求' })).not.toBeInTheDocument();
 });
 
+test('an unavailable conversation can be cleared from the loading error only after confirmation', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const api = mockApi({
+    readSession: vi.fn(async () => { throw Object.assign(new Error('这段对话已无法继续，请清空对话后重新提问。'), { status: 404 }); }),
+    deleteSession: vi.fn(async () => { throw Object.assign(new Error('not found'), { status: 404 }); }),
+  });
+  render(<AssistantPage api={api} />);
+  await screen.findByRole('alert');
+  fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
+  expect(screen.getByRole('button', { name: '重试连接' })).toBeDisabled();
+  expect(api.deleteSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '取消' }));
+  expect(JSON.parse(sessionStorage.getItem('shopping-assistant'))).toEqual(credentials);
+  expect(screen.getByRole('button', { name: '清空对话' })).toHaveFocus();
+  expect(api.createSession).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
+  fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
+  expect(await screen.findByRole('textbox', { name: '告诉助手你的需求' })).not.toBeDisabled();
+  expect(api.deleteSession).toHaveBeenCalledTimes(1);
+  expect(api.createSession).toHaveBeenCalledTimes(1);
+});
+
 test.each([
-  ['cancelled', null, /已停止本轮/],
-  ['failed', 'deadline_exceeded', /等待超时/],
+  ['cancelled', null, '已停止查找。你可以继续提问。'],
+  ['failed', 'deadline_exceeded', '等待回复超时，请进群联系管理员处理。'],
+  ['failed', 'TURN_TIMEOUT', '等待回复超时，请进群联系管理员处理。'],
+  ['failed', 'MODEL_INVALID_RESPONSE', '这次回复没能正常生成，请点击“重试”。'],
+  ['failed', 'MODEL_UNAVAILABLE', '导购服务出现异常，请进群联系管理员处理。'],
+  ['failed', 'INPUT_TOO_LARGE', '对话内容太长，请清空对话后重新提问。'],
+  ['failed', 'EVIDENCE_TOO_LARGE', '导购服务出现异常，请进群联系管理员处理。'],
+  ['failed', 'REQUEST_OUTCOME_UNKNOWN', '导购服务出现异常，请进群联系管理员处理。'],
+  ['failed', 'RESULT_NOT_SAVED', '导购服务出现异常，请进群联系管理员处理。'],
+  ['failed', 'UNKNOWN_FAILURE', '导购服务出现异常，请进群联系管理员处理。'],
+  ['failed', 'CONSTRUCTOR', '导购服务出现异常，请进群联系管理员处理。'],
 ])('restored %s turn exposes a readable terminal state and permits a new message', async (status, errorCode, expected) => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 0, needs: emptyShoppingNeeds(),
@@ -392,6 +714,69 @@ test.each([
   render(<AssistantPage api={api} />);
   expect(await screen.findByText(expected)).toBeInTheDocument();
   expect(screen.getByRole('textbox')).not.toBeDisabled();
+  expect(Boolean(screen.queryByRole('button', { name: '进群联系管理员' })))
+    .toBe(status === 'failed' && !['INPUT_TOO_LARGE', 'MODEL_INVALID_RESPONSE'].includes(errorCode));
+});
+
+test('a failed live query gives administrator contact guidance without exposing internal diagnostics or claiming the requirements were saved', async () => {
+  const api = mockApi({ subscribeTurn: vi.fn(async (_credentials, active) => ({ ...active,
+    status: 'failed', phase: 'explaining', eventVersion: 2, errorCode: 'MODEL_UNAVAILABLE' })) });
+  render(<AssistantPage api={api} />);
+  fireEvent.change(await screen.findByRole('textbox'), { target: { value: '我想找一个靠谱的代充，gpt plus会员的' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  expect(await screen.findByText('导购服务出现异常，请进群联系管理员处理。')).toBeVisible();
+  expect(screen.queryByText(/回答无效|生成可用的推荐|MODEL_INVALID_RESPONSE|已确认的需求|本轮|这次未能完成/)).not.toBeInTheDocument();
+  expect(screen.getByRole('textbox')).not.toBeDisabled();
+  expect(api.sendTurn).toHaveBeenCalledTimes(1);
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '保留草稿' } });
+  const contact = screen.getByRole('button', { name: '进群联系管理员' });
+  contact.focus();
+  fireEvent.click(contact);
+  const community = screen.getByRole('dialog', { name: 'QQ 交流群' });
+  expect(within(community).getByRole('textbox', { name: 'QQ 群号' })).toHaveValue('346347792');
+  expect(within(community).getByAltText('QQ 群二维码')).toBeVisible();
+  fireEvent.click(within(community).getByRole('button', { name: '关闭交流群弹窗' }));
+  expect(contact).toHaveFocus();
+  expect(input).toHaveValue('保留草稿');
+  expect(api.sendTurn).toHaveBeenCalledTimes(1);
+});
+
+test.each(['initialization', 'subscription', 'clearing'])('server failure during %s provides group contact without losing conversation', async stage => {
+  const { createAssistantApi } = await import('./assistant-api.js');
+  let failure;
+  try { await createAssistantApi(async () => new Response('private provider details', { status: 503 })).status(); }
+  catch (error) { failure = error; }
+  const api = mockApi();
+  if (stage === 'initialization') api.status.mockRejectedValueOnce(failure);
+  if (stage === 'subscription') api.subscribeTurn.mockRejectedValueOnce(failure);
+  if (stage === 'clearing') {
+    sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+    api.readSession.mockResolvedValue({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(), turns: [done] });
+    api.deleteSession.mockRejectedValueOnce(failure);
+  }
+  render(<AssistantPage api={api} />);
+  if (stage === 'subscription') {
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: '买plus呢' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  }
+  if (stage === 'clearing') {
+    await screen.findByText(reply.text);
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '清空对话' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认清空' }));
+  }
+  const contact = await screen.findByRole('button', { name: '进群联系管理员' });
+  expect(screen.getByRole('alert')).toHaveTextContent('请进群联系管理员处理');
+  expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
+  fireEvent.click(contact);
+  expect(screen.getByRole('dialog', { name: 'QQ 交流群' })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '关闭交流群弹窗' }));
+  if (stage === 'clearing') {
+    expect(screen.getByText(reply.text)).toBeVisible();
+    expect(JSON.parse(sessionStorage.getItem('shopping-assistant'))).toEqual(credentials);
+  }
+  expect(api.sendTurn).toHaveBeenCalledTimes(stage === 'subscription' ? 1 : 0);
 });
 
 test('restored no-match keeps the authoritative hard budget and displays no invented cards', async () => {
@@ -575,7 +960,7 @@ test('unknown pending UUID without server input never invents a replay after rel
   sessionStorage.setItem('shopping-assistant', JSON.stringify({ ...credentials, pendingMessageId: done.clientMessageId }));
   const api = mockApi();
   render(<AssistantPage api={api} />);
-  expect(await screen.findByRole('alert')).toHaveTextContent(/无法确认/);
+  expect(await screen.findByRole('alert')).toHaveTextContent(/无法找回上一条消息/);
   expect(screen.getByRole('textbox')).toBeDisabled();
   expect(api.sendTurn).not.toHaveBeenCalled();
   expect(api.createSession).not.toHaveBeenCalled();
@@ -669,7 +1054,7 @@ test('context exceeding the request limit preserves draft and can be disabled to
   expect(input).toHaveValue(draft);
   expect(screen.getByRole('alert')).toHaveTextContent('2,000');
   fireEvent.click(screen.getByRole('button', { name: '设置' }));
-  fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.click(screen.getByRole('checkbox', { name: '识别当前筛选' }));
   fireEvent.click(screen.getByRole('button', { name: '发送' }));
   await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
   expect(api.sendTurn.mock.calls[0][1].text).toBe(draft);
@@ -701,3 +1086,90 @@ test.each(['/?platform=other', '/?platform=unknown', '/guide?platform=anthropic'
   expect(screen.getByRole('checkbox', { name: '识别当前筛选' })).toBeChecked();
   },
 );
+
+test('invalid model replies allow two explicit retries of the exact input, then offer administrator contact', async () => {
+  const original = '当前页面筛选：ChatGPT / Codex\n买plus呢';
+  let attempt = 0;
+  const api = mockApi({
+    sendTurn: vi.fn(async (_credentials, input) => ({ snapshot: turn({ id: String(++attempt), inputText: input.text,
+      clientMessageId: input.clientMessageId, expectedRevision: input.expectedRevision }), created: true })),
+    subscribeTurn: vi.fn(async (_credentials, active) => ({ ...active, status: 'failed', phase: 'understanding',
+      errorCode: 'MODEL_INVALID_RESPONSE', eventVersion: 2 })),
+  });
+  render(<AssistantPage api={api} embedded catalogPlatform="openai" />);
+  fireEvent.change(await screen.findByRole('textbox'), { target: { value: '买plus呢' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  for (let retry = 1; retry <= 2; retry++) {
+    const button = await screen.findByRole('button', { name: '重试' });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    expect(api.sendTurn).toHaveBeenCalledTimes(retry);
+    expect(screen.queryByRole('button', { name: '进群联系管理员' })).not.toBeInTheDocument();
+    fireEvent.click(button);
+  }
+  expect(await screen.findByText('重试后仍未能正常回复，请进群联系管理员处理。')).toBeVisible();
+  expect(screen.queryByRole('button', { name: '重试' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '进群联系管理员' })).toBeVisible();
+  expect(api.sendTurn).toHaveBeenCalledTimes(3);
+  expect(new Set(api.sendTurn.mock.calls.map(([, input]) => input.clientMessageId)).size).toBe(3);
+  for (const [, input] of api.sendTurn.mock.calls) expect(input).toMatchObject({ text: original, expectedRevision: 0 });
+});
+
+test.each([1, 2, 3])('restoring %i consecutive invalid replies retains the retry allowance', async count => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const turns = Array.from({ length: count }, (_, i) => turn({ id: String(i + 1), status: 'failed',
+    phase: 'understanding', errorCode: 'MODEL_INVALID_RESPONSE' }));
+  const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 0, needs: emptyShoppingNeeds(), turns })) });
+  render(<AssistantPage api={api} />);
+  await screen.findByRole('textbox');
+  expect(Boolean(screen.queryByRole('button', { name: '重试' }))).toBe(count < 3);
+  expect(Boolean(screen.queryByRole('button', { name: '进群联系管理员' }))).toBe(count === 3);
+  expect(api.sendTurn).not.toHaveBeenCalled();
+});
+
+test('retry succeeds using the existing requirements and removes the retry action', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const needs = { ...emptyShoppingNeeds(), purpose: '写代码', platform: 'openai' };
+  const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 4, needs,
+    turns: [turn({ status: 'failed', phase: 'understanding', errorCode: 'MODEL_INVALID_RESPONSE', expectedRevision: 4 })] })),
+    sendTurn: vi.fn(async (_credentials, input) => ({ snapshot: turn({ id: '2', clientMessageId: input.clientMessageId,
+      inputText: input.text, expectedRevision: input.expectedRevision }), created: true })),
+    subscribeTurn: vi.fn(async (_credentials, active) => ({ ...active, status: 'succeeded', phase: 'succeeded',
+      reply: { ...reply, needs } })),
+  });
+  render(<AssistantPage api={api} />);
+  fireEvent.click(await screen.findByRole('button', { name: '重试' }));
+  expect(await screen.findByText(reply.text)).toBeVisible();
+  expect(api.sendTurn.mock.calls[0][1]).toMatchObject({ text: '写代码', expectedRevision: 4 });
+  expect(screen.queryByRole('button', { name: '重试' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '进群联系管理员' })).not.toBeInTheDocument();
+});
+
+test.each(['different input', 'successful reply'])('a %s starts a fresh retry allowance', async scenario => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const failed = turn({ status: 'failed', errorCode: 'MODEL_INVALID_RESPONSE' });
+  const turns = [{ ...failed, id: '1' }, scenario === 'successful reply' ? { ...done, id: '2' } : { ...failed, id: '2' },
+    { ...failed, id: '3', inputText: scenario === 'different input' ? '读论文' : '写代码' }];
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 0,
+    needs: emptyShoppingNeeds(), turns })) })} />);
+  expect(await screen.findByRole('button', { name: '重试' })).toBeVisible();
+  expect(screen.queryByRole('button', { name: '进群联系管理员' })).not.toBeInTheDocument();
+});
+
+test('repeated clicks on retry cannot submit concurrent requests', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  let finish;
+  const api = mockApi({
+    readSession: vi.fn(async () => ({ id: sessionId, revision: 0, needs: emptyShoppingNeeds(),
+      turns: [turn({ status: 'failed', errorCode: 'MODEL_INVALID_RESPONSE' })] })),
+    sendTurn: vi.fn(async (_credentials, input) => ({ snapshot: turn({ id: '2', inputText: input.text,
+      clientMessageId: input.clientMessageId }), created: true })),
+    subscribeTurn: vi.fn(async () => new Promise(resolve => { finish = resolve; })),
+  });
+  render(<AssistantPage api={api} />);
+  const button = await screen.findByRole('button', { name: '重试' });
+  fireEvent.click(button);
+  fireEvent.click(button);
+  await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalledTimes(1));
+  expect(api.sendTurn).toHaveBeenCalledTimes(1);
+  await act(async () => finish({ ...done, id: '2' }));
+});

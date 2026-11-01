@@ -35,7 +35,7 @@ export default function ModalDialog({ open, onClose, children, className = '', .
 
   return <dialog {...props} ref={ref} className={`modal-dialog ${className}`} aria-modal="true"
     onKeyDown={onKeyDown}
-    onCancel={event => { event.preventDefault(); onClose(); }}
+    onCancel={event => { event.preventDefault(); event.stopPropagation(); onClose(); }}
     onClose={event => { if (open && !event.currentTarget.open) onClose(); }}
     onPointerDown={event => { backdropPointerDown.current = isBackdropEvent(event); }}
     onPointerCancel={() => { backdropPointerDown.current = false; }}

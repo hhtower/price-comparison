@@ -3,16 +3,20 @@ import {
 } from '@price-comparison/catalog/assistant-contract';
 
 const ROOT = '/api/assistant';
+export const ASSISTANT_SERVICE_ERROR = '导购服务出现异常，请进群联系管理员处理。';
+function serviceError(message = ASSISTANT_SERVICE_ERROR) {
+  return Object.assign(new Error(message), { contactAdmin: true });
+}
 function publicError(status) {
-  const message = status === 404 || status === 410 ? '会话已失效，请开始新对话。'
-    : status === 409 ? '会话版本已变化，请重新连接以同步状态。'
-      : status === 429 ? '请求较多，请稍后重新连接。'
-        : status === 400 || status === 422 ? '请检查输入内容和长度。'
-          : '导购服务暂时不可用，请稍后重新连接。';
-  return Object.assign(new Error(message), { status });
+  const message = status === 404 || status === 410 ? '这段对话已无法继续，请清空对话后重新提问。'
+    : status === 409 ? '对话记录已更新，请重新连接查看最新消息。'
+      : status === 429 ? '访问太频繁，请稍后重新连接。'
+        : status === 400 || status === 422 ? '请输入 1 至 2,000 字的问题。'
+          : ASSISTANT_SERVICE_ERROR;
+  return Object.assign(new Error(message), { status, contactAdmin: ![400, 404, 409, 410, 422, 429].includes(status) });
 }
 function checked(parse) {
-  try { return parse(); } catch { throw new Error('导购服务响应异常，请重新连接。'); }
+  try { return parse(); } catch { throw serviceError('暂时无法读取回复，请进群联系管理员处理。'); }
 }
 export function createAssistantApi(fetcher = (...args) => fetch(...args)) {
   const sessionPath = credentials => '/sessions/' + encodeURIComponent(credentials.sessionId);
@@ -29,12 +33,12 @@ export function createAssistantApi(fetcher = (...args) => fetch(...args)) {
       });
     } catch (error) {
       if (signal?.aborted || error?.name === 'AbortError') throw error;
-      throw new Error('连接中断，请重新连接以确认消息状态。');
+      throw new Error('连接中断，请重新连接查看回复。');
     }
     if (!response.ok) throw publicError(response.status);
     if (stream) return response;
     if (response.status === 204) return undefined;
-    try { return await response.json(); } catch { throw new Error('导购服务响应异常，请重新连接。'); }
+    try { return await response.json(); } catch { throw serviceError('暂时无法读取回复，请进群联系管理员处理。'); }
   }
   function checkTurn(value, credentials, id) {
     return checked(() => {
@@ -51,12 +55,12 @@ export function createAssistantApi(fetcher = (...args) => fetch(...args)) {
       return session;
     });
   }
-  async function subscribeTurn(credentials, initial, onSnapshot, signal) {
+  async function subscribeTurn(credentials, initial, onSnapshot, signal, onReasoning) {
     let latest = checkTurn(initial, credentials, initial.id);
     const publish = value => {
       const snapshot = checkTurn(value, credentials, initial.id);
       if (snapshot.clientMessageId !== initial.clientMessageId || snapshot.inputText !== initial.inputText
-        || snapshot.expectedRevision !== initial.expectedRevision) throw new Error('导购服务响应异常，请重新连接。');
+        || snapshot.expectedRevision !== initial.expectedRevision) throw serviceError('暂时无法读取回复，请进群联系管理员处理。');
       if (snapshot.eventVersion > latest.eventVersion) {
         latest = snapshot;
         if (!signal?.aborted) onSnapshot(snapshot);
@@ -90,8 +94,15 @@ export function createAssistantApi(fetcher = (...args) => fetch(...args)) {
             if (frame.length > ASSISTANT_LIMITS.sseBufferMaxBytes) throw new Error();
             const lines = frame.split(/\r?\n/u);
             const event = lines.find(line => line.startsWith('event:'))?.slice(6).trim();
-            if (event !== 'snapshot') continue;
+            if (event !== 'snapshot' && event !== 'reasoning') continue;
             const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).replace(/^ /u, '')).join('\n');
+            if (event === 'reasoning') {
+              let thought;
+              try { thought = JSON.parse(data); } catch { continue; }
+              if (!signal?.aborted && thought?.turnId === initial.id && typeof thought.text === 'string'
+                && thought.text.length <= ASSISTANT_LIMITS.reasoningMaxChars) onReasoning?.(thought.text);
+              continue;
+            }
             if (data && publish(JSON.parse(data))) return latest;
           }
           if (buffer.length > ASSISTANT_LIMITS.sseBufferMaxBytes) throw new Error();
@@ -107,21 +118,21 @@ export function createAssistantApi(fetcher = (...args) => fetch(...args)) {
       signal?.throwIfAborted();
       const session = await readSession(credentials, signal);
       const current = session.turns.find(turn => turn.id === initial.id);
-      if (!current) throw new Error('轮次已失效，请重新连接。');
+      if (!current) throw new Error('没有找到这条消息，请重新连接查看对话记录。');
       if (publish(current)) return latest;
     }
-    throw new Error('进度连接已中断，请重新连接；消息仍保留在服务器。');
+    throw serviceError('暂时无法查看回复，请进群联系管理员处理，也可以点击“重新连接”查看结果。');
   }
   return {
     async status(signal) {
       const value = await request('/status', { signal });
-      if (typeof value?.enabled !== 'boolean') throw new Error('导购服务响应异常。');
+      if (typeof value?.enabled !== 'boolean') throw serviceError();
       return { enabled: value.enabled };
     },
     async createSession(signal) {
       const value = await request('/sessions', { method: 'POST', signal });
       if (typeof value?.sessionId !== 'string' || !/^[a-f0-9-]{36}$/iu.test(value.sessionId)
-        || typeof value.accessToken !== 'string' || !value.accessToken || value.revision !== 0) throw new Error('导购服务响应异常。');
+        || typeof value.accessToken !== 'string' || !value.accessToken || value.revision !== 0) throw serviceError();
       return { sessionId: value.sessionId, accessToken: value.accessToken, revision: 0 };
     },
     readSession,
@@ -133,7 +144,7 @@ export function createAssistantApi(fetcher = (...args) => fetch(...args)) {
         body: { clientMessageId, expectedRevision, text } });
       const snapshot = checkTurn(value?.snapshot, credentials);
       if (typeof value?.created !== 'boolean' || snapshot.clientMessageId !== clientMessageId
-        || snapshot.expectedRevision !== expectedRevision || snapshot.inputText !== text) throw new Error('导购服务响应异常，请重新连接。');
+        || snapshot.expectedRevision !== expectedRevision || snapshot.inputText !== text) throw serviceError('暂时无法读取回复，请进群联系管理员处理。');
       return { snapshot, created: value.created };
     },
     subscribeTurn,

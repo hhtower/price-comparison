@@ -13,6 +13,7 @@ export function selectedAssistantPlatform(embedded, value) {
 }
 
 export function AssistantHeader({ title = '选购', labels = [], recognizeFilters, onRecognizeFilters,
+  expandReasoning, onExpandReasoning,
   blocked = false, clearDisabled = false, onClear, onCollapse }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsButton = useRef(null);
@@ -48,6 +49,8 @@ export function AssistantHeader({ title = '选购', labels = [], recognizeFilter
       {settingsOpen && <div id={settingsId} className="assistant-menu-panel" role="group" aria-label="设置">
         <label><input type="checkbox" checked={recognizeFilters} disabled={blocked}
           onChange={event => onRecognizeFilters(event.target.checked)} />识别当前筛选</label>
+        <label><input type="checkbox" checked={expandReasoning}
+          onChange={event => onExpandReasoning(event.target.checked)} />默认展开思考过程</label>
         <button type="button" disabled={clearDisabled} onClick={() => {
           setSettingsOpen(false);
           onClear(settingsButton.current);

@@ -8,17 +8,21 @@ import {
 } from '@price-comparison/catalog/assistant-contract';
 import { normalizePurchaseTag, purchaseWarrantyLabel } from '@price-comparison/catalog/purchase-attributes';
 import Brand from './Brand.jsx';
-import { assistantApi } from './assistant-api.js';
+import { assistantApi, ASSISTANT_SERVICE_ERROR } from './assistant-api.js';
+import ContactAdminButton from './ContactAdminButton.jsx';
 import { displayPurchaseTagText } from './purchase-tag-values.js';
 import { formatMoney } from './money.js';
+import { readCatalog, formatPeriod } from './official-reference.js';
+import { assistantOfficialPrice } from './assistant-official-price.js';
 import OfferTagDetails, { offerConditions } from './OfferTagDetails.jsx';
 import AssistantLoading from './AssistantLoading.jsx';
 import { AssistantHeader, AssistantWelcome, AssistantPlatformChip, AssistantSendIcon, ASSISTANT_STARTERS, selectedAssistantPlatform } from './AssistantControls.jsx';
 import './assistant.css';
 
 const STORAGE_KEY = 'shopping-assistant';
+const REASONING_EXPANDED_KEY = 'shopping-assistant-reasoning-expanded';
 const ConversationContext = createContext(null);
-const PHASES = { queued: '正在排队', understanding: '正在理解需求', searching: '正在查找报价', explaining: '正在整理推荐' };
+const PHASES = { queued: '正在准备查询', understanding: '正在理解需求', searching: '正在查找报价', explaining: '正在整理推荐' };
 const PREFERENCES = { lower_price: '价格优先', simple_setup: '操作简单', longer_warranty: '质保优先' };
 
 function needsLabels(needs) {
@@ -38,7 +42,7 @@ function saveCredentials(credentials, pendingMessageId) {
       sessionId: credentials.sessionId, accessToken: credentials.accessToken,
       ...(pendingMessageId ? { pendingMessageId } : {}),
     }));
-  } catch { throw new Error('浏览器无法保存会话凭证，请允许当前标签页使用会话存储后重试。'); }
+  } catch { throw new Error('浏览器无法保存对话，请允许此网站保存数据后重试。'); }
 }
 function storedCredentials() {
   const raw = sessionStorage.getItem(STORAGE_KEY);
@@ -48,44 +52,72 @@ function storedCredentials() {
     if (!/^[a-f0-9-]{36}$/iu.test(value?.sessionId) || typeof value?.accessToken !== 'string' || !value.accessToken
       || value.pendingMessageId && !/^[a-f0-9-]{36}$/iu.test(value.pendingMessageId)) throw new Error();
     return { sessionId: value.sessionId, accessToken: value.accessToken, pendingMessageId: value.pendingMessageId };
-  } catch { throw new Error('保存的会话已失效，请开始新对话。'); }
+  } catch { throw new Error('无法读取已保存的对话，请清空对话后重新提问。'); }
 }
-function turnResult(turn) {
+function turnResult(turn, recentTurns) {
   if (turn.status === 'succeeded') {
     const reply = validateAssistantReply(turn.reply);
-    return { content: [{ type: 'text', text: reply.text }], metadata: { custom: { reply } } };
+    return { content: [{ type: 'text', text: reply.text }], metadata: { custom: { reply, turnId: turn.id } } };
   }
   const code = turn.errorCode?.toLowerCase();
-  const text = turn.status === 'cancelled' ? '已停止本轮，可以继续描述需求。'
-    : code?.includes('timeout') || code?.includes('deadline') ? '本轮等待超时，请稍后再试。'
-      : '这次未能完成，已确认的需求仍保留。可以重新发送。';
-  return { content: [{ type: 'text', text }] };
+  const invalidResponse = turn.status === 'failed' && code === 'model_invalid_response';
+  const retryExhausted = recentTurns.length === 3 && recentTurns.every(item => item.status === 'failed'
+    && item.errorCode?.toLowerCase() === 'model_invalid_response' && item.inputText === turn.inputText);
+  const retryText = invalidResponse && !retryExhausted ? turn.inputText : null;
+  const contactAdmin = turn.status !== 'cancelled' && code !== 'input_too_large' && !retryText;
+  const text = turn.status === 'cancelled' ? '已停止查找。你可以继续提问。'
+    : invalidResponse ? retryText ? '这次回复没能正常生成，请点击“重试”。' : '重试后仍未能正常回复，请进群联系管理员处理。'
+      : code?.includes('timeout') || code?.includes('deadline') ? '等待回复超时，请进群联系管理员处理。'
+      : code === 'input_too_large' ? '对话内容太长，请清空对话后重新提问。'
+        : ASSISTANT_SERVICE_ERROR;
+  return { content: [{ type: 'text', text }], metadata: { custom: { contactAdmin, retryText, turnId: turn.id } } };
 }
 function historyMessages(session) {
-  return session.turns.flatMap(turn => [
+  return session.turns.flatMap((turn, index) => [
     { id: 'user-' + turn.id, role: 'user', content: turn.inputText },
-    ...(isTurnTerminal(turn.status) ? [{ id: 'assistant-' + turn.id, role: 'assistant', ...turnResult(turn) }] : []),
+    ...(isTurnTerminal(turn.status) ? [{ id: 'assistant-' + turn.id, role: 'assistant', ...turnResult(turn, session.turns.slice(Math.max(0, index - 2), index + 1)) }] : []),
   ]);
 }
 function RunStatus() {
   const { phase, stopping } = useContext(ConversationContext);
   return <div role="status" aria-live="polite" className="assistant-run-status">
     <span className="assistant-spinner" aria-hidden="true" />
-    {stopping ? '正在停止' : PHASES[phase] ?? '正在同步会话'}
+    {stopping ? '正在停止' : PHASES[phase] ?? '正在读取最新消息'}
   </div>;
 }
 
 function RestoredRunStatus() {
   const running = useAuiState(state => state.thread.isRunning);
-  const { busy } = useContext(ConversationContext);
-  return busy && !running ? <div className="assistant-message assistant-message-assistant"><RunStatus /></div> : null;
+  const { busy, reasoning, activeTurnId } = useContext(ConversationContext);
+  return busy && !running ? <div className="assistant-message assistant-message-assistant">
+    <Reasoning text={reasoning[activeTurnId]} running /><RunStatus />
+  </div> : null;
 }
 
-function QuoteCard({ card }) {
+function Reasoning({ text, running }) {
+  const { expandReasoning } = useContext(ConversationContext);
+  const [open, setOpen] = useState(expandReasoning);
+  const content = useRef(null);
+  const following = useRef(true);
+  useEffect(() => { setOpen(expandReasoning); }, [expandReasoning]);
+  useEffect(() => {
+    if (open && following.current && content.current) content.current.scrollTop = content.current.scrollHeight;
+  }, [text, open]);
+  if (!text) return null;
+  return <details className="assistant-reasoning" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>{running ? '思考中' : '思考过程'}</summary>
+    <div ref={content} className="assistant-reasoning-text" data-streaming={running || undefined} onScroll={event => {
+      const element = event.currentTarget;
+      following.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 24;
+    }}>{text}</div>
+  </details>;
+}
+
+function QuoteCard({ card, catalog }) {
   const [open, setOpen] = useState(false);
   const offer = card.offer ?? { name: card.title, shop: `商铺 #${card.shopId}`, tags: [] };
-  const expired = Date.parse(card.priceExpiresAt) <= Date.now();
   const price = <p className="assistant-price">{formatMoney(card.price, card.currency)}</p>;
+  const reference = assistantOfficialPrice(card, catalog);
   const facts = offerConditions(offer);
   const summary = facts.filter(fact => ['delivery', 'access'].includes(fact.name) || /^duration(?:_|$)/u.test(fact.name))
     .map(fact => displayPurchaseTagText(fact, fact.value)).join(' · ');
@@ -109,31 +141,60 @@ function QuoteCard({ card }) {
   </>;
   return <article className="assistant-card">
     <div className="assistant-card-heading"><h2>{card.title}</h2>{price}</div>
-    <div className="assistant-offer-meta"><span>{offer.shop}</span>{summary && <span>{summary}</span>}</div>
-    {expired && <p className="assistant-caveat">报价已过期，请重新核对</p>}
+    <div className="assistant-offer-meta"><span>店铺：{offer.shop}</span>{summary && <span>{summary}</span>}</div>
+    {reference && <p className="assistant-official-price">
+      <span>官方内购参考 · {reference.countryName} · {formatPeriod(reference.period)}</span>
+      <span>{formatMoney(reference.amount, '')} {reference.currency}
+        {reference.currency !== 'CNY' && `（约 ${formatMoney(reference.cnyAmount)}）`}</span>
+    </p>}
     {rows.length > 0 && <details className="assistant-purchase-notes"><summary>购买须知{conditions.some(fact => fact.name === 'usage_restriction') && <small>有使用限制</small>}</summary>
       <dl>{rows.map(([label, value]) => <div key={label}><dt>{label}：</dt><dd>{value}</dd></div>)}</dl>
     </details>}
     <button type="button" className="assistant-offer-details" aria-haspopup="dialog" onClick={() => setOpen(true)}>查看报价详情</button>
     {open && <OfferTagDetails offer={offer} item={{ name: card.title }} onClose={() => setOpen(false)}>
-      {price}{expired && <p className="assistant-caveat">报价已过期，请重新核对</p>}{fullNotes}
+      {price}{fullNotes}
+      {reference && <p className="assistant-quote-note">{!reference.regionMatched && '报价地区未明确，'}{!reference.periodMatched && '报价周期未明确，'}
+        官方参考取已采集有效报价中{reference.regionMatched && '同地区、'}同套餐{reference.periodMatched && '、同周期'}的最低折算价，来自 {reference.countryName} App Store，地区账号和支付条件适用。
+        采集于 <time dateTime={reference.capturedAt}>{new Date(reference.capturedAt).toLocaleString('zh-CN')}</time>
+        {reference.exchangeDate && `；汇率日期 ${reference.exchangeDate}`}。</p>}
       <p className="assistant-quote-note">这是本次推荐的报价快照，下单前请到商家核对价格、库存和完整条款。</p>
       {offer.productUrl && <p><a href={offer.productUrl} target="_blank" rel="noopener noreferrer">前往商家核对报价</a></p>}
     </OfferTagDetails>}
   </article>;
 }
 
+function QuoteCards({ cards }) {
+  const [catalog, setCatalog] = useState(null);
+  const hasCards = cards.length > 0;
+  useEffect(() => {
+    if (!hasCards) return undefined;
+    const controller = new AbortController();
+    readCatalog(controller.signal).then(result => {
+      if (!controller.signal.aborted) setCatalog(result);
+    }).catch(() => { /* Reference prices are optional; merchant quotes remain usable. */ });
+    return () => controller.abort();
+  }, [hasCards]);
+  return <div className="assistant-cards">{cards.map(card =>
+    <QuoteCard card={card} catalog={catalog} key={card.productId} />)}</div>;
+}
+
 function Message() {
   const role = useAuiState(state => state.message.role);
   const reply = useAuiState(state => state.message.metadata.custom?.reply);
+  const contactAdmin = useAuiState(state => state.message.metadata.custom?.contactAdmin);
+  const retryText = useAuiState(state => state.message.metadata.custom?.retryText);
   const last = useAuiState(state => state.message.isLast);
   const running = useAuiState(state => state.message.status?.type === 'running');
-  const { sendOption, blocked } = useContext(ConversationContext);
-  if (running) return <MessagePrimitive.Root className="assistant-message assistant-message-assistant"><RunStatus /></MessagePrimitive.Root>;
+  const turnId = useAuiState(state => state.message.metadata.custom?.turnId);
+  const { sendOption, retry, blocked, reasoning, activeTurnId } = useContext(ConversationContext);
   return <MessagePrimitive.Root className={'assistant-message assistant-message-' + role}>
-    <MessagePrimitive.Parts />
-    {reply && <div className="assistant-cards">{reply.cards.map(card =>
-      <QuoteCard card={card} key={card.productId} />)}</div>}
+    {role === 'assistant' && <Reasoning text={reasoning[running ? activeTurnId : turnId]} running={running} />}
+    {running ? <RunStatus /> : <MessagePrimitive.Parts />}
+    {contactAdmin && <div className="assistant-options"><ContactAdminButton /></div>}
+    {retryText && last && <div className="assistant-options">
+      <button type="button" disabled={blocked} onClick={() => retry(retryText)}>重试</button>
+    </div>}
+    {reply && <QuoteCards cards={reply.cards} />}
     {reply && last && reply.options.length > 0 && <div className="assistant-options" aria-label="快捷回答">
       {reply.options.map(option => <button type="button" key={option} disabled={blocked} onClick={() => sendOption(option)}>{option}</button>)}
     </div>}
@@ -141,7 +202,7 @@ function Message() {
 }
 
 function Conversation({ api, credentials, initialSession, onNew, locked, focusInput, onActivity, embedded,
-  onCollapse, recognizeFilters, onRecognizeFilters, catalogPlatform, notice }) {
+  onCollapse, recognizeFilters, onRecognizeFilters, expandReasoning, onExpandReasoning, catalogPlatform, notice }) {
   const session = useRef(initialSession);
   const pending = useRef(null);
   const active = useRef(initialSession.turns.find(turn => !isTurnTerminal(turn.status)) ?? null);
@@ -155,6 +216,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
   const [error, setError] = useState('');
   const [draftError, setDraftError] = useState('');
   const [phase, setPhase] = useState(active.current?.phase ?? '');
+  const [reasoning, setReasoning] = useState({});
   const [needs, setNeeds] = useState(initialSession.needs);
   const [completed, setCompleted] = useState(null);
   const [started, setStarted] = useState(initialSession.turns.length > 0);
@@ -169,7 +231,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     if (mounted.current) setPhase(turn.phase);
   }
   function finish(turn) {
-    if (!isTurnTerminal(turn.status)) throw new Error('消息尚未完成，请重新连接。');
+    if (!isTurnTerminal(turn.status)) throw new Error('还没有收到回复，请点击“重新连接”继续等待。');
     const turns = session.current.turns.filter(item => item.id !== turn.id);
     turns.push(turn);
     session.current = { ...session.current, turns,
@@ -182,12 +244,16 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
       setUncertain(false); setNeeds(session.current.needs); setPhase('');
       setCompleted(turn.id + ':' + turn.eventVersion);
     }
-    return turnResult(turn);
+    return turnResult(turn, turns.slice(-3));
   }
   async function watch(turn, signal) {
     acceptSnapshot(turn);
     if (isTurnTerminal(turn.status)) return turn;
-    try { return await api.subscribeTurn(credentials, turn, acceptSnapshot, signal); }
+    try { return await api.subscribeTurn(credentials, turn, acceptSnapshot, signal, text => {
+      if (mounted.current && !signal.aborted && active.current?.id === turn.id && !isTurnTerminal(active.current.status)) {
+        setReasoning(previous => ({ ...previous, [turn.id]: text }));
+      }
+    }); }
     catch (failure) {
       if (active.current && isTurnTerminal(active.current.status)) return active.current;
       throw failure;
@@ -195,7 +261,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
   }
   async function sendPending(signal) {
     const input = pending.current;
-    if (!input) throw new Error('无法确认上一条消息内容，请开始新对话；不会自动重复发送。');
+    if (!input) throw new Error('无法找回上一条消息，请清空对话后重新提问。');
     try {
       accepting.current = api.sendTurn(credentials, input, signal);
       return (await accepting.current).snapshot;
@@ -214,7 +280,8 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
       const current = messages.at(-1);
       const text = current?.role === 'user' ? current.content.filter(part => part.type === 'text').map(part => part.text).join('') : '';
       if (!text.trim() || text.length > ASSISTANT_LIMITS.userTextMaxChars || pending.current) {
-        return { content: [{ type: 'text', text: '请检查输入长度，或先重新连接上一条消息。' }] };
+        return { content: [{ type: 'text', text: pending.current
+          ? '上一条消息还没收到回复，请点击“重新连接”查看结果。' : '请输入 1 至 2,000 字的问题。' }] };
       }
       connection.current = new AbortController();
       const signal = connection.current.signal;
@@ -230,10 +297,10 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
           saveCredentials(credentials);
           syncOnIdle.current = true;
           if (mounted.current) { setUncertain(false); setNeeds(session.current.needs); }
-          return { content: [{ type: 'text', text: '对话已更新，正在恢复记录。' }] };
+          return { content: [{ type: 'text', text: '正在读取最新消息，请稍候。' }] };
         }
-        if (mounted.current) { setError(failure.message); setUncertain(true); }
-        return { content: [{ type: 'text', text: '连接中断，请重新连接查看这条消息的结果。' }] };
+        if (mounted.current) { setError(failure); setUncertain(true); }
+        return { content: [{ type: 'text', text: failure.contactAdmin ? failure.message : '暂时无法查看回复，请点击“重新连接”。' }] };
       } finally { if (mounted.current) setBusy(false); }
     },
   }), [api, credentials]);
@@ -265,7 +332,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
       } else { setUncertain(false); setNeeds(session.current.needs); }
       if (mounted.current) importHistory();
     } catch (failure) {
-      if (mounted.current) { setError(failure.message); setUncertain(true); }
+      if (mounted.current) { setError(failure); setUncertain(true); }
     } finally { if (mounted.current) setBusy(false); }
   }
   async function stop() {
@@ -278,15 +345,15 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
         const restored = await api.readSession(credentials);
         turn = restored.turns.find(item => item.clientMessageId === pending.current?.clientMessageId);
       }
-      if (!turn) throw new Error('消息状态待确认，请重新连接后再停止。');
+      if (!turn) throw new Error('暂时无法停止查找，请点击“重新连接”后再试。');
       const cancelled = await api.cancelTurn(credentials, turn.id);
       const restored = await api.readSession(credentials);
       const authoritative = restored.turns.find(item => item.id === turn.id);
       session.current = restored;
       acceptSnapshot(authoritative && authoritative.eventVersion >= cancelled.eventVersion ? authoritative : cancelled);
-      if (!isTurnTerminal(active.current.status)) throw new Error('停止状态待确认，请重新连接。');
+      if (!isTurnTerminal(active.current.status)) throw new Error('还没确认是否停止，请点击“重新连接”查看结果。');
       connection.current?.abort();
-    } catch (failure) { if (mounted.current) setError(failure.message); }
+    } catch (failure) { if (mounted.current) setError(failure); }
     finally { if (mounted.current) setStopping(false); }
   }
   useEffect(() => {
@@ -322,6 +389,10 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     const message = messageWithContext(text);
     if (message) runtime.thread.append({ role: 'user', content: [{ type: 'text', text: message }] });
   }
+  function retry(text) {
+    if (blocked || pending.current || runtime.thread.getState().isRunning) return;
+    runtime.thread.append({ role: 'user', content: [{ type: 'text', text }] });
+  }
   function sendDraft(event) {
     event.preventDefault();
     const text = messageWithContext(runtime.thread.composer.getState().text);
@@ -330,8 +401,9 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     runtime.thread.composer.send();
   }
   return <AssistantRuntimeProvider runtime={runtime}>
-    <ConversationContext.Provider value={{ blocked, sendOption, busy, phase, stopping }}>
+    <ConversationContext.Provider value={{ blocked, sendOption, retry, busy, phase, stopping, reasoning, expandReasoning, activeTurnId: active.current?.id }}>
       <AssistantHeader title={title} labels={labels} recognizeFilters={recognizeFilters}
+        expandReasoning={expandReasoning} onExpandReasoning={onExpandReasoning}
         onRecognizeFilters={value => { onRecognizeFilters(value); setDraftError(''); }} blocked={blocked}
         clearDisabled={busy || stopping || locked || (!started && !uncertain)} onClear={onNew} onCollapse={onCollapse} />
       {notice}
@@ -341,7 +413,8 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
           <ThreadPrimitive.Messages components={{ UserMessage: Message, AssistantMessage: Message }} />
           <RestoredRunStatus />
         </ThreadPrimitive.Viewport>
-        {error && <div role="alert" className="assistant-error"><p>{error}</p>
+        {error && <div role="alert" className="assistant-error"><p>{error.message}</p>
+          {error.contactAdmin && <ContactAdminButton disabled={locked} />}
           <button type="button" disabled={busy} onClick={() => void reconnect()}>重新连接</button></div>}
         {draftError && <p role="alert" className="assistant-draft-error">{draftError}</p>}
         <ComposerPrimitive.Root className="assistant-composer" onSubmit={sendDraft}>
@@ -373,6 +446,15 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
   const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState('');
   const [recognizeFilters, setRecognizeFilters] = useState(true);
+  const [expandReasoning, setExpandReasoning] = useState(() => {
+    try { return localStorage.getItem(REASONING_EXPANDED_KEY) === 'true'; }
+    catch { return false; }
+  });
+  function changeExpandReasoning(value) {
+    setExpandReasoning(value);
+    try { localStorage.setItem(REASONING_EXPANDED_KEY, String(value)); }
+    catch { /* Keep the preference usable in memory when browser storage is unavailable. */ }
+  }
   const cancelClear = useRef(null);
   const clearOpener = useRef(null);
   const credentials = useRef(null);
@@ -399,7 +481,7 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
         }
         credentials.current = currentCredentials;
         setState({ session });
-      } catch (failure) { if (live && !controller.signal.aborted) setState({ error: failure.message }); }
+      } catch (failure) { if (live && !controller.signal.aborted) setState({ error: failure }); }
     }
     void initialize();
     return () => { live = false; controller.abort(); };
@@ -422,29 +504,33 @@ export default function AssistantPage({ api = assistantApi, embedded = false, en
       setConfirmClear(false);
       setState({ loading: true });
       setGeneration(value => value + 1);
-    } catch (failure) { setClearError(failure.message); }
+    } catch (failure) { setClearError(failure); }
     finally { setClearing(false); }
   }
   const Container = embedded ? 'div' : 'main';
   const onNew = opener => { clearOpener.current = opener; setConfirmClear(true); };
   const confirmation = confirmClear && <section className="assistant-clear" aria-label="清空当前对话">
       <p>清空后无法恢复这段对话。</p>
-      {clearError && <p role="alert">{clearError}</p>}
+      {clearError && <><p role="alert">{clearError.message}</p>
+        {clearError.contactAdmin && <ContactAdminButton disabled={clearing} />}</>}
       <div><button ref={cancelClear} type="button" disabled={clearing} onClick={() => {
         setConfirmClear(false); setClearError('');
       }}>取消</button>
         <button type="button" disabled={clearing} onClick={() => void newConversation()}>{clearing ? '正在清空' : '确认清空'}</button></div>
     </section>;
   if (!state.session && !state.disabled) return <AssistantLoading embedded={embedded} onCollapse={onCollapse} error={state.error}
+    notice={confirmation} blocked={confirmClear || clearing} onClear={event => onNew(event.currentTarget)}
     onRetry={() => { setState({ loading: true }); setGeneration(value => value + 1); }} />;
   return <Container className={'assistant-page' + (embedded ? ' assistant-embedded' : '')}>
     {!embedded && <header className="assistant-header"><Brand /><a href="/guide">选购指南</a></header>}
     {state.session ? <Conversation key={generation} api={api} credentials={credentials.current} initialSession={state.session} embedded={embedded}
       onNew={onNew} locked={confirmClear || clearing} focusInput={focusInput && !confirmClear} onActivity={onActivity}
       onCollapse={onCollapse} recognizeFilters={recognizeFilters} onRecognizeFilters={setRecognizeFilters}
+      expandReasoning={expandReasoning} onExpandReasoning={changeExpandReasoning}
       catalogPlatform={catalogPlatform} notice={confirmation} />
       : <>
         <AssistantHeader recognizeFilters={recognizeFilters} onRecognizeFilters={setRecognizeFilters}
+          expandReasoning={expandReasoning} onExpandReasoning={changeExpandReasoning}
           blocked={confirmClear || clearing} clearDisabled={confirmClear || clearing}
           onClear={onNew} onCollapse={onCollapse} />
         {confirmation}

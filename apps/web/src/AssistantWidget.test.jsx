@@ -36,6 +36,30 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+test.each(['Escape', 'cancel'])('group contact closes on %s while the assistant and its draft remain open', async closeEvent => {
+  const api = mockApi();
+  api.subscribeTurn.mockImplementation(async (_credentials, turn) => ({ ...turn,
+    status: 'failed', phase: 'understanding', eventVersion: 2, errorCode: 'REQUEST_OUTCOME_UNKNOWN' }));
+  render(<AssistantWidget api={api} />);
+  fireEvent.click(await screen.findByRole('button', { name: '打开导购助手' }));
+  const input = await screen.findByRole('textbox', { name: '告诉助手你的需求' });
+  fireEvent.change(input, { target: { value: '写代码' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  const contact = await screen.findByRole('button', { name: '进群联系管理员' });
+  fireEvent.change(input, { target: { value: '保留下一条需求' } });
+  contact.focus();
+  fireEvent.click(contact);
+  const community = screen.getByRole('dialog', { name: 'QQ 交流群' });
+  if (closeEvent === 'Escape') fireEvent.keyDown(community, { key: 'Escape' });
+  else fireEvent(community, new Event('cancel', { cancelable: true }));
+  expect(screen.queryByRole('dialog', { name: 'QQ 交流群' })).not.toBeInTheDocument();
+  expect(screen.getByRole('dialog', { name: '导购助手' })).toBeVisible();
+  expect(input).toHaveValue('保留下一条需求');
+  expect(contact).toHaveFocus();
+  expect(api.sendTurn).toHaveBeenCalledTimes(1);
+  expect(api.cancelTurn).not.toHaveBeenCalled();
+});
+
 test('disabled status hides the launcher and does not create a session', async () => {
   const api = mockApi(false);
   render(<AssistantWidget api={api} />);

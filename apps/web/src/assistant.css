@@ -53,30 +53,38 @@
 .assistant-caveat{font-size:12px;color:#80531f;padding-left:8px;border-left:2px solid #e5c89c}
 .assistant-card>.assistant-caveat{grid-column:1/-1}
 .assistant-purchase-notes{grid-column:1;font-size:12px;color:var(--assistant-muted);min-width:0}
-.assistant-purchase-notes>summary{min-height:44px}
+.assistant-purchase-notes>summary{min-height:32px}
 .assistant-purchase-notes[open]{grid-column:1/-1}
 .assistant-purchase-notes summary small{margin-left:8px;color:#80531f;font-size:11px}
 .assistant-purchase-notes dl{margin:0 0 4px;padding-top:8px;border-top:1px solid #edf1f1}
 .assistant-purchase-notes dl>div{display:flex;align-items:baseline;margin:0 0 6px}
 .assistant-purchase-notes dt{flex-shrink:0}
 .assistant-purchase-notes dd{margin:0;min-width:0;color:#34484e;overflow-wrap:anywhere}
-.assistant-card>.assistant-offer-details{grid-column:2;min-height:44px;font-size:13px;font-weight:650;border:0;padding:8px 0;background:transparent}
+.assistant-card>.assistant-offer-details{grid-column:2;min-height:32px;font-size:12px;font-weight:500;border:0;padding:4px 0;background:transparent}
 .assistant-offer-meta{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:0 10px;font-size:12px;color:var(--assistant-muted);margin:2px 0}
 .assistant-offer-meta>span+span{color:#456b66}
+.assistant-offer-meta>span{min-width:0;overflow-wrap:anywhere}
+.assistant-card>.assistant-official-price{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:2px 10px;font-size:12px;color:var(--assistant-muted);margin:6px 0 2px}
 .assistant-card-reasons{margin:10px 0 0;padding-left:18px;font-size:12px;color:var(--assistant-muted)}
 .assistant-quote-note{font-size:12px;color:var(--assistant-muted)}
-.assistant-options{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
-.assistant-options button{font-size:13px;background:#f0f8f5;border-color:#cfe1dc}
+.assistant-options{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.assistant-page :is(.assistant-options,.assistant-error,.assistant-clear,.assistant-fallback) :is(button,a){box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;min-height:32px;max-width:100%;padding:4px 10px;border:1px solid var(--assistant-line);border-radius:8px;background:#f5f8f7;color:#456b66;font-size:12px;line-height:1.5;text-decoration:none}
+.assistant-page :is(.assistant-options,.assistant-error,.assistant-clear,.assistant-fallback) :is(button:not(:disabled),a):hover{background:#edf5f3;border-color:#bdd4cf;color:var(--assistant-accent)}
 .assistant-progress{flex-shrink:0;padding:8px 0;color:var(--assistant-muted);font-size:12px}
 .assistant-progress:empty{display:none}
 .assistant-run-status{display:flex;align-items:center;gap:8px;color:var(--assistant-muted);font-size:13px}
+.assistant-reasoning{margin-bottom:8px;color:var(--assistant-muted);font-size:12px;white-space:normal}
+.assistant-reasoning-text{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:8px 0 8px 10px;border-left:2px solid var(--assistant-line)}
+.assistant-reasoning-text[data-streaming]::after{content:'';display:inline-block;width:2px;height:1em;margin-left:3px;vertical-align:-.1em;background:currentColor}
 .assistant-spinner{width:14px;height:14px;flex-shrink:0;border:2px solid #dce5e5;border-top-color:var(--assistant-accent);border-radius:50%;animation:assistant-spin 1s linear infinite}
 @keyframes assistant-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.assistant-spinner{animation:none}}
 .assistant-error,.assistant-clear{flex-shrink:0;padding:12px;border:1px solid #e8d5ac;border-radius:8px;background:#fffbef;font-size:13px;margin-bottom:10px}
 .assistant-error p,.assistant-clear p{margin:0 0 8px;overflow-wrap:anywhere}
-.assistant-clear>div{display:flex;gap:8px;justify-content:flex-end}
-.assistant-clear button:last-child{color:#9b3c2a}
+.assistant-error{display:flex;flex-wrap:wrap;gap:6px}
+.assistant-error p{flex-basis:100%;margin:0 0 2px}
+.assistant-clear>div{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.assistant-page .assistant-clear>div>button:last-child{color:#9b3c2a}
 .assistant-composer{display:flex;flex-direction:column;flex-shrink:0;padding:6px;border:1px solid #cbd8d8;border-radius:12px;background:#fff}
 .assistant-composer-row{display:flex;gap:6px;align-items:flex-end;min-width:0}
 .assistant-composer:focus-within{border-color:#83bcb5;box-shadow:0 0 0 3px #0f817918}
@@ -90,7 +98,7 @@
 .assistant-draft-error{flex-shrink:0;font-size:12px;color:#9b3c2a;margin:0 0 8px}
 .assistant-fallback{padding:24px 4px;font-size:13px;overflow-wrap:anywhere}
 .assistant-fallback h2{font-size:18px}
-.assistant-fallback :is(a,button){display:inline-block;margin:8px 14px 0 0}
+.assistant-fallback :is(a,button){margin:8px 6px 0 0}
 .assistant-launcher{position:fixed;right:20px;bottom:calc(20px + env(safe-area-inset-bottom));z-index:32;display:flex;align-items:center;gap:8px;min-height:48px;padding:10px 14px;border:1px solid #dce5e5;border-radius:12px;background:#fff;color:#176e67;font:inherit;font-size:13px;font-weight:650;box-shadow:0 6px 24px #183b4218;cursor:pointer}
 .assistant-launcher svg{width:20px;height:20px}
 .assistant-launcher-status{font-size:11px;font-weight:400;color:#62757a}
