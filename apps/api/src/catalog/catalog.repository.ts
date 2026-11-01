@@ -279,6 +279,33 @@ export class CatalogRepository {
         ...(query.sort && query.sort !== 'default' ? { sort: query.sort, sortValue: last.sortValue } : { catalogRank: last.catalogRank }) }) } : {}) };
   }
 
+  async referenceOffers(input: CatalogQuery): Promise<CatalogOffer[]> {
+    const verified = sql`r.settlement_price is not null and r.settlement_price >= 0 and r.settlement_price < 'Infinity'::numeric
+      and r.settlement_verified_at is not null and nullif(btrim(r.settlement_payment_method), '') is not null`;
+    const price = sql`case when ${verified} then r.settlement_price else r.listed_price end`;
+    // Reference quotes need no freshness gate, catalog totals or merchant-review hydration.
+    const result = await sql<CatalogOffer>`select r.product_id::text as "productId", r.shop_id::text as "shopId",
+      r.product_name as name, sh.name as shop, r.product_url as "productUrl", r.product_spec as spec, r.tags,
+      (${price})::text as price, r.currency, r.listed_price::text as "listedPrice",
+      case when ${verified} then coalesce(r.settlement_quantity, 1) else 1 end as "settlementQuantity",
+      case when ${verified} then r.settlement_payment_method else '支付价（预估：售价）' end as "paymentMethod",
+      to_char(r.captured_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "capturedAt",
+      null::text as "priceExpiresAt", r.is_stale as stale, r.stock_available as "inStock",
+      (sh.protocol is distinct from 'liandong' and sh.protocol is distinct from '16688') as "independentShop"
+      from catalog_read_offers r
+      join standard_products sp on sp.id = r.standard_product_id
+      join shops sh on sh.id = r.shop_id
+      where r.standard_product_id = ${input.standardProductId}::bigint
+        and ${publicStandard('sp')} and sh.enabled = true and sh.deleted_at is null
+        and ${price} >= 0 and ${price} < 'Infinity'::numeric
+        ${input.currency ? sql`and r.currency = ${input.currency}` : sql``}
+        ${input.priceMax !== undefined ? sql`and ${price} <= ${input.priceMax}::numeric` : sql``}
+        ${input.tags.length ? sql`and r.tags @> ${JSON.stringify(input.tags)}::jsonb` : sql``}
+        ${input.warrantyDaysMin !== undefined ? sql`and r.warranty_days >= ${input.warrantyDaysMin}` : sql``}
+      order by r.product_id`.execute(this.database);
+    return result.rows.map(offer => ({ ...offer, name: sanitizeOfferName(offer.name) }));
+  }
+
   async facets(input: CatalogFacetsQuery): Promise<CatalogFacets> {
     const result = await this.runRead(database => buildCatalogQuery({ ...input, limit: 1 }, this.policy, true).execute(database));
     return { tagFacets: result.rows[0]!.tag_facets, nextExpiryAt: result.rows[0]!.next_expiry_at };

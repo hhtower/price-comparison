@@ -180,6 +180,12 @@ export class CatalogService {
     return this.readFresh(() => this.repository.search(query));
   }
 
+  getReferenceOffers(input: Pick<CatalogQueryInput, 'standardProductId' | 'currency' | 'priceMax' | 'tags' | 'warrantyDaysMin'>) {
+    const query = normalizeCatalogQuery(input);
+    if (!query.standardProductId) throw new DomainValidationError('INVALID_STANDARD_PRODUCT', '商品编号无效');
+    return this.repository.referenceOffers(query);
+  }
+
   private async readFresh<T extends { readonly nextExpiryAt?: string | null }>(loader: () => Promise<T>): Promise<T> {
     const deadline = Date.now() + 5_000;
     for (let attempt = 0; attempt < 3; attempt++) {

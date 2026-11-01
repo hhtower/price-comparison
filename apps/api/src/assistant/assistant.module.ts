@@ -5,11 +5,13 @@ import { AssistantAccess } from './assistant-access.js';
 import { readAssistantConfig } from './assistant.config.js';
 import { AssistantController } from './assistant.controller.js';
 import { AssistantRepository } from './assistant.repository.js';
+import { AssistantReasoning } from './assistant-reasoning.js';
 
 @Module({
   controllers: [AssistantController],
   providers: [
     AssistantRepository,
+    { provide: AssistantReasoning, useFactory: () => new AssistantReasoning() },
     {
       provide: AssistantAccess,
       inject: [RATE_LIMIT_STORE],
@@ -19,7 +21,7 @@ import { AssistantRepository } from './assistant.repository.js';
       },
     },
   ],
-  exports: [AssistantRepository],
+  exports: [AssistantRepository, AssistantReasoning],
 })
 export class AssistantModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {

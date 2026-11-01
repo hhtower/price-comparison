@@ -147,6 +147,24 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
     assert.ok(await service.resolvePublicProductIdentity(identity));
   });
 
+  test('stale and out-of-stock references remain available but hidden shops do not', async () => {
+    const { standard, shop, source } = await fixture('reference');
+    await database.insertInto('offers').values({ product_id: source.id, price: '10.00', currency: 'CNY',
+      idempotency_key: 'old-reference', captured_at: new Date('2020-01-01T00:00:00Z'),
+      stock_available: false, is_stale: true }).execute();
+    const query = { standardProductId: String(standard.id), currency: 'CNY' };
+    const offers = await service.getReferenceOffers(query);
+    assert.equal(offers.length, 1);
+    assert.equal(offers[0]?.price, '10.00');
+    assert.equal(offers[0]?.inStock, false);
+    assert.equal(offers[0]?.stale, true);
+    await database.updateTable('shops').set({ enabled: false }).where('id', '=', shop.id).execute();
+    assert.deepEqual(await service.getReferenceOffers(query), []);
+    await database.updateTable('shops').set({ enabled: true }).where('id', '=', shop.id).execute();
+    await database.updateTable('standard_product_members').set({ publication_state: 'quarantined' }).where('product_id', '=', source.id).execute();
+    assert.deepEqual(await service.getReferenceOffers(query), []);
+  });
+
   test('real catalog offers never combine one price with another SKU warranty', async () => {
     const { identity, standard, shop, source } = await fixture('offers');
     const covered = await database.insertInto('products').values({
@@ -170,11 +188,7 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
     }))).execute();
     const standardProduct = await service.resolvePublicProductIdentity(identity);
     assert.ok(standardProduct);
-    const page = await service.getCatalog({
-      standardProductId: standardProduct.id, currency: 'CNY', detailKind: 'offers', detailPageSize: 20,
-    });
-    const detail = page.items[0]?.detail;
-    assert.ok(detail?.kind === 'offers');
+    const detail = { entries: await service.getReferenceOffers({ standardProductId: standardProduct.id, currency: 'CNY' }) };
     assert.equal(detail.entries.length, 2);
     const needs = {
       purpose: null, platform: null, budget: { amount: '10.00', currency: 'CNY', basis: 'purchase' as const },

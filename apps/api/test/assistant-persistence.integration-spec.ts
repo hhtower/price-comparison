@@ -7,7 +7,10 @@ import type { DatabaseSchema } from '../src/database/types.js';
 import { up } from '../src/database/migrations/027_assistant_20261031.js';
 import { AssistantRepository } from '../src/assistant/assistant.repository.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
-import { emptyShoppingNeeds, type AssistantReply } from '@price-comparison/catalog/assistant-contract';
+import { AssistantService } from '../src/assistant/assistant.service.js';
+import { createStreamingCall } from '../src/ai/llm-runtime.js';
+import type { CatalogService } from '../src/catalog/catalog.service.js';
+import { emptyShoppingNeeds, validateSessionSnapshot, type AssistantReply } from '@price-comparison/catalog/assistant-contract';
 
 const schema = `assistant_${randomUUID().replaceAll('-', '')}`;
 let admin: Pool;
@@ -67,6 +70,28 @@ test('only one concurrent turn is accepted per session', async () => {
   assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
 });
 
+test('conversations beyond thirty turns can continue and restore their complete history', async () => {
+  const session = await repository.createSession();
+  await sql`insert into assistant_turns
+    (session_id, client_message_id, expected_revision, input_text, status, phase, reply, deadline_at)
+    select ${session.sessionId}::uuid, gen_random_uuid(), i, '继续推荐', 'succeeded', 'understanding',
+      ${JSON.stringify(reply())}::jsonb, now() from generate_series(0, 39) i`.execute(db);
+  await db.updateTable('assistant_sessions').set({ revision: 40 }).where('id', '=', session.sessionId).execute();
+  const message = { ...input(), expectedRevision: 40 };
+  const accepted = await repository.acceptTurn(session.sessionId, session.accessToken, message);
+  assert.equal(accepted.created, true);
+  assert.equal(accepted.snapshot.expectedRevision, 40);
+  assert.equal((await repository.acceptTurn(session.sessionId, session.accessToken, message)).created, false);
+  await assert.rejects(repository.acceptTurn(session.sessionId, session.accessToken, { ...input(), expectedRevision: 40 }));
+  await repository.cancelTurn(session.sessionId, accepted.snapshot.id, session.accessToken);
+  await repository.acceptTurn(session.sessionId, session.accessToken, { ...input(), expectedRevision: 40 });
+  const restored = validateSessionSnapshot(await repository.readSession(session.sessionId, session.accessToken));
+  assert.equal(restored.revision, 40);
+  assert.equal(restored.turns.length, 42);
+  assert.equal(restored.turns[40]?.status, 'cancelled');
+  assert.equal(restored.turns[41]?.status, 'queued');
+});
+
 test('complete reply and needs commit together and duplicate completion is idempotent', async () => {
   const session = await repository.createSession();
   const accepted = await repository.acceptTurn(session.sessionId, session.accessToken, input());
@@ -108,6 +133,34 @@ test('failure while updating needs rolls back the previously written complete re
   } finally {
     await sql`drop trigger reject_assistant_revision on assistant_sessions; drop function reject_assistant_revision()`.execute(db);
   }
+});
+
+test('invalid understanding saves an independent question and accepts the next selection at the new revision', async () => {
+  const session = await repository.createSession();
+  const accepted = await repository.acceptTurn(session.sessionId, session.accessToken, input('读论文'));
+  const claim = await claimTurn(accepted.snapshot.id);
+  const model = createStreamingCall({ AI_BASE_URL: 'http://model.invalid/v1', AI_API_KEY: 'local-mock' }, async () =>
+    new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: '{"intent":"clarify"}' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
+      { headers: { 'content-type': 'text/event-stream' } }));
+  const service = new AssistantService(repository, {} as CatalogService, model, 'mock');
+  await service.runTurn(claim, new AbortController().signal);
+  const stored = validateSessionSnapshot(await repository.readSession(session.sessionId, session.accessToken));
+  assert.equal(stored.revision, 1);
+  assert.equal(stored.turns[0]?.status, 'succeeded');
+  assert.equal(stored.turns[0]?.reply?.kind, 'question');
+  assert.ok(stored.turns[0]?.reply?.options.includes('Claude'));
+  assert.deepEqual(stored.needs, emptyShoppingNeeds());
+  const row = await db.selectFrom('assistant_turns').select(['request_in_flight', 'requests_started'])
+    .where('id', '=', claim.id).executeTakeFirstOrThrow();
+  assert.equal(row.request_in_flight, false);
+  assert.equal(Number(row.requests_started), 1);
+  await jobs.complete('assistant_turn', claim.id, claim.claimed_by);
+  const next = await repository.acceptTurn(session.sessionId, session.accessToken, { ...input('Claude'), expectedRevision: 1 });
+  const nextClaim = await claimTurn(next.snapshot.id);
+  const context = await repository.readTurnContext(next.snapshot.id, nextClaim.claimed_by, String(nextClaim.row.claim_token));
+  assert.equal(context.history[0]?.text, '读论文');
+  assert.equal(context.history[0]?.reply.kind, 'question');
+  await repository.cancelTurn(session.sessionId, next.snapshot.id, session.accessToken);
 });
 
 test('cancelled turns cannot commit late replies or be resurrected by runtime requeue', async () => {

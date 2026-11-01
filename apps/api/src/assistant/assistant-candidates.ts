@@ -30,10 +30,16 @@ function setupSteps(candidate: AssistantCandidate): number | undefined {
     ? Number(value) : undefined;
 }
 
-function hasWarranty(candidate: AssistantCandidate): boolean {
-  if (candidate.offer.tags.some(tag => tag.name === 'warranty' && tag.value !== 'covered')) return false;
-  return tag(candidate, 'warranty') === 'covered' || (warrantyDays(candidate) ?? 0) > 0
-    || ['first_login', 'period', 'subscription', 'first_code', 'activation'].includes(tag(candidate, 'warranty_scope') ?? '');
+export function isBeginnerRecommendation(candidate: AssistantCandidate, needs: ShoppingNeeds): boolean {
+  if (needs.budget || needs.requiredTags.length || needs.warrantyDaysMin !== null || needs.preferences.length) return false;
+  const product = candidate.standardProduct;
+  if (['ip', 'email'].includes(product.platformGroup ?? groupCatalogPlatforms([product.platform])[0]!)
+    || !['账号与订阅', '订阅', 'subscription', 'account'].includes(product.kind)) return false;
+  // Navigation groups also contain mailboxes, YouTube and X; use standard identities, never offer marketing.
+  const aiPackage = [product.name, ...product.identityNames ?? []].some(name =>
+    /(?<![a-z0-9_])(?:chatgpt|gpt|codex|claude|gemini|cursor|grok|supergrok|perplexity|copilot|manus|suno|firefly)(?![a-z0-9_])/iu.test(name.normalize('NFKC')));
+  return aiPackage && ['top_up', 'account'].includes(tag(candidate, 'delivery') ?? '')
+    && (warrantyDays(candidate) ?? -1) >= 30;
 }
 
 function matchesPlatform(product: PublicCatalogProduct, requested: string): boolean {
@@ -76,17 +82,44 @@ function priceOrder(a: AssistantCandidate, b: AssistantCandidate): number {
       ? compareMoney(money(a.offer.price)!, money(b.offer.price)!) : 0);
 }
 
-export function selectCandidates(candidates: AssistantCandidate[], needs: ShoppingNeeds, now: Date): AssistantCandidate[] {
+function purchaseFacets(candidate: AssistantCandidate): Map<string, Set<string>> {
+  const facets = new Map<string, Set<string>>();
+  for (const tag of candidate.offer.tags) {
+    const field = PURCHASE_GUIDE_FIELDS[tag.name];
+    if (!field) continue;
+    const values = facets.get(field.collectionGroup) ?? new Set<string>();
+    values.add(JSON.stringify([tag.name, tag.value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase()]));
+    facets.set(field.collectionGroup, values);
+  }
+  return facets;
+}
+
+function facetDistance(a: Map<string, Set<string>>, b: Map<string, Set<string>>): number {
+  let distance = 0;
+  let total = 0;
+  for (const group of new Set([...a.keys(), ...b.keys()])) {
+    // Bound each facet's influence: more login tags must not outweigh a different purchase gate.
+    const weight = group === '其他使用条件' ? 4 : ['交付形态', '使用方式'].includes(group) ? 2 : 1;
+    const left = a.get(group);
+    const right = b.get(group);
+    const union = new Set([...left ?? [], ...right ?? []]);
+    const shared = [...left ?? []].filter(value => right?.has(value)).length;
+    // Unknown conditions are distinct evidence, never evidence of unrestricted use.
+    distance += weight * (!left || !right ? 0.5 : 1 - shared / union.size);
+    total += weight;
+  }
+  return total ? distance / total : 0;
+}
+
+export function selectCandidates(candidates: AssistantCandidate[], needs: ShoppingNeeds, now: Date, limit = 3): AssistantCandidate[] {
   if (!Number.isFinite(now.getTime())) return [];
   const eligible = candidates.flatMap(candidate => {
     const { offer, standardProduct } = candidate;
     const price = money(offer.price);
-    if (standardProduct.mergedIntoId || offer.priceStatus !== 'verified' || price === undefined
-      || !/^[A-Z]{3}$/u.test(offer.currency) || offer.inStock !== true || offer.stale !== false
+    if (standardProduct.mergedIntoId || price === undefined
+      || !/^[A-Z]{3}$/u.test(offer.currency)
       || offer.settlementQuantity !== 1
       || offer.tags.some(tag => tag.name === 'minimum_quantity' && tag.value !== '1')
-      || !(Date.parse(offer.priceExpiresAt ?? '') > now.getTime())
-      || !(Date.parse(offer.inventoryExpiresAt ?? '') > now.getTime())
       || !matchesRequestedProduct(standardProduct, needs)
       || !needs.requiredTags.every(required => required.value !== 'unknown' && tag(candidate, required.name) === required.value)
       || (needs.warrantyDaysMin !== null && (warrantyDays(candidate) ?? -1) < needs.warrantyDaysMin)) return [];
@@ -121,19 +154,39 @@ export function selectCandidates(candidates: AssistantCandidate[], needs: Shoppi
         if (order) return order;
       }
     }
-    return Number(hasWarranty(b)) - Number(hasWarranty(a))
-      || Number(['top_up', 'account'].includes(tag(b, 'delivery') ?? ''))
-        - Number(['top_up', 'account'].includes(tag(a, 'delivery') ?? ''))
+    return Number(isBeginnerRecommendation(b, needs)) - Number(isBeginnerRecommendation(a, needs))
       || priceOrder(a, b) || compareText(a.standardProduct.id, b.standardProduct.id)
       || compareText(a.offer.shopId, b.offer.shopId) || compareText(a.offer.productId, b.offer.productId);
   });
   const seen = new Set<string>();
-  return eligible.filter(candidate => {
+  const unique = eligible.filter(candidate => {
     const key = JSON.stringify([candidate.offer.shopId, candidate.offer.productId]);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).slice(0, 3);
+  });
+  const facets = unique.map(purchaseFacets);
+  const selected = new Set<number>();
+  const nearest = unique.map(() => 1);
+  if (unique.length && limit > 0) selected.add(0);
+  // MMR: keep the best ranked offer, then balance rank with distance to the nearest selected offer.
+  // Text equality here is lexical; the existing explanation call handles semantic paraphrases.
+  let last = 0;
+  while (selected.size < Math.min(limit, unique.length)) {
+    let best = -1;
+    let bestScore = -Infinity;
+    for (const [index, candidate] of unique.entries()) {
+      if (selected.has(index)) continue;
+      nearest[index] = Math.min(nearest[index]!, candidate.standardProduct.id !== unique[last]!.standardProduct.id
+        ? 1 : facetDistance(facets[index]!, facets[last]!));
+      // Default newcomer suitability outranks diversity; other offers remain available as fallbacks.
+      const score = 2 * Number(isBeginnerRecommendation(candidate, needs)) + 0.2 / (index + 1) + 0.8 * nearest[index]!;
+      if (score > bestScore) { best = index; bestScore = score; }
+    }
+    selected.add(best);
+    last = best;
+  }
+  return unique.filter((_, index) => selected.has(index));
 }
 
 export function candidateEvidence(candidate: AssistantCandidate): Array<{ id: string; text: string }> {
@@ -150,8 +203,8 @@ export function candidateEvidence(candidate: AssistantCandidate): Array<{ id: st
     && tags.some(other => other.name === tag.name && other.value !== tag.value));
   const warranty = conflictingWarranty ? '资料存在冲突，请在商品详情核实' : purchaseWarrantyLabel(tags);
   const facts = [
-    fact('price', `该报价为 ${offer.price ?? '未知'} ${offer.currency}，结算数量为 ${offer.settlementQuantity} 件；价格状态：${offer.priceStatus === 'verified' ? '已核验' : '未核验或已过期'}。`),
-    fact('availability', `快照库存：${offer.inStock ? '有货' : '无货'}；${offer.stale ? '数据已陈旧' : '数据未标记陈旧'}。采集于 ${offer.capturedAt}；价格有效至 ${offer.priceExpiresAt ?? '未知'}；库存有效至 ${offer.inventoryExpiresAt ?? '未知'}。`),
+    fact('price', `采集参考价为 ${offer.price ?? '未知'} ${offer.currency}，结算数量为 ${offer.settlementQuantity} 件；实际价格以商家为准。`),
+    fact('availability', `采集于 ${offer.capturedAt}；采集时库存：${offer.inStock ? '有货' : '无货'}。同步存在时间差，实际价格与库存请向商家确认。`),
     fact('warranty', warranty
       ? `商家质保说明：${warranty}；具体限制以该报价的售后条款为准。`
       : '商家未明确质保时长与保障范围，请在商品详情核实不保事项和售后条款。'),

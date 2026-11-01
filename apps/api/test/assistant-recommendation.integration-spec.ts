@@ -9,7 +9,6 @@ import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { validateAssistantReply, validateSessionSnapshot } from '@price-comparison/catalog/assistant-contract';
 import { migrationProvider } from '../scripts/migrate.js';
-import { createAiConcurrencyCoordinator } from '../src/ai/ai-concurrency.js';
 import { createStreamingCall } from '../src/ai/llm-runtime.js';
 import { AssistantRepository } from '../src/assistant/assistant.repository.js';
 import { AssistantService } from '../src/assistant/assistant.service.js';
@@ -137,7 +136,7 @@ test('real catalog recommendation persists canonical UTC cards from PostgreSQL o
       const prompt = JSON.parse(request.messages.at(-1).content);
       const call = ++requests;
       assert.ok(call <= 2, 'one recommendation must not start a third model request');
-      assert.equal(await redis!.hlen(concurrencyKey), 1, 'both model calls use the shared concurrency lease');
+      assert.equal(await redis!.hlen(concurrencyKey), 0, 'assistant model calls do not acquire shared concurrency');
       let output: string;
       if (call === 1) {
         assert.equal(prompt.userText, 'anthropic coding');
@@ -174,8 +173,8 @@ test('real catalog recommendation persists canonical UTC cards from PostgreSQL o
     let resolveSettled!: () => void;
     const settled = new Promise<void>(resolve => { resolveSettled = resolve; });
     worker = new WorkerRuntime({
-      kind: 'assistant_turn', workerId: schema, concurrency: 1, aiConcurrency: 1, aiStage: 'assistant',
-      aiCoordinator: createAiConcurrencyCoordinator(redis, { concurrency: 1, key: concurrencyKey, pollMs: 5 }),
+      kind: 'assistant_turn', workerId: schema, concurrency: Infinity,
+
       heartbeatMs: 100, leaseMs: 10_000,
       service: {
         claimNext: (...args) => jobs.claimNext(...args), claimAvailable: (...args) => jobs.claimAvailable(...args),
@@ -207,12 +206,9 @@ test('real catalog recommendation persists canonical UTC cards from PostgreSQL o
     assert.equal(card.price, '49.00');
     assert.equal(card.currency, 'CNY');
     assert.equal(card.capturedAt, '2026-10-31T11:59:00.123Z');
-    assert.equal(card.priceExpiresAt, '2026-10-31T12:59:00.123Z');
-    for (const field of ['capturedAt', 'priceExpiresAt'] as const) {
-      assert.match(card[field], /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.123Z$/u);
-      assert.equal(Date.parse(card[field]), Date.parse(rawOffer[field]!));
-    }
-    assert.equal(Date.parse(card.priceExpiresAt) - Date.parse(card.capturedAt), 3_600_000);
+    assert.equal(card.priceExpiresAt, null);
+    assert.equal(new Date(card.capturedAt).toISOString(), card.capturedAt);
+    assert.equal(Date.parse(card.capturedAt), Date.parse(rawOffer.capturedAt));
     assert.ok(card.reasons.length > 0);
     assert.ok(card.caveats.length > 0);
     assert.ok(card.evidenceIds.length > 0);

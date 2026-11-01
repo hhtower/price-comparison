@@ -13,7 +13,7 @@
 
 - 所有 LLM/OpenAI-compatible 请求必须 `stream: true`，并通过共享 AI 运行时适配层发送。
 - 分块仅在内存中聚合。完整响应先通过 JSON/schema、业务约束和长度检查，再以一次原子操作持久化；禁止保存半成品。
-- 所有 LLM worker 使用共享 `AI_CONCURRENCY` 与 `WorkerRuntime`；业务代码不得另建并发池、限流器或重试语义。
+- 所有 LLM worker 复用 `WorkerRuntime` 的任务、超时、取消和重试机制。后台任务使用共享 `AI_CONCURRENCY`；AI 助手独立执行，不占用共享池，不设模型并发上限。业务代码不得另建重试语义。
 - 新增或修改 LLM 调用必须覆盖流式分块、超时、取消、截断/无效响应路径；测试使用 mock 或免费本地模型，不调用付费模型。
 
 ## 数据库脚本

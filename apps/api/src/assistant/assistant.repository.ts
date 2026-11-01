@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { sql, type Kysely, type Selectable } from 'kysely';
-import { emptyShoppingNeeds, validateAssistantReply, type AssistantReply, type ShoppingNeeds, type TurnSnapshot, type SessionSnapshot } from '@price-comparison/catalog/assistant-contract';
+import { ASSISTANT_LIMITS, emptyShoppingNeeds, validateAssistantReply, type AssistantReply, type ShoppingNeeds, type TurnSnapshot, type SessionSnapshot } from '@price-comparison/catalog/assistant-contract';
 import { DATABASE } from '../database/database.providers.js';
 import { jsonb, type DatabaseSchema, type AssistantTurnTable, type JsonValue } from '../database/types.js';
 import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
@@ -87,12 +87,12 @@ export class AssistantRepository {
         return { snapshot: turnSnapshot(previous), created: false };
       }
       if (session.revision !== input.expectedRevision) throw conflict();
-      const rows = await tx.selectFrom('assistant_turns').select(['status']).where('session_id', '=', id).execute();
-      if (rows.some(row => row.status === 'queued' || row.status === 'running')) throw conflict();
-      if (rows.length >= 30) throw new DomainValidationError('ASSISTANT_SESSION_LIMIT', '本次会话已达到30轮，请重新开始');
+      const active = await tx.selectFrom('assistant_turns').select('id').where('session_id', '=', id)
+        .where('status', 'in', ['queued', 'running']).executeTakeFirst();
+      if (active) throw conflict();
       const turn = await tx.insertInto('assistant_turns').values({
         session_id: id, client_message_id: input.clientMessageId, expected_revision: input.expectedRevision,
-        input_text: input.text, deadline_at: new Date(Date.now() + 90_000),
+        input_text: input.text, deadline_at: new Date(Date.now() + ASSISTANT_LIMITS.turnDeadlineMs),
         model: null, error_code: null, claimed_by: null, claim_token: null, lease_until: null,
         started_at: null, finished_at: null,
       }).returningAll().executeTakeFirstOrThrow();

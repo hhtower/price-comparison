@@ -6,6 +6,36 @@ import { classifyProviderRequestFailure as classify } from '../src/ai/standardiz
 const environment = { AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'test-key', AI_TIMEOUT_MS: '1000' };
 const input = { model: 'model', messages: [{ role: 'user' as const, content: 'hello' }], responseFormat: { type: 'json_schema' }, signal: new AbortController().signal };
 
+test('forwards reasoning fragments separately from the validated answer', async () => {
+  const fragments: string[] = [];
+  const call = createStreamingCall(environment, async () => eventStream([
+    { choices: [{ delta: { reasoning_content: '先看' } }] },
+    { choices: [{ delta: { reasoning: '预算' } }] },
+    { choices: [{ delta: { content: '{"ok":true}' }, finish_reason: 'stop' }] },
+  ]));
+  const result = await call({ ...input, onReasoning: text => { fragments.push(text); } });
+  assert.deepEqual(fragments, ['先看', '预算']);
+  assert.equal(result.content, '{"ok":true}');
+});
+
+test('reasoning obeys output size and type validation', async () => {
+  for (const reasoning_content of ['x'.repeat(1_048_577), { text: 'invalid' }]) {
+    const call = createStreamingCall({ ...environment, AI_MAX_OUTPUT_BYTES: '100' }, async () => eventStream([
+      { choices: [{ delta: { reasoning_content } }] },
+      { choices: [{ delta: { content: '{}' }, finish_reason: 'stop' }] },
+    ]));
+    await assert.rejects(call(input), /limit|reasoning/u);
+  }
+});
+
+test('reasoning does not consume the structured answer budget', async () => {
+  const call = createStreamingCall({ ...environment, AI_MAX_OUTPUT_BYTES: '2' }, async () => eventStream([
+    { choices: [{ delta: { reasoning_content: '先检查所有购买要求' } }] },
+    { choices: [{ delta: { content: '{}' }, finish_reason: 'stop' }] },
+  ]));
+  assert.equal((await call(input)).content, '{}');
+});
+
 test('reads one positive integer concurrency value for every AI worker', () => {
   assert.equal(readAiConcurrency({ AI_CONCURRENCY: '4' }), 4);
   assert.equal(readAiConcurrency({}), 2);
@@ -698,7 +728,7 @@ test('Sol reasoning configuration supports snapshots and leaves other models unc
   await call({ ...input, model: 'gpt-4o', maxOutputTokens: 1024 });
   assert.equal(sent.max_completion_tokens, 1024);
   assert.equal('reasoning_effort' in sent, false);
-  for (const model of ['deepseek-flash', 'glm-4.7', 'glm-5.2']) {
+  for (const model of ['deepseek-chat', 'glm-4.7', 'glm-5.2']) {
     await call({ ...input, model, maxOutputTokens: 1024 });
     assert.equal(sent.max_tokens, 1024);
     assert.deepEqual(sent.thinking, { type: 'disabled' });

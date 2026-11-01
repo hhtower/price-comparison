@@ -8,11 +8,11 @@ import { ASSISTANT_LIMITS } from '@price-comparison/catalog/assistant-contract';
 import { AppModule } from '../app.module.js';
 import { JobsRepository } from '../jobs/jobs.repository.js';
 import { AssistantRepository } from '../assistant/assistant.repository.js';
+import { AssistantReasoning } from '../assistant/assistant-reasoning.js';
 import { AssistantService } from '../assistant/assistant.service.js';
 import { readAssistantConfig } from '../assistant/assistant.config.js';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { createStreamingCall } from '../ai/llm-runtime.js';
-import { createAiConcurrencyCoordinator, createAiConcurrencyRedisClient, readAiConcurrency } from '../ai/ai-concurrency.js';
 import { MetricsService } from '../observability/metrics.js';
 import { StructuredLogger } from '../observability/request-context.js';
 import { WorkerRuntime } from './worker-runtime.js';
@@ -26,20 +26,16 @@ export async function main(): Promise<void> {
   await repository.cleanupExpired();
   if (cleanupOnly) { await context.close(); return; }
   const logger = context.get(StructuredLogger);
-  const redis = createAiConcurrencyRedisClient();
-  const concurrency = readAiConcurrency();
-  const service = new AssistantService(repository, context.get(CatalogService), createStreamingCall({
-    ...process.env, AI_MAX_OUTPUT_BYTES: String(ASSISTANT_LIMITS.outputMaxBytes),
-  }, undefined, logger), config.model!);
+  const service = new AssistantService(repository, context.get(CatalogService),
+    createStreamingCall(config.environment, undefined, logger), config.model!, undefined, context.get(AssistantReasoning), logger);
   const worker = new WorkerRuntime({
     service: context.get(JobsRepository), kind: 'assistant_turn', workerId: `assistant-${randomUUID()}`,
-    handler: (job, signal, execution) => {
-      logger.log('assistant.started', { turnId: job.id.toString(), queueWaitMs: execution?.aiLease?.queueWaitMs ?? 0 });
+    handler: (job, signal) => {
+      logger.log('assistant.started', { turnId: job.id.toString() });
       return service.runTurn(job, signal);
     },
     beforeExecute: async () => { await repository.cleanupExpired(); },
-    concurrency, aiConcurrency: concurrency,
-    aiCoordinator: createAiConcurrencyCoordinator(redis, { concurrency }), aiStage: 'assistant',
+    concurrency: Infinity,
     heartbeatMs: ASSISTANT_LIMITS.workerHeartbeatMs, metrics: context.get(MetricsService), logger,
   });
   let stopping = false;
@@ -47,7 +43,6 @@ export async function main(): Promise<void> {
     if (stopping) return;
     stopping = true;
     await worker.stop();
-    redis.disconnect?.();
     await context.close();
   };
   process.once('SIGINT', () => void shutdown());

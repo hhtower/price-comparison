@@ -53,6 +53,14 @@ const understanding = (patch: unknown = {}, evidence: unknown = []) => ({
   intent: 'recommend', patch, evidence, question: null, options: [],
 });
 
+test('reference quote expiry is optional metadata and does not restrict the capture time', () => {
+  for (const priceExpiresAt of [null, '2020-01-01T00:00:00Z', card.capturedAt]) {
+    assert.equal(validateAssistantReply({ ...reply(), cards: [{ ...card, priceExpiresAt }] })
+      .cards[0]?.priceExpiresAt, priceExpiresAt);
+  }
+  assert.throws(() => validateAssistantReply({ ...reply(), cards: [{ ...card, priceExpiresAt: 'invalid' }] }));
+});
+
 test('product choice persists across follow-ups and quote details reject unsafe or malformed data', () => {
   const selected = applyNeedsPatch(emptyShoppingNeeds(), { product: 'ChatGPT Plus' });
   assert.equal(applyNeedsPatch(selected, { preferences: ['lower_price'] }).product, 'ChatGPT Plus');
@@ -254,7 +262,6 @@ test('reply validates complete cards and rejects extra fields and unsafe or mism
   }
   for (const patch of [{ productId: 2 }, { shopId: '-1' }, { standardProductId: '0' },
     { capturedAt: '2026-02-30T01:00:00Z' }, { priceExpiresAt: 'yesterday' },
-    { priceExpiresAt: card.capturedAt }, { priceExpiresAt: '2026-10-30T01:00:00Z' },
     { inventoryExpiresAt: '2026-10-31T02:00:00Z' }, { evidenceIds: [] }, { reasons: [] }]) {
     assert.throws(() => validateAssistantReply({ ...reply(), cards: [{ ...card, ...patch }] }));
   }
@@ -328,16 +335,36 @@ test('repository failed and cancelled snapshots preserve uppercase public error 
   }
 });
 
-test('session snapshots reject cross-session turns, duplicates, excessive history and concurrent active turns', () => {
+test('session snapshots reject cross-session turns, duplicates and concurrent active turns', () => {
   const session = { id: sessionId, revision: 0, needs: emptyShoppingNeeds(), turns: [turn()] };
   assert.deepEqual(validateSessionSnapshot(session), session);
   for (const patch of [{ turns: [turn(), turn()] },
     { turns: [{ ...turn(), sessionId: clientMessageId }] },
     { turns: [turn(), { ...turn(), id: '2', clientMessageId: sessionId }] },
-    { turns: Array(31).fill(turn()) }, { revision: -1 }, { revision: 31 },
+    { revision: -1 }, { revision: 31 }, { revision: 1.5 }, { revision: Number.MAX_SAFE_INTEGER + 1 },
     { turns: [{ ...turn(), expectedRevision: 1 }] }, { extra: true }]) {
     assert.throws(() => validateSessionSnapshot({ ...session, ...patch }));
   }
+});
+
+test('long conversations preserve full history and accept revisions beyond thirty', () => {
+  const turns = Array.from({ length: 100 }, (_, index) => ({
+    ...turn(), id: String(index + 1),
+    clientMessageId: `${String(index + 1).padStart(8, '0')}-1234-4234-8234-123456789abc`,
+    expectedRevision: index, status: 'succeeded' as const, phase: 'succeeded' as const, reply: reply(),
+  }));
+  const ending: TurnSnapshot[] = ['failed', 'cancelled', 'queued'].map((status, index) => ({
+    ...turn(), id: String(101 + index),
+    clientMessageId: `${String(101 + index).padStart(8, '0')}-1234-4234-8234-123456789abc`,
+    expectedRevision: 100, status: status as TurnSnapshot['status'],
+    phase: status === 'queued' ? 'queued' : 'searching', errorCode: status === 'failed' ? 'MODEL_ERROR' : null,
+  }));
+  const session = { id: sessionId, revision: 100, needs: emptyShoppingNeeds(), turns: [...turns, ...ending] };
+  assert.deepEqual(validateSessionSnapshot(session), session);
+  assert.deepEqual(validateTurnSnapshot(ending[2]), ending[2]);
+  assert.throws(() => validateSessionSnapshot({ ...session, revision: 99 }));
+  assert.throws(() => validateSessionSnapshot({ ...session, turns: [...turns, { ...ending[2], expectedRevision: 99 }] }));
+  assert.throws(() => validateSessionSnapshot({ ...session, turns: [...turns, ending[2], ending[0]] }));
 });
 
 test('session snapshots preserve chronological revision history across success, failure and active work', () => {

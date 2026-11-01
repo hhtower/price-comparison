@@ -5,14 +5,14 @@ export const ASSISTANT_LIMITS = Object.freeze({
   contextMaxBytes: 24 * 1024,
   contextTurns: 6,
   evidenceMaxBytes: 32 * 1024,
-  outputMaxTokens: 2048,
+  outputMaxTokens: 8192,
   outputMaxBytes: 16 * 1024,
+  reasoningMaxChars: 8000,
   replyMaxChars: 1200,
   optionsMax: 4,
   optionMaxChars: 120,
   cardsMax: 3,
-  turnDeadlineMs: 90_000,
-  sessionMaxTurns: 30,
+  turnDeadlineMs: 300_000,
   sessionTtlMs: 24 * 60 * 60 * 1000,
   sessionMaxActiveTurns: 1,
   sessionMaxSubscriptions: 2,
@@ -82,7 +82,7 @@ export type AssistantReply = {
     price: string;
     currency: string;
     capturedAt: string;
-    priceExpiresAt: string;
+    priceExpiresAt: string | null;
     detailPath: string;
     reasons: string[];
     caveats: string[];
@@ -280,8 +280,7 @@ export function validateAssistantReply(value: unknown): AssistantReply {
     const standardProductId = id(source.standardProductId);
     const productId = id(source.productId);
     const capturedAt = timestamp(source.capturedAt);
-    const priceExpiresAt = timestamp(source.priceExpiresAt);
-    if (Date.parse(priceExpiresAt) <= Date.parse(capturedAt)) invalid('price expiry');
+    const priceExpiresAt = source.priceExpiresAt === null ? null : timestamp(source.priceExpiresAt);
     if (source.detailPath !== `/products/${standardProductId}`) invalid('detailPath');
     const notes = (value: unknown, min = 0) => unique(list(value, ASSISTANT_LIMITS.cardNotesMax,
       item => text(item, 'card note', ASSISTANT_LIMITS.cardNoteMaxChars, true), min));
@@ -327,7 +326,7 @@ export function validateTurnSnapshot(value: unknown): TurnSnapshot {
   return {
     id: id(source.id), sessionId: uuid(source.sessionId), clientMessageId: uuid(source.clientMessageId),
     inputText: validateAssistantInput(source.inputText),
-    expectedRevision: integer(source.expectedRevision, 'expectedRevision', ASSISTANT_LIMITS.sessionMaxTurns),
+    expectedRevision: integer(source.expectedRevision, 'expectedRevision'),
     eventVersion: integer(source.eventVersion, 'eventVersion'), status, phase, reply, errorCode,
   };
 }
@@ -335,8 +334,8 @@ export function validateTurnSnapshot(value: unknown): TurnSnapshot {
 export function validateSessionSnapshot(value: unknown): SessionSnapshot {
   const source = record(value, ['id', 'revision', 'needs', 'turns']);
   const sessionId = uuid(source.id);
-  const revision = integer(source.revision, 'revision', ASSISTANT_LIMITS.sessionMaxTurns);
-  const turns = list(source.turns, ASSISTANT_LIMITS.sessionMaxTurns, validateTurnSnapshot);
+  const revision = integer(source.revision, 'revision');
+  const turns = list(source.turns, Number.MAX_SAFE_INTEGER, validateTurnSnapshot);
   unique(turns.map(turn => turn.id));
   unique(turns.map(turn => turn.clientMessageId.toLowerCase()));
   if (turns.some(turn => turn.sessionId.toLowerCase() !== sessionId.toLowerCase() || turn.expectedRevision > revision)

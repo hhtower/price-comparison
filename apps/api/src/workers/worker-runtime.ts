@@ -63,7 +63,7 @@ export class WorkerRuntime {
   constructor(options: WorkerRuntimeOptions) {
     this.options = {
       ...options,
-      concurrency: Math.min(options.concurrency ?? 2, options.aiConcurrency ?? Number.MAX_SAFE_INTEGER),
+      concurrency: Math.min(options.concurrency ?? 2, options.aiConcurrency ?? Infinity),
       leaseMs: options.leaseMs ?? 30_000,
       heartbeatMs: options.heartbeatMs ?? 10_000,
       pollMs: options.pollMs ?? 250,
@@ -168,6 +168,8 @@ export class WorkerRuntime {
 
   private async claimBatch(limit: number): Promise<ClaimedJob[]> {
     if (limit < 1) return [];
+    // Unlimited execution still claims finite batches for bounded database transactions.
+    if (limit === Infinity) limit = 100;
     const queue = queueName(this.options.kind);
     if (this.options.service.claimAvailable) {
       const claimed = await this.options.service.claimAvailable(queue, this.options.workerId, limit, this.options.leaseMs);

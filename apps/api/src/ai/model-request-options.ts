@@ -28,6 +28,8 @@ export function buildModelRequestOptions(model: string, options: ModelRequestOpt
     ...(maxOutputTokens === undefined ? {} : gpt ? { max_completion_tokens: maxOutputTokens } : { max_tokens: maxOutputTokens }),
     // Keep reasoning options off older GPTs and unrelated OpenAI-compatible models.
     ...(/^gpt-6\.1-sol(?:-|$)/iu.test(model) ? { reasoning_effort: options.reasoningEffort ?? 'medium' } : {}),
+    ...(/^deepseek-(?:v4-pro|flash)(?:-|$)/iu.test(model) && options.reasoningEffort
+      ? { reasoning_effort: options.reasoningEffort } : {}),
     // GLM-5.3 requires thinking; low effort avoids its default deep reasoning.
     ...(glm ? { reasoning_effort: options.reasoningEffort ?? 'low', thinking: { type: 'enabled' } }
       : !gpt && options.thinking ? { thinking: { type: options.thinking } } : {}),

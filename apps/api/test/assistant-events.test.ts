@@ -11,6 +11,7 @@ import { AssistantController } from '../src/assistant/assistant.controller.js';
 import { AssistantAccess } from '../src/assistant/assistant-access.js';
 import type { AssistantRepository } from '../src/assistant/assistant.repository.js';
 import { createAiConcurrencyRedisClient } from '../src/ai/ai-concurrency.js';
+import type { AssistantReasoning } from '../src/assistant/assistant-reasoning.js';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const auth = `Bearer ${'a'.repeat(43)}`;
@@ -65,6 +66,45 @@ test('terminal subscription sends its authoritative snapshot then closes and rel
   assert.equal(f.raw.writableEnded, true);
   assert.equal(f.releases(), 1);
   assert.equal(f.raw.listenerCount('close'), 0);
+});
+
+test('authenticated SSE relays thinking independently of snapshots and unsubscribes on close', async context => {
+  enabled(context);
+  const f = fixture();
+  let listener!: (text: string) => void;
+  let released = 0;
+  const reasoning = { subscribe: async (key: string, receive: (text: string) => void) => {
+    assert.equal(key, id + ':1');
+    listener = receive;
+    receive('先看预算');
+    return () => { released++; };
+  } } as unknown as AssistantReasoning;
+  const controller = new AssistantController(f.repo as unknown as AssistantRepository,
+    f.access as unknown as AssistantAccess, reasoning);
+  const pending = controller.events(id, '1', auth, f.reply);
+  await flush();
+  assert.match(f.raw.chunks.join(''), /event: reasoning\ndata:.*先看预算/u);
+  listener('继续筛选');
+  f.raw.end();
+  await pending;
+  assert.equal(released, 1);
+  const count = f.raw.chunks.length;
+  listener('断开后不再写入');
+  assert.equal(f.raw.chunks.length, count);
+});
+
+test('unavailable thinking transport leaves authoritative snapshots available', async context => {
+  enabled(context);
+  const f = fixture();
+  const reasoning = { subscribe: async () => { throw new Error('offline'); } } as unknown as AssistantReasoning;
+  const controller = new AssistantController(f.repo as unknown as AssistantRepository,
+    f.access as unknown as AssistantAccess, reasoning);
+  const pending = controller.events(id, '1', auth, f.reply);
+  await flush();
+  assert.match(f.raw.chunks.join(''), /event: snapshot/u);
+  f.raw.end();
+  await pending;
+  assert.equal(f.releases(), 1);
 });
 
 test('authentication, feature and slot failures happen before sending SSE headers', async context => {

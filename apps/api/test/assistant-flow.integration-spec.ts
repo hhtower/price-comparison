@@ -13,7 +13,6 @@ import {
   emptyShoppingNeeds, validateSessionSnapshot, validateTurnSnapshot,
   type SessionSnapshot, type TurnSnapshot,
 } from '@price-comparison/catalog/assistant-contract';
-import { createAiConcurrencyCoordinator } from '../src/ai/ai-concurrency.js';
 import { createStreamingCall } from '../src/ai/llm-runtime.js';
 import { AssistantModule } from '../src/assistant/assistant.module.js';
 import { AssistantRepository } from '../src/assistant/assistant.repository.js';
@@ -185,8 +184,8 @@ test('real database HTTP/SSE flow uses shared worker and fragmented mock model, 
   let settled!: () => void;
   const workerSettled = new Promise<void>(resolve => { settled = resolve; });
   worker = new WorkerRuntime({
-    kind: 'assistant_turn', workerId: `${prefix}:worker`, concurrency: 1, aiConcurrency: 1, aiStage: 'assistant',
-    aiCoordinator: createAiConcurrencyCoordinator(redis, { concurrency: 1, key: `${prefix}:ai`, pollMs: 5 }),
+    kind: 'assistant_turn', workerId: `${prefix}:worker`, concurrency: Infinity,
+
     heartbeatMs: 100, leaseMs: 10_000,
     service: {
       claimNext: (...args) => jobs.claimNext(...args),
@@ -242,7 +241,7 @@ test('real database HTTP/SSE flow uses shared worker and fragmented mock model, 
   const beforeCommit = await repository.readSession(sessionId, accessToken);
   assert.equal(beforeCommit.revision, 0);
   assert.deepEqual(beforeCommit.needs, emptyShoppingNeeds());
-  assert.equal(await redis.hlen(`${prefix}:ai`), 1, 'model executes under the real shared Redis lease');
+  assert.equal(await redis.hlen(`${prefix}:ai`), 0, 'assistant executes without a shared Redis lease');
   unblockModel();
   const events: TurnSnapshot[] = [initial.value!];
   for await (const snapshot of stream) events.push(snapshot);
@@ -257,7 +256,7 @@ test('real database HTTP/SSE flow uses shared worker and fragmented mock model, 
   });
   assert.ok(wireChunks > 3, 'both JSON deltas and wire/SSE frames are fragmented');
   assert.equal(modelRequests, 1);
-  assert.equal(await redis.hlen(`${prefix}:ai`), 0, 'settled worker releases shared concurrency');
+  assert.equal(await redis.hlen(`${prefix}:ai`), 0, 'assistant never consumes shared concurrency');
   assert.equal(await redis.zcard(`assistant:streams:${sessionId}`), 0, 'terminal stream releases its connection slot');
   const restored = await (await http('GET', path, 200, undefined, accessToken)).json() as SessionSnapshot;
   assert.equal(restored.revision, 1);

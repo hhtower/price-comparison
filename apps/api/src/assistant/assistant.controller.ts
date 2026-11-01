@@ -1,6 +1,6 @@
 import {
   Body, Controller, Delete, Get, Headers, HttpCode, HttpException, Inject,
-  Param, Post, Req, Res, ServiceUnavailableException,
+  Optional, Param, Post, Req, Res, ServiceUnavailableException,
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import {
@@ -11,6 +11,7 @@ import { sleep } from '../common/sleep.js';
 import { AssistantAccess, type AssistantSubscription } from './assistant-access.js';
 import { readAssistantConfig } from './assistant.config.js';
 import { AssistantRepository } from './assistant.repository.js';
+import { AssistantReasoning } from './assistant-reasoning.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 function token(authorization: string | undefined): string {
@@ -45,6 +46,7 @@ export class AssistantController {
   constructor(
     @Inject(AssistantRepository) private readonly repository: AssistantRepository,
     @Inject(AssistantAccess) private readonly access: AssistantAccess,
+    @Optional() @Inject(AssistantReasoning) private readonly reasoning?: AssistantReasoning,
   ) {}
 
   @Get('status')
@@ -124,6 +126,7 @@ export class AssistantController {
     if (raw.destroyed || raw.writableEnded) close();
     let subscription: AssistantSubscription | undefined;
     let ready = false;
+    let unsubscribe: (() => void) | undefined;
     const writable = () => !controller.signal.aborted && !raw.destroyed && !raw.writableEnded
       && raw.writableLength <= ASSISTANT_LIMITS.sseBufferMaxBytes;
     const write = (frame: string) => {
@@ -144,6 +147,13 @@ export class AssistantController {
         'X-Accel-Buffering': 'no', Connection: 'keep-alive',
       });
       ready = true;
+      if (!isTurnTerminal(snapshot.status)) {
+        unsubscribe = await this.reasoning?.subscribe(`${snapshot.sessionId}:${snapshot.id}`, text => {
+          try {
+            if (writable()) write(`event: reasoning\ndata: ${JSON.stringify({ turnId: snapshot.id, text })}\n\n`);
+          } catch { close(); }
+        }).catch(() => undefined);
+      }
       let version = -1;
       let heartbeatAt = Date.now();
       for (;;) {
@@ -170,6 +180,7 @@ export class AssistantController {
       }
     } finally {
       close();
+      unsubscribe?.();
       raw.off('close', close);
       if (ready && !raw.destroyed && !raw.writableEnded) {
         if (raw.writableLength > ASSISTANT_LIMITS.sseBufferMaxBytes) raw.destroy();

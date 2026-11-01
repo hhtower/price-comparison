@@ -21,6 +21,7 @@ export interface StreamingInput {
   responseFormat?: Record<string, unknown>; tools?: ChatCompletionTool[];
   toolChoice?: ChatCompletionToolChoiceOption; includeUsage?: boolean; temperature?: number;
   maxOutputTokens?: number;
+  onReasoning?: (text: string) => void | Promise<void>;
   context?: Record<string, unknown>;
 }
 export type StreamingCall = (input: StreamingInput) => Promise<StreamingResult>;
@@ -94,12 +95,12 @@ export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env
   const modelOptions = readModelRequestOptions(environment);
   if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1) throw new Error('AI worker configuration is incomplete');
   const client = createRuntimeClient(environment, fetchImpl, timeout);
-  return async ({ model, messages, responseFormat, signal, context, tools, toolChoice, includeUsage, temperature, maxOutputTokens }) => {
+  return async ({ model, messages, responseFormat, signal, context, tools, toolChoice, includeUsage, temperature, maxOutputTokens, onReasoning }) => {
     const startedAt = performance.now();
     const deadline = new AbortController();
     const combined = AbortSignal.any([signal, deadline.signal]);
     const timer = setTimeout(() => deadline.abort(new Error(`AI response timed out after ${timeout}ms`)), timeout);
-    const parts: string[] = []; let outputBytes = 0; let firstContentMs: number | null = null; let finishReason: string | null = null;
+    const parts: string[] = []; let outputBytes = 0; let reasoningBytes = 0; let firstContentMs: number | null = null; let finishReason: string | null = null;
     const calls = new Map<number, StreamingToolCall>();
     const responseModels = new Set<string>();
     let responseId: string | null = null; let chunkCount = 0; let contentChunks = 0; let usage: StreamingUsage | null = null;
@@ -159,6 +160,19 @@ export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env
         const toolDeltas = choice?.delta?.tool_calls ?? [];
         if (!Array.isArray(toolDeltas)) throw invalidStream('AI response has invalid tool calls');
         const delta = choice?.delta?.content ?? '';
+        const reasoning = choice?.delta as { reasoning_content?: unknown; reasoning?: unknown } | undefined;
+        const thought = reasoning?.reasoning_content ?? reasoning?.reasoning ?? '';
+        if (typeof thought !== 'string') validationFailure ??= 'AI response has invalid reasoning';
+        if (typeof thought === 'string' && thought) {
+          // Reasoning must not consume the smaller structured-answer budget.
+          reasoningBytes += Buffer.byteLength(thought, 'utf8');
+          if (reasoningBytes > 1_048_576) {
+            stream.controller.abort();
+            throw invalidStream('AI reasoning exceeds bytes limit');
+          }
+          if (!validationFailure) await onReasoning?.(thought);
+          combined.throwIfAborted();
+        }
         if (typeof delta !== 'string') validationFailure ??= 'AI response has invalid content';
         if (!validationFailure && (delta || toolDeltas.length) && firstContentMs === null) { firstContentMs = Math.round(performance.now() - startedAt); logger?.log?.('ai.first_content', { ...context, firstContentMs }); }
         if (typeof delta === 'string' && delta) {
