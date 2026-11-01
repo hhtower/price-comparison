@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildTagReviewRequest, parseTagReviewResponse } from '../src/ai/tag-review-request.js';
+import { readTextEvidence, validateTextReview } from '../src/shops/shop-text-review.js';
 
 const parse = (value: unknown) => parseTagReviewResponse(JSON.stringify(value));
 const item = { id: '11', decisions: [true, false], textReview: null };
@@ -28,6 +29,8 @@ test('binary examples preserve independent outcomes for tags of the same product
   const examples = [...prompt.matchAll(/<review_example>\s*<input>\s*```json\n([\s\S]*?)\n```\s*<\/input>\s*<output>\s*```json\n([\s\S]*?)\n```\s*<\/output>\s*<\/review_example>/gu)];
   assert.ok(examples.length >= 2);
   let mixed = false;
+  const textJudgments = new Set<boolean | null>();
+  let conflict = false;
   for (const example of examples) {
     const source = JSON.parse(example[1]!);
     const response = parseTagReviewResponse(example[2]!);
@@ -36,9 +39,18 @@ test('binary examples preserve independent outcomes for tags of the same product
       assert.deepEqual(Object.keys(row).sort(), ['decisions', 'id', 'textReview']);
       assert.equal(row.decisions.length, source.proposals.items.find((candidate: { id: string }) => candidate.id === row.id).tags.length);
       mixed ||= row.decisions.includes(true) && row.decisions.includes(false);
+      const input = source.inputs.find((input: { id: string }) => input.id === row.id);
+      const review = validateTextReview(row.textReview, readTextEvidence(input));
+      if (review) {
+        assert.equal(row.decisions.length, 0, 'text review also runs without proposed tags');
+        for (const judgment of Object.values(review.answers)) textJudgments.add(judgment.value);
+        conflict ||= Object.values(review.consistency).some(judgment => judgment.value === true);
+      }
     }
   }
   assert.ok(mixed, 'one false label must not reject true labels of the same product');
+  assert.deepEqual(textJudgments, new Set([true, false, null]), 'examples distinguish disclosure, absence and uncertainty');
+  assert.ok(conflict, 'a complete text example demonstrates a conflict with two distinct source claims');
 });
 
 test('the protocol carries only per-tag booleans and handles empty candidate arrays', () => {

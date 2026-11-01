@@ -1,7 +1,7 @@
 import { TAG_SCHEMA, type TagExtractionInput, type TagExtractionResponse } from './tag-extraction-request.js';
 import { CONSISTENCY_KEYS, DISCLOSURE_KEYS, TEXT_REVIEW_INSTRUCTIONS, type TextReview } from '../shops/shop-text-review.js';
 
-export const TAG_REVIEW_PROMPT_VERSION = 'tag-review-20261027-v3';
+export const TAG_REVIEW_PROMPT_VERSION = 'tag-review-20261101-v4';
 
 export interface TagReviewResponse {
   items: Array<{ id: string; decisions: boolean[]; textReview: TextReview | null }>;
@@ -28,6 +28,7 @@ You are a binary judge of proposed buyer-facing product tags. Judge each existin
 
 # Output
 Return only {"items":[{"id":"input ID","decisions":[true,false],"textReview":null}]} with exactly these keys. Every input ID appears exactly once. For each ID return exactly one JSON boolean for each proposed tag, in the original order; zero proposed tags requires decisions=[].
+The null textReview above illustrates an input without shopText; when shopText is present, use the complete review object defined below and shown in the final example.
 For decisions use true for yes and false for no, without explanations or corrected tags. No additional fields, Markdown or reasoning outside JSON. At most 1000 items and 100 decisions per item.
 
 ## Independent title/body review
@@ -55,6 +56,19 @@ ${TEXT_REVIEW_INSTRUCTIONS}
 <output>
 \`\`\`json
 {"items":[{"id":"203","decisions":[false],"textReview":null},{"id":"204","decisions":[],"textReview":null}]}
+\`\`\`
+</output>
+</review_example>
+
+<review_example>
+<input>
+\`\`\`json
+{"inputs":[{"id":"205","name":"ChatGPT Plus 代充 1个月","shopText":{"unitId":"demo-205","name":"ChatGPT Plus 代充 1个月","description":"本商品服务期为3个月。需要已有ChatGPT账号，提交账号邮箱。售后按那项规则处理。","hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}],"proposals":{"items":[{"id":"205","tags":[]}]}}
+\`\`\`
+</input>
+<output>
+\`\`\`json
+{"items":[{"id":"205","decisions":[],"textReview":{"answers":{"L1":{"value":true,"reason":"标题明确商品套餐。","evidence":[{"field":"name","quote":"ChatGPT Plus"}]},"L2":{"value":true,"reason":"标题明确以代充交付。","evidence":[{"field":"name","quote":"代充"}]},"L3":{"value":true,"reason":"明确披露使用期限，但标题与正文期限冲突，另计入C3。","evidence":[{"field":"name","quote":"1个月"},{"field":"description","quote":"本商品服务期为3个月"}]},"R1":{"value":true,"reason":"买家须有账号。","evidence":[{"field":"description","quote":"需要已有ChatGPT账号"}]},"R2":{"value":true,"reason":"明确须提交的材料。","evidence":[{"field":"description","quote":"提交账号邮箱"}]},"R3":{"value":false,"reason":"完整标题正文未说明购买或操作时限。","evidence":[]},"A1":{"value":null,"reason":"售后所指规则未提供，无法确定适用事件与范围。","evidence":[{"field":"description","quote":"售后按那项规则处理"}]},"A2":{"value":false,"reason":"完整标题正文未提供售后联系人或渠道。","evidence":[]}},"consistency":{"C1":{"value":false,"reason":"未发现商品套餐身份冲突。","evidence":[]},"C2":{"value":false,"reason":"未发现交付方式冲突。","evidence":[]},"C3":{"value":true,"reason":"同一商品的使用期限分别写为1个月和3个月。","evidence":[{"field":"name","quote":"1个月"},{"field":"description","quote":"本商品服务期为3个月"}]},"C4":{"value":false,"reason":"未发现功能或使用限制冲突。","evidence":[]},"C5":{"value":false,"reason":"未发现买家资格或操作要求冲突。","evidence":[]},"C6":{"value":null,"reason":"所指售后规则缺失，无法判断其范围内是否冲突。","evidence":[{"field":"description","quote":"售后按那项规则处理"}]}}}}]}
 \`\`\`
 </output>
 </review_example>
