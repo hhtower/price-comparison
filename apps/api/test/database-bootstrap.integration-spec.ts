@@ -6,6 +6,7 @@ import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrateToLatest, migrationProvider } from '../scripts/migrate.js';
 import type { DatabaseSchema } from '../src/database/types.js';
+import { publishNextCatalogChange } from '../src/catalog/catalog-projection.js';
 
 async function databaseFixture(t: TestContext) {
   assert.ok(process.env.TEST_DATABASE_URL, 'TEST_DATABASE_URL is required');
@@ -89,4 +90,51 @@ test('review-key migration backfills existing reviews and rolls back without cha
     .execute(database)).rows[0], original);
   await migrateToLatest(database);
   assert.deepEqual((await read()).rows[0], upgraded);
+});
+
+
+test('rating revision changes only for scoring inputs and survives rollback and reinstallation', async t => {
+  const { database, schema } = await databaseFixture(t);
+  const migrator = new Migrator({ db: database, provider: migrationProvider, migrationTableSchema: schema });
+  const names = Object.keys(await migrationProvider.getMigrations()).sort();
+  const previous = names[names.indexOf('028_catalog_rating_versions_20261101') - 1]!;
+  assert.ifError((await migrator.migrateTo(previous)).error);
+  const shop = await database.insertInto('shops').values({ name: 'Revision', platform: 'test', url: 'https://revision.invalid' })
+    .returning('id').executeTakeFirstOrThrow();
+  await migrateToLatest(database);
+  const revision = async () => (await sql<{ revision: string }>`select rating_revision::text as revision from shops where id = ${shop.id}`.execute(database)).rows[0]!.revision;
+  assert.equal(await revision(), '0');
+  await database.updateTable('shops').set({ name: 'Renamed' }).where('id', '=', shop.id).execute();
+  assert.equal(await revision(), '0');
+  await database.updateTable('shops').set({ url: 'https://changed.invalid' }).where('id', '=', shop.id).execute();
+  assert.equal(await revision(), '1');
+  await database.updateTable('shops').set({ url: 'https://changed.invalid' }).where('id', '=', shop.id).execute();
+  assert.equal(await revision(), '1');
+  assert.ifError((await migrator.migrateTo(previous)).error);
+  assert.equal((await database.selectFrom('shops').select('url').where('id', '=', shop.id).executeTakeFirstOrThrow()).url, 'https://changed.invalid');
+  await migrateToLatest(database);
+  assert.equal(await revision(), '0');
+});
+
+test('published results backfill asynchronously and survive migration rollback without changing source data', async t => {
+  const { database, schema } = await databaseFixture(t);
+  const migrator = new Migrator({ db: database, provider: migrationProvider, migrationTableSchema: schema });
+  assert.ifError((await migrator.migrateTo('028_catalog_rating_versions_20261101')).error);
+  const shop = await database.insertInto('shops').values({ name: 'Published', platform: 'test', url: 'https://published.invalid' })
+    .returning('id').executeTakeFirstOrThrow();
+  await migrateToLatest(database);
+  assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 0);
+  assert.equal(await publishNextCatalogChange(database), true);
+  assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 0);
+  while (await publishNextCatalogChange(database)) {}
+  assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 1);
+  assert.equal(await publishNextCatalogChange(database), false);
+  await sql`insert into catalog_read_shop_totals values (99, ${shop.id}, 'CNY', 10, now(), 1, 99)`.execute(database);
+  await sql`truncate catalog_read_offer_prices`.execute(database);
+  while (await publishNextCatalogChange(database)) {}
+  assert.equal((await sql`select * from catalog_read_shop_totals`.execute(database)).rows.length, 0);
+  assert.ifError((await migrator.migrateTo('028_catalog_rating_versions_20261101')).error);
+  assert.equal((await database.selectFrom('shops').select('name').where('id', '=', shop.id).executeTakeFirstOrThrow()).name, 'Published');
+  await migrateToLatest(database);
+  assert.equal(await publishNextCatalogChange(database), true);
 });

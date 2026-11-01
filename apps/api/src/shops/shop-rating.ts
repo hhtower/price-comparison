@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import type { JsonValue } from '../database/types.js';
 
 export const SHOP_RATING_POLICY_ID = 'shop-public-information-score-v2';
-const MAX_AGE_MS = 86_400_000;
 const DOMAINS = [['L1', 'L2', 'L3'], ['R1', 'R2', 'R3'], ['A1', 'A2']];
 const QUESTIONS = DOMAINS.flat();
 const GROUPS = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6'];
@@ -105,21 +104,19 @@ export type ShopRatingDetails = {
 };
 
 export function readShopRating(value: JsonValue | null, source: Source, now: number,
-  text?: { listings: Listing[]; reviewed: number; nextExpiryAt: number } | null): { score: string | null; nextExpiryAt: number | null; details: ShopRatingDetails | null } {
+  text?: { listings: Listing[]; reviewed: number } | null): { score: string | null; nextExpiryAt: number | null; details: ShopRatingDetails | null } {
   const state = storedState(value, source);
-  const fresh = (field: { observedAt: number } | null | undefined) => field != null && field.observedAt <= now && field.observedAt + MAX_AGE_MS > now;
-  const deposit = fresh(state?.deposit) ? state!.deposit! : null;
-  const volume = fresh(state?.volume) ? state!.volume! : null;
-  const deadlines = [deposit, volume].flatMap(field => field ? [field.observedAt + MAX_AGE_MS] : []);
-  const currentText = text && text.nextExpiryAt > now && text.listings.length ? text : null;
-  if (currentText) deadlines.push(currentText.nextExpiryAt);
-  if (!deadlines.length) return { score: null, nextExpiryAt: null, details: null };
+  const observed = (field: { observedAt: number } | null | undefined) => field != null && field.observedAt <= now;
+  const deposit = observed(state?.deposit) ? state!.deposit! : null;
+  const volume = observed(state?.volume) ? state!.volume! : null;
+  const currentText = text?.listings.length ? text : null;
+  if (!deposit && !volume && !currentText) return { score: null, nextExpiryAt: null, details: null };
   const input: RatingInput = {
     deposit: deposit?.value ?? { amountMinor: null, currency: null, purpose: null }, volume: volume?.value ?? null,
     listings: currentText?.listings ?? null,
   };
   const noDeposit = { amountMinor: null, currency: null, purpose: null };
-  return { score: scoreShopRating(input).toFixed(2), nextExpiryAt: Math.min(...deadlines), details: {
+  return { score: scoreShopRating(input).toFixed(2), nextExpiryAt: null, details: {
     deposit: deposit ? { amountMinor: deposit.value.amountMinor, currency: deposit.value.currency,
       contribution: scoreShopRating({ ...input, volume: null, listings: null }).toFixed(2) } : null,
     volume: volume ? { count: volume.value,

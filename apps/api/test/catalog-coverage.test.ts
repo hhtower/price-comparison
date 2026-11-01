@@ -7,7 +7,7 @@ import { CatalogRepository } from '../src/catalog/catalog.repository.js';
 import { CatalogService } from '../src/catalog/catalog.service.js';
 import type { DatabaseSchema } from '../src/database/types.js';
 
-test('coverage counts source shops and products in one snapshot without public-offer filtering', async () => {
+test('coverage reads published counts without scanning source tables', async () => {
   const queries: CompiledQuery[] = [];
   const expected = { shopCount: 1234, productCount: 3149999 };
   class Driver extends DummyDriver {
@@ -27,9 +27,8 @@ test('coverage counts source shops and products in one snapshot without public-o
   try {
     assert.deepEqual(await new CatalogRepository(database).coverage(), expected);
     assert.equal(queries.length, 1);
-    assert.match(queries[0]!.sql, /count\(\*\) from shops/u);
-    assert.match(queries[0]!.sql, /count\(\*\) from products/u);
-    assert.doesNotMatch(queries[0]!.sql, /\b(where|join|offers|standard_products)\b/iu);
+    assert.match(queries[0]!.sql, /from catalog_coverage/u);
+    assert.doesNotMatch(queries[0]!.sql, /\b(count|join|shops|products|offers)\b/iu);
     assert.deepEqual(queries[0]!.parameters, []);
   } finally {
     await database.destroy();
@@ -54,7 +53,7 @@ test('public coverage coalesces reads in the existing cache and does not cache f
   await controller.getCoverage();
   assert.equal(reads, 1);
 
-  await cache.del('catalog:coverage:v1');
+  await cache.del('catalog:coverage:v2');
   fail = true;
   await assert.rejects(controller.getCoverage(), error => {
     assert.equal((error as { getStatus(): number }).getStatus(), 503);

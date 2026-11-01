@@ -13,6 +13,7 @@ export function createDevPlan(environment: NodeJS.ProcessEnv = process.env) {
   const commands = [
     { name: 'api', command: 'tsx watch apps/api/src/main.ts' },
     { name: 'web', command: 'vite --config apps/web/vite.config.js --host' },
+    { name: 'catalog', command: 'tsx watch apps/api/src/workers/catalog.worker.ts' },
   ];
   if (runtime.configured) {
     commands.push({ name: 'ai', command: 'tsx watch apps/api/src/workers/ai.worker.ts' });

@@ -868,8 +868,8 @@ test('hides aggregate totals and loads the next page when the virtual list reach
   expect(calls.at(-1).searchParams.get('limit')).toBe('20');
 });
 
-test('uses the earliest expiry across loaded infinite-query pages', async () => {
-  const firstExpiry = new Date(Date.now() + 1500).toISOString();
+test('loaded pages do not refetch at observation deadlines', async () => {
+  const firstExpiry = new Date(Date.now() + 200).toISOString();
   const secondExpiry = new Date(Date.now() + 60000).toISOString();
   const calls = [];
   vi.stubGlobal('fetch', vi.fn(async input => {
@@ -886,7 +886,8 @@ test('uses the earliest expiry across loaded infinite-query pages', async () => 
   await screen.findByRole('heading', { name: /第二页到期商品/ });
   const firstPageCalls = () => calls.filter(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20' && !url.searchParams.has('cursor'));
   expect(firstPageCalls()).toHaveLength(1);
-  await waitFor(() => expect(firstPageCalls().length).toBeGreaterThan(1), { timeout: 3000 });
+  await act(async () => new Promise(resolve => setTimeout(resolve, 250)));
+  expect(firstPageCalls()).toHaveLength(1);
 });
 
 test('automatically fills the viewport when the initial page contains one short product', async () => {

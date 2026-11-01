@@ -13,6 +13,7 @@
     "worker:assistant": "tsx apps/api/src/workers/assistant.worker.ts",
     "assistant:cleanup": "tsx apps/api/src/workers/assistant.worker.ts --cleanup",
     "worker:crawler": "tsx apps/api/src/workers/crawler.worker.ts",
+    "worker:catalog": "tsx apps/api/src/workers/catalog.worker.ts",
     "worker:official-reference": "tsx apps/api/src/workers/official-reference.worker.ts",
     "worker:standardization": "tsx apps/api/src/workers/standardization-entrypoint.ts",
     "test": "npm run test:e2e && npm run test:web",

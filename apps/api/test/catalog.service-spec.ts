@@ -1,147 +1,32 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ServiceUnavailableException } from '@nestjs/common';
 import { createCache } from '../src/cache/cache.js';
 import { CatalogService, normalizeCatalogQuery, type CatalogQueryInput } from '../src/catalog/catalog.service.js';
 import type { CatalogFacets, CatalogPage, CatalogQuery, CatalogRepository } from '../src/catalog/catalog.repository.js';
 
 const emptyPage = { items: [], platformFacets: [], total: 0 };
 
-test('catalog reads use the live projection without a version round trip or a cached response', async () => {
-  for (const kind of ['page', 'facets'] as const) {
-    let reads = 0;
-    const first = kind === 'page' ? { ...emptyPage, total: 1 } : { tagFacets: [] };
-    const latest = kind === 'page' ? { ...emptyPage, total: 2 }
-      : { tagFacets: [{ name: 'region', value: 'us', priority: 2 }] };
-    let projection: CatalogPage | CatalogFacets = first;
-    const loader = async () => { reads += 1; return projection; };
-    const cache = createCache();
-    const service = new CatalogService({ search: loader, facets: loader } as unknown as CatalogRepository, cache);
-    const read = () => kind === 'page' ? service.getCatalog({}) : service.getFacets({});
-    try {
-      assert.deepEqual(await read(), first);
-      projection = latest;
-      assert.deepEqual(await read(), latest, `${kind} sees source changes without a catalog version change`);
-      assert.equal(reads, 2);
-    } finally { await cache.disconnect(); }
-  }
-});
-
-test('page and facet query failures propagate unchanged without falling back to a previous response', async () => {
-  for (const kind of ['page', 'facets'] as const) {
-    let reads = 0;
-    const failure = new Error('database unavailable');
-    const first = kind === 'page' ? { ...emptyPage, total: 1 } : { tagFacets: [] };
-    const recovered = kind === 'page' ? { ...emptyPage, total: 3 }
-      : { tagFacets: [{ name: 'region', value: 'jp', priority: 3 }] };
-    const loader = async () => {
-      reads += 1;
-      if (reads === 2) throw failure;
-      return reads === 1 ? first : recovered;
-    };
-    const cache = createCache();
-    const service = new CatalogService({ search: loader, facets: loader } as unknown as CatalogRepository, cache);
-    const read = () => kind === 'page' ? service.getCatalog({}) : service.getFacets({});
-    try {
-      assert.deepEqual(await read(), first);
-      await assert.rejects(read(), (error: unknown) => error === failure);
-      assert.deepEqual(await read(), recovered);
-      assert.equal(reads, 3);
-    } finally { await cache.disconnect(); }
-  }
-});
-
-test('a new page or facets request finishes before an older slow request and later reads stay fresh', async () => {
-  for (const kind of ['page', 'facets'] as const) {
-    let reads = 0;
-    const oldResult = kind === 'page' ? { ...emptyPage, total: 1 } : { tagFacets: [] };
-    const latest = kind === 'page' ? { ...emptyPage, total: 2 }
-      : { tagFacets: [{ name: 'region', value: 'us', priority: 2 }] };
-    let finishOld!: (value: typeof oldResult) => void;
-    const slow = new Promise<typeof oldResult>(resolve => { finishOld = resolve; });
-    const loader = () => ++reads === 1 ? slow : Promise.resolve(latest);
-    const cache = createCache();
-    const service = new CatalogService({ search: loader, facets: loader } as unknown as CatalogRepository, cache);
-    const read = () => kind === 'page' ? service.getCatalog({}) : service.getFacets({});
-    try {
-      const oldRequest = read();
-      let currentFinished = false;
-      const currentRequest = read().then(result => { currentFinished = true; return result; });
-      await new Promise(resolve => setImmediate(resolve));
-      const finishedBeforeOld = currentFinished;
-      const readsBeforeOld = reads;
-      finishOld(oldResult);
-      const [old, current] = await Promise.all([oldRequest, currentRequest]);
-      assert.equal(finishedBeforeOld, true, `${kind} must not coalesce behind a previous query`);
-      assert.equal(readsBeforeOld, 2);
-      assert.deepEqual(old, oldResult);
-      assert.deepEqual(current, latest);
-      assert.deepEqual(await read(), latest, 'a late old result cannot replace a later live read');
-      assert.equal(reads, 3);
-    } finally {
-      finishOld(oldResult);
-      await cache.disconnect();
-    }
-  }
-});
-
-for (const kind of ['page', 'facets'] as const) test(`${kind} rechecks both expired slow loads and performs a fourth read on the next request`, async context => {
-  context.mock.timers.enable({ apis: ['Date'], now: 1_000 });
+for (const kind of ['page', 'facets'] as const) test(`${kind} caches for at most five seconds and propagates failures after expiry`, async context => {
+  context.mock.timers.enable({ apis: ['Date'], now: 1000 });
   let reads = 0;
+  const failure = new Error('database unavailable');
   const loader = async () => {
-    reads += 1;
-    const result = { ...(kind === 'page' ? emptyPage : { tagFacets: [] }),
-      nextExpiryAt: reads <= 2 ? new Date(Date.now() + 5).toISOString() : null };
-    if (reads <= 2) context.mock.timers.tick(10);
-    return result;
+    if (++reads === 2) throw failure;
+    return kind === 'page' ? { ...emptyPage, total: reads } : { tagFacets: [], nextExpiryAt: null };
   };
   const cache = createCache();
   const service = new CatalogService({ search: loader, facets: loader } as unknown as CatalogRepository, cache);
   const read = () => kind === 'page' ? service.getCatalog({}) : service.getFacets({});
   try {
-    const result = await read();
-    assert.equal(result.nextExpiryAt, null, 'a second expired load cannot be returned');
+    const first = await read();
+    assert.deepEqual(await read(), first);
+    assert.equal(reads, 1);
+    context.mock.timers.tick(5000);
+    await assert.rejects(read(), (error: unknown) => error === failure);
+    await read();
     assert.equal(reads, 3);
-    assert.equal(Date.now(), 1_020);
-    assert.deepEqual(await read(), result);
-    assert.equal(reads, 4, 'a stable response still requires a live read on the next request');
   } finally { await cache.disconnect(); }
 });
-
-for (const kind of ['page', 'facets'] as const) {
-  test(`${kind} stops repeatedly expired reads without returning stale data`, async () => {
-    let reads = 0;
-    const loader = async () => {
-      if (++reads > 4) throw new Error('unbounded catalog reload');
-      return { ...(kind === 'page' ? emptyPage : { tagFacets: [] }), nextExpiryAt: new Date(0).toISOString() };
-    };
-    const cache = createCache();
-    const service = new CatalogService({ search: loader, facets: loader } as unknown as CatalogRepository, cache);
-    try {
-      const read = () => kind === 'page' ? service.getCatalog({}) : service.getFacets({});
-      await assert.rejects(read(), error => error instanceof ServiceUnavailableException && error.getStatus() === 503);
-      assert.equal(reads, 3);
-    } finally { await cache.disconnect(); }
-  });
-
-  test(`${kind} does not start another read after exhausting the freshness retry budget`, async context => {
-    context.mock.timers.enable({ apis: ['Date'], now: 1_000 });
-    let reads = 0;
-    const loader = async () => {
-      reads++;
-      context.mock.timers.tick(5_001);
-      return { ...(kind === 'page' ? emptyPage : { tagFacets: [] }),
-        nextExpiryAt: reads === 1 ? new Date(1_001).toISOString() : null };
-    };
-    const cache = createCache();
-    const service = new CatalogService({ search: loader, facets: loader } as unknown as CatalogRepository, cache);
-    try {
-      const read = () => kind === 'page' ? service.getCatalog({}) : service.getFacets({});
-      await assert.rejects(read(), error => error instanceof ServiceUnavailableException && error.getStatus() === 503);
-      assert.equal(reads, 1);
-    } finally { await cache.disconnect(); }
-  });
-}
 
 test('repository calls receive normalized queries, distinct detail pages and filters on every request', async () => {
   const pages: CatalogQuery[] = [];
@@ -160,9 +45,9 @@ test('repository calls receive normalized queries, distinct detail pages and fil
       { ...base, tag: { name: 'region', value: 'us' } }, { standardProductId: '42' }, base,
     ]) await service.getCatalog(input);
     assert.deepEqual(pages, [
-      detail, detail, { ...detail, detailPage: 1 }, { ...detail, detailKind: 'shops' },
+      detail, { ...detail, detailPage: 1 }, { ...detail, detailKind: 'shops' },
       { ...detail, detailPageSize: 2 }, { ...detail, tags: [{ name: 'region', value: 'us' }] },
-      { standardProductId: '42', tags: [], limit: 20 }, detail,
+      { standardProductId: '42', tags: [], limit: 20 },
     ]);
     const filters = { platform: ' OpenAI ', q: ' Ｐｌｕｓ ', shopQuery: ' Ｍａｌｌ ',
       priceMin: '7', priceMax: 9, offerSort: 'priceDesc', tag: { name: ' region ', value: ' US ' } };
@@ -175,8 +60,8 @@ test('repository calls receive normalized queries, distinct detail pages and fil
       priceMin: '7.00', priceMax: '9.00', currency: 'CNY', tag: { name: 'region', value: 'us' } });
     const expectedFacets = { platform: 'openai', search: 'plus', shopQuery: 'Mall',
       priceMin: '7.00', priceMax: '9.00', currency: 'CNY', tags: [{ name: 'region', value: 'us' }] };
-    assert.deepEqual(facets, [expectedFacets, expectedFacets]);
-    assert.equal(pages.length, 9);
+    assert.deepEqual(facets, [expectedFacets]);
+    assert.equal(pages.length, 7);
   } finally { await cache.disconnect(); }
 });
 

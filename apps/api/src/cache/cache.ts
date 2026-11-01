@@ -73,19 +73,21 @@ export class Cache {
     return value;
   }
 
-  async wrap<T>(key: string, load: () => T | Promise<T>, ttl = this.options.ttl): Promise<T> {
+  async wrap<T>(key: string, load: () => T | Promise<T>, ttl: number | (() => number) | undefined = this.options.ttl): Promise<T> {
     const existing = this.pending.get(key);
     if (existing) return existing as Promise<T>;
     const task = (async () => {
       for (let index = 0; index < this.stores.length; index++) {
         const record = await this.record<T>(this.stores[index]!, key);
-        if (record?.value === undefined) continue;
+        if (record?.value === undefined || (record.expires != null && record.expires <= Date.now())) continue;
         // Promotion keeps the secondary tier's absolute expiry rather than renewing its TTL.
         await Promise.all(this.stores.slice(0, index).map(store => attempt(() => store.setRaw(key, record))));
         return record.value;
       }
       const value = await load();
-      await this.set(key, value, ttl);
+      const remaining = typeof ttl === 'function' ? ttl() : ttl;
+      // Keyv treats zero as unlimited; an exhausted read budget must not be cached.
+      if (remaining === undefined || remaining > 0) await this.set(key, value, remaining);
       return value;
     })();
     this.pending.set(key, task);

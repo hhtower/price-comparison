@@ -1,3 +1,4 @@
+import { publishNextCatalogChange } from '../src/catalog/catalog-projection.js';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { Kysely, PostgresDialect, TableNode, sql, type QueryId } from 'kysely';
@@ -85,7 +86,11 @@ describe('complete shop snapshot synchronization', () => {
     // start from the published state, not the row read before the review.
     return database.selectFrom('products').selectAll().where('id', '=', product.id).executeTakeFirstOrThrow();
   }
-  const visibleProducts = async () => (await new CatalogRepository(database).search({ tags: [], limit: 100 })).items.flatMap(item => item.offers.map(offer => offer.productId));
+  const publishChanges = async () => { while (await publishNextCatalogChange(database)) {} };
+  const visibleProducts = async () => {
+    await publishChanges();
+    return (await new CatalogRepository(database).search({ tags: [], limit: 100 })).items.flatMap(item => item.offers.map(offer => offer.productId));
+  };
 
   test('successful crawls atomically persist source-bound ratings and accept lower counts', async () => {
     const s = await shop();
@@ -98,6 +103,7 @@ describe('complete shop snapshot synchronization', () => {
     let saved = await database.selectFrom('shops').selectAll().where('id', '=', s.id).executeTakeFirstOrThrow();
     assert.equal(readShopRating(saved.shop_rating, saved, Date.now()).score, '33.75');
     await publish(s.id, 'rated');
+    await publishChanges();
     assert.equal((await new CatalogRepository(database).search({ shopId: String(s.id), tags: [], limit: 10 })).items[0]?.offers[0]?.shopScore, '33.75');
     volume = 0;
     await handler(await claim(s.id));
@@ -862,9 +868,11 @@ describe('complete shop snapshot synchronization', () => {
     const initial = await service.getCatalog(query);
     assert.deepEqual(initial.items.flatMap(item => item.offers.map(offer => offer.productId)), [String(original.id)]);
     assert.deepEqual(await service.getCatalog(query), initial);
-    assert.equal(values.size, 0, 'live catalog reads do not store quote responses');
+    assert.ok(values.size > 0, 'responses use a bounded five-second cache');
 
     await refreshStock('0');
+    await publishChanges();
+    values.clear();
     const offer = await database.selectFrom('offers').select(['stock_available', 'is_stale']).where('product_id', '=', original.id).executeTakeFirstOrThrow();
     assert.deepEqual(offer, { stock_available: false, is_stale: false });
     const unavailable = await service.getCatalog(query);
@@ -882,6 +890,8 @@ describe('complete shop snapshot synchronization', () => {
     assert.equal((await database.selectFrom('offers').select('stock_available').where('product_id', '=', original.id).executeTakeFirstOrThrow()).stock_available, false);
 
     await refreshStock('7');
+    await publishChanges();
+    values.clear();
     const restocked = await service.getCatalog(query);
     assert.deepEqual(restocked.items.flatMap(item => item.offers.map(offer => offer.productId)), [String(original.id)]);
     assert.equal(restocked.items[0]?.offers[0]?.inStock, true);
@@ -929,6 +939,8 @@ describe('complete shop snapshot synchronization', () => {
     assert.equal(initial.items[0]?.minPrice, '1.00');
 
     for (const refresh of refreshes.slice(0, 4)) await refresh(0);
+    await publishChanges();
+    values.clear();
     const available = await service.getCatalog(query);
     assert.deepEqual(available.items[0]?.offers.map(offer => offer.productId), productIds.slice(4));
     assert.equal(available.items[0]?.minPrice, '5.00');
@@ -937,6 +949,8 @@ describe('complete shop snapshot synchronization', () => {
     assert.deepEqual((await service.getFacets(query)).tagFacets.filter(tag => tag.name === 'access').map(({ name, value }) => ({ name, value })), [{ name: 'access', value: 'shared' }]);
 
     await refreshes[1]!(2);
+    await publishChanges();
+    values.clear();
     const restocked = await service.getCatalog(query);
     assert.deepEqual(restocked.items[0]?.offers.map(offer => offer.productId), [productIds[1], ...productIds.slice(4)]);
     assert.equal(restocked.items[0]?.minPrice, '1.40');
@@ -1132,6 +1146,8 @@ describe('complete shop snapshot synchronization', () => {
     assert.equal((await database.selectFrom('shops').select('enabled').where('id', '=', s.id).executeTakeFirstOrThrow()).enabled, true);
     await database.updateTable('fetch_runs').set({ status: 'failed' }).where('id', '=', job.id).execute();
     await refresh(s.id, [listing('cached-failure', 'ChatGPT Plus', 12)]);
+    await publishChanges();
+    values.clear();
     const recovered = await service.getCatalog(query);
     assert.equal(recovered.items[0]?.offers[0]?.productId, String(product.id));
     assert.equal(recovered.items[0]?.offers[0]?.price, '12.00');

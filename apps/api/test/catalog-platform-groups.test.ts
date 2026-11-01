@@ -37,7 +37,7 @@ test('catalog lists, paginated details and facets filter the IP group using cano
         queries.push(query);
         const page = { entries: [], platform_facets: [], total: 0, offer_total: 0, next_expiry_at: null, has_next: false };
         return { rows: query.sql.startsWith('show jit') ? [{ jit: 'off' }]
-          : query.sql.startsWith('fetch ') ? [{ kind: 0, payload: page }]
+          : query.sql.startsWith('with catalog_groups') ? [{ ...page, shop_ratings: [] }]
           : query.sql.startsWith('with ') ? [{ tag_facets: [], next_expiry_at: null }] : [] };
       } };
     }

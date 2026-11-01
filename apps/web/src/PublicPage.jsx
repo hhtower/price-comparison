@@ -102,14 +102,11 @@ function returnToCatalog(event) {
 }
 
 function currentInventory(offer) {
-  return !offer.stale && offer.inStock !== false
-    && (offer.inventoryExpiresAt == null || Date.parse(offer.inventoryExpiresAt) > Date.now());
+  return !offer.stale && offer.inStock !== false;
 }
 
 function availableOffer(offer) {
-  return ['verified', 'expired', 'estimated'].includes(offer?.priceStatus) && !offer.stale && offer.inStock !== false && offer.price != null && Number.isFinite(Number(offer.price)) && Number(offer.price) >= 0
-    && Number.isFinite(Date.parse(offer.priceExpiresAt))
-    && Date.parse(offer.inventoryExpiresAt ?? offer.priceExpiresAt) > Date.now();
+  return ['verified', 'expired', 'estimated'].includes(offer?.priceStatus) && !offer.stale && offer.inStock !== false && offer.price != null && Number.isFinite(Number(offer.price)) && Number(offer.price) >= 0;
 }
 
 function OfferPrice({ offer, className = '', starting = false }) {
@@ -118,10 +115,9 @@ function OfferPrice({ offer, className = '', starting = false }) {
   const listed = Number(offer?.listedPrice);
   const listedAmount = offer?.listedPrice != null && String(offer.listedPrice).trim() && Number.isFinite(listed) && listed >= 0
     ? formatMoney(listed, available ? '' : offer.currency) : '—';
-  const expired = offer?.priceStatus === 'expired' || Date.parse(offer?.priceExpiresAt) <= Date.now();
-  const estimated = expired || offer?.paymentMethod?.includes('预估');
-  const hint = available ? [offer.paymentMethod, expired ? '支付价已过期，按历史金额预估' : `有效至 ${new Date(offer.priceExpiresAt).toLocaleString('zh-CN')}`,
-    expired && offer.priceVerifiedAt ? `核价于 ${new Date(offer.priceVerifiedAt).toLocaleString('zh-CN')}` : null].filter(Boolean).join(' · ') : undefined;
+  const estimated = offer?.priceStatus === 'estimated' || offer?.paymentMethod?.includes('预估');
+  const hint = available ? [offer.paymentMethod,
+    offer.priceVerifiedAt ? `核价于 ${new Date(offer.priceVerifiedAt).toLocaleString('zh-CN')}` : null].filter(Boolean).join(' · ') : undefined;
   return <span className={`offer-price ${className}${available ? '' : ' price-unavailable'}`} title={hint}>
     <span aria-label={available ? `结算价 ${amount}，${hint}` : '暂无报价'}>{amount}</span>
     {available && estimated ? <span className="offer-price-suffix">预估</span> : null}
@@ -130,24 +126,15 @@ function OfferPrice({ offer, className = '', starting = false }) {
   </span>;
 }
 
-function usePriceExpiry(data, refresh, enabled = true) {
+function useCatalogRefresh(_data, refresh, enabled = true) {
   const [revision, tick] = useState(0);
-  // Keep local deadlines active when a refresh fails or remains pending.
-  const expiries = [data?.nextExpiryAt, ...(data?.items || []).flatMap(item =>
-    [...(item.offers || []), ...(item.detail?.entries || []).map(entry => entry.offer || entry)]
-      .flatMap(offer => [offer.priceExpiresAt, offer.inventoryExpiresAt, offer.shopScoreExpiresAt]))]
-    .map(value => Date.parse(value)).filter(value => Number.isFinite(value) && value > Date.now());
-  const expires = expiries.length ? Math.min(...expiries) : null;
   useEffect(() => {
     if (!enabled) return;
     const recheck = () => { tick(value => value + 1); refresh(); };
     const visible = () => { if (document.visibilityState === 'visible') recheck(); };
     document.addEventListener('visibilitychange', visible);
-    const at = expires;
-    // An already-expired response stays visibly stale without a refetch loop.
-    const timer = at !== null && at > Date.now() ? setTimeout(recheck, Math.min(at - Date.now(), 2147483647)) : undefined;
-    return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', visible); };
-  }, [expires, refresh, enabled]);
+    return () => document.removeEventListener('visibilitychange', visible);
+  }, [refresh, enabled]);
   return revision;
 }
 
@@ -161,7 +148,7 @@ function FilterCount({ params, enabled, detail = false, current }) {
   const request = useDebounced(params);
   const preview = useQuery({ queryKey: ['filter-count', request], enabled: enabled && !current,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog?' + request + '&limit=1', signal) });
-  usePriceExpiry(preview.data, preview.refetch, enabled && !current);
+  useCatalogRefresh(preview.data, preview.refetch, enabled && !current);
   const result = current || preview.data;
   return <span className="filter-count" role="status">{!current && (params !== request || preview.isFetching) ? '统计中…' : !current && preview.isError ? '数量暂不可用'
     : result ? detail ? `${result.offerTotal ?? 0} 条报价` : `${result.total ?? 0} 款 · ${result.offerTotal ?? 0} 条报价` : ''}</span>;
@@ -441,7 +428,6 @@ function ShopScore({ offer }) {
   const [open, setOpen] = useState(false);
   const details = offer.shopScoreDetails;
   const score = offer.shopScore;
-  if (Date.parse(offer.shopScoreExpiresAt) <= Date.now()) return null;
   if ((typeof score !== 'string' && typeof score !== 'number') || String(score).trim() === '') return null;
   const value = Number(score);
   return Number.isFinite(value) && value >= 0 && value <= 100
@@ -509,8 +495,7 @@ function OfferCard({ offer, item, rank, onOfferDetails, comparison, onCompare, b
 }
 
 function OfferComparison({ entries, onRemove, onClose, onOfferDetails }) {
-  const expiries = entries.flatMap(({ offer }) => [Date.parse(offer.priceExpiresAt), Date.parse(offer.inventoryExpiresAt), Date.parse(offer.shopScoreExpiresAt)]).filter(value => Number.isFinite(value) && value > Date.now());
-  usePriceExpiry({ nextExpiryAt: expiries.length ? new Date(Math.min(...expiries)).toISOString() : null }, NOOP);
+  useCatalogRefresh({ items: [{ offers: entries.map(entry => entry.offer) }] }, NOOP);
   entries = entries.filter(({ offer }) => currentInventory(offer));
   return <ModalDialog open className="offer-comparison" style={{ '--comparison-columns': entries.length }} aria-labelledby="offer-comparison-title" onClose={onClose}>
     <header className="dialog-header"><h2 id="offer-comparison-title">报价对比</h2><button type="button" aria-label="关闭报价对比" onClick={onClose}>×</button></header>
@@ -621,10 +606,9 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   });
   const detailData = useMemo(() => {
     const pages = detailQuery.data?.pages || EMPTY_LIST;
-    const expiries = pages.map(page => Date.parse(page.nextExpiryAt)).filter(Number.isFinite);
-    return { ...pages[0], items: pages.flatMap(page => page.items || []), nextExpiryAt: expiries.length ? new Date(Math.min(...expiries)).toISOString() : null };
+    return { ...pages[0], items: pages.flatMap(page => page.items || []) };
   }, [detailQuery.data]);
-  const priceRevision = usePriceExpiry(detailData, detailQuery.refetch);
+  const priceRevision = useCatalogRefresh(detailData, detailQuery.refetch);
   const firstDetailItem = detailQuery.data?.pages[0]?.items?.find(item => item.id === detail.item.id);
   const missingPage = standalone && state.page > 1 && detailQuery.data !== undefined
     && (!firstDetailItem?.detail?.entries?.length || (state.page - 1) * state.pageSize >= firstDetailItem.detail.total);
@@ -641,7 +625,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   const facetParams = queryFor(state).toString();
   const facets = useQuery({ queryKey: ['detail-facets', facetParams], enabled: filterOpen,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog/facets?' + facetParams, signal) });
-  usePriceExpiry(facets.data, facets.refetch, filterOpen);
+  useCatalogRefresh(facets.data, facets.refetch, filterOpen);
   const loading = detailQuery.isPending;
   const error = detailQuery.isError && !detailQuery.data;
   const item = detailData.items?.find(item => item.id === detail.item.id);
@@ -857,7 +841,7 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
 
   const queryClient = useQueryClient();
   const coverageQuery = useQuery({
-    queryKey: ['catalog-coverage'], staleTime: 300_000, enabled: !productId,
+    queryKey: ['catalog-coverage'], staleTime: 5_000, enabled: !productId,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog/coverage', signal),
   });
   const request = useMemo(() => catalogParams(search, platform, selectedTags, warrantyDaysMin, selectedProduct, newcomer).toString(), [search, platform, selectedTags, warrantyDaysMin, selectedProduct, newcomer]);
@@ -930,16 +914,14 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
     enabled: !productId && filterOpen,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog/facets?' + request, signal),
   });
-  usePriceExpiry(facetQuery.data, facetQuery.refetch, !productId && filterOpen);
+  useCatalogRefresh(facetQuery.data, facetQuery.refetch, !productId && filterOpen);
   const data = useMemo(() => {
     const pages = catalogQuery.data?.pages || EMPTY_LIST;
     const last = pages.at(-1) || {};
-    const expiryTimes = pages.map(page => Date.parse(page.nextExpiryAt)).filter(Number.isFinite);
     return { ...last, items: pages.flatMap(page => page.items || EMPTY_LIST),
-      platformFacets: last.platformFacets || EMPTY_LIST,
-      nextExpiryAt: expiryTimes.length ? new Date(Math.min(...expiryTimes)).toISOString() : null };
+      platformFacets: last.platformFacets || EMPTY_LIST };
   }, [catalogQuery.data]);
-  const priceRevision = usePriceExpiry(data, catalogQuery.refetch, !productId);
+  const priceRevision = useCatalogRefresh(data, catalogQuery.refetch, !productId);
   useEffect(() => {
     const position = window.history.state?.catalogScroll;
     if (!productId && listMeasured && catalogQuery.data && Number.isFinite(position)) {
@@ -1131,7 +1113,7 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
 
 export default function PublicPage({ productId, onPlatformChange, assistantEnabled = false }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: {
-    staleTime: 30_000, gcTime: 300_000, retry: false, refetchOnWindowFocus: false,
+    staleTime: 5_000, gcTime: 300_000, retry: false, refetchOnWindowFocus: false,
   } } }));
   useEffect(() => () => client.clear(), [client]);
   return <QueryClientProvider client={client}><PublicCatalog key={productId || 'catalog'} productId={productId} onPlatformChange={onPlatformChange} assistantEnabled={assistantEnabled} /></QueryClientProvider>;

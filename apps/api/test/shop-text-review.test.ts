@@ -49,7 +49,8 @@ test('whole-source manifest preserves unknowns, deduplicates SKUs and rejects st
   const conflict = { ...row, text_review: { ...stored, review: { ...review,
     answers: { ...answers, L1: { value: false, reason: '未明确', evidence: [] } } } } };
   assert.equal(aggregateTextReviews(manifest, source, [row, conflict], 100)?.reviewed, 0);
-  assert.equal(aggregateTextReviews(manifest, source, [row], 86_400_100), null);
+  assert.deepEqual(aggregateTextReviews(manifest, source, [row], 86_400_100), first);
+  assert.equal(aggregateTextReviews(manifest, source, [row], 99), null);
 });
 
 test('incremental text reviews keep conflicts across batches and retain only judgments', () => {
@@ -65,7 +66,7 @@ test('incremental text reviews keep conflicts across batches and retain only jud
   assert.equal(result.reviewed, 0);
   assert.equal(result.listings[0]?.answers, null);
   assert.ok(!JSON.stringify(result).includes('evidence'));
-  assert.equal(createTextReviewAccumulator(manifest, source, 86_400_100), null);
+  assert.ok(createTextReviewAccumulator(manifest, source, 86_400_100));
 });
 
 test('prepared reviews retain only validated judgments and recheck the live manifest and source', () => {

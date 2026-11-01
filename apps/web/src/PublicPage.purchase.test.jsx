@@ -46,58 +46,28 @@ test('estimated payment prices visibly identify their assumption while remaining
   expect(within(screen.getByRole('dialog', { name: '报价对比' })).getByText('预估')).toBeInTheDocument();
 });
 
-test.each(['/', '/products/42'])('expired payment quotes remain estimated and comparable on %s', async path => {
+test.each(['/', '/products/42'])('observed quotes with no expiry remain visible and comparable on %s', async path => {
   window.history.replaceState({}, '', path);
-  mockApi({ priceStatus: 'expired' }); render(<App />);
-  await screen.findAllByText('预估');
-  expect(screen.getAllByLabelText(/结算价.*历史金额预估/).length).toBeGreaterThan(0);
-  expect(screen.getAllByText('¥12.5').length).toBeGreaterThan(0);
-  fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
-  fireEvent.click(screen.getAllByRole('button', { name: '对比（1）' })[0]);
-  expect(within(screen.getByRole('dialog', { name: '报价对比' })).getByText('预估')).toBeInTheDocument();
-});
-
-test.each(['/', '/products/42'])('inventory expiry removes the merchant listing even when the refresh hangs on %s', async path => {
-  window.history.replaceState({}, '', path);
-  mockApi({ inventoryExpiresAt: new Date(Date.now() + 400).toISOString() });
-  const fetchMock = globalThis.fetch;
-  let reads = 0;
-  vi.stubGlobal('fetch', vi.fn(input => {
-    if (new URL(input, 'http://localhost').pathname === '/api/catalog' && ++reads > 1) return new Promise(() => {});
-    return fetchMock(input);
-  }));
-  render(<App />); await screen.findAllByText('¥12.5');
-  await waitFor(() => expect(screen.queryByText('¥12.5')).not.toBeInTheDocument());
-  expect(document.querySelector('.tile-price.best')).toBeNull();
-  expect(screen.queryByText('预估')).not.toBeInTheDocument();
-  expect(screen.queryAllByText('接码服务')).toHaveLength(0);
-  expect(screen.queryAllByRole('link', { name: '去商家' })).toHaveLength(0);
-});
-
-test.each(['/', '/products/42'])('inventory still expires after payment expiry when the first refresh hangs on %s', async path => {
-  window.history.replaceState({}, '', path);
-  mockApi({ expires: true, inventoryExpiresAt: new Date(Date.now() + 800).toISOString() });
-  const fetchMock = globalThis.fetch;
-  let reads = 0;
-  vi.stubGlobal('fetch', vi.fn(input => {
-    if (new URL(input, 'http://localhost').pathname === '/api/catalog' && ++reads > 1) return new Promise(() => {});
-    return fetchMock(input);
-  }));
-  render(<App />); await screen.findAllByText('¥12.5');
-  await screen.findAllByText('预估');
-  await waitFor(() => expect(screen.queryByText('¥12.5')).not.toBeInTheDocument());
-  expect(document.querySelector('.tile-price.best')).toBeNull();
-});
-
-test('comparison changes an existing estimate only once then removes its amount at inventory expiry', async () => {
-  mockApi({ paymentMethod: '支付宝（预估）', inventoryExpiresAt: new Date(Date.now() + 800).toISOString() });
-  render(<App />); await screen.findAllByText('¥12.5');
+  mockApi({ inventoryExpiresAt: null }); render(<App />);
+  await screen.findAllByText('¥12.5');
   fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
   fireEvent.click(screen.getAllByRole('button', { name: '对比（1）' })[0]);
   const comparison = within(screen.getByRole('dialog', { name: '报价对比' }));
-  expect(comparison.getAllByText('预估')).toHaveLength(1);
-  await waitFor(() => expect(comparison.queryByText('¥12.5')).not.toBeInTheDocument());
-  expect(comparison.queryByRole('link', { name: '去商家' })).not.toBeInTheDocument();
+  expect(comparison.getByText('¥12.5')).toBeInTheDocument();
+  expect(comparison.getByRole('link', { name: '去商家' })).toBeInTheDocument();
+});
+
+test.each(['/', '/products/42'])('elapsed quote and stock deadlines never remove listings or trigger SQL rereads on %s', async path => {
+  window.history.replaceState({}, '', path);
+  const calls = mockApi({ expires: true, inventoryExpiresAt: new Date(Date.now() + 200).toISOString() });
+  render(<App />); await screen.findAllByText('¥12.5');
+  fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
+  fireEvent.click(screen.getAllByRole('button', { name: '对比（1）' })[0]);
+  const before = calls.filter(url => url.pathname === '/api/catalog').length;
+  await act(async () => new Promise(resolve => setTimeout(resolve, 250)));
+  expect(screen.getAllByText('¥12.5').length).toBeGreaterThan(0);
+  expect(within(screen.getByRole('dialog', { name: '报价对比' })).getByRole('link', { name: '去商家' })).toBeInTheDocument();
+  expect(calls.filter(url => url.pathname === '/api/catalog')).toHaveLength(before);
 });
 
 test('keeps history off the homepage and offers both aggregate and individual history in product details', async () => {
@@ -464,7 +434,7 @@ test.each([
     && url.searchParams.getAll('tag').includes(JSON.stringify({ name: 'warranty_scope', value: scope })))).toBe(true));
 });
 
-test('homepage shows compact settlement and listed prices with expiry in a hint and one click merchant links', async () => {
+test('homepage shows compact settlement and listed prices with verification time in a hint and one click merchant links', async () => {
   mockApi(); render(<App />);
   expect(await screen.findByRole('link', { name: 'Codex 手机接码' })).toHaveAttribute('href', '/products/42?newcomer=false');
   expect(screen.getAllByText('¥12.5')).toHaveLength(2);
@@ -473,10 +443,10 @@ test('homepage shows compact settlement and listed prices with expiry in a hint 
   expect(document.querySelector('.lowest-note')).not.toHaveTextContent('标价');
   expect(screen.getByLabelText(/结算价.*预估.*售价/).closest('.tile-price')).toHaveTextContent('¥18预估 / 标价 18');
   expect(document.querySelector('.tile-price.price-unavailable')).not.toBeInTheDocument();
-  expect(screen.queryByText(/核验|有效至|支付宝/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/核验|核价于|支付宝/)).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /展开报价|收起报价/ })).not.toBeInTheDocument();
   expect(screen.queryByText(quote.spec)).not.toBeInTheDocument();
-  expect(screen.getAllByTitle(/支付宝.*有效至/)).toHaveLength(2);
+  expect(screen.getAllByTitle(/支付宝.*核价于/)).toHaveLength(2);
   expect(screen.queryByText('¥0')).not.toBeInTheDocument();
   expect(screen.getAllByRole('link', { name: '去商家' })[0]).toHaveAttribute('href', 'https://example.com/buy');
 });
@@ -565,19 +535,19 @@ test('restores list scroll only after the virtual rows have measurable height', 
   await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 250));
 });
 
-test('payment expiry retains an estimated minimum while rereading and visibility restoration rechecks', async () => {
+test('visibility restoration refreshes observed quotes without changing their price status', async () => {
   const calls = mockApi({ expires: true }); render(<App />);
   await screen.findAllByText('¥12.5');
   await screen.findAllByText('预估');
-  await waitFor(() => expect(document.querySelector('.tile-price.best')).toHaveTextContent('¥12.5预估'));
-  expect(document.querySelector('.lowest-note')).toHaveTextContent('¥12.5预估');
+  await waitFor(() => expect(document.querySelector('.tile-price.best')).toHaveTextContent('¥12.5'));
+  expect(document.querySelector('.lowest-note')).toHaveTextContent('¥12.5');
   expect(screen.queryByText('¥0')).not.toBeInTheDocument();
   const before = calls.filter(url => url.pathname === '/api/catalog').length;
   await act(async () => document.dispatchEvent(new Event('visibilitychange')));
   await waitFor(() => expect(calls.filter(url => url.pathname === '/api/catalog').length).toBeGreaterThan(before));
 });
 
-test('payment expiry keeps the estimated minimum even when rereading fails', async () => {
+test('a failed visibility refresh preserves the last observed minimum', async () => {
   const api = mockApi({ expires: true });
   const fetchMock = globalThis.fetch;
   let release;
@@ -589,12 +559,13 @@ test('payment expiry keeps the estimated minimum even when rereading fails', asy
   }));
   render(<App />); await screen.findAllByText('¥12.5');
   await screen.findAllByText('预估');
-  await waitFor(() => expect(document.querySelector('.tile-price.best')).toHaveTextContent('¥12.5预估'));
-  expect(document.querySelector('.lowest-note')).toHaveTextContent('¥12.5预估');
+  await waitFor(() => expect(document.querySelector('.tile-price.best')).toHaveTextContent('¥12.5'));
+  expect(document.querySelector('.lowest-note')).toHaveTextContent('¥12.5');
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')));
   await waitFor(() => expect(release).toBeTypeOf('function'));
   await act(async () => release(Response.json({}, { status: 503 })));
   expect(await screen.findByRole('alert')).toHaveTextContent('商品加载失败');
-  expect(document.querySelector('.tile-price.best')).toHaveTextContent('¥12.5预估');
+  expect(document.querySelector('.tile-price.best')).toHaveTextContent('¥12.5');
 });
 
 test.each(['/', '/products/42'])('opens SKU details without requests and keeps nested report and comparison layers on %s', async path => {

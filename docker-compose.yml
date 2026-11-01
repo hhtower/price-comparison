@@ -39,6 +39,13 @@ services:
       retries: 3
     stop_grace_period: 30s
 
+  worker-catalog:
+    <<: *app
+    command: ["node", "dist/server/workers/catalog.worker.js"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 90s
+
   worker-crawler:
     <<: *app
     command: ["node", "dist/server/workers/crawler.worker.js"]

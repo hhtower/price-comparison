@@ -60,6 +60,7 @@ export interface ShopTable {
   deleted_at: NullableTimestamp;
   shop_rating: NullableJsonbColumn;
   rating_manifest: NullableJsonbColumn;
+  rating_revision: Generated<bigint>;
 }
 
 export interface ProductTable {

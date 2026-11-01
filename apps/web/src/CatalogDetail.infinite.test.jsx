@@ -57,10 +57,10 @@ test.each(['offers', 'shops'])('empty paginated %s show the server count without
 
 test.each(['offers', 'shops'])('%s label shop scores and omit absent scores without a placeholder', async kind => {
   mockApi(); const modal = await open(kind);
-  expect([...modal.querySelectorAll('.shop-score')].map(node => node.textContent)).toEqual(['评分 0', '评分 33.75', '评分 0', '评分 12.5', '评分 20']);
+  expect([...modal.querySelectorAll('.shop-score')].map(node => node.textContent)).toEqual(['评分 0', '评分 33.75', '评分 33.75', '评分 0', '评分 12.5', '评分 20']);
   expect(modal.querySelector('.shop-score')).not.toHaveAttribute('title');
   expect(within(modal).getByText('商铺2').closest(kind === 'shops' ? 'strong' : '.offer-shop-identity').querySelector('.shop-score')).toBeNull();
-  expect(within(modal).getByText('商铺3').closest(kind === 'shops' ? 'strong' : '.offer-shop-identity').querySelector('.shop-score')).toBeNull();
+  expect(within(modal).getByText('商铺3').closest(kind === 'shops' ? 'strong' : '.offer-shop-identity').querySelector('.shop-score')).toHaveTextContent('评分 33.75');
   expect(within(modal).queryByText(/商铺评分|暂无评分|\/100/)).not.toBeInTheDocument();
 });
 
@@ -99,7 +99,7 @@ test.each(['offers', 'shops'])('%s score badges explain the score without openin
     expect(score).toHaveFocus();
   }
   expect(score).toHaveTextContent(/^评分 0$/);
-  fireEvent.click(within(modal).getByRole('button', { name: '商铺评分 33.75' }));
+  fireEvent.click(within(modal).getAllByRole('button', { name: '商铺评分 33.75' })[0]);
   explanation = screen.getByRole('dialog', { name: '商铺评分说明' });
   expect(within(explanation).getByRole('row', { name: '押金 100 元 18.75 分' })).toBeInTheDocument();
   expect(within(explanation).getByRole('row', { name: '公示销量 1,000 15 分' })).toBeInTheDocument();

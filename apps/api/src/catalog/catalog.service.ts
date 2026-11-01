@@ -1,4 +1,4 @@
-import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { CACHE, type Cache } from '../cache/cache.js';
 import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQuery, type CatalogSort, type CatalogTag, type PublicCatalogProduct, type PublicProductIdentity } from './catalog.repository.js';
 import { DomainValidationError } from '../common/errors.js';
@@ -149,7 +149,7 @@ export class CatalogService {
   }
 
   getCoverage() {
-    return this.cache.wrap('catalog:coverage:v1', () => this.repository.coverage(), 300_000);
+    return this.readCached('catalog:coverage:v2', () => this.repository.coverage());
   }
 
   getProduct(id: string) {
@@ -172,12 +172,12 @@ export class CatalogService {
       standardProductId: input.standardProductId, shopQuery: input.shopQuery, shopId: input.shopId,
       priceMin: input.priceMin, priceMax: input.priceMax, currency: input.currency, offerSort: input.offerSort,
     });
-    return this.readFresh(() => this.repository.facets(query));
+    return this.readCached(`catalog:facets:v2:${JSON.stringify(query)}`, () => this.repository.facets(query));
   }
 
   async getCatalog(input: CatalogQueryInput): Promise<CatalogPage> {
     const query = normalizeCatalogQuery(input);
-    return this.readFresh(() => this.repository.search(query));
+    return this.readCached(`catalog:page:v2:${JSON.stringify(query)}`, () => this.repository.search(query));
   }
 
   getReferenceOffers(input: Pick<CatalogQueryInput, 'standardProductId' | 'currency' | 'priceMax' | 'tags' | 'warrantyDaysMin'>) {
@@ -186,14 +186,9 @@ export class CatalogService {
     return this.repository.referenceOffers(query);
   }
 
-  private async readFresh<T extends { readonly nextExpiryAt?: string | null }>(loader: () => Promise<T>): Promise<T> {
+  private readCached<T>(key: string, loader: () => Promise<T>): Promise<T> {
     const deadline = Date.now() + 5_000;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const result = await loader();
-      if (!result.nextExpiryAt || Date.parse(result.nextExpiryAt) > Date.now()) return result;
-      if (Date.now() >= deadline) break;
-    }
-    throw new ServiceUnavailableException('目录更新频繁，暂时无法取得有效快照，请稍后重试');
+    return this.cache.wrap(key, loader, () => deadline - Date.now());
   }
 }
 

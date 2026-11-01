@@ -84,7 +84,7 @@ export function createTextReviewAccumulator(manifest: unknown, source: Source, n
   if (!closed(manifest, ['sourceUrl','sourceProtocol','sourcePlatform','observedAt','units'])
     || manifest.sourceUrl !== source.url || manifest.sourceProtocol !== source.protocol || manifest.sourcePlatform !== source.platform
     || typeof manifest.observedAt !== 'number' || !Number.isSafeInteger(manifest.observedAt) || manifest.observedAt < 0
-    || manifest.observedAt > now || manifest.observedAt + 86_400_000 <= now || !Array.isArray(manifest.units)) return null;
+    || manifest.observedAt > now || !Array.isArray(manifest.units)) return null;
   const units = new Map<string, string | null>();
   for (const unit of manifest.units) {
     if (!closed(unit, ['unitId','hash']) || typeof unit.unitId !== 'string' || !unit.unitId.trim()
@@ -101,7 +101,6 @@ export function createTextReviewAccumulator(manifest: unknown, source: Source, n
     if (old && JSON.stringify(old) !== JSON.stringify(listing)) conflicts.add(review.unitId);
     else reviews.set(review.unitId, listing);
   };
-  const nextExpiryAt = manifest.observedAt + 86_400_000;
   return { add, finish() {
     let reviewed = 0;
     const listings = [...units.keys()].sort().map(unitId => {
@@ -109,6 +108,6 @@ export function createTextReviewAccumulator(manifest: unknown, source: Source, n
       if (review) reviewed++;
       return review ?? { unitId, answers: null, consistency: null };
     });
-    return { listings, reviewed, nextExpiryAt };
+    return { listings, reviewed };
   } };
 }

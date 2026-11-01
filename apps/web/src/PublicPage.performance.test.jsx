@@ -89,7 +89,7 @@ test('selecting the active platform and applying unchanged filters keep the exis
   expect(screen.getByRole('heading', { name: /^商品0 / })).toBeInTheDocument();
 });
 
-test('reopening unchanged filters reuses fresh facets and refresh invalidates them', async () => {
+test('reopening filters reuses prepared options until refresh', async () => {
   const fetchMock = vi.fn(async url => String(url).includes('/catalog/facets') ? facetsResponse() : response([product(0)]));
   vi.stubGlobal('fetch', fetchMock);
   render(<PublicPage />);
@@ -118,14 +118,14 @@ test('facet reuse expires so reopening filters can show updated conditions', asy
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   await screen.findByRole('checkbox', { name: /独享/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  clock.mockReturnValue(61000);
+  clock.mockReturnValue(6001);
   facets = [{ name: 'duration', value: '30 days', priority: 2 }];
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   expect(await screen.findByRole('checkbox', { name: /30天/ })).toBeInTheDocument();
   expect(screen.queryByRole('checkbox', { name: /独享/ })).not.toBeInTheDocument();
 });
 
-test('detail batches append quotes without facets and reuse fresh batches', async () => {
+test('detail batches append quotes and reuse loaded batches when reopened', async () => {
   const detailCalls = [];
   const item = { ...product(0), productCount: 24 };
   vi.stubGlobal('fetch', vi.fn(async input => {
@@ -151,7 +151,7 @@ test('detail batches append quotes without facets and reuse fresh batches', asyn
   fireEvent.click(within(dialog).getByRole('button', { name: '关闭报价详情' }));
   fireEvent.click(screen.getByRole('button', { name: '24 条报价' }));
   await within(screen.getByRole('dialog', { name: /报价/ })).findByText('报价100');
-  expect(detailCalls.map(url => url.searchParams.get('detailPage'))).toEqual(['0', '1']);
+  await waitFor(() => expect(detailCalls.map(url => url.searchParams.get('detailPage'))).toEqual(['0', '1']));
 });
 
 test('a cached quote dialog still reports refresh failures and allows retry', async () => {

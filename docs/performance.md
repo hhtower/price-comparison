@@ -5,22 +5,17 @@
 
 ## 目录与店铺评分
 
-- 目录和筛选项只返回仍有效的快照。一次请求最多尝试三次完整快照读取；
-  从首次读取开始计时，五秒重试预算耗尽时不再发起下一次读取。仍然过期则返回 HTTP 503。
-  已开始的 SQL 由 `PG_STATEMENT_TIMEOUT_MS` 限制，五秒不是 SQL 的硬超时。
-- 数据库先严格校验审核结果绑定的内容版本和指纹，不匹配时不生成
-  `text_review_key`。匹配后根据完整评分原文和审核内容生成键；
-  原文或审核内容变化会改变键，清除审核结果会清除键。
-- 同一店铺、相同键的审核只读取一份。不同结论保留独立记录，继续参与冲突检查。
-  版本和指纹各自绑定正确的不同 SKU 可以共享相同内容的审核。
-  目录进程最多缓存 2048 份已验证的精简审核结果，序列化内容总量限制为 8 MiB；
-  缓存命中只传输键，
-  不再读取审核正文。每次汇总仍检查当前来源、清单中的单位及文本哈希和有效期。
-- 进程重启、缓存淘汰及新内容的首次读取仍需完整验证。缓存不保证所有店铺的
-  审核同时驻留，也不通过截断正文或丢弃冲突来限制成本。
+- 目录保留最后一次成功采集的报价和库存，不因时间经过自动下架；明确售罄、
+  停用、删除和取消发布仍生效。抓取失败不会刷新采集时间。
+- 目录、筛选项和覆盖统计最多缓存五秒，相同请求合并读取。浏览器重返视图时重新校验；
+  缓存上限不代表页面自动推送，也不包含查询和网络耗时。
+- 评分、常用目录汇总与覆盖统计提前计算并持久化，输入变化后由目录 worker 原子更新；没有新数据时继续读取已有结果。
+  查询不补算、不等待后台任务；搜索和组合筛选只查询已准备的报价与评分。
 
-这部分结构由 `025_shop_text_review_keys_20261030` 迁移安装。部署时先停止相关
-进程并执行正常迁移、构建流程，再启动新代码，步骤见[开发与部署](../WORKFLOW.md)。
+升级须先执行数据库迁移再启动新代码，见[开发与部署](../WORKFLOW.md)。
+性能基准入口为 `apps/api/scripts/benchmark-catalog.ts`，需通过 `TEST_DATABASE_URL`
+指定专用本机 PostgreSQL；脚本自动创建并清理测试 schema，分别测量冷请求、缓存复用和并发请求。
+
 
 ## 后台任务
 
@@ -45,8 +40,8 @@
 
 | 范围 | 测试文件 |
 | --- | --- |
-| 新鲜度重读边界 | `apps/api/test/catalog.service-spec.ts` |
-| 审核去重、缓存失效及快照 | `apps/api/test/catalog.integration-spec.ts`、`apps/api/test/shop-text-review.test.ts` |
+| 五秒缓存与取消过期重读 | `apps/api/test/catalog-cache.test.ts`、`apps/api/test/catalog.service-spec.ts` |
+| 评分去重、后台发布及快照 | `apps/api/test/catalog.integration-spec.ts`、`apps/api/test/shop-text-review.test.ts` |
 | 迁移升级及回滚 | `apps/api/test/database-bootstrap.integration-spec.ts` |
 | 进度写入与别名查询 | `apps/api/test/ai-progress.test.ts`、`apps/api/test/catalog-aliases.repository.test.ts` |
 | 名称一致性修复 | `apps/api/test/name-consensus-repair.test.ts`、`apps/api/test/name-consensus.integration-spec.ts` |
