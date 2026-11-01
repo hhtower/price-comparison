@@ -844,6 +844,28 @@ describe('admin lists over real PostgreSQL', () => {
     }
   });
 
+  test('standard picker finds Claude renamed plans without adding Premium aliases to ChatGPT', async () => {
+    const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
+    const rows = await database.insertInto('standard_products').values([
+      { name: 'Claude Max 20x', canonical_family: 'anthropic', canonical_product: 'claude', canonical_tier: 'max_20x', platform: 'claude-picker-test' },
+      { name: 'Claude Team 5x', canonical_family: 'anthropic', canonical_product: 'claude', canonical_tier: 'team_5x', platform: 'claude-picker-test' },
+      { name: 'ChatGPT Team 5x', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'team_5x', platform: 'claude-picker-test' },
+    ]).returning('id').execute();
+    try {
+      for (const [keyword, index, name] of [
+        ['Claude Ultra', 0, 'Claude Ultra'], ['Claude Max 20x', 0, 'Claude Ultra'],
+        ['ClaudeUltra', 0, 'Claude Ultra'], ['Claude Team Premium', 1, 'Claude Team Premium'],
+        ['Premium', 1, 'Claude Team Premium'],
+      ] as const) {
+        const page = await get(`standard-products?${new URLSearchParams({ keyword, platform: 'claude-picker-test', page: '1' })}`);
+        assert.deepEqual(page.items.map((item: { id: string }) => item.id), [String(rows[index]!.id)], keyword);
+        assert.equal(page.items[0]?.name, name);
+      }
+    } finally {
+      await database.deleteFrom('standard_products').where('id', 'in', rows.map(row => row.id)).execute();
+    }
+  });
+
   test('standard picker ranks exact product identities ahead of related guides so Pro 500 appears on the first page', async () => {
     const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
     const rows = await database.insertInto('standard_products').values([

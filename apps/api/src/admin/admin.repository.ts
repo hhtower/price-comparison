@@ -330,6 +330,7 @@ export class AdminRepository {
         array_to_string(standard_products.aliases, ' '),
         ${JSON.stringify(labels.products)}::jsonb ->> lower(btrim(standard_products.canonical_product)),
         ${JSON.stringify(labels.families)}::jsonb ->> lower(btrim(standard_products.canonical_family)),
+        ${JSON.stringify(labels.identities)}::jsonb ->> concat_ws('/', lower(btrim(standard_products.canonical_family)), lower(btrim(standard_products.canonical_product)), lower(btrim(standard_products.canonical_tier))),
         ${JSON.stringify(labels.tiers)}::jsonb ->> lower(btrim(standard_products.canonical_tier))), NFKC), '[[:space:]]+', '', 'g')`;
       for (const word of words) query = query.where(searchText, 'ilike', containsPattern(word));
       // ID cursors keep their original ordering; relevance applies to numbered picker pages.

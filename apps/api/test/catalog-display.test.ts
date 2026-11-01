@@ -7,7 +7,7 @@ test('known machine names describe products and explicit purposes without changi
     ['openai / codex / sms', 'Codex 手机接码'], ['ChatGPT Free', 'ChatGPT 普通账号'],
     ['openai / chatgpt / pro_5x', 'ChatGPT Pro 100'], ['openai / chatgpt / pro_20x', 'ChatGPT Pro 200'],
     ['openai / chatgpt / pro_500', 'ChatGPT Pro 500'],
-    ['anthropic / claude / max_20x', 'Claude Max 20x'], ['google / gemini / ultra_5x', 'Gemini Ultra 5x'],
+    ['anthropic / claude / max_20x', 'Claude Ultra'], ['google / gemini / ultra_5x', 'Gemini Ultra 5x'],
     ['cursor / cursor / plugin_access', 'Cursor 插件访问'], ['google / google_sms / standard', 'Google 手机接码'],
     ['独家人工名称', '独家人工名称'], ['人工品牌/自定义产品/保修方案', '人工品牌/自定义产品/保修方案'], ['unknown / widget / free', 'unknown widget 免费版'],
     ['openai / chatgpt / constructor', 'openai / chatgpt / constructor'],
@@ -54,6 +54,22 @@ test('service and utility machine names are readable without losing their distin
 test('search labels expose X/Twitter for both canonical social family spellings', () => {
   assert.equal(CATALOG_DISPLAY_SEARCH_LABELS.families.x, 'X/Twitter');
   assert.equal(CATALOG_DISPLAY_SEARCH_LABELS.families.twitter, 'X/Twitter');
+});
+
+test('Claude standard names use current labels without renaming merchant offers or other platforms', () => {
+  for (const [tier, name, expected] of [
+    ['max_5x', 'Claude Max 5x', 'Claude Max'],
+    ['max_20x', 'Claude Max 20x', 'Claude Ultra'],
+    ['team_5x', 'Claude Team 5x', 'Claude Team Premium'],
+    ['team', 'Claude Team Standard', 'Claude Team'],
+  ]) {
+    assert.equal(canonicalProductDisplayName({ family: 'anthropic', product: 'claude', tier: tier! }), expected);
+    assert.equal(standardProductDisplayName(name!), expected);
+    assert.equal(standardProductDisplayName(expected!), expected);
+  }
+  assert.equal(standardProductDisplayName('Claude Max 20x 充值资格账号'), 'Claude Max 20x 充值资格账号');
+  assert.equal(canonicalProductDisplayName({ family: 'openai', product: 'chatgpt', tier: 'team_5x' }), 'ChatGPT Team 5x');
+  assert.equal(canonicalProductDisplayName({ family: 'google', product: 'gemini', tier: 'ultra_20x' }), 'Gemini Ultra 20x');
 });
 
 test('existing ChatGPT Pro market names display the amount tier and remain searchable by old and new aliases', () => {

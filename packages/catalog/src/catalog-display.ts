@@ -103,7 +103,15 @@ function ownValue<T>(values: Record<string, T>, key: string): T | undefined {
   return Object.hasOwn(values, key) ? values[key] : undefined;
 }
 
+export const CATALOG_PRODUCT_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  'anthropic/claude/max_5x': ['Claude Max', 'Claude Max 5x', 'Claude Max 100'],
+  'anthropic/claude/max_20x': ['Claude Ultra', 'Claude Max 20x', 'Claude Ultra 10x', 'Claude Max 200'],
+  'anthropic/claude/team': ['Claude Team', 'Claude Team Standard'],
+  'anthropic/claude/team_5x': ['Claude Team Premium', 'Claude Team 5x'],
+};
+
 export const CATALOG_DISPLAY_SEARCH_LABELS = {
+  identities: Object.fromEntries(Object.entries(CATALOG_PRODUCT_ALIASES).map(([key, aliases]) => [key, aliases.join(' ')])),
   products: { ...PURPOSES,
     ...Object.fromEntries(Object.entries(FAMILIES).map(([key, name]) => [`${key}_sms`, `${name} 手机接码`])),
     ...Object.fromEntries(Object.entries(PRODUCTS).flatMap(([key, [, name]]) => [[key, name], [`${key}_sms`, `${name} 手机接码`]])),
@@ -126,6 +134,8 @@ export function canonicalProductDisplayName(identity: ProductDisplayIdentity): s
   const fallback = `${identity.family} / ${identity.product} / ${identity.tier}`;
   if ((known && known[0] !== family) || (service && service[0] !== family) || (sms && (tier !== 'standard' || (!known && platform !== family)))
     || ['constructor', '__proto__', 'prototype', 'tostring'].some(key => key === product || key === tier)) return fallback;
+  const currentName = CATALOG_PRODUCT_ALIASES[`${family}/${product}/${tier}`]?.[0];
+  if (currentName) return currentName;
   if (family === 'xai' && product === 'grok' && ['plus', 'premium', 'super', 'ultra'].includes(tier))
     return `Grok·X·Cursor ${TIERS[tier]}（统一订阅）`;
   if (family === 'xai' && product === 'grok' && ['supergrok', 'heavy'].includes(tier))
@@ -144,6 +154,9 @@ export function canonicalProductDisplayName(identity: ProductDisplayIdentity): s
 }
 
 export function standardProductDisplayName(name: string): string {
+  const normalized = name.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+  for (const aliases of Object.values(CATALOG_PRODUCT_ALIASES))
+    if (aliases.some(alias => alias.toLowerCase() === normalized)) return aliases[0]!;
   if (/^(?:X Premium(?: Plus|\+)?|SuperGrok|Grok Heavy)$/u.test(name)) return `${name}（旧版）`;
   const pro = name.match(/^ChatGPT\s+Pro\s*(5|10|20|25|50)\s*[x×倍]$/iu);
   if (pro) return `ChatGPT Pro ${{ '5': 100, '10': 200, '20': 200, '25': 500, '50': 500 }[pro[1]!]}`;

@@ -25,12 +25,15 @@ test('all product metadata reads retain identities used for matching translated 
   try {
     const repository = new CatalogRepository(db);
     for (const sample of [
-      { name: row.name, tier: 'business', alias: 'ChatGPT 企业版', requested: 'ChatGPT Business', display: 'ChatGPT 商业版' },
-      { name: 'ChatGPT Pro 5x', tier: 'pro_5x', alias: 'ChatGPT Pro 100', requested: 'ChatGPT Pro 5x', display: 'ChatGPT Pro 100' },
+      { family: 'openai', product: 'chatgpt', name: row.name, tier: 'business', alias: 'ChatGPT 企业版', requested: 'ChatGPT Business', display: 'ChatGPT 商业版' },
+      { family: 'openai', product: 'chatgpt', name: 'ChatGPT Pro 5x', tier: 'pro_5x', alias: 'ChatGPT Pro 100', requested: 'ChatGPT Pro 5x', display: 'ChatGPT Pro 100' },
+      { family: 'anthropic', product: 'claude', name: 'Claude Max 20x', tier: 'max_20x', alias: 'Claude Ultra', requested: 'Claude Max 20x', display: 'Claude Ultra' },
+      { family: 'anthropic', product: 'claude', name: 'Claude Ultra', tier: 'max_20x', alias: 'Claude Ultra 10x', requested: 'Claude Max 20x', display: 'Claude Ultra' },
+      { family: 'anthropic', product: 'claude', name: 'Claude Team 5x', tier: 'team_5x', alias: 'Claude Team Premium', requested: 'Claude Team 5x', display: 'Claude Team Premium' },
     ]) {
-      row = { ...row, name: sample.name, tier: sample.tier, aliases: [sample.alias] };
+      row = { ...row, family: sample.family, product: sample.product, name: sample.name, tier: sample.tier, aliases: sample.family === 'anthropic' ? [] : [sample.alias] };
       for (const product of [(await repository.publicProducts()).items[0], await repository.publicProduct('42'),
-        await repository.resolvePublicProductIdentity({ platform: 'openai', product: 'chatgpt', tier: sample.tier })]) {
+        await repository.resolvePublicProductIdentity({ platform: sample.family, product: sample.product, tier: sample.tier })]) {
         assert.ok(product);
         assert.equal(product.name, sample.display);
         for (const requested of [sample.requested, sample.alias]) {

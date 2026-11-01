@@ -6,6 +6,47 @@ import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { identityGuardRegressions } from './fixtures/identity-guard-regressions.js';
 
+test('Claude renamed plans retain existing catalog keys', () => {
+  for (const [tier, expected] of [
+    ['Ultra', 'max_20x'], ['Claude Ultra', 'max_20x'], ['Ultra 10x', 'max_20x'],
+    ['Ultra（原 Max 20x）', 'max_20x'], ['Max 20x', 'max_20x'],
+    ['Max 100', 'max_5x'], ['Max 5x', 'max_5x'], ['Team Premium', 'team_5x'],
+  ]) {
+    const identity = { family: 'anthropic', product: 'claude', tier: expected! };
+    assert.deepEqual(policy.normalizeIdentity({ family: 'Anthropic', product: 'Claude Code', tier }), identity, tier);
+    assert.equal(buildCanonicalStandardKey({ ...identity, tier: tier! }), buildCanonicalStandardKey(identity), tier);
+  }
+  assert.equal(policy.normalizeIdentity({ family: 'google', product: 'gemini', tier: 'Ultra 20x' }).tier, 'ultra_20x');
+  assert.equal(policy.normalizeIdentity({ family: 'cursor', product: 'cursor', tier: 'Ultra' }).tier, 'ultra');
+});
+
+for (const format of ['raw', 'text'] as const) test('Claude current and legacy names resolve together without merging different plans: ' + format, () => {
+  for (const [name, tier] of [
+    ['Claude Ultra 账号', 'max_20x'], ['Claude Code Ultra 10x 订阅', 'max_20x'],
+    ['Claude Ultra（原 Max 20x）账号', 'max_20x'], ['Claude Ultra 10x / Max 20x 账号', 'max_20x'],
+    ['Claude Max 20x 账号', 'max_20x'], ['Claude Max 5x 账号', 'max_5x'],
+    ['Claude Max 100美元套餐 账号', 'max_5x'], ['Claude Max $200套餐 账号', 'max_20x'],
+    ['Claude Team Premium 席位', 'team_5x'], ['Claude Team Standard 席位', 'team'],
+  ]) {
+    const raw = { name: name! };
+    const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'claude-renamed', spec: '', ...raw });
+    const identity = { family: 'anthropic', product: 'claude', tier: tier! };
+    assert.deepEqual(policy.assessProductEvidence(evidence, format).identity, identity, name);
+    assert.equal(policy.identityEvidenceConflict(identity, evidence, format), null, name);
+  }
+  for (const raw of [
+    { name: 'Claude Max 账号' }, { name: 'Claude Max 账号 售价100美元' },
+    { name: 'Claude Max 100/200 账号' }, { name: 'Claude Max 100美元 / 200美元 账号' },
+    { name: 'Claude Ultra / Max 5x 账号' }, { name: 'Claude Ultra 5x 账号' },
+    { name: 'Claude Ultra 账号', sourceData: { evidence: '实际交付 Max 5x 订阅账号。' } },
+    { name: 'Claude Max 5x 账号', sourceData: { evidence: '实际交付 Ultra 订阅账号。' } },
+    { name: 'Claude Team Premium 20x 席位' },
+  ]) {
+    const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'claude-conflict', spec: '', ...raw });
+    assert.equal(policy.assessProductEvidence(evidence, format).kind, 'ambiguous', raw.name);
+  }
+});
+
 for (const raw of [
   { name: '陌生商品', sourceData: { evidence: '<p>交付内容、平台和套餐均未说明。</p>' } },
   { id: 'ChatGPT Free account', name: '陌生商品', sourceData: { evidence: '<p>交付内容未说明。</p>' } },

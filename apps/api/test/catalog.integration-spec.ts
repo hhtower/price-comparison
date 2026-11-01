@@ -117,6 +117,24 @@ describe('catalog SQL read model', () => {
     delete process.env.PG_SCHEMA;
   });
 
+  test('Claude current and legacy searches share the existing product and offers', async () => {
+    await database.updateTable('standard_products').set({ name: 'Claude Max 20x', canonical_family: 'anthropic',
+      canonical_product: 'claude', canonical_tier: 'max_20x' }).where('id', '=', standardOne).execute();
+    for (const search of ['Claude Ultra', 'Claude Max 20x', 'Claude Ultra 10x']) {
+      const page = await repository.search({ search, tags: [], limit: 20 });
+      assert.deepEqual(page.items.map(item => item.id), [String(standardOne)], search);
+      assert.equal(page.items[0]?.name, 'Claude Ultra');
+      assert.equal(page.items[0]?.offers[0]?.productId, String(productOne));
+    }
+    await database.updateTable('standard_products').set({ name: 'Claude Team 5x', canonical_tier: 'team_5x' })
+      .where('id', '=', standardOne).execute();
+    await database.updateTable('standard_products').set({ name: 'ChatGPT Team 5x', canonical_family: 'openai',
+      canonical_product: 'chatgpt', canonical_tier: 'team_5x' }).where('id', '=', standardTwo).execute();
+    const premium = await repository.search({ search: 'Premium', tags: [], limit: 20 });
+    assert.deepEqual(premium.items.map(item => item.id), [String(standardOne)]);
+    assert.equal(premium.items[0]?.name, 'Claude Team Premium');
+  });
+
   async function addSku(shopId: bigint, externalId: string, price: string, tags: { name: string; value: string }[] = []) {
     const product = await database.insertInto('products').values({
       shop_id: shopId, external_id: externalId, name: `Widget ${externalId}`, spec: externalId,

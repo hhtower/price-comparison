@@ -10,7 +10,7 @@ import { createTextReviewAccumulator, prepareTextReview, type PreparedTextReview
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
 import { catalogOrderRank, catalogPlatformGroup, OTHER_CATALOG_RANK } from './catalog-order.js';
 import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './quote-policy.js';
-import { CATALOG_DISPLAY_SEARCH_LABELS, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
+import { CATALOG_DISPLAY_SEARCH_LABELS, CATALOG_PRODUCT_ALIASES, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { PriceHistoryRepository } from './price-history.repository.js';
 
 export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly identityNames?: readonly string[]; readonly kind: string; readonly mergedIntoId?: string }
@@ -28,7 +28,8 @@ function publicStandard(alias: string): RawBuilder<boolean> {
 
 function productMetadata(row: { id: string; name: string; platform: string; platform_group: string; family: string | null; product: string | null; tier: string | null; aliases: string[]; merged_into_id: string | null }): PublicCatalogProduct {
   return { id: row.id, name: standardProductDisplayName(row.name), platform: row.platform, platformGroup: row.platform_group,
-    identityNames: [row.name, [row.family, row.product, row.tier].filter(Boolean).join(' '), ...row.aliases],
+    identityNames: [row.name, [row.family, row.product, row.tier].filter(Boolean).join(' '),
+      ...CATALOG_PRODUCT_ALIASES[`${row.family}/${row.product}/${row.tier}`] ?? [], ...row.aliases],
     kind: standardProductKind({ family: row.family ?? '', product: row.product ?? '', tier: row.tier ?? '' }),
     ...(row.merged_into_id ? { mergedIntoId: row.merged_into_id } : {}) };
 }
@@ -144,6 +145,7 @@ const DEFAULT_PAGE_SIZE = 20;
 const PRODUCT_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.products);
 const FAMILY_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.families);
 const TIER_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.tiers);
+const IDENTITY_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.identities);
 const TIER_TERM_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.tierTerms);
 function offerPriceText(alias: string): RawBuilder<string | null> {
   const offer = sql.table(alias);
@@ -414,6 +416,7 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
     sp.canonical_family, sp.canonical_product, sp.canonical_tier,
     ${PRODUCT_SEARCH_LABELS}::jsonb ->> lower(btrim(sp.canonical_product)),
     ${FAMILY_SEARCH_LABELS}::jsonb ->> lower(btrim(sp.canonical_family)),
+    ${IDENTITY_SEARCH_LABELS}::jsonb ->> concat_ws('/', lower(btrim(sp.canonical_family)), lower(btrim(sp.canonical_product)), lower(btrim(sp.canonical_tier))),
     coalesce(${TIER_SEARCH_LABELS}::jsonb ->> lower(btrim(sp.canonical_tier)),
       (select string_agg(coalesce(${TIER_TERM_SEARCH_LABELS}::jsonb ->> term, term), ' ' order by ordinal)
         from regexp_split_to_table(lower(btrim(sp.canonical_tier)), '[_[:space:]]+')

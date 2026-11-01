@@ -1,7 +1,7 @@
 import { canonicalizeMatchText } from './fingerprint.js';
 import { saleEvidenceView } from './sale-evidence.js';
 
-export const IDENTITY_POLICY_VERSION = 'catalog-identity-20261023-v30';
+export const IDENTITY_POLICY_VERSION = 'catalog-identity-20261101-v31';
 
 export interface Identity { family: string; product: string; tier: string }
 
@@ -66,6 +66,15 @@ const CHATGPT_PRO_MULTIPLIERS: Record<string, ChatgptProDollarTier> = {
 };
 const CHATGPT_PRO_AMOUNTS: Record<string, ChatgptProDollarTier> = { '100': 'pro_5x', '200': 'pro_20x', '500': 'pro_500' };
 
+// Max 20x subscribers migrate to Ultra: https://support.claude.com/en/articles/17728952
+function claudePlanText(value: string): string {
+  return value
+    .replace(/(?<![\d.])10\s*(?:x|×|倍)\s*ultra(?![a-z])/gu, 'max 20x')
+    .replace(/(?<![a-z])ultra(?:\s*10\s*(?:x|×|倍)(?![a-z\d]))?(?![a-z])/gu, 'max 20x')
+    .replace(/(?<![a-z])max\s*\$?\s*(?:100|200)(?![\d.x])(?:\s*(?:usd|dollars?|美元|美金|美刀|刀))?(?:\s*[/|、]\s*(?:max\s*)?\$?\s*(?:100|200)(?![\d.x])(?:\s*(?:usd|dollars?|美元|美金|美刀|刀))?)*/gu,
+      label => [...label.matchAll(/100|200/gu)].map(([amount]) => amount === '100' ? 'max 5x' : 'max 20x').join(' '));
+}
+
 function quotaMultipliers(value: string): Set<string> {
   return new Set([...value.matchAll(/(?<![\d.])(\d+(?:\.\d+)?|\.\d+)\s*(?:x|×|倍)(?![a-z\d])/giu)].map(match => match[1]!));
 }
@@ -117,6 +126,13 @@ export function normalizeIdentity(input: { family?: unknown; product?: unknown; 
     if (FREE_TIERS.has(compact(tier))) tier = 'free';
   }
   if (TIERS[product]) {
+    if (product === 'claude') {
+      const renamed = claudePlanText(tier.replace(/_/gu, ' '));
+      const multipliers = quotaMultipliers(renamed);
+      if (!renamed.replace(/claude|code|max|原|旧|现|5|20|[\sx×倍/|、()（）._-]/gu, '')
+        && /max/u.test(renamed) && multipliers.size === 1 && ['5', '20'].includes([...multipliers][0]!))
+        tier = `max_${[...multipliers][0]}x`;
+    }
     const value = compact(tier).replace(/[×倍]/gu, 'x').replace(/\$/gu, '').replace(/^(?:openaichatgpt|chatgpt|googleai|googlegemini|gemini|anthropicclaude|claudecode|claude)/u, '');
     const aliases: Record<string, string> = {
       free: 'free', 普号: 'free', 普通账号: 'free', 普通账户: 'free', 未订阅: 'free', 免费: 'free', 免费版: 'free',
@@ -475,7 +491,7 @@ export function assessProductEvidence(evidence: Record<string, unknown>, format:
   if (products.length > 1) return ambiguous('Conflicting explicit account brands', ['conflicting_brands']);
   // A future upgrade is not the plan delivered by the current listing.
   const withoutUpgrades = (value: string) => value.replace(/可(?:以)?升级(?:(?:至|为|到)\s*)?(?:pro|plus|max|ultra|team|business)[^，。;；]*/gu, ' ');
-  const planText = withoutUpgrades(anchorText);
+  const planText = products[0] === 'claude' ? claudePlanText(withoutUpgrades(anchorText)) : withoutUpgrades(anchorText);
   const dollarTiers = chatgptProDollarTiers(planText);
   const dollarTier = dollarTiers.size === 1 ? [...dollarTiers][0] : undefined;
   const plans = new Set<string>();
@@ -514,7 +530,7 @@ export function assessProductEvidence(evidence: Record<string, unknown>, format:
   let multipliers = quotaMultipliers(planText);
   // An anchored Pro/Max/Ultra title may leave its required multiplier to the description.
   if (!multipliers.size && !dollarTier && titleAnchored && ['pro', 'max', 'ultra', 'team'].includes(tier)) {
-    const described = quotaMultipliers(withoutUpgrades(text));
+    const described = quotaMultipliers(product === 'claude' ? claudePlanText(withoutUpgrades(text)) : withoutUpgrades(text));
     if (described.size === 1 || (product === 'chatgpt' && tier === 'pro' && described.size)) multipliers = described;
   }
   const chatgptPro = product === 'chatgpt' && tier === 'pro';
@@ -657,7 +673,7 @@ export const IDENTITY_POLICY_PROMPT = `Official account identity policy (${IDENT
 - Grok accounts use xai/grok. Current unified Grok/X/Cursor subscriptions use tiers plus, premium, super, ultra (shared AI usage; 1x/4x/15x/50x respectively). A named Grok Plus/Premium/Ultra plan or explicitly new/unified X plan is distinct from historical X Premium/Premium+ and SuperGrok/Heavy. Grok Super needs explicit new/unified or 15x evidence; Super alone never proves historical SuperGrok. Preserve old/legacy SKU identities; no automatic migration or mapping from old plans, dollar prices, gifts, shared menus or supported software. A unified subscription's included Cursor/Grok/X benefits are not three separately purchased subscriptions and do not establish standalone Cursor Pro/Pro+. gro, gr0k and Grok in an account title refer to Grok; 普号/free means tier free. For Grok products only, provider aliases x, grok and x.ai normalize to xai. X/Twitter social accounts, Grok API credits, mirrors and SMS services remain separate products; never infer or collapse different paid tiers.
 - ChatGPT tiers: free, go, plus, pro_5x, pro_20x, pro_500, team, team_5x. The user-facing names are Pro 100, Pro 200 and Pro 500. Pro 5x/5X and Pro 100 are aliases for the first tier; Pro 10x/10X, Pro 20x/20X and Pro 200 are aliases for the second; Pro 25x/25X, Pro 50x/50X and Pro 500 are aliases for the third. Accept both Pro 10x/10x Pro and the legacy Pro 20x/20x Pro spellings, and likewise Pro 25x/25x Pro and legacy Pro 50x/50x Pro. Equivalent current/legacy aliases may coexist (10x with 20x; 25x with 50x). Compare canonical tiers before declaring a conflict. Different unselected amount tiers (Pro 100/200/500) or contradictory delivered tiers require review; never select the largest amount. Merchant sale prices, balances and usage amounts are not plan names and must not override a named Pro tier or multiplier. Do not infer unsupported decimal multipliers.
 - Gemini paid tiers: plus, pro, ultra_5x, ultra_20x. Ordinary Google/Gemini Free accounts use google/email/standard, subject to their actual login/mail availability.
-- Claude tiers: free, pro, max_5x, max_20x, team, team_5x.
+- Claude tiers keep stable keys: free, pro, max_5x, max_20x, team, team_5x. Display max_5x as Max, max_20x as Ultra, and team_5x as Team Premium. Ultra (including its current 10x weekly label) and legacy Max 20x are the same plan; Max 5x/Max 100 and Max 20x/Max 200 are supported plan names. Equivalent Ultra/Max 20x labels may coexist; Ultra and Max 5x conflict. A bare Max remains ambiguous without explicit plan amount or multiplier evidence; merchant prices and credit balances do not establish a tier. Name changes and billing-price changes do not create new identities. Ultra's lack of a five-hour limit applies only to verified accounts; never infer verification or credits received from the plan name.
 - Team and Business are aliases of team. Team 5x, team5x, 5x Team and Business 5x are team_5x. Claude Team Premium is team_5x.
 - Team JSON/RT/Token credentials with actual subscribed-account evidence remain Team accounts, including software-only or reverse-proxy-only use. Delivery format, registered email domain and supported client do not change family/product/tier and do not alone prove entitlement. Negated 5X and comparison quantities are not positive tier evidence; ChatGPT premium/高级 without explicit selected 5X mapping remains unresolved.
 - Codex account subscriptions are ChatGPT. Claude Code account subscriptions are Claude. Decide model relay exclusions from the sold object: explicit model API relay credits, prepaid relay balances, request passes and API pool access are not catalog products. Relay/API mentions in after-sales or policy warnings, comparisons, instructions, possible extra services, categories, URLs, balances or dollar amounts alone do not establish the sold object; ambiguous sale evidence requires review. Login Token instructions, standalone tutorial headings, registration mailbox domains and buyer account restrictions are not sold goods.
