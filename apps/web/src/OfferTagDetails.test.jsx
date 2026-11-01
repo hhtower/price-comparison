@@ -23,7 +23,7 @@ test('details bind the exact merchant SKU, show only known conditions and preser
   const dialog = screen.getByRole('dialog', { name: offer.name });
   expect(within(dialog).getByRole('heading', { name: offer.name })).toHaveAttribute('id', 'offer-tag-details-title');
   expect(within(dialog).getByRole('region', { name: '商品条件' })).toHaveAttribute('tabindex', '0');
-  expect(within(dialog).getByRole('banner')).toContainElement(within(dialog).getByText('甲店 · 月付规格'));
+  expect(within(dialog).getByRole('banner')).toContainElement(within(dialog).getByText('店铺：甲店 · 月付规格'));
   expect(within(dialog).getByRole('region', { name: '商品条件' })).not.toHaveTextContent('甲店');
   for (const group of ['购买内容', '使用方式', '使用前提', '期限额度']) expect(within(dialog).getByRole('heading', { name: group })).toBeInTheDocument();
   for (const group of ['售后保障', '其他条件']) expect(within(dialog).queryByRole('heading', { name: group })).not.toBeInTheDocument();
@@ -83,4 +83,15 @@ test('offers without known conditions show one concise empty state', () => {
   expect(within(dialog).getByText('暂无商品条件信息')).toBeInTheDocument();
   expect(within(dialog).getAllByRole('heading')).toHaveLength(1);
   expect(dialog).not.toHaveTextContent(/尚未确认|请向商家核实/);
+});
+
+test.each([['45 days', false], ['30 days', true]])('only merges an equivalent warranty window: %s', (window, separate) => {
+  render(<OfferTagDetails offer={{ ...offer, tags: [
+    { name: 'warranty_days', value: '45' }, { name: 'warranty_window', value: window },
+    { name: 'warranty_terms', value: '封号退款，二次验证不换号' },
+  ] }} item={{ name: '标准商品' }} onClose={() => {}} />);
+  const dialog = screen.getByRole('dialog');
+  expect(dialog).toHaveTextContent('质保45天');
+  expect(dialog.textContent.includes('保障窗口')).toBe(separate);
+  expect(dialog).toHaveTextContent('封号退款,二次验证不换号');
 });

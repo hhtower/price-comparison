@@ -6,7 +6,7 @@ import {
 import {
   ASSISTANT_LIMITS, emptyShoppingNeeds, isTurnTerminal, validateAssistantReply,
 } from '@price-comparison/catalog/assistant-contract';
-import { normalizePurchaseTag, purchaseWarrantyLabel } from '@price-comparison/catalog/purchase-attributes';
+import { normalizePurchaseTag, purchaseTagLabel, purchaseWarrantyLabel } from '@price-comparison/catalog/purchase-attributes';
 import Brand from './Brand.jsx';
 import { assistantApi, ASSISTANT_SERVICE_ERROR } from './assistant-api.js';
 import ContactAdminButton from './ContactAdminButton.jsx';
@@ -134,32 +134,38 @@ function QuoteCard({ card, catalog }) {
   if (facts.some(fact => fact.name === 'warranty_terms')) warnings.push('售后条款见详情');
   const rows = [['充值渠道', channel], ['质保', warranty], ['购买条件', conditions.map(fact => displayPurchaseTagText(fact, fact.value)).join('；')],
     ['注意事项', [...new Set(warnings)].join('；')]].filter(([, value]) => value);
-  const detailNotes = [...new Set([...card.reasons, ...card.caveats])]
-    .filter(note => !/^(?:商家质保说明|商家未明确质保|不保事项|售后条款)/u.test(note))
-    .filter(note => !/报价、库存与完整售后条款请在商品详情核对|功能依据官方套餐资料；实际使用入口/u.test(note))
-    .filter(note => !/采集参考价为|采集于 .*同步存在时间差/u.test(note));
-  const fullNotes = <>
-    {detailNotes.length > 0 && <div className="assistant-detail-notes" aria-label="补充说明">{detailNotes.map(note => <p key={note}>{note}</p>)}</div>}
-    <p className="assistant-detail-captured">采集于 <time dateTime={card.capturedAt}>{new Date(card.capturedAt).toLocaleString('zh-CN')}</time></p>
-  </>;
+  const representedNotes = new Set(facts.flatMap(fact => [fact.value, displayPurchaseTagText(fact, fact.value),
+    `${fact.label}：${fact.value}`, `${fact.label}：${displayPurchaseTagText(fact, fact.value)}`]));
+  for (const tag of offer.tags.flatMap(normalizePurchaseTag)) {
+    const fact = facts.find(fact => fact.name === tag.name);
+    if (!fact) continue;
+    representedNotes.add(`${fact.label}：${purchaseTagLabel(tag)}`);
+    if (tag.name === 'delivery' && tag.value === 'top_up') representedNotes.add('购买内容：代充：给你已有账号充值，下单前确认账号条件和充值流程。');
+    if (tag.name === 'delivery' && tag.value === 'account') representedNotes.add('购买内容：成品号：商家提供一个账号，下单前确认登录方式、是否独享及能否改密。');
+  }
+  if (!conflictingWarranty && purchaseWarrantyLabel(offer.tags)) {
+    representedNotes.add(`商家质保说明：${purchaseWarrantyLabel(offer.tags)}；具体限制以该报价的售后条款为准。`);
+  }
+  representedNotes.add('报价、库存与完整售后条款请在商品详情核对。');
+  const detailNotes = [...new Set([...card.reasons, ...card.caveats])].filter(note => !representedNotes.has(note));
+  const officialPrice = reference && <p className="assistant-official-price">
+    <span>官方内购参考 · {reference.countryName} · {formatPeriod(reference.period)}</span>
+    <span>{formatMoney(reference.amount, '')} {reference.currency}
+      {reference.currency !== 'CNY' && `（约 ${formatMoney(reference.cnyAmount)}）`}</span>
+  </p>;
   return <article className="assistant-card">
     <div className="assistant-card-heading"><h2>{card.title}</h2>{price}</div>
     <div className="assistant-offer-meta"><span>店铺：{offer.shop}</span>{summary && <span>{summary}</span>}</div>
-    {reference && <p className="assistant-official-price">
-      <span>官方内购参考 · {reference.countryName} · {formatPeriod(reference.period)}</span>
-      <span>{formatMoney(reference.amount, '')} {reference.currency}
-        {reference.currency !== 'CNY' && `（约 ${formatMoney(reference.cnyAmount)}）`}</span>
-    </p>}
+    {officialPrice}
     {rows.length > 0 && <details className="assistant-purchase-notes"><summary>购买须知{conditions.some(fact => fact.name === 'usage_restriction') && <small>有使用限制</small>}</summary>
       <dl>{rows.map(([label, value]) => <div key={label}><dt>{label}：</dt><dd>{value}</dd></div>)}</dl>
     </details>}
     <button type="button" className="assistant-offer-details" aria-haspopup="dialog" onClick={() => setOpen(true)}>查看报价详情</button>
     {open && <OfferTagDetails offer={offer} item={{ name: card.title }} onClose={() => setOpen(false)}
-      footer={offer.productUrl && <a className="assistant-detail-merchant-link" aria-label="前往商家核对报价" href={offer.productUrl} target="_blank" rel="noopener noreferrer">前往商家</a>}>
-      {price}{fullNotes}
-      {reference && <p className="assistant-quote-note">官方参考：{reference.regionMatched && '同地区、'}同套餐{reference.periodMatched && '、同周期'}；{reference.countryName} App Store，{formatPeriod(reference.period)}{reference.exchangeDate && `，汇率 ${reference.exchangeDate}`}。{!reference.regionMatched && '报价地区未明确。'}{!reference.periodMatched && '报价周期未明确。'}
-      </p>}
-      <p className="assistant-quote-note">下单前核对价格、库存和完整条款。</p>
+      footer={offer.productUrl && <a className="assistant-detail-merchant-link" aria-label="前往商家核对报价" href={offer.productUrl} target="_blank" rel="noopener noreferrer">去商家</a>}>
+      <div className="assistant-detail-price">{price}<time dateTime={card.capturedAt}>最近更新 {new Date(card.capturedAt).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}</time></div>
+      {officialPrice}
+      {detailNotes.length > 0 && <div className="assistant-detail-notes" aria-label="补充说明">{detailNotes.map(note => <p key={note}>{note}</p>)}</div>}
     </OfferTagDetails>}
   </article>;
 }

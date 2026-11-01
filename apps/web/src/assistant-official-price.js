@@ -25,12 +25,14 @@ export function assistantOfficialPrice(card, catalog) {
   const durations = [...new Set(tags
     .filter(tag => tag.name === 'duration').map(tag => offerDuration(tag.value)))];
   const duration = durations.length === 1 && durations[0] ? durations[0] : null;
-  const matches = catalog.apps.flatMap(app => app.plans.filter(plan => {
-    if (plan.kind !== 'subscription' || !planDuration(plan.period) || (duration && planDuration(plan.period) !== duration)) return false;
+  const candidates = catalog.apps.flatMap(app => app.plans.filter(plan => {
+    if (plan.kind !== 'subscription' || !planDuration(plan.period)) return false;
     // Duplicate SKU labels are not distinct product identities; ambiguity must suppress the reference.
     const name = identity(formatPlanName(plan).replace(/\s+#\d+$/u, ''));
     return name === identity(card.title) || identity(`${app.name} ${name}`) === identity(card.title);
   }));
+  const samePeriod = candidates.filter(plan => planDuration(plan.period) === duration);
+  const matches = samePeriod.length ? samePeriod : candidates;
   if (!matches.length || new Set(matches.map(plan => planDuration(plan.period))).size !== matches.length) return null;
   const prices = matches.flatMap(plan => plan.prices.map(price => price && ({ ...price, period: plan.period }))).filter(price => {
     if (!price || (region && price.country !== region) || price.stale !== false || !Number.isFinite(price.amount) || price.amount <= 0
@@ -41,5 +43,5 @@ export function assistantOfficialPrice(card, catalog) {
     } catch { return false; }
   });
   const price = prices.sort((a, b) => a.cnyAmount - b.cnyAmount || a.country.localeCompare(b.country))[0];
-  return price ? { ...price, exchangeDate: catalog.exchangeDate, regionMatched: Boolean(region), periodMatched: Boolean(duration) } : null;
+  return price ? { ...price, exchangeDate: catalog.exchangeDate, regionMatched: Boolean(region), periodMatched: planDuration(price.period) === duration } : null;
 }

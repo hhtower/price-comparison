@@ -213,16 +213,16 @@ test('cards label merchants and show their own region official price without a l
   expect(fetcher).toHaveBeenCalledTimes(1);
   expect(fetcher).toHaveBeenCalledWith('/api/official-reference/catalog', expect.objectContaining({ credentials: 'omit' }));
   fireEvent.click(within(us).getByRole('button', { name: '查看报价详情' }));
-  expect(screen.getByRole('dialog')).toHaveTextContent('同地区、同套餐、同周期');
+  const details = screen.getByRole('dialog');
+  expect(details).toHaveTextContent('官方内购参考 · 美国 · 每月');
+  expect(within(details).getByText(/19.99 USD.*约 ¥139.93/)).toBeVisible();
+  expect(details).not.toHaveTextContent(/同地区|同周期|汇率/);
 });
 
 test.each([
   ['different plan', [{ ...referencePlan, name: 'ChatGPT Pro' }], referenceCard],
-  ['different period', [{ ...referencePlan, period: 'P1Y' }], referenceCard],
   ['unavailable country', [referencePlan], { ...referenceCard, offer: { ...referenceCard.offer,
     tags: [{ name: 'duration', value: '1 month' }, { name: 'region', value: 'in' }] } }],
-  ['thirty days is not one month', [referencePlan], { ...referenceCard, offer: { ...referenceCard.offer,
-    tags: [{ name: 'duration', value: '30 days' }, { name: 'region', value: 'us' }] } }],
   ['ambiguous SKU', [referencePlan, { ...referencePlan, id: 'other', name: 'ChatGPT Plus - Monthly #2' }], referenceCard],
   ['ambiguous SKU with unknown duration', [referencePlan, { ...referencePlan, id: 'other', name: 'ChatGPT Plus - Monthly #2' }],
     { ...referenceCard, offer: { ...referenceCard.offer, tags: [] } }],
@@ -236,6 +236,26 @@ test.each([
   await renderReferenceCards(plans, [card]);
   expect(screen.queryByText(/官方内购参考/)).not.toBeInTheDocument();
   expect(screen.getByText('¥61.68')).toBeVisible();
+});
+
+test.each([['2 months', 'P1M', '每月'], ['30 days', 'P1M', '每月'], ['1 month', 'P1Y', '每年']])(
+  'reference falls back to the actual official billing period for %s', async (duration, period, label) => {
+  await renderReferenceCards([{ ...referencePlan, period }], [{ ...referenceCard, offer: { ...referenceCard.offer,
+    name: 'codex Plus 两个月独享成品plus - gamil邮箱【保45天可用60天两个月】(全网独家iphone/ios pay/google pay渠道)',
+    shop: 'AI批发的杂货店', tags: [{ name: 'duration', value: duration }, { name: 'delivery', value: 'account' }, { name: 'access', value: 'dedicated' }] } }]);
+  expect(await screen.findByText(`官方内购参考 · 美国 · ${label}`)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
+  const dialog = screen.getByRole('dialog');
+  expect(dialog).toHaveTextContent(`官方内购参考 · 美国 · ${label}`);
+  expect(dialog).toHaveTextContent('19.99 USD（约 ¥139.93）');
+  expect(dialog).not.toHaveTextContent('同周期');
+});
+
+test('reference prefers the matching period over a cheaper different period', async () => {
+  await renderReferenceCards([referencePlan, { ...referencePlan, id: 'plus-year', period: 'P1Y',
+    prices: [{ ...referencePrice, amount: 15, cnyAmount: 105 }] }]);
+  expect(await screen.findByText('官方内购参考 · 美国 · 每月')).toBeVisible();
+  expect(screen.getByText(/19.99 USD.*约 ¥139.93/)).toBeVisible();
 });
 
 test.each([['12 months', 'P1Y', '每年'], ['1 year', 'P1Y', '每年'], ['1 week', 'P1W', '每周']])(
@@ -257,8 +277,9 @@ test.each([
   expect(await screen.findByText('官方内购参考 · 美国 · 每年')).toBeVisible();
   expect(screen.getByText(/15 USD.*约 ¥105/)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
-  expect(screen.getByRole('dialog')).toHaveTextContent('报价周期未明确');
-  expect(screen.getByRole('dialog')).not.toHaveTextContent('同周期');
+  expect(screen.getByRole('dialog')).toHaveTextContent('官方内购参考 · 美国 · 每年');
+  expect(screen.getByRole('dialog')).toHaveTextContent('15 USD（约 ¥105）');
+  expect(screen.getByRole('dialog')).not.toHaveTextContent(/报价周期未明确|同周期/);
 });
 
 test('reference defaults to the cheapest price when both region and duration are missing', async () => {
@@ -270,8 +291,9 @@ test('reference defaults to the cheapest price when both region and duration are
   expect(await screen.findByText('官方内购参考 · 菲律宾 · 每月')).toBeVisible();
   expect(screen.getByText(/999 PHP.*约 ¥104.29/)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
-  expect(screen.getByRole('dialog')).toHaveTextContent('报价地区未明确');
-  expect(screen.getByRole('dialog')).toHaveTextContent('报价周期未明确');
+  expect(screen.getByRole('dialog')).toHaveTextContent('官方内购参考 · 菲律宾 · 每月');
+  expect(screen.getByRole('dialog')).toHaveTextContent('999 PHP（约 ¥104.29）');
+  expect(screen.getByRole('dialog')).not.toHaveTextContent(/报价地区未明确|报价周期未明确/);
 });
 
 test.each(['US', '美国', '美区', 'usa'])('reference recognizes explicit region alias %s', async region => {
@@ -301,7 +323,8 @@ test.each([
   expect(screen.getByText(/1599 INR.*约 ¥130/)).toBeVisible();
   expect(screen.queryByRole('link', { name: /官方内购参考/ })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
-  expect(screen.getByRole('dialog')).toHaveTextContent('报价地区未明确');
+  expect(screen.getByRole('dialog')).toHaveTextContent('官方内购参考 · 印度 · 每月');
+  expect(screen.getByRole('dialog')).toHaveTextContent('1599 INR（约 ¥130）');
 });
 
 test('stale matching region does not fall back to a fresh foreign price', async () => {
@@ -404,6 +427,46 @@ test.each([
   fireEvent.click(await screen.findByText('购买须知'));
   expect(screen.getByText(expected)).toBeVisible();
   expect(screen.getByText('$49')).toBeVisible();
+});
+
+test('quote details reuse cleaned merchant titles and facts, with the update time beside the price', async () => {
+  const delivery = '购买内容：成品号：商家提供一个账号，下单前确认登录方式、是否独享及能否改密。';
+  const extra = '售后条款：二次验证不换号';
+  const card = { ...referenceCard, reasons: [delivery, '使用期限：2个月', '质保天数：质保45天'],
+    caveats: ['报价、库存与完整售后条款请在商品详情核对。', extra],
+    offer: { ...referenceCard.offer, name: '【现货秒发】Plus 两个月独享成品号', productUrl: 'https://shop.invalid/buy', tags: [
+      { name: 'delivery', value: 'account' }, { name: 'duration', value: '2 months' },
+      { name: 'warranty_days', value: '45' }, { name: 'warranty_window', value: '45 days' },
+      { name: 'warranty_terms', value: '封号按剩余质保时间退款' },
+    ] } };
+  await renderReferenceCards([], [card]);
+  fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
+  const dialog = screen.getByRole('dialog', { name: 'Plus 两个月独享成品号' });
+  expect(dialog).not.toHaveTextContent(/现货|秒发|购买内容：成品号|使用期限：2个月|质保天数：|保障窗口45天|下单前核对|采集于/);
+  expect(within(dialog).getAllByText('质保45天')).toHaveLength(1);
+  expect(within(dialog).getAllByText('2个月')).toHaveLength(1);
+  expect(dialog).toHaveTextContent(extra);
+  expect(dialog).toHaveTextContent('封号按剩余质保时间退款');
+  const time = within(dialog).getByText(/^最近更新/);
+  expect(time).toHaveAttribute('datetime', card.capturedAt);
+  expect(time.parentElement).toContainElement(within(dialog).getByText('¥61.68'));
+  const confirm = within(dialog).getByRole('button', { name: '确认', exact: true });
+  expect(dialog).toHaveTextContent(`店铺：${card.offer.shop}`);
+  const link = within(dialog).getByRole('link', { name: '前往商家核对报价' });
+  expect(link).toHaveTextContent('去商家');
+  expect(link.nextElementSibling).toBe(confirm);
+  confirm.focus(); fireEvent.keyDown(dialog, { key: 'Tab' });
+  expect(within(dialog).getByRole('button', { name: '关闭商品说明' })).toHaveFocus();
+  fireEvent.click(confirm);
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+
+test('legacy quotes keep warranty and delivery notes when structured facts are missing', async () => {
+  const reasons = ['购买内容：成品号：商家提供一个账号，下单前确认登录方式、是否独享及能否改密。', '质保天数：质保45天'];
+  const caveats = ['售后条款：二次验证不换号', '商家未明确质保时长与保障范围，请在商品详情核实不保事项和售后条款。'];
+  await renderReferenceCards([], [{ ...referenceCard, reasons, caveats, offer: { ...referenceCard.offer, tags: [] } }]);
+  fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
+  for (const note of [...reasons, ...caveats]) expect(screen.getByRole('dialog')).toHaveTextContent(note);
 });
 
 test.each([
