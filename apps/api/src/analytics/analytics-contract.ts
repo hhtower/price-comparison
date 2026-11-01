@@ -1,11 +1,13 @@
 import { REFERENCE_APPS } from '../official-reference/official-reference.catalog.js';
 
 // Keep categories and reference identities bounded: never accept URLs or free-form labels.
-export const ANALYTICS_PAGES = { catalog: '商品比价', tools_ai: 'AI 检测', tools_ip: 'IP 检测' } as const;
+export const ANALYTICS_PAGES = { catalog: '商品比价', tools_ai: 'AI 检测', tools_ip: 'IP 检测', guide: '选购指南', assistant: '导购助手' } as const;
 export const REFERENCE_ACTIONS = { reference_open: '打开官网正价参考', reference_product: '切换参考产品', reference_plans_open: '展开参考套餐', reference_plan_select: '选择参考套餐' } as const;
 const referenceActions = Object.keys(REFERENCE_ACTIONS) as (keyof typeof REFERENCE_ACTIONS)[];
-export const ANALYTICS_ACTIONS = { search: '商品搜索', filter: '筛选商品', product_detail: '查看商品详情', outbound: '前往商家', shop_submit: '提交商铺', report_submit: '提交举报', ai_test: '发起 AI 检测', ip_test: '发起 IP 检测', ...REFERENCE_ACTIONS } as const;
-export const PAGE_ACTIONS = { catalog: ['search', 'filter', 'product_detail', 'outbound', 'shop_submit', 'report_submit', ...referenceActions], tools_ai: ['ai_test', ...referenceActions], tools_ip: ['ip_test', ...referenceActions] } as const;
+export const ASSISTANT_ACTIONS = { assistant_open: '打开导购助手', assistant_ask: '助手提问', assistant_reply: '助手回复成功', assistant_failure: '助手回复失败', assistant_cancelled: '助手查找取消', assistant_connection: '助手连接异常', assistant_quote_detail: '助手查看报价详情', assistant_outbound: '助手前往商家' } as const;
+const assistantActions = Object.keys(ASSISTANT_ACTIONS) as (keyof typeof ASSISTANT_ACTIONS)[];
+export const ANALYTICS_ACTIONS = { search: '商品搜索', filter: '筛选商品', product_detail: '查看商品详情', outbound: '前往商家', shop_submit: '提交商铺', report_submit: '提交举报', ai_test: '发起 AI 检测', ip_test: '发起 IP 检测', ...REFERENCE_ACTIONS, ...ASSISTANT_ACTIONS } as const;
+export const PAGE_ACTIONS = { catalog: ['search', 'filter', 'product_detail', 'outbound', 'shop_submit', 'report_submit', ...referenceActions, ...assistantActions], tools_ai: ['ai_test', ...referenceActions, ...assistantActions], tools_ip: ['ip_test', ...referenceActions, ...assistantActions], guide: assistantActions, assistant: assistantActions } as const;
 export const ANALYTICS_DEVICES = { desktop: '桌面', mobile: '手机', tablet: '平板' } as const;
 export const ANALYTICS_BROWSERS = { chrome: 'Chrome', edge: 'Edge', firefox: 'Firefox', safari: 'Safari', other: '其他' } as const;
 export const ANALYTICS_SOURCES = { direct: '直接访问', internal: '站内跳转', external: '外部来源' } as const;

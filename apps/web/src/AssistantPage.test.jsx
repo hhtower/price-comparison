@@ -210,7 +210,7 @@ test('cards label merchants and show their own region official price without a l
   expect(within(indiaCard).getByText(/1599 INR.*约 ¥130/)).toBeVisible();
   expect(screen.queryByRole('link', { name: /官方内购参考/ })).not.toBeInTheDocument();
   expect(screen.getAllByText('店铺：AI源头')).toHaveLength(2);
-  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher.mock.calls.filter(([url]) => url === '/api/official-reference/catalog')).toHaveLength(1);
   expect(fetcher).toHaveBeenCalledWith('/api/official-reference/catalog', expect.objectContaining({ credentials: 'omit' }));
   fireEvent.click(within(us).getByRole('button', { name: '查看报价详情' }));
   const details = screen.getByRole('dialog');

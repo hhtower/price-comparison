@@ -11,6 +11,7 @@ import { AnalyticsRepository } from '../src/analytics/analytics.repository.js';
 import { AnalyticsNetworkService, analyticsCacheOptions, type AnalyticsNetwork } from '../src/analytics/analytics-network.js';
 import { analyticsPeriod } from '../src/analytics/analytics-input.js';
 import type { AnalyticsCollection } from '../src/analytics/analytics-contract.js';
+import { ASSISTANT_ACTIONS } from '../src/analytics/analytics-contract.js';
 import { createCache } from '../src/cache/cache.js';
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -30,6 +31,22 @@ test('visitor analytics migration, atomic writes, deduplication and reports over
     await repository.addExcludedIp('192.0.2.6');
     const query = { days: 7, page: 1, limit: 20 };
     const payload: AnalyticsCollection = { visitId: randomUUID(), visitorId: randomUUID(), sessionId: randomUUID(), page: 'catalog', device: 'desktop', browser: 'chrome', source: 'direct', activeMs: 0, actions: [] };
+
+    await t.test('assistant events persist and appear in reports after migration', async t => {
+      t.after(async () => { await pool.query('truncate analytics_visits cascade'); });
+      for (const page of ['catalog', 'tools_ai', 'tools_ip', 'guide', 'assistant'] as const) {
+        const input = { ...payload, page, visitId: randomUUID(), actions: Object.keys(ASSISTANT_ACTIONS)
+          .map(name => ({ id: randomUUID(), name: name as keyof typeof ASSISTANT_ACTIONS })) };
+        await repository.collect(input);
+        await repository.collect(input);
+      }
+      const counts = await pool.query('select name, count(*)::integer as count from analytics_actions group by name');
+      assert.equal(counts.rows.length, Object.keys(ASSISTANT_ACTIONS).length);
+      assert.ok(counts.rows.every(row => row.count === 5));
+      const report = await repository.summary(query);
+      assert.ok(report.pages.some((row: any) => row.key === 'assistant' && row.count === 1));
+      assert.ok(report.actions.some((row: any) => row.key === 'assistant_quote_detail' && row.count === 5));
+    });
 
     await t.test('reports exclude own IPs from historical visits and actions without deleting raw records', async t => {
       t.after(async () => { await pool.query('truncate analytics_visits cascade'); });

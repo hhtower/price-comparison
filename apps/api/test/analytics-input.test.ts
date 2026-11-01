@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { ASSISTANT_ACTIONS } from '../src/analytics/analytics-contract.js';
 import { parseCollection, parseAnalyticsQuery, analyticsPeriod } from '../src/analytics/analytics-input.js';
 
 export const collection = {
@@ -14,6 +15,18 @@ test('accepts only bounded analytics fields and rejects credentials, URLs and in
   assert.throws(() => parseCollection(null));
   assert.throws(() => parseCollection({ ...collection, actions: [{ id: collection.visitId, name: 'search', query: 'secret' }] }));
 });
+test('assistant actions accept only fixed categories on supported public pages', () => {
+  for (const page of ['catalog', 'tools_ai', 'tools_ip', 'guide', 'assistant']) {
+    for (const name of Object.keys(ASSISTANT_ACTIONS)) {
+      const input = { ...collection, page, actions: [{ id: collection.visitId, name }] };
+      assert.deepEqual(parseCollection(input), input);
+      assert.throws(() => parseCollection({ ...input, actions: [{ ...input.actions[0], text: 'private question' }] }));
+      assert.throws(() => parseCollection({ ...input, actions: [{ ...input.actions[0], reference: { appId: '6448311069' } }] }));
+    }
+  }
+  assert.throws(() => parseCollection({ ...collection, page: 'admin', actions: [{ id: collection.visitId, name: 'assistant_open' }] }));
+});
+
 test('statistics ranges are bounded and Shanghai calendar boundaries include today', () => {
   assert.deepEqual(parseAnalyticsQuery({}), { days: 7, page: 1, limit: 20 });
   assert.deepEqual(parseAnalyticsQuery({ days: '30', page: '2', limit: '10' }), { days: 30, page: 2, limit: 10 });

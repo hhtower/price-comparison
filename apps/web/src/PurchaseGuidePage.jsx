@@ -1,9 +1,11 @@
 import React, { useEffect } from 'react';
+import { usePageAnalytics } from './usePageAnalytics.js';
 import PurchaseGuide from './PurchaseGuide.jsx';
 import { purchaseGuideReturnHref } from './purchase-guide-navigation.js';
 import { PURCHASE_GUIDE_CONTENT as guide, PURCHASE_GUIDE_FIELDS, PURCHASE_GUIDE_GROUPS } from '@price-comparison/catalog/purchase-guide-content';
 
 export default function PurchaseGuidePage() {
+  usePageAnalytics('guide');
   const returnHref = purchaseGuideReturnHref();
   useEffect(() => {
     const revealAnchor = () => {

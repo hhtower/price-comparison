@@ -9,6 +9,8 @@ import {
 import { normalizePurchaseTag, purchaseTagLabel, purchaseWarrantyLabel } from '@price-comparison/catalog/purchase-attributes';
 import Brand from './Brand.jsx';
 import { assistantApi, ASSISTANT_SERVICE_ERROR } from './assistant-api.js';
+import { trackUsage } from './analytics.js';
+import { usePageAnalytics } from './usePageAnalytics.js';
 import ContactAdminButton from './ContactAdminButton.jsx';
 import { displayPurchaseTagText } from './purchase-tag-values.js';
 import { formatMoney } from './money.js';
@@ -160,9 +162,9 @@ function QuoteCard({ card, catalog }) {
     {rows.length > 0 && <details className="assistant-purchase-notes"><summary>购买须知{conditions.some(fact => fact.name === 'usage_restriction') && <small>有使用限制</small>}</summary>
       <dl>{rows.map(([label, value]) => <div key={label}><dt>{label}：</dt><dd>{value}</dd></div>)}</dl>
     </details>}
-    <button type="button" className="assistant-offer-details" aria-haspopup="dialog" onClick={() => setOpen(true)}>查看报价详情</button>
+    <button type="button" className="assistant-offer-details" aria-haspopup="dialog" onClick={() => { trackUsage('assistant_quote_detail'); setOpen(true); }}>查看报价详情</button>
     {open && <OfferTagDetails offer={offer} item={{ name: card.title }} onClose={() => setOpen(false)}
-      footer={offer.productUrl && <a className="assistant-detail-merchant-link" aria-label="前往商家核对报价" href={offer.productUrl} target="_blank" rel="noopener noreferrer">去商家</a>}>
+      footer={offer.productUrl && <a className="assistant-detail-merchant-link" aria-label="前往商家核对报价" href={offer.productUrl} target="_blank" rel="noopener noreferrer" onClick={() => trackUsage('assistant_outbound')}>去商家</a>}>
       <div className="assistant-detail-price">{price}<time dateTime={card.capturedAt}>最近更新 {new Date(card.capturedAt).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}</time></div>
       {officialPrice}
       {detailNotes.length > 0 && <div className="assistant-detail-notes" aria-label="补充说明">{detailNotes.map(note => <p key={note}>{note}</p>)}</div>}
@@ -226,6 +228,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
   const [reasoning, setReasoning] = useState({});
   const [needs, setNeeds] = useState(initialSession.needs);
   const [completed, setCompleted] = useState(null);
+  const reportedTurns = useRef(new Set(initialSession.turns.filter(turn => isTurnTerminal(turn.status)).map(turn => turn.id)));
   const [started, setStarted] = useState(initialSession.turns.length > 0);
   const [topic, setTopic] = useState(() => {
     const text = initialSession.turns[0]?.inputText.split('\n').at(-1);
@@ -251,7 +254,12 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
       setUncertain(false); setNeeds(session.current.needs); setPhase('');
       setCompleted(turn.id + ':' + turn.eventVersion);
     }
-    return turnResult(turn, turns.slice(-3));
+    const result = turnResult(turn, turns.slice(-3));
+    if (!reportedTurns.current.has(turn.id)) {
+      reportedTurns.current.add(turn.id);
+      trackUsage({ succeeded: 'assistant_reply', failed: 'assistant_failure', cancelled: 'assistant_cancelled' }[turn.status]);
+    }
+    return result;
   }
   async function watch(turn, signal) {
     acceptSnapshot(turn);
@@ -296,6 +304,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
       setBusy(true); setError(''); setPhase('queued');
       try {
         saveCredentials(credentials, pending.current.clientMessageId);
+        trackUsage('assistant_ask');
         return finish(await watch(await sendPending(signal), signal));
       } catch (failure) {
         if (failure.status === 409) {
@@ -306,7 +315,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
           if (mounted.current) { setUncertain(false); setNeeds(session.current.needs); }
           return { content: [{ type: 'text', text: '正在读取最新消息，请稍候。' }] };
         }
-        if (mounted.current) { setError(failure); setUncertain(true); }
+        if (mounted.current) { trackUsage('assistant_connection'); setError(failure); setUncertain(true); }
         return { content: [{ type: 'text', text: failure.contactAdmin ? failure.message : '暂时无法查看回复，请点击“重新连接”。' }] };
       } finally { if (mounted.current) setBusy(false); }
     },
@@ -339,7 +348,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
       } else { setUncertain(false); setNeeds(session.current.needs); }
       if (mounted.current) importHistory();
     } catch (failure) {
-      if (mounted.current) { setError(failure); setUncertain(true); }
+      if (mounted.current) { trackUsage('assistant_connection'); setError(failure); setUncertain(true); }
     } finally { if (mounted.current) setBusy(false); }
   }
   async function stop() {
@@ -447,6 +456,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
 
 export default function AssistantPage({ api = assistantApi, embedded = false, enabled = false,
   focusInput = !embedded && !window.matchMedia?.('(max-width: 600px)').matches, onActivity, onCollapse, catalogPlatform }) {
+  usePageAnalytics(embedded ? null : 'assistant', 'assistant_open');
   const [state, setState] = useState({ loading: true });
   const [generation, setGeneration] = useState(0);
   const [confirmClear, setConfirmClear] = useState(false);

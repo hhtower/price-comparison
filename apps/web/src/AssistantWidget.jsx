@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { assistantApi } from './assistant-api.js';
+import { trackUsage } from './analytics.js';
 import AssistantLoading from './AssistantLoading.jsx';
 import './assistant.css';
 
@@ -51,7 +52,7 @@ export default function AssistantWidget({ api = assistantApi, catalogPlatform, o
   return <div className="assistant-widget">
     <button type="button" className="assistant-launcher" ref={launcher}
       aria-label="打开导购助手" aria-expanded={open} aria-controls={id} aria-haspopup="dialog"
-      onClick={() => { setVisited(true); setOpen(value => !value); }}>
+      onClick={() => { if (!open) trackUsage('assistant_open'); setVisited(true); setOpen(value => !value); }}>
       <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3v-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" /><path d="M7 9h10M7 13h6" /></svg>
       <span>导购助手</span>
       <span className="assistant-launcher-status" role="status">{activity.busy ? '正在查找' : activity.attention ? '连接中断' : unread ? '有新回复' : ''}</span>
