@@ -383,7 +383,10 @@ test('quote cards show compact facts and grouped purchase notes without repeatin
   expect(notes).not.toHaveTextContent('采集于');
   expect(notes).not.toHaveTextContent('具体限制以');
   fireEvent.click(within(article).getByRole('button', { name: '查看报价详情' }));
-  expect(screen.getByRole('dialog')).toHaveTextContent('掉订阅按剩余天数退款');
+  const details = screen.getByRole('dialog');
+  expect(details).toHaveTextContent('掉订阅按剩余天数退款');
+  expect(details).not.toHaveTextContent('商家质保说明');
+  expect(within(details).getAllByText('不保封号')).toHaveLength(1);
 });
 
 test.each([

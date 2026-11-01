@@ -67,6 +67,19 @@
 .assistant-card>.assistant-official-price{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:2px 10px;font-size:12px;color:var(--assistant-muted);margin:6px 0 2px}
 .assistant-card-reasons{margin:10px 0 0;padding-left:18px;font-size:12px;color:var(--assistant-muted)}
 .assistant-quote-note{font-size:12px;color:var(--assistant-muted)}
+.assistant-detail-notes{margin:8px 0;padding-left:10px;border-left:2px solid #e5c89c;color:#80531f;font-size:12px}
+.assistant-detail-notes p{margin:4px 0}
+.assistant-detail-captured{color:var(--assistant-muted);font-size:11px}
+.assistant-page .offer-tag-details{width:min(680px,calc(100vw - 24px));height:min(600px,calc(100dvh - 24px));border-color:var(--assistant-line);border-radius:12px;box-shadow:0 20px 60px #14232c2b}
+.assistant-page .offer-tag-details-body{padding:16px 18px}
+.assistant-page .offer-tag-details-groups{grid-template-columns:1fr;gap:8px}
+.assistant-page .offer-tag-details-groups section{padding:10px 12px;border-radius:8px;background:#fff}
+.assistant-page .offer-tag-details-groups h3{margin-bottom:6px;font-size:12px}
+.assistant-page .offer-tag-details-groups li{font-size:12px;font-weight:550;line-height:1.55}
+.assistant-page .offer-tag-details-groups li+li{margin-top:6px;padding-top:6px}
+.assistant-page .offer-tag-details-actions{padding:10px 18px}
+.assistant-page .assistant-detail-merchant-link{display:inline-flex;align-items:center;min-height:40px;padding:0 12px;border:1px solid var(--assistant-line);border-radius:8px;color:var(--assistant-accent);font-size:12px;text-decoration:none}
+.assistant-page .assistant-detail-merchant-link:hover{background:#edf5f3}
 .assistant-options{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .assistant-page :is(.assistant-options,.assistant-error,.assistant-clear,.assistant-fallback) :is(button,a){box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;min-height:32px;max-width:100%;padding:4px 10px;border:1px solid var(--assistant-line);border-radius:8px;background:#f5f8f7;color:#456b66;font-size:12px;line-height:1.5;text-decoration:none}
 .assistant-page :is(.assistant-options,.assistant-error,.assistant-clear,.assistant-fallback) :is(button:not(:disabled),a):hover{background:#edf5f3;border-color:#bdd4cf;color:var(--assistant-accent)}

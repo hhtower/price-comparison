@@ -1110,7 +1110,7 @@
   .detail-filter-popover .filter-panel--inline .filter-group-content { margin-left: 72px; }
 }
 
-.offer-tag-details { width: 760px; height: 640px; padding: 0; overflow: hidden; border: 1px solid var(--catalog-line); border-radius: 16px; background: #fff; color: var(--catalog-ink); box-shadow: 0 24px 80px #17212b33; }
+.offer-tag-details { --catalog-line: #dce5e5; --catalog-ink: #14232c; --catalog-muted: #6f7e85; --catalog-accent: #0f8179; width: 760px; height: 640px; padding: 0; overflow: hidden; border: 1px solid var(--catalog-line); border-radius: 16px; background: #fff; color: var(--catalog-ink); box-shadow: 0 24px 80px #17212b33; }
 .offer-tag-details[open] { display: flex; flex-direction: column; }
 .offer-tag-details > .dialog-header { flex-shrink: 0; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--catalog-line); }
 .offer-tag-details .dialog-header h2 { display: -webkit-box; min-width: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; font-size: 17px; line-height: 1.5; letter-spacing: -.035em; }

@@ -34,7 +34,7 @@ export function OfferFacts({ tags, settlementQuantity, formatValue = displayPurc
   </div> : <div className="offer-facts" aria-hidden="true" />;
 }
 
-export default function OfferTagDetails({ offer, item, onClose, onReport, formatValue, children }) {
+export default function OfferTagDetails({ offer, item, onClose, onReport, formatValue, children, footer }) {
   const facts = offerConditions(offer, formatValue);
   return <ModalDialog open className="offer-tag-details" aria-labelledby="offer-tag-details-title" onClose={onClose}>
     <header className="dialog-header"><div className="offer-tag-details-summary"><h2 id="offer-tag-details-title" title={offer.name || item.name}>{offer.name || item.name}</h2><p>{offer.shop || '未知商铺'}{offer.independentShop ? <span className="offer-shop-risk-note"> · 自建站，风险相对更高</span> : ''}{offer.spec ? ` · ${offer.spec}` : ''}</p></div><button type="button" aria-label="关闭商品说明" onClick={onClose}>×</button></header>
@@ -44,6 +44,6 @@ export default function OfferTagDetails({ offer, item, onClose, onReport, format
         <ul>{facts.filter(fact => fact.displayGroup === group.id).map(fact => <li key={`${fact.name}:${fact.value}`} aria-label={`${fact.label}：${fact.value}`}>{displayPurchaseTagText(fact, fact.value)}</li>)}</ul>
       </section>)}</div> : <p className="offer-tag-details-empty">暂无商品条件信息</p>}
     </div>
-    <footer className="offer-tag-details-actions">{onReport && <button type="button" className="text-button" onClick={() => onReport(offer)}>举报此报价</button>}<button type="button" className="primary-button" onClick={onClose}>确认</button></footer>
+    <footer className="offer-tag-details-actions">{onReport && <button type="button" className="text-button" onClick={() => onReport(offer)}>举报此报价</button>}{footer}<button type="button" className="primary-button" onClick={onClose}>确认</button></footer>
   </ModalDialog>;
 }
