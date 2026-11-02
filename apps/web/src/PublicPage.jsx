@@ -1,10 +1,10 @@
 import OfferTagDetails, { OfferFacts } from './OfferTagDetails.jsx';
 import ModalDialog from './components/ModalDialog.jsx';
-import PurchaseGuide from './PurchaseGuide.jsx';
+import PurchaseGuide, { PurchaseGuideLink } from './PurchaseGuide.jsx';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Virtuoso } from 'react-virtuoso';
-import Brand from './Brand.jsx';
+import Brand, { logoUrl } from './Brand.jsx';
 import CommunityDialog from './CommunityDialog.jsx';
 import { usePageAnalytics } from './usePageAnalytics.js';
 import { trackUsage } from './analytics.js';
@@ -329,7 +329,7 @@ function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, dra
     const previousFocus = document.activeElement;
     const panel = dialogRef.current;
     const toolbar = panel?.parentElement?.previousElementSibling;
-    if (inline && toolbar?.matches('.search-panel')) {
+    if (inline && toolbar?.matches('.catalog-sticky-header')) {
       // Native focus scrolling can put a long panel underneath the sticky toolbar.
       panel.focus({ preventScroll: true });
       const overlap = toolbar.getBoundingClientRect().bottom - panel.getBoundingClientRect().top;
@@ -523,7 +523,7 @@ function readDetailSearch(params) {
     tags: [...new Set([...tags, ...inferred.map(tagKey)])], warranty: warranty || String(parsed.warrantyDaysMin || ''), newcomer };
 }
 
-function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCompare, onOpenComparison, desktop, standalone = false }) {
+function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCompare, onOpenComparison, desktop, standalone = false, referenceRef }) {
   const initial = { keyword: '', tags: [], warranty: '', shopId: '', shopName: '', priceMin: '', priceMax: '', currency: 'CNY',
     pageSize: PRODUCT_PAGE_SIZE, page: 1, offerSort: 'price', kind: detail.kind, scrollTop: 0 };
   const [state, setState] = useState(() => {
@@ -689,12 +689,12 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
       <span className="catalog-shop-identity"><span className="offer-rank">{rank}</span><span className="catalog-shop-copy"><strong><span className="catalog-shop-name">{entry.name}</span><ShopScore offer={entry.offer} /><ShopBadge offer={entry.offer} /></strong><span>{entry.count} 条报价</span></span></span><strong className="catalog-shop-price"><OfferPrice offer={entry.offer} /> →</strong>
     </button> : <OfferCard key={offerIdentity(entry, index)} offer={entry} item={detail.item} rank={rank} best={state.offerSort === 'price' && rank === 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} showHistory />;
   }
-  if (missingPage) return <section className="product-route-state" role="alert"><h1>商品分页不存在</h1><a href={productPagePath(detail.item.id)}>返回商品首页</a><a href="/" onClick={returnToCatalog}>返回商品列表</a></section>;
+  if (missingPage) return <section className="product-route-state" role="alert"><h1>商品分页不存在</h1><header className="product-page-heading"><a href={productPagePath(detail.item.id)}>返回商品首页</a><a href="/" onClick={returnToCatalog}>返回商品列表</a><span className="official-reference-slot" ref={referenceRef} /></header></section>;
   const Container = standalone ? 'section' : ModalDialog;
   const Controls = standalone ? 'div' : React.Fragment;
   return <Container {...(standalone ? {} : { open: true, onClose })} className={standalone ? 'product-page-details' : 'catalog-detail-dialog'} aria-labelledby="catalog-detail-title">
     <Controls {...(standalone ? { className: 'product-detail-controls' } : {})}>
-    {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><h1>{formatStandardName(detail.item.name)}</h1><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span>{detail.item.kind}</span></header> : null}
+    {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><h1>{formatStandardName(detail.item.name)}</h1><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span><span className="official-reference-slot" ref={referenceRef} /></header> : null}
     <header className="dialog-header"><div>{state.shopId ? <button type="button" className="text-button" onClick={() => navigate(shopListState.current || { shopId: '', shopName: '', kind: 'shops' })}>← 返回商铺列表</button> : null}<h2 id="catalog-detail-title">{standalone ? label : formatStandardName(detail.item.name) + ' · ' + label}{state.shopName ? ` · ${state.shopName}` : ''}</h2><p>{loading ? '…' : total} {isShops ? '家商铺' : '条报价'}</p></div><div className="detail-header-actions">{comparison.length ? <button type="button" className="text-button" onClick={onOpenComparison}>对比（{comparison.length}）</button> : null}{standalone ? <div className="detail-kind-tabs" role="group" aria-label="报价视图"><button type="button" aria-pressed={!isShops} onClick={() => navigate({ kind: 'offers', shopId: '', shopName: '' })}>全部报价</button><button type="button" aria-pressed={isShops} onClick={() => navigate({ kind: 'shops', shopId: '', shopName: '' })}>按商铺</button></div> : <button type="button" aria-label={`关闭${label}详情`} onClick={onClose}>×</button>}</div></header>
     <div className="detail-query-panel" ref={toolbar} onKeyDown={event => {
       if (event.key === 'Escape' && filterOpen) { event.preventDefault(); event.stopPropagation(); setFilterOpen(false); }
@@ -763,7 +763,7 @@ const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDe
   return <Virtuoso useWindowScroll data={items} computeItemKey={catalogItemKey} itemContent={renderItem} endReached={onEndReached} totalListHeightChanged={onHeightChanged} increaseViewportBy={CATALOG_OVERSCAN} />;
 });
 
-function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
+function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenceRef }) {
   usePageAnalytics('catalog');
   const requestedProductPage = publicPageNumber(new URLSearchParams(window.location.search).getAll('page'));
   const invalidProductPage = Boolean(productId && requestedProductPage === null);
@@ -786,6 +786,7 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
   const onHeightChanged = useCallback(height => { if (height > 0) setListMeasured(true); }, []);
   const [shopDialogOpen, setShopDialogOpen] = useState(false);
   const [communityOpen, setCommunityOpen] = useState(false);
+  const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [platformPickerOpen, setPlatformPickerOpen] = useState(false);
   const desktopFilters = useDesktopFilters();
@@ -805,9 +806,18 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
   const [submittingReport, setSubmittingReport] = useState(false);
   const [toast, setToast] = useState('');
   const toastTimer = useRef(null);
-  const searchPanel = useRef(null);
+  const brandHeader = useRef(null);
+  const [brandVisible, setBrandVisible] = useState(true);
+  const catalogToolbar = useRef(null);
   useEffect(() => {
-    const panel = searchPanel.current;
+    const header = brandHeader.current;
+    if (!header || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(([entry]) => setBrandVisible(entry.isIntersecting));
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    const panel = catalogToolbar.current;
     if (!panel) return;
     const measure = () => panel.closest('.compact-catalog').style.setProperty('--catalog-toolbar-height', `${Math.ceil(panel.getBoundingClientRect().height)}px`);
     measure();
@@ -1028,13 +1038,15 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
     setPlatformPickerOpen(false);
     if (value === platform) return;
     setPlatform(value); setSelectedProduct(''); setDraftProduct(''); trackUsage('filter');
+    window.scrollTo(0, 0);
   };
   const platformLabel = platform === '全部' ? '全部平台' : displayPlatform(platform);
 
   return (
     <main className={`public-layout compact-catalog${productId ? ' product-detail-layout' : ''}`}>
-      {!productId ? <header className="site-header community-header">
-        <div className="brand-block"><div className="public-brand-row"><Brand /><CatalogCoverage data={coverageQuery.data} /></div><p className="brand-disclaimer"><span>本站展示第三方商铺报价，信息仅供比较参考。价格、库存、商品内容及交易条件可能变化，请在下单前以商家页面的实际信息为准。</span><span>本站不参与交易，交易与售后请联系商家。发现价格不符、链接失效或可疑商品，可在对应报价下方举报。</span></p></div>
+      {!productId ? <>
+      <header ref={brandHeader} className="site-header community-header">
+        <div className="brand-block"><div className="public-brand-row"><Brand /><CatalogCoverage data={coverageQuery.data} /></div></div>
         <div className="public-header-actions">
           <span className="community-links">
             <a className="community-trigger" href="/tools" aria-label="检测工具">
@@ -1058,18 +1070,23 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
               </svg>
             </button>
           </span>
+          <span className="official-reference-slot" ref={referenceRef} />
           <button type="button" className="submit-shop-button" onClick={() => setShopDialogOpen(true)}>提交商铺</button>
         </div>
-      </header> : null}
-      {productId ? <div className="product-page-content">
-        {invalidProductPage || productQuery.isPending || productQuery.isError ? <a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a> : null}
-        {invalidProductPage ? <section className="product-route-state" role="alert"><h1>商品分页不存在</h1></section> : productQuery.isPending ? <p role="status">正在加载商品…</p> : productQuery.isError ? <section className="product-route-state" role="alert"><h1>{productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载'}</h1>{productQuery.error?.status !== 404 ? <button type="button" className="primary-button" onClick={() => productQuery.refetch()}>重试</button> : null}</section> : productDetail && !productQuery.data.mergedIntoId ? <>
-          <CatalogDetailDialog key={productId} standalone desktop={desktopFilters} detail={productDetail} onOfferDetails={openOfferDetails} comparison={comparison} onCompare={toggleComparison} onOpenComparison={() => setComparisonOpen(true)} />
-        </> : null}
-      </div> : <>
-      <section ref={searchPanel} className="search-panel" aria-label="搜索和筛选">
+        <div className="catalog-notice">
+          <span>本站不参与交易<span aria-hidden="true"> · </span></span>
+          <button type="button" className="catalog-disclaimer-trigger" aria-haspopup="dialog" aria-expanded={disclaimerOpen} aria-controls="catalog-disclaimer-dialog" onClick={() => setDisclaimerOpen(true)}>免责声明</button>
+          <span aria-hidden="true">·</span>
+          <PurchaseGuideLink>选购指南 →</PurchaseGuideLink>
+        </div>
+      </header>
+      <div ref={catalogToolbar} className="catalog-sticky-header">
+      <section className="search-panel" aria-label="搜索和筛选">
+        <div className="catalog-search-row">
+        {!brandVisible ? <a className="catalog-home-link" href="/" aria-label="返回首页"><img src={logoUrl} width="28" height="28" alt="" aria-hidden="true" /></a> : null}
         <label className="search-field"><span aria-hidden="true">⌕</span><input aria-label="搜索商品" value={query} maxLength={500} placeholder="搜索商品，如 Plus、Claude" autoComplete="off" onChange={(event) => changeSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing && query.trim() !== search) { setSearch(query.trim()); if (query.trim()) trackUsage('search'); } }} />{query ? <button type="button" className="text-button" aria-label="清除搜索" onClick={() => changeSearch('')}>×</button> : null}</label>
         <button type="button" className={`icon-button ${loading ? 'is-refreshing' : ''}`} title={loading ? '正在刷新价格' : '刷新价格'} aria-label={loading ? '正在刷新价格' : '刷新价格'} aria-busy={loading} onClick={refreshCatalog}><span className="refresh-icon" aria-hidden="true">↻</span></button>
+        </div>
         <div className="catalog-toolbar" role="group" aria-label="平台与排序">
           {desktopFilters ? <div className="platform-tabs" role="group" aria-label="商品平台">{platforms.map((item) => <button key={item} type="button" aria-pressed={item === platform} className={item === platform ? 'active' : ''} onClick={() => changePlatform(item)}>{displayPlatform(item)}</button>)}</div>
             : <button type="button" className={`platform-picker-trigger${platform !== '全部' ? ' has-selection' : ''}`} aria-label={`选择平台：${platformLabel}`} aria-haspopup="dialog" aria-expanded={platformPickerOpen} aria-controls="catalog-platform-picker" onClick={() => setPlatformPickerOpen(true)}><span>{platformLabel}</span><span className="filter-chevron" aria-hidden="true" /></button>}
@@ -1080,13 +1097,20 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
           </div>
         </div>
       </section>
+      </div>
+      </> : null}
+      {productId ? <div className="product-page-content">
+        {invalidProductPage || productQuery.isPending || productQuery.isError ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><span className="official-reference-slot" ref={referenceRef} /></header> : null}
+        {invalidProductPage ? <section className="product-route-state" role="alert"><h1>商品分页不存在</h1></section> : productQuery.isPending ? <p role="status">正在加载商品…</p> : productQuery.isError ? <section className="product-route-state" role="alert"><h1>{productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载'}</h1>{productQuery.error?.status !== 404 ? <button type="button" className="primary-button" onClick={() => productQuery.refetch()}>重试</button> : null}</section> : productDetail && !productQuery.data.mergedIntoId ? <>
+          <CatalogDetailDialog key={productId} standalone desktop={desktopFilters} detail={productDetail} onOfferDetails={openOfferDetails} comparison={comparison} onCompare={toggleComparison} onOpenComparison={() => setComparisonOpen(true)} referenceRef={referenceRef} />
+        </> : null}
+      </div> : <>
       {!desktopFilters && platformPickerOpen ? <ModalDialog open id="catalog-platform-picker" className="platform-picker-dialog" aria-labelledby="platform-picker-title" onClose={() => setPlatformPickerOpen(false)}>
         <div className="dialog-header"><h2 id="platform-picker-title">选择平台</h2><button type="button" aria-label="关闭平台选择" onClick={() => setPlatformPickerOpen(false)}>×</button></div>
         <div className="platform-picker-options" role="group" aria-label="商品平台">{platforms.map(item => <button key={item} type="button" aria-pressed={item === platform} onClick={() => changePlatform(item)}><span>{item === '全部' ? '全部平台' : displayPlatform(item)}</span><span aria-hidden="true">{item === platform ? '✓' : ''}</span></button>)}</div>
       </ModalDialog> : null}
-      <FilterPanel open={filterOpen} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => facetQuery.refetch()} draftTags={draftTags} draftWarrantyDaysMin={draftWarrantyDaysMin} draftProduct={draftProduct} onWarrantyChange={changeDraftWarranty} onToggle={toggleDraftTag} onClear={() => { setDraftTags(new Set()); setDraftWarrantyDaysMin(''); setDraftProduct(''); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
+      <FilterPanel open={filterOpen} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen || disclaimerOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => facetQuery.refetch()} draftTags={draftTags} draftWarrantyDaysMin={draftWarrantyDaysMin} draftProduct={draftProduct} onWarrantyChange={changeDraftWarranty} onToggle={toggleDraftTag} onClear={() => { setDraftTags(new Set()); setDraftWarrantyDaysMin(''); setDraftProduct(''); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
         preview={filterOpen && isValidWarrantyMinimum(draftWarrantyDaysMin) ? <FilterCount params={draftRequest} enabled current={draftRequest === request && catalogQuery.data && !catalogQuery.isPlaceholderData ? data : undefined} /> : null} />
-      <PurchaseGuide />
       <div className="catalog-scroll">
         {intentTags.length ? <div className="intent-chips" aria-label="已识别购买条件">{intentTags.map((tag) => <button type="button" key={tagKey(tag)} aria-label={`移除${displayPurchaseValue(tag)}`} onClick={() => { setQuery(removeSearchIntent(query, tag)); }}>{displayPurchaseValue(tag)} <span aria-hidden="true">×</span></button>)}<button type="button" className="intent-clear" onClick={() => { setQuery(parseCatalogSearch(query).text); }}>清除已识别条件</button></div> : null}
         {selectedCount ? <div className="selected-filters" aria-label="已选筛选条件">{selectedProduct ? <button type="button" onClick={() => { setSelectedProduct(''); setDraftProduct(''); trackUsage('filter'); }}>{selectedProductName} ×</button> : null}{selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}{warrantyDaysMin ? <button type="button" onClick={() => { setWarrantyDaysMin(''); setDraftWarrantyDaysMin(''); trackUsage('filter'); }}>质保至少{warrantyDaysMin}天 ×</button> : null}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
@@ -1105,16 +1129,21 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled }) {
       {offerDetails ? <OfferTagDetails formatValue={displayPurchaseValue} {...offerDetails} onClose={() => setOfferDetails(null)} onReport={report} /> : null}
       {reportOffer ? <ModalDialog open className="report-dialog" aria-labelledby="report-dialog-title" onClose={() => { if (!submittingReport) setReportOffer(null); }}><form onSubmit={submitReport}><div className="dialog-header"><h2 id="report-dialog-title">举报此报价</h2><button type="button" aria-label="关闭举报" disabled={submittingReport} onClick={() => setReportOffer(null)}>×</button></div><p className="report-product-name">{reportOffer.name} · {reportOffer.shop}</p><label>举报原因<select name="reason" required defaultValue=""><option value="" disabled>请选择原因</option><option value="price_mismatch">价格或库存与商家页面不符</option><option value="invalid_link">商品链接失效</option><option value="misleading">商品描述有误导</option><option value="unsafe">疑似欺诈或违规商品</option><option value="other">其他问题</option></select></label><label>补充说明<textarea name="details" rows="4" maxLength="1000" placeholder="可填写实际价格、问题位置等信息" /></label><p className="report-help">本站会核查举报；下单前请以商家页面的实际信息为准。</p>{reportError ? <p className="report-error" role="alert">{reportError}</p> : null}<div className="report-dialog-actions"><button type="button" className="text-button" disabled={submittingReport} onClick={() => setReportOffer(null)}>取消</button><button type="submit" className="primary-button" disabled={submittingReport}>{submittingReport ? '提交中…' : '提交举报'}</button></div></form></ModalDialog> : null}
       {communityOpen && <CommunityDialog onClose={() => setCommunityOpen(false)} />}
+      {disclaimerOpen ? createPortal(<ModalDialog open id="catalog-disclaimer-dialog" className="catalog-disclaimer-dialog" aria-labelledby="catalog-disclaimer-title" onClose={() => setDisclaimerOpen(false)}>
+        <header className="dialog-header"><h2 id="catalog-disclaimer-title">免责声明</h2><button type="button" aria-label="关闭免责声明" onClick={() => setDisclaimerOpen(false)}>×</button></header>
+        <p>本站展示第三方商铺报价，信息仅供比较参考。价格、库存、商品内容及交易条件可能变化，请在下单前以商家页面的实际信息为准。</p>
+        <p>本站不参与交易，交易与售后请联系商家。发现价格不符、链接失效或可疑商品，可在对应报价下方举报。</p>
+      </ModalDialog>, document.body) : null}
       <ModalDialog className="shop-dialog" open={shopDialogOpen} onClose={() => setShopDialogOpen(false)} aria-labelledby="shop-submit-title"><form onSubmit={submitShop}><div className="dialog-header"><h2 id="shop-submit-title">提交商铺地址</h2><button type="button" aria-label="关闭" onClick={() => setShopDialogOpen(false)}>×</button></div><label>商铺名称<input name="name" required /></label><label>商铺地址<input name="url" type="url" placeholder="https://" required /></label><button className="dialog-submit" disabled={submittingShop}>{submittingShop ? '提交中…' : '提交审核'}</button></form></ModalDialog>
     </main>
   );
 }
 
 
-export default function PublicPage({ productId, onPlatformChange, assistantEnabled = false }) {
+export default function PublicPage({ productId, onPlatformChange, assistantEnabled = false, referenceRef }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: {
     staleTime: 5_000, gcTime: 300_000, retry: false, refetchOnWindowFocus: false,
   } } }));
   useEffect(() => () => client.clear(), [client]);
-  return <QueryClientProvider client={client}><PublicCatalog key={productId || 'catalog'} productId={productId} onPlatformChange={onPlatformChange} assistantEnabled={assistantEnabled} /></QueryClientProvider>;
+  return <QueryClientProvider client={client}><PublicCatalog key={productId || 'catalog'} productId={productId} onPlatformChange={onPlatformChange} assistantEnabled={assistantEnabled} referenceRef={referenceRef} /></QueryClientProvider>;
 }

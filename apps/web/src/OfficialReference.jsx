@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import ModalDialog from './components/ModalDialog.jsx';
 import { trackUsage } from './analytics.js';
 import './official-reference.css';
@@ -206,25 +207,26 @@ function ReferencePanel({ catalog, setCatalog, selection, setSelection }) {
   </div>;
 }
 
-export default function OfficialReference() {
+export default function OfficialReference({ target } = {}) {
   const [open, setOpen] = useState(false);
   const [catalog, setCatalog] = useState(null);
   const [selection, setSelection] = useState({ appId: null, planId: null });
   const trigger = useRef(null);
-  function close() { setOpen(false); trigger.current?.focus(); }
+  function close() { setOpen(false); }
   useEffect(() => {
     if (!open) return undefined;
     const previous = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    return () => { document.body.style.overflow = previous; };
+    return () => { document.body.style.overflow = previous; trigger.current?.focus({ preventScroll: true }); };
   }, [open]);
-  return <>
-    <button type="button" ref={trigger} className="official-reference-trigger" aria-label="官网正价参考" title="官网正价参考" aria-haspopup="dialog" aria-expanded={open} aria-controls="official-reference-dialog" onClick={() => {
+  const button = <button type="button" ref={trigger} className="official-reference-trigger" aria-label="官网正价参考" title="官网正价参考" aria-haspopup="dialog" aria-expanded={open} aria-controls="official-reference-dialog" onClick={() => {
       if (!open) { setOpen(true); trackUsage('reference_open'); }
-    }}><span aria-hidden="true">官网<br />正价参考</span></button>
-    <ModalDialog id="official-reference-dialog" className="official-reference-dialog" open={open} onClose={close} aria-labelledby="official-reference-title">
+    }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M3 4h18v16H3zM3 9h18M8 4v5M16 4v5M7 13h4M7 16h7" /></svg><span aria-hidden="true">官网价格</span></button>;
+  return <>
+    {target === undefined ? button : target && createPortal(button, target)}
+    {createPortal(<ModalDialog id="official-reference-dialog" className="official-reference-dialog" open={open} onClose={close} aria-labelledby="official-reference-title">
       <header className="reference-dialog-header"><div><h2 id="official-reference-title">官网正价参考</h2><p>选套餐，比较各地区官方价</p></div><button type="button" className="reference-close" aria-label="关闭官网正价参考" onClick={close}>×</button></header>
       {open && <ReferencePanel catalog={catalog} setCatalog={setCatalog} selection={selection} setSelection={setSelection} />}
-    </ModalDialog>
+    </ModalDialog>, document.body)}
   </>;
 }

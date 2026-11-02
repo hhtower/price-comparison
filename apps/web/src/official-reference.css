@@ -1,7 +1,8 @@
+.official-reference-slot { display: inline-flex; flex-shrink: 0; }
 .official-reference-trigger {
-  position: fixed; z-index: 30; right: 18px; top: 48%; display: inline-flex; align-items: center; justify-content: center;
-  box-sizing: border-box; width: 68px; height: 68px; border: 1px solid #b9d5cf; border-radius: 50%; padding: 0; background: #fff; color: #175e53;
-  box-shadow: 0 4px 20px #183c3321; font-family: inherit; font-size: 12px; font-weight: 600; line-height: 1.5; cursor: pointer; text-align: center;
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; gap: 6px;
+  box-sizing: border-box; min-height: 44px; border: 1px solid #dce5e5; border-radius: 8px; padding: 8px 10px; background: #fff; color: #175e53;
+  font-family: inherit; font-size: 12px; font-weight: 600; line-height: 1.5; white-space: nowrap; cursor: pointer;
 }
 .official-reference-trigger > span { pointer-events: none; }
 .official-reference-trigger:hover { border-color: #277e6c; background: #f4faf7; }
@@ -91,7 +92,6 @@
   .reference-price-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
 }
 @media (max-width: 720px) {
-  .official-reference-trigger { top: auto; bottom: calc(20px + env(safe-area-inset-bottom)); right: 14px; width: 64px; height: 64px; font-size: 11px; }
   .official-reference-dialog { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border: 0; border-radius: 0; }
   .reference-dialog-header { padding: calc(18px + env(safe-area-inset-top)) 18px 17px; }
   .reference-dialog-header h2 { font-size: 21px; }

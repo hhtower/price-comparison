@@ -7,13 +7,40 @@ test('mobile brand keeps a readable minimum height', () => {
   expect(brand).toMatch(/min-height:\s*44px/u);
 });
 
-test('mobile catalog keeps the shared sticky search panel instead of disabling it', () => {
+test('catalog keeps the compact search toolbar opaque and sticky', () => {
   const shared = readFileSync('apps/web/src/styles.css', 'utf8');
-  expect(shared).toMatch(/\.compact-catalog \.search-panel\{position:sticky;top:0;/u);
-  const catalog = readFileSync('apps/web/src/public-catalog.css', 'utf8');
-  const overrides = [...catalog.matchAll(/\.compact-catalog \.search-panel\s*\{([^}]+)\}/gu)];
-  for (const [, rule] of overrides) expect(rule).not.toMatch(/position:\s*(static|relative)/u);
-  expect(overrides.some(([, rule]) => /background:\s*var\(--catalog-bg\)/u.test(rule))).toBe(true);
+  const css = readFileSync('apps/web/src/community.css', 'utf8');
+  const toolbar = css.match(/\.compact-catalog \.catalog-sticky-header\s*\{([^}]+)\}/u)?.[1];
+  expect(toolbar).toMatch(/position:\s*sticky/u);
+  expect(toolbar).toMatch(/top:\s*0/u);
+  expect(toolbar).toMatch(/background:\s*var\(--catalog-bg\)/u);
+  expect(shared).toMatch(/\.compact-catalog \.search-panel\{display:grid;/u);
+});
+
+test.each([
+  ['public-catalog.css', 'styles.css'],
+  ['styles.css', 'public-catalog.css'],
+])('disclaimer row keeps the catalog width and centering when %s loads before %s', (first, second) => {
+  const style = document.createElement('style');
+  style.textContent = [first, second].map(file => readFileSync(`apps/web/src/${file}`, 'utf8')).join('\n');
+  const catalog = document.createElement('main');
+  catalog.className = 'public-layout compact-catalog';
+  const disclaimer = document.createElement('div');
+  disclaimer.className = 'catalog-notice';
+  catalog.append(disclaimer);
+  document.head.append(style);
+  document.body.append(catalog);
+  try {
+    const computed = getComputedStyle(disclaimer);
+    expect(computed.maxWidth).toBe('1200px');
+    expect(computed.width).toBe('100%');
+    expect(computed.marginLeft).toBe('auto');
+    expect(computed.marginRight).toBe('auto');
+    expect(computed.marginTop).toBe('0px');
+  } finally {
+    catalog.remove();
+    style.remove();
+  }
 });
 
 test('mobile quotes use flat rows and a price/action grid rather than wrapping the whole action row', () => {

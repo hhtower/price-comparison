@@ -164,7 +164,7 @@ function IpTool({ visible, onPhaseChange }) {
   </div>;
 }
 
-export default function QualityToolsPage() {
+export default function QualityToolsPage({ referenceRef }) {
   const [tool, setTool] = useState('ai');
   const [aiPhase, setAiPhase] = useState('idle');
   const [ipPhase, setIpPhase] = useState('idle');
@@ -184,7 +184,7 @@ export default function QualityToolsPage() {
     return () => controller.abort();
   }, [catalogAttempt]);
   return <main className="quality-page">
-    <header className="quality-header"><div className="brand-block"><Brand /><p className="brand-disclaimer">检测结果仅供参考</p></div><nav aria-label="检测工具导航"><a href="/">首页</a><a className="is-active" href="/tools" aria-current="page">检测工具</a></nav></header>
+    <header className="quality-header"><div className="brand-block"><Brand /><p className="brand-disclaimer">检测结果仅供参考</p></div><nav aria-label="检测工具导航"><a href="/">首页</a><a className="is-active" href="/tools" aria-current="page">检测工具</a><span className="official-reference-slot" ref={referenceRef} /></nav></header>
     <div className="quality-scroll">
       <h1 className="quality-sr-only">{TOOL_LABELS[tool]}</h1>
       <div className="quality-toolbar">

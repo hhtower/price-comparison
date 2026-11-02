@@ -160,7 +160,7 @@ test('keeps visible offer facts accessible beside an empty tag row', async () =>
 test('keeps inline filters below the sticky toolbar without scrolling an already visible panel', async () => {
   mockApi(); render(<App />);
   await screen.findByRole('link', { name: product.name });
-  const toolbar = screen.getByRole('region', { name: '搜索和筛选' });
+  const toolbar = screen.getByRole('region', { name: '搜索和筛选' }).closest('.catalog-sticky-header');
   const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect');
   const scrollBy = vi.spyOn(window, 'scrollBy').mockImplementation(() => {});
   const focus = vi.spyOn(HTMLElement.prototype, 'focus');
@@ -533,6 +533,40 @@ test('restores list scroll only after the virtual rows have measurable height', 
   expect(scrollTo).not.toHaveBeenCalled();
   await act(async () => measurement.callback(1500));
   await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 250));
+});
+
+test('product pages keep official prices accessible from the product header', async () => {
+  window.history.replaceState({}, '', '/products/42');
+  mockApi(); render(<App />);
+  await screen.findByRole('heading', { level: 1, name: product.name });
+  expect(screen.getByRole('button', { name: '官网正价参考' }).closest('header')).toHaveClass('product-page-heading');
+});
+
+test('out-of-range product pages keep the official price entry', async () => {
+  window.history.replaceState({}, '', '/products/42?page=4');
+  mockApi(); render(<App />);
+  await screen.findByRole('heading', { name: '商品分页不存在' });
+  expect(screen.getByRole('button', { name: '官网正价参考' })).toBeInTheDocument();
+});
+
+test('an open official price panel survives product loading', async () => {
+  window.history.replaceState({}, '', '/products/42');
+  mockApi();
+  const original = fetch;
+  let resolveProduct;
+  vi.stubGlobal('fetch', vi.fn((url, options) => {
+    if (url === '/api/catalog/products/42') return new Promise(resolve => { resolveProduct = resolve; });
+    if (url === '/api/official-reference/catalog') return Promise.resolve(Response.json({ apps: [] }));
+    return original(url, options);
+  }));
+  render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: '官网正价参考' }));
+  await screen.findByRole('dialog', { name: '官网正价参考' });
+  await act(async () => resolveProduct(Response.json(product)));
+  await screen.findByRole('heading', { level: 1, name: product.name });
+  expect(screen.getByRole('dialog', { name: '官网正价参考' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '关闭官网正价参考' }));
+  expect(screen.getByRole('button', { name: '官网正价参考' })).toHaveFocus();
 });
 
 test('visibility restoration refreshes observed quotes without changing their price status', async () => {

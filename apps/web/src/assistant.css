@@ -140,6 +140,5 @@
   .assistant-embedded .assistant-conversation-header{margin:0 -12px 8px;padding:0 12px}
   .assistant-embedded .assistant-thread{min-height:0}
   .assistant-launcher{right:14px;bottom:calc(14px + env(safe-area-inset-bottom))}
-  body:has(.assistant-launcher) .official-reference-trigger{bottom:calc(78px + env(safe-area-inset-bottom))}
 }
 @media(max-height:500px){.assistant-welcome{padding:12px 0;flex-basis:112px}.assistant-welcome h2{margin-bottom:12px}}

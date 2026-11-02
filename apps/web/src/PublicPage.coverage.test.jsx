@@ -23,7 +23,7 @@ function mockCatalog(coverage) {
   return calls;
 }
 
-test('measures the search toolbar, updates the sticky offset on resize and disconnects on unmount', async () => {
+test('measures only the search toolbar and updates the sticky offset on resize', async () => {
   const observers = [];
   vi.stubGlobal('ResizeObserver', class {
     constructor(callback) { this.callback = callback; observers.push(this); }
@@ -33,14 +33,20 @@ test('measures the search toolbar, updates the sticky offset on resize and disco
   });
   let height = 138;
   const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
-    return { top: 0, left: 0, bottom: 0, right: 0, width: 390, height: this.matches('.search-panel') ? height : 0 };
+    return { top: 0, left: 0, bottom: 0, right: 0, width: 390, height: this.matches('.catalog-sticky-header') ? height : 0 };
   });
   try {
     mockCatalog({ shopCount: 20, productCount: 100 });
     const mounted = renderPage();
-    const toolbar = screen.getByRole('region', { name: '搜索和筛选' });
-    const catalog = toolbar.closest('.compact-catalog');
+    const search = screen.getByRole('region', { name: '搜索和筛选' });
+    const catalog = search.closest('.compact-catalog');
     await waitFor(() => expect(catalog.style.getPropertyValue('--catalog-toolbar-height')).toBe('138px'));
+    const toolbar = search.closest('.catalog-sticky-header');
+    const header = screen.getByRole('link', { name: '知途 · 拾价' }).closest('header');
+    expect(toolbar).not.toContainElement(header);
+    expect(within(header).getByRole('button', { name: '提交商铺' })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: '免责声明' })).toBeInTheDocument();
+    expect(screen.queryByText(/本站展示第三方商铺报价/)).not.toBeInTheDocument();
     const observer = observers.find(instance => instance.observe.mock.calls.some(([element]) => element === toolbar));
     expect(observer).toBeDefined();
     expect(observer.observe).toHaveBeenCalledWith(toolbar, { box: 'border-box' });
@@ -52,6 +58,31 @@ test('measures the search toolbar, updates the sticky offset on resize and disco
   } finally {
     bounds.mockRestore();
   }
+});
+
+test('shows a small home link only while the complete brand header is out of view', async () => {
+  const observers = [];
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe(target) { this.target = target; }
+    disconnect = vi.fn();
+  });
+  window.history.replaceState({}, '', '/?q=Plus');
+  mockCatalog({ shopCount: 20, productCount: 100 });
+  const mounted = renderPage();
+  await screen.findByRole('heading', { name: /可比价商品/ });
+  const header = screen.getByRole('link', { name: '知途 · 拾价' }).closest('header');
+  const observer = observers.find(instance => instance.target === header);
+  expect(screen.queryByRole('link', { name: '返回首页' })).not.toBeInTheDocument();
+  await act(async () => observer.callback([{ isIntersecting: false }]));
+  const home = screen.getByRole('link', { name: '返回首页' });
+  expect(home).toHaveAttribute('href', '/');
+  expect(home.closest('.catalog-sticky-header')).toContainElement(screen.getByRole('textbox', { name: '搜索商品' }));
+  expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Plus');
+  await act(async () => observer.callback([{ isIntersecting: true }]));
+  expect(screen.queryByRole('link', { name: '返回首页' })).not.toBeInTheDocument();
+  mounted.unmount();
+  expect(observer.disconnect).toHaveBeenCalledOnce();
 });
 
 test('shows static collection scale beside the brand with compact numbers and no explanation controls', async () => {

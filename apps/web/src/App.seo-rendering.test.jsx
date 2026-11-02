@@ -22,6 +22,7 @@ test.each([true, false, 'error'])('homepage icon navigation follows assistant st
   expect(container.querySelector('a[href="/assistant"]')).toBeNull();
   await act(async () => { resolveStatus(enabled === 'error' ? new Response(null, { status: 503 }) : Response.json({ enabled })); });
   const header = container.querySelector('.public-header-actions');
+  expect(screen.getByRole('button', { name: '官网正价参考' }).closest('.public-header-actions')).toBe(header);
   const assistant = header.querySelector('a[href="/assistant"]');
   expect(Boolean(assistant)).toBe(enabled === true);
   expect(Boolean(screen.queryByRole('button', { name: '打开导购助手' }))).toBe(enabled === true);
@@ -78,12 +79,13 @@ test('real client retains readable quotes after replacing server HTML under its 
   }));
   render(<VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 300 }}><App /></VirtuosoMockContext.Provider>, { container });
   expect(await screen.findByText('ChatGPT Plus')).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: /查看选购说明/ })).toHaveAttribute('href', '/guide');
-  const inlineGuide = container.querySelector('.purchase-guide-brief');
-  expect(inlineGuide).toHaveTextContent('第一次购买？');
+  expect(screen.getByRole('link', { name: '选购指南 →' })).toHaveAttribute('href', '/guide');
+  const inlineGuide = container.querySelector('.catalog-notice');
+  expect(inlineGuide).toHaveTextContent('本站不参与交易');
   expect(inlineGuide.querySelector('ol')).toBeNull();
   expect(inlineGuide.querySelector('h2')).toBeNull();
   expect(inlineGuide.querySelector('details')).toBeNull();
+  expect(inlineGuide.closest('header')).toHaveClass('community-header');
   expect(inlineGuide.querySelector('a')).toHaveAttribute('href', '/guide');
   expect(container.querySelectorAll('a[href="/guide"]')).toHaveLength(1);
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();

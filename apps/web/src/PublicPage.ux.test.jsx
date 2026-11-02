@@ -40,6 +40,41 @@ function mount() {
   return render(<VirtuosoMockContext.Provider value={{ viewportHeight: 3000, itemHeight: 300 }}><PublicPage /></VirtuosoMockContext.Provider>);
 }
 
+test('keeps a compact disclaimer below the brand and opens its original wording in a dismissible dialog', async () => {
+  window.history.replaceState({}, '', '/?q=Plus&platform=openai');
+  const user = userEvent.setup();
+  mount();
+  await screen.findByRole('heading', { name: /ChatGPT Plus/ });
+  const trigger = screen.getByRole('button', { name: '免责声明', exact: true });
+  const notice = trigger.closest('.catalog-notice');
+  expect(within(trigger.closest('header')).getByRole('link', { name: '知途 · 拾价' })).toBeInTheDocument();
+  expect(notice).toHaveTextContent('本站不参与交易');
+  expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('dialog', { name: '免责声明' })).not.toBeInTheDocument();
+  const original = [
+    '本站展示第三方商铺报价，信息仅供比较参考。价格、库存、商品内容及交易条件可能变化，请在下单前以商家页面的实际信息为准。',
+    '本站不参与交易，交易与售后请联系商家。发现价格不符、链接失效或可疑商品，可在对应报价下方举报。',
+  ];
+  for (const text of original) expect(screen.queryByText(text, { exact: true })).not.toBeInTheDocument();
+  const guide = within(notice).getByRole('link', { name: '选购指南 →' });
+  fireEvent.contextMenu(guide);
+  expect(new URL(guide.href).searchParams.get('returnTo')).toBe(window.location.pathname + window.location.search);
+  await user.click(trigger);
+  const dialog = screen.getByRole('dialog', { name: '免责声明' });
+  expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  expect(notice).not.toContainElement(dialog);
+  for (const text of original) expect(within(dialog).getByText(text, { exact: true })).toBeVisible();
+  expect(within(dialog).getByRole('button', { name: '关闭免责声明' })).toHaveFocus();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog', { name: '免责声明' })).not.toBeInTheDocument();
+  expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  expect(trigger).toHaveFocus();
+  await user.click(trigger);
+  await user.click(screen.getByRole('button', { name: '关闭免责声明' }));
+  expect(screen.queryByRole('dialog', { name: '免责声明' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});
+
 test('detail search and sort apply directly while filter drafts stay isolated', async () => {
   mount();
   fireEvent.click(await screen.findByRole('button', { name: '15 条报价' }));

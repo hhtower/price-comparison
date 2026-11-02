@@ -2,8 +2,12 @@ import React from 'react';
 import { purchaseGuideHref, refreshPurchaseGuideHref } from './purchase-guide-navigation.js';
 import { PURCHASE_GUIDE_CONTENT as guide } from '@price-comparison/catalog/purchase-guide-content';
 
+export function PurchaseGuideLink({ children }) {
+  return <a href={purchaseGuideHref()} onClick={refreshPurchaseGuideHref} onAuxClick={refreshPurchaseGuideHref} onContextMenu={refreshPurchaseGuideHref}>{children}</a>;
+}
+
 export default function PurchaseGuide({ full = false }) {
-  if (!full) return <p className="purchase-guide-brief">第一次购买？<a href={purchaseGuideHref()} onClick={refreshPurchaseGuideHref} onAuxClick={refreshPurchaseGuideHref} onContextMenu={refreshPurchaseGuideHref}>查看选购说明 →</a></p>;
+  if (!full) return <p className="purchase-guide-brief">第一次购买？<PurchaseGuideLink>查看选购说明 →</PurchaseGuideLink></p>;
   return <div className="purchase-guide-content">
     <div className="guide-introduction"><p className="guide-headline">{guide.headline}</p><p>{guide.introduction}</p></div>
     <h2 id="guide-scenarios">{guide.scenariosTitle}</h2>

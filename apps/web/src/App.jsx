@@ -40,6 +40,7 @@ function currentRoute() {
 export default function App() {
   const [route, setRoute] = useState(currentRoute);
   const [assistantEnabled, setAssistantEnabled] = useState(false);
+  const [referenceTarget, setReferenceTarget] = useState(null);
   const [catalogPlatform, setCatalogPlatform] = useState(() => new URLSearchParams(window.location.search).get('platform'));
   useEffect(() => {
     const onPopState = () => setRoute(currentRoute());
@@ -60,9 +61,9 @@ export default function App() {
   if (route === 'admin') return <AdminRouteBoundary><Suspense fallback={<main className="route-state" role="status">正在加载管理端…</main>}><AdminPage /></Suspense></AdminRouteBoundary>;
   if (route === 'assistant') return <Suspense fallback={<AssistantLoading />}><AssistantPage /></Suspense>;
   return <>
-    {route === 'guide' ? <PurchaseGuidePage /> : route === 'tools' ? <QualityToolsPage />
-      : <PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} onPlatformChange={setCatalogPlatform} assistantEnabled={assistantEnabled} />}
-    {route !== 'guide' && <OfficialReference />}
+    {route === 'guide' ? <PurchaseGuidePage /> : route === 'tools' ? <QualityToolsPage referenceRef={setReferenceTarget} />
+      : <PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} onPlatformChange={setCatalogPlatform} assistantEnabled={assistantEnabled} referenceRef={setReferenceTarget} />}
+    {route !== 'guide' && <OfficialReference target={referenceTarget} />}
     <AssistantWidget catalogPlatform={route === 'public' ? catalogPlatform : null} onEnabledChange={setAssistantEnabled} />
   </>;
 }

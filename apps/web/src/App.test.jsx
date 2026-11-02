@@ -20,6 +20,7 @@ test('tools route preserves the active tool title on mount and keyboard switchin
   window.history.replaceState({}, '', '/tools');
   render(<App />);
   expect(document.title).toBe('知途 · 拾价 · AI检测');
+  expect(screen.getByRole('button', { name: '官网正价参考' }).closest('nav')).toHaveAttribute('aria-label', '检测工具导航');
   const aiTab = screen.getByRole('tab', { name: 'AI检测' });
   const ipTab = screen.getByRole('tab', { name: 'IP检测' });
   aiTab.focus();
@@ -38,7 +39,6 @@ test('public route stays usable before the admin chunk loads and history navigat
   render(<App />);
   expect(screen.getByText('公开报价页面')).toBeInTheDocument();
   expect(document.body).toHaveClass('public-shell');
-  expect(screen.getByRole('button', { name: '官网正价参考' })).toBeInTheDocument();
 
   window.history.pushState({}, '', '/admin/');
   fireEvent(window, new PopStateEvent('popstate'));

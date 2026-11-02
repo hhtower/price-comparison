@@ -133,6 +133,39 @@ test('mobile platform picker applies immediately, preserves search and sorting, 
   await waitFor(() => expect(window.location.search).not.toContain('platform='));
 });
 
+test.each(['desktop', 'mobile'])('%s category changes return to the top while reselecting the active category keeps the position', async mode => {
+  const user = userEvent.setup();
+  const scrollTo = vi.fn();
+  vi.stubGlobal('scrollTo', scrollTo);
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: mode === 'desktop', addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+  window.history.replaceState({}, '', '/?platform=anthropic');
+  let resolveGoogle;
+  const catalog = platform => jsonResponse({ total: 1, platformFacets: ['anthropic', 'google'],
+    items: [{ id: platform, name: platform === 'google' ? 'Google 分类商品' : 'Claude 分类商品', offers: [] }] });
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname !== '/api/catalog') return jsonResponse({});
+    if (url.searchParams.get('platform') === 'google') return new Promise(resolve => { resolveGoogle = resolve; });
+    return catalog('anthropic');
+  }));
+  render(<PublicPage />);
+  await screen.findByRole('heading', { name: /^Claude 分类商品/ });
+  const selectCategory = async name => {
+    if (mode === 'mobile') await user.click(screen.getByRole('button', { name: /^选择平台：/ }));
+    await user.click(screen.getByRole('button', { name, exact: true }));
+  };
+  await selectCategory('Claude');
+  expect(scrollTo).not.toHaveBeenCalled();
+  await selectCategory('Gemini / Google');
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith(0, 0);
+  await act(async () => resolveGoogle(catalog('google')));
+  await screen.findByRole('heading', { name: /^Google 分类商品/ });
+  scrollTo.mockClear();
+  await selectCategory('Claude');
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith(0, 0);
+  await screen.findByRole('heading', { name: /^Claude 分类商品/ });
+});
+
 test('mobile platform picker cancels without changing selection and closes when switching to desktop', async () => {
   const user = userEvent.setup();
   let onChange;
@@ -782,7 +815,9 @@ test('filters one standard product card by all selected tags', async () => {
       return jsonResponse({ total: 1, platformFacets: ['openai'], tagFacets: [], items: [{ id: 'sp-1', name: 'ChatGPT Plus', platform: 'openai', offers: [{ productId: '42', shopId: '7', name: 'Plus 报价', shop: '可信店', price: '14.30', currency: 'CNY', independentShop: true, productUrl: 'https://example.com/plus', capturedAt: '2026-09-22T08:00:00Z', tags: [] }] }] });
     }));
     render(<PublicPage />);
+    await user.click(screen.getByRole('button', { name: '免责声明', exact: true }));
     expect(await screen.findByText(/本站展示第三方商铺报价/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '关闭免责声明' }));
     await user.click(await screen.findByRole('button', { name: '商品说明' }));
     expect(screen.getByRole('dialog', { name: 'Plus 报价' })).toHaveTextContent('自建站，风险相对更高');
     await user.click(within(screen.getByRole('dialog', { name: 'Plus 报价' })).getByRole('button', { name: '举报此报价' }));
