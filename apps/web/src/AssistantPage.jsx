@@ -425,7 +425,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
       {notice}
       <ThreadPrimitive.Root className={'assistant-thread' + (!started ? ' assistant-thread-empty' : '')}>
         {!started && <AssistantWelcome disabled={blocked} onStart={sendOption} />}
-        <ThreadPrimitive.Viewport className="assistant-viewport" turnAnchor="top">
+        <ThreadPrimitive.Viewport className="assistant-viewport" turnAnchor="top" autoScroll>
           <ThreadPrimitive.Messages components={{ UserMessage: Message, AssistantMessage: Message }} />
           <RestoredRunStatus />
         </ThreadPrimitive.Viewport>
