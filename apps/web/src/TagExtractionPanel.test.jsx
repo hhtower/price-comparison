@@ -465,10 +465,10 @@ test('刷新结果保留当前展开依据并使收起的旧依据缓存失效',
   expect(await screen.findByText('输入指纹：audit-3-1')).toBeInTheDocument();
 });
 
-test('标签抽取首页只展示监控与最近任务，三步流程和结果统计不重复', async () => {
+test('标签抽取看板只汇总当前执行任务，不显示历史覆盖统计', async () => {
   const calls = installApi({ handle(call, job) {
     if (call.path.endsWith('task-queue')) return Response.json({ items: [job], summary: {
-      total: 12, pendingProducts: 30, queued: 3, running: 1, reviewProducts: 2, failedProducts: 1, coveredProducts: 20,
+      total: 6, pendingProducts: 30, queued: 3, running: 1, paused: 2, reviewProducts: 2, failedProducts: 1, coveredProducts: 20,
       currentReasons: { provider_error: 1 },
     } });
     if (call.path.endsWith('/jobs/8')) return Response.json({ job, progress: {
@@ -481,7 +481,12 @@ test('标签抽取首页只展示监控与最近任务，三步流程和结果�
   render(<TagExtractionPanel shops={shops} />);
   const monitor = screen.getByRole('region', { name: '标签抽取监控' });
   expect(await within(monitor).findByText('30')).toBeInTheDocument();
+  expect(monitor).toHaveTextContent('当前任务6');
   expect(monitor).toHaveTextContent('排队任务3');
+  expect(monitor).toHaveTextContent('暂停任务2');
+  expect(within(monitor).getAllByRole('term').map(term => term.textContent))
+    .toEqual(['当前任务', '排队任务', '运行任务', '暂停任务', '待处理商品']);
+  expect(calls.filter(call => call.path.endsWith('task-queue')).every(call => call.query.get('status') === 'unfinished')).toBe(true);
   const overview = await screen.findByRole('region', { name: '标签任务运行概览' });
   expect(await within(overview).findByRole('progressbar', { name: '标签商品处理进度' })).toHaveAttribute('value', '2');
   expect(within(overview).getByRole('list', { name: '标签抽取阶段' })).toHaveTextContent('提取标签');
@@ -492,6 +497,31 @@ test('标签抽取首页只展示监控与最近任务，三步流程和结果�
   expect(screen.queryByRole('combobox', { name: '店铺筛选' })).not.toBeInTheDocument();
   expect(screen.queryByText(/标签数量按已记录审计结果统计/)).not.toBeInTheDocument();
   expect(calls.some(call => call.path.endsWith('/tag-results'))).toBe(false);
+});
+
+test('当前任务结束后看板归零并清除运行概览，历史记录仍可单独查看', async () => {
+  let finished = false;
+  const calls = installApi({ state: 'running', handle(call, job) {
+    if (call.path.endsWith('task-queue')) {
+      const activeOnly = call.query.get('status') === 'unfinished';
+      return Response.json({
+        items: activeOnly && finished ? [] : [{ ...job, status: finished ? 'succeeded' : 'running' }],
+        summary: { total: activeOnly && finished ? 0 : 1, queued: 0, running: finished ? 0 : 1, paused: 0, pendingProducts: finished ? 0 : 2 },
+      });
+    }
+  } });
+  const user = userEvent.setup();
+  const panel = render(<TagExtractionPanel shops={shops} />);
+  await screen.findByRole('button', { name: '查看标签任务 #8' });
+  finished = true;
+  await user.click(screen.getByRole('button', { name: '刷新标签状态' }));
+  expect(await screen.findByText('暂无执行中的标签抽取任务')).toBeInTheDocument();
+  const monitor = screen.getByRole('region', { name: '标签抽取监控' });
+  expect(within(monitor).getAllByRole('definition').every(value => value.textContent === '0')).toBe(true);
+  expect(screen.queryByRole('region', { name: '标签任务运行概览' })).not.toBeInTheDocument();
+  panel.rerender(<TagExtractionPanel shops={shops} view="history" />);
+  expect(await screen.findByRole('button', { name: '查看标签任务 #8' })).toBeInTheDocument();
+  expect(calls.filter(call => call.path.endsWith('task-queue')).at(-1).query.get('status')).toBe('all');
 });
 
 test('监控统计和最近任务不继承记录页的店铺范围', async () => {
@@ -679,7 +709,7 @@ test('关闭标签抽取后禁用创建，历史与商品依据仍可查看', as
   render(<TagExtractionPanel shops={shops} enabled={false} />);
   expect(screen.getByText(/标签抽取功能未启用/)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '新建标签任务' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: '创建全部未完成任务' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '批量新建标签任务' })).toBeDisabled();
   await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
   await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
   expect(await screen.findByText('冻结输入 JSON')).toBeInTheDocument();
@@ -1072,12 +1102,13 @@ test('旧版本任务显示阻塞原因，版本信息默认折叠', async () =>
   expect(disclosure).not.toHaveAttribute('open');
 });
 
-test('一键创建全部未完成任务不等待证据预览', async () => {
+test('批量新建任务明确全站选取范围且不等待证据预览', async () => {
   const calls = installApi({ handle(call) {
     if (call.path === '/api/ai/tag-jobs') return Response.json({ id: '9', phase: 'preparing' });
   } });
   const user = userEvent.setup(); render(<TagExtractionPanel shops={shops} />);
-  await user.click(screen.getByRole('button', { name: '创建全部未完成任务' }));
+  await user.click(screen.getByRole('button', { name: '批量新建标签任务' }));
+  expect(screen.getByText(/为全站符合条件、需要抽取标签的商品创建新任务/)).toBeInTheDocument();
   const dialog = screen.getByRole('dialog');
   const create = within(dialog).getByRole('button', { name: '确认创建标签任务' });
   expect(create).toBeDisabled();
@@ -1101,7 +1132,7 @@ test('全部任务网络重试复用请求 ID', async () => {
     if (call.path === '/api/ai/tag-jobs') return ++submissions === 1 ? Response.json({error:{message:'网络中断'}},{status:503}) : Response.json({id:'9'});
   } });
   const user = userEvent.setup(); render(<TagExtractionPanel shops={shops} />);
-  await user.click(screen.getByRole('button', { name: '创建全部未完成任务' }));
+  await user.click(screen.getByRole('button', { name: '批量新建标签任务' }));
   await user.click(screen.getByRole('checkbox', { name: /我确认可能消耗模型额度/ }));
   await user.click(screen.getByRole('button', { name: '确认创建标签任务' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('网络中断');

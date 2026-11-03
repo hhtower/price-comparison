@@ -100,27 +100,32 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
   };
 }
 
-/** Job summaries follow the list filter; pending products match the actionable all-pending scope. */
+/** The active board counts task members; history retains current product coverage diagnostics. */
 async function readTagTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueFilter) {
  const status=input.status??'unfinished';
  if(!['unfinished','attention','all'].includes(status)) throw new DomainValidationError('INVALID_TASK_FILTER','任务筛选无效');
  const page=normalizePageRequest(input);
  const needsAttention=sql<boolean>`(status='failed' or current_attention>0 or (not configuration_current and status in ('queued','running','paused','ready')))`;
  const result=await sql<{items: Array<Record<string,unknown>>;summary: Record<string,unknown>}>`
- with eligible_products as (
+ with ${status==='unfinished'?sql``:sql`eligible_products as (
  select p.id from products p join shops s on s.id=p.shop_id
  where p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked
  ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`}
  and not ${currentManualDecision}
  and not exists(select 1 from standard_product_members a where a.product_id=p.id and a.assignment_source='human')
  and exists(select 1 from standard_product_members a join standard_products standard on standard.id=a.standard_product_id where a.product_id=p.id and a.assignment_source='ai' and a.publication_state='published' and standard.verification_state='verified' and standard.merged_into_id is null)
- ), current_members as (
+ ),`} current_members as (
   select m.job_id,m.product_id,m.status,j.status job_status,
     m.output->>'outcome' outcome,
     coalesce(m.output->>'reasonCode',m.reason_code,'unrecorded') reason,
     m.output is null output_missing,
     jsonb_array_length(coalesce(m.output->'rejectedTags','[]'::jsonb))>0 has_rejected
-   from ai_job_input_members m join ai_jobs j on j.id=m.job_id
+  from ai_job_input_members m join ai_jobs j on j.id=m.job_id
+ ${status==='unfinished'?sql`
+  where j.job_type='tag_extraction' and ${unfinished}
+    and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION}
+    and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
+ `:sql`
    join products p on p.id=m.product_id join shops s on s.id=p.shop_id
   where j.job_type='tag_extraction' ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`} and m.content_version=p.content_version
    and m.standardization_revision=p.standardization_revision and m.fingerprint=p.content_fingerprint
@@ -130,7 +135,7 @@ async function readTagTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueFilter)
    and not ${currentManualDecision}
    and not exists(select 1 from standard_product_members a where a.product_id=p.id and a.assignment_source='human')
    and exists(select 1 from standard_product_members a join standard_products standard on standard.id=a.standard_product_id where a.product_id=p.id and a.assignment_source='ai' and a.publication_state='published' and standard.verification_state='verified' and standard.merged_into_id is null)
-   and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type='tag_extraction' and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentTagMemberSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${IDENTITY_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})
+   and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type='tag_extraction' and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentTagMemberSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${IDENTITY_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`}
  ), current_counts as (
   select job_id,
     count(*) filter(where status in ('queued','processing'))::int current_pending,
@@ -148,6 +153,7 @@ async function readTagTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueFilter)
     coalesce(c.covered_products,0) covered_products,coalesce(c.review_products,0) review_products,coalesce(c.failed_products,0) failed_products
   from ai_jobs j left join shops s on s.id=j.scope_shop_id
     left join current_counts c on c.job_id=j.id where j.job_type='tag_extraction'
+   ${status==='unfinished'?sql`and ${unfinished}`:sql``}
    ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or j.id in(select m.job_id from ai_job_input_members m join products p on p.id=m.product_id where p.shop_id=${input.scopeShopId}))`}
  ), filtered as (select * from jobs where ${status==='unfinished'?sql`configuration_current and status in ('queued','running','paused','ready')`:status==='attention'?needsAttention:sql`true`}),
  page as (
@@ -158,10 +164,10 @@ async function readTagTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueFilter)
   from (select * from filtered where ${page.afterId===undefined?sql`true`:sql`id<${page.afterId}`} order by id desc limit ${page.limit+1}) j
  )
  select coalesce((select jsonb_agg(jsonb_build_object('id',id::text,'status',status,'phase',phase,'total',raw_count,'processed',member_processed,'remaining',current_pending,'unclassified',current_attention,'model',model,'jobType',job_type,'parentIdentityJobId',parent_identity_job_id::text,'retryOfJobId',retry_of_job_id::text,'sourceFetchRunId',source_fetch_run_id::text,'scopeShopId',scope_shop_id::text,'shopName',shop_name,'uniqueInputCount',unique_count,'pipelineVersions',pipeline_versions,'configurationCurrent',configuration_current,'inputBytes',input_bytes::text,'estimatedTokens',estimated_tokens::text,'createdAt',created_at,'finishedAt',finished_at) order by id desc) from page),'[]'::jsonb) items,
- (select jsonb_build_object('total',count(*),'unfinished',count(*) filter(where status in ('queued','running','paused','ready')),'queued',count(*) filter(where status='queued'),'running',count(*) filter(where status='running'),'paused',count(*) filter(where status in ('paused','ready')),'attention',count(*) filter(where ${needsAttention}),'pendingProducts',(select count(*) from eligible_products p
+ (select jsonb_build_object('total',count(*),'unfinished',count(*) filter(where status in ('queued','running','paused','ready')),'queued',count(*) filter(where status='queued'),'running',count(*) filter(where status='running'),'paused',count(*) filter(where status in ('paused','ready')),'attention',count(*) filter(where ${needsAttention}),'pendingProducts',${status==='unfinished'?sql`coalesce(sum(current_pending),0)`:sql`(select count(*) from eligible_products p
    where not exists(select 1 from current_members m where m.product_id=p.id and (
      (m.outcome in ('updated','unchanged','empty','review'))
-     or (m.job_status in ('queued','running','paused','ready') and m.status in ('queued','processing'))))),'pendingEvents',0,'currentReasons',(select coalesce(jsonb_object_agg(reason,n),'{}'::jsonb) from (select m.reason,count(*)::int n from current_members m where m.job_id in(select id from filtered) and m.status not in ('queued','processing') and (m.output_missing or m.outcome in ('review','failed','skipped','cancelled') or m.has_rejected) group by m.reason) reasons),
+     or (m.job_status in ('queued','running','paused','ready') and m.status in ('queued','processing')))))`},'pendingEvents',0,'currentReasons',(select coalesce(jsonb_object_agg(reason,n),'{}'::jsonb) from (select m.reason,count(*)::int n from current_members m where m.job_id in(select id from filtered) and m.status not in ('queued','processing') and (m.output_missing or m.outcome in ('review','failed','skipped','cancelled') or m.has_rejected) group by m.reason) reasons),
  'coveredProducts',coalesce(sum(covered_products),0),
  'reviewProducts',coalesce(sum(review_products),0),
  'failedProducts',coalesce(sum(failed_products),0)) from filtered) summary

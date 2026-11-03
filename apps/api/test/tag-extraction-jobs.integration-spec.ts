@@ -164,7 +164,37 @@ test('background bulk preparation plans unique inputs within published identity 
  await completeTagJob(job.id);
 });
 
-test('all-pending and tag queue pending counts use the latest current audited outcomes', async () => {
+test('active tag board counts only its task members regardless of history or current product eligibility', async () => {
+ const f = await fixture(4);
+ const shopId = f.products[0]!.shop_id;
+ const history = await db.transaction().execute(tx => createTagJob(tx, { productIds: [f.inputId], model: 'mock' }));
+ await db.updateTable('ai_jobs').set({ status: 'succeeded' }).where('id', '=', history.id).execute();
+ await db.updateTable('ai_job_input_members').set({ status: 'classified', output: jsonb({ outcome: 'review', rejectedTags: [] }) })
+  .where('job_id', '=', f.job.id).where('product_id', '=', f.inputId).execute();
+ await db.updateTable('ai_job_input_members').set({ status: 'processing' })
+  .where('job_id', '=', f.job.id).where('product_id', '=', f.products[1]!.id).execute();
+ await db.updateTable('products').set({ standardization_locked: true, content_version: 2n }).where('shop_id', '=', shopId).execute();
+ const queue = () => readAiTaskQueue(db, { jobType: 'tag_extraction', status: 'unfinished', scopeShopId: shopId });
+ const running = await queue();
+ assert.deepEqual(running.items.map(item => item.id), [String(f.job.id)]);
+ assert.equal(running.summary.total, 1);
+ assert.equal(running.summary.running, 1);
+ assert.equal(running.summary.pendingProducts, 3);
+ assert.equal(running.items[0]!.remaining, 3);
+ assert.equal(running.items[0]!.processed, 1);
+ for (const status of ['paused', 'ready'] as const) {
+  await db.updateTable('ai_jobs').set({ status }).where('id', '=', f.job.id).execute();
+  const paused = await queue();
+  assert.equal(paused.summary.paused, 1);
+  assert.equal(paused.summary.pendingProducts, 3);
+ }
+ await db.updateTable('ai_jobs').set({ status: 'succeeded' }).where('id', '=', f.job.id).execute();
+ const completed = await queue();
+ assert.deepEqual(completed.items, []);
+ for (const field of ['total', 'queued', 'running', 'paused', 'pendingProducts']) assert.equal(completed.summary[field], 0);
+});
+
+test('all-pending and historical tag queue coverage use the latest current audited outcomes', async () => {
  const f = await fixture(25);
  const ids = f.products.map(p => p.id);
  const success = { outcome: 'updated', rejectedTags: [] };
@@ -207,7 +237,7 @@ test('all-pending and tag queue pending counts use the latest current audited ou
  await db.insertInto('product_tags').values({ product_id: ids[21]!, name: 'warranty', value: 'covered' }).execute();
  for (const status of ['unfinished', 'attention', 'all']) {
    const queue = await readAiTaskQueue(db, { jobType: 'tag_extraction', scopeShopId: f.products[0]!.shop_id, status, limit: 1 });
-   assert.equal(queue.summary.pendingProducts, 14, status);
+   assert.equal(queue.summary.pendingProducts, status === 'unfinished' ? 2 : 14, status);
    if (queue.nextCursor) {
      const next = await readAiTaskQueue(db, { jobType: 'tag_extraction', scopeShopId: f.products[0]!.shop_id, status, limit: 1, cursor: queue.nextCursor });
      assert.deepEqual(next.summary, queue.summary);

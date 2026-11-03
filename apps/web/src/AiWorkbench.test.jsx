@@ -157,7 +157,7 @@ describe('AiWorkbench', () => {
     });
     render(<AiWorkbench shops={shops} />);
     await userEvent.setup().click(screen.getByRole('tab', { name: '标签抽取' }));
-    await screen.findByText('暂无标签抽取任务');
+    await screen.findByText('暂无执行中的标签抽取任务');
     const queueReads = calls.filter(call => call.path === '/api/admin/ai/task-queue');
     expect(queueReads.length).toBeGreaterThan(0);
     expect(queueReads.every(call => call.search.includes('jobType=tag_extraction'))).toBe(true);

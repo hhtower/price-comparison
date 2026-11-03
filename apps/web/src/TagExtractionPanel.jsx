@@ -183,7 +183,7 @@ function Audit({ data }) {
 export default function TagExtractionPanel({ shops, onProductsChanged, onRefreshRuntime, view = 'tasks', enabled = true }) {
   const isHistory = view === 'history';
   const [historyFilter, setHistoryFilter] = useState('all');
-  const filter = isHistory ? historyFilter : 'all';
+  const filter = isHistory ? historyFilter : 'unfinished';
   const [shop, setShop] = useState('');
   const [queue, setQueue] = useState(null);
   const [jobId, setJobId] = useState(null);
@@ -419,19 +419,19 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
           <div className="ai-standardization-heading"><h3>标签抽取监控</h3><span className={`ai-status-badge is-${enabled ? 'success' : 'attention'}`}>{enabled ? '已启用' : '已关闭'}</span></div>
           <div className="ai-header-actions">
             <button type="button" disabled={busy} aria-label="刷新标签状态" onClick={refresh}>刷新状态</button>
-            <button type="button" disabled={busy || !enabled} aria-label="创建全部未完成任务" onClick={() => run(openAllPending)}>全部待处理</button>
+            <button type="button" disabled={busy || !enabled} aria-label="批量新建标签任务" onClick={() => run(openAllPending)}>批量新建</button>
             <button type="button" className="primary" disabled={busy || !enabled} aria-label="新建标签任务" onClick={() => openCreate()}>新建任务</button>
           </div>
         </header>
         {!enabled ? <p className="ai-config-notice" role="status">标签抽取功能未启用，现有记录仍可查看。</p> : null}
         {!queue ? <p role="status">{error ? '标签状态暂不可用，请刷新重试。' : '正在读取标签任务…'}</p> : <Metrics values={{
-          待处理商品: queue.summary?.pendingProducts, 排队任务: queue.summary?.queued, 运行任务: queue.summary?.running,
-          待复核商品: queue.summary?.reviewProducts, 失败商品: queue.summary?.failedProducts, 已覆盖商品: queue.summary?.coveredProducts,
+          当前任务: queue.summary?.total, 排队任务: queue.summary?.queued, 运行任务: queue.summary?.running,
+          暂停任务: queue.summary?.paused, 待处理商品: queue.summary?.pendingProducts,
         }} />}
       </section>
       {!detailOpen && latest ? <TagTaskOverview snapshot={snapshot} item={latest} shops={shops} actions={
         <button type="button" disabled={busy} aria-label={`查看标签任务 #${latest.id}`} onClick={() => selectJob(latest.id)}>查看详情</button>
-      } /> : !detailOpen && queue ? <section className="ai-task-card"><EmptyState>暂无标签抽取任务</EmptyState></section> : null}
+      } /> : !detailOpen && queue ? <section className="ai-task-card"><EmptyState>暂无执行中的标签抽取任务</EmptyState></section> : null}
     </div> : <>
       <header className="ai-card-header">
         <div className="tag-panel-filters">
@@ -486,7 +486,8 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
       </div>
     </ModalDialog> : null}
     {dialog ? <ModalDialog open onClose={() => { if (!busy) { setDialog(null); invalidateDraft(); } }} aria-label="创建标签任务" className="management-dialog tag-create-dialog"><div className="dialog-body">
-      <h3>{dialog.allPending ? '创建全部未完成任务' : '创建标签任务'}</h3>
+      <h3>{dialog.allPending ? '批量新建标签任务' : '创建标签任务'}</h3>
+      {dialog.allPending ? <p>为全站符合条件、需要抽取标签的商品创建新任务。看板中的“待处理商品”仅统计当前已有任务。</p> : null}
       {!dialog.allPending ? <>
         <label>范围店铺<select disabled={busy} value={scopeShop} onChange={event => { setScopeShop(event.target.value); invalidateDraft(); }}><option value="">使用商品 ID</option>{shops?.items?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label>商品 ID（空格或逗号分隔）<textarea disabled={busy} value={ids} onChange={event => { setIds(event.target.value); invalidateDraft(); }} /></label>

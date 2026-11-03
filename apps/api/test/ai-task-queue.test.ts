@@ -38,3 +38,29 @@ for (const status of ['all', 'unfinished', 'attention']) {
     } finally { await database.destroy(); }
   });
 }
+
+test('active tag task summaries count unfinished task members without reading product coverage or historical outcomes', async () => {
+  const queries: CompiledQuery[] = [];
+  class Driver extends DummyDriver {
+    async acquireConnection(): Promise<any> {
+      return { executeQuery: async (query: CompiledQuery) => {
+        queries.push(query);
+        return { rows: [{ items: [], summary: { total: 0, pendingProducts: 0 } }] };
+      } };
+    }
+  }
+  const database = new Kysely<DatabaseSchema>({ dialect: {
+    createAdapter: () => new PostgresAdapter(), createDriver: () => new Driver(),
+    createIntrospector: db => new PostgresIntrospector(db), createQueryCompiler: () => new PostgresQueryCompiler(),
+  } });
+  try {
+    const result = await readAiTaskQueue(database, { jobType: 'tag_extraction', status: 'unfinished', limit: 1 });
+    assert.deepEqual(result.summary, { total: 0, pendingProducts: 0 });
+    assert.equal(queries.length, 1);
+    const query = queries[0]!.sql;
+    assert.doesNotMatch(query, /eligible_products|content_version|content_fingerprint|product_standardization_decisions|standard_product_members|from products/u);
+    assert.match(query, /where j\.job_type='tag_extraction' and j\.status in \('queued', 'running', 'paused', 'ready'\)/u);
+    assert.match(query, /'pendingProducts',coalesce\(sum\(current_pending\),0\)/u);
+    assert.match(query, /configuration_current and status in \('queued','running','paused','ready'\)/u);
+  } finally { await database.destroy(); }
+});
