@@ -415,8 +415,10 @@ export class AdminRepository {
 
   async listRunHistory(filter: RunHistoryListFilter = {}): Promise<CursorPage<AdminRunHistoryRow>> {
     const page = normalizePageRequest(filter);
-    let query = this.database
-      .selectFrom('fetch_runs')
+    let runs = this.database.selectFrom('fetch_runs');
+    if (filter.shopId !== undefined) runs = runs.where('fetch_runs.shop_id', '=', filter.shopId);
+    if (filter.status) runs = runs.where('fetch_runs.status', '=', filter.status);
+    let query = runs
       .leftJoin('shops', 'shops.id', 'fetch_runs.shop_id')
       .select([
         'fetch_runs.id', 'fetch_runs.shop_id', 'shops.name as shop_name',
@@ -428,13 +430,10 @@ export class AdminRepository {
       .orderBy('fetch_runs.id', 'desc')
       .limit(page.limit + 1);
 
-    if (filter.shopId !== undefined) query = query.where('fetch_runs.shop_id', '=', filter.shopId);
-    if (filter.status) query = query.where('fetch_runs.status', '=', filter.status);
     if (page.page !== undefined) {
       const [items, count] = await Promise.all([
         query.offset((page.page - 1) * page.limit).limit(page.limit).execute(),
-        query.clearSelect().clearOrderBy().clearLimit()
-          .select(({ fn }) => fn.countAll<string>().as('total')).executeTakeFirstOrThrow(),
+        runs.select(({ fn }) => fn.countAll<string>().as('total')).executeTakeFirstOrThrow(),
       ]);
       return { items, total: Number(count.total), page: page.page, pageSize: page.limit };
     }

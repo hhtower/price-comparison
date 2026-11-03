@@ -55,7 +55,21 @@ test('run history page numbers include the filtered total and use the same start
     assert.deepEqual(dataQuery.parameters, [7n, 'failed', 2, 2]);
     assert.match(countQuery.sql, /"fetch_runs"\."shop_id" = \$1 and "fetch_runs"\."status" = \$2/u);
     assert.deepEqual(countQuery.parameters, [7n, 'failed']);
-    assert.doesNotMatch(countQuery.sql, /limit|offset|order by/u);
+    assert.doesNotMatch(countQuery.sql, /limit|offset|order by|join|shops/u);
+  } finally { await f.database.destroy(); }
+});
+
+test('unfiltered run history counts only fetch runs so PostgreSQL can use an index-only scan', async () => {
+  const f = fixture([row(2n)], 1_280_000);
+  try {
+    const page = await new AdminRepository(f.database).listRunHistory({ page: 1, limit: 10 });
+    assert.equal(page.total, 1_280_000);
+    assert.equal(page.items[0]!.shop_name, 'History');
+    const dataQuery = f.queries.find(query => query.sql.includes('limit'))!;
+    const countQuery = f.queries.find(query => query.sql.includes('count(*)'))!;
+    assert.match(dataQuery.sql, /left join "shops"/u);
+    assert.equal(countQuery.sql, 'select count(*) as "total" from "fetch_runs"');
+    assert.deepEqual(countQuery.parameters, []);
   } finally { await f.database.destroy(); }
 });
 
