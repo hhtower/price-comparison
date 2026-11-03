@@ -90,10 +90,6 @@ docs/               Screenshots, shop scoring rules, and deployment notes
 
 See the [documentation index](docs/README.md) for more information. Report security issues as described in [SECURITY.md](SECURITY.md).
 
-## Acknowledgments
-
-[LINUX DO community](https://linux.do/)
-
 ## License
 
 [GNU GPL v3.0](LICENSE) (`GPL-3.0-only`). Commercial use is permitted. Distribution of this program or modified versions must comply with GPL requirements, including notices, corresponding source, and the same license. Third-party dependencies and materials retain their own licenses.

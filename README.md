@@ -90,10 +90,6 @@ docs/               产品截图、商铺评分规则与部署说明
 
 更多说明见 [文档索引](docs/README.md)，安全问题请按 [SECURITY.md](SECURITY.md) 反馈。
 
-## 致谢
-
-[LINUX DO 社区](https://linux.do/)
-
 ## 许可证
 
 [GNU GPL v3.0](LICENSE)（`GPL-3.0-only`）。允许商业使用；分发本程序或修改版时须遵守 GPL 的声明保留、对应源码提供和相同许可要求。第三方依赖及资料遵循各自许可证。
