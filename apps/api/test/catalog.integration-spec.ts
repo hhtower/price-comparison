@@ -135,7 +135,7 @@ describe('catalog SQL read model', () => {
     assert.deepEqual((await readPublished({ tags: [], limit: 20 })).items.map(item => item.id), [String(standardTwo)]);
   });
 
-  test('Claude current and legacy searches share the existing product and offers', async () => {
+  test('current and legacy plan searches share the existing products and offers', async () => {
     await database.updateTable('standard_products').set({ name: 'Claude Max 20x', canonical_family: 'anthropic',
       canonical_product: 'claude', canonical_tier: 'max_20x' }).where('id', '=', standardOne).execute();
     for (const search of ['Claude Ultra', 'Claude Max 20x', 'Claude Ultra 10x']) {
@@ -149,8 +149,14 @@ describe('catalog SQL read model', () => {
     await database.updateTable('standard_products').set({ name: 'ChatGPT Team 5x', canonical_family: 'openai',
       canonical_product: 'chatgpt', canonical_tier: 'team_5x' }).where('id', '=', standardTwo).execute();
     const premium = await readPublished({ search: 'Premium', tags: [], limit: 20 });
-    assert.deepEqual(premium.items.map(item => item.id), [String(standardOne)]);
-    assert.equal(premium.items[0]?.name, 'Claude Team Premium');
+    assert.deepEqual(new Map(premium.items.map(item => [item.id, item.name])),
+      new Map([[String(standardOne), 'Claude Team Premium'], [String(standardTwo), 'ChatGPT Premium']]));
+    for (const search of ['ChatGPT Premium', 'ChatGPT Team 5x', 'ChatGPT Team 10x', 'ChatGPT Business Premium']) {
+      const page = await readPublished({ search, tags: [], limit: 20 });
+      assert.deepEqual(page.items.map(item => item.id), [String(standardTwo)], search);
+      assert.equal(page.items[0]?.name, 'ChatGPT Premium');
+      assert.equal(page.items[0]?.offers[0]?.productId, String(productTwo));
+    }
   });
 
   async function addSku(shopId: bigint, externalId: string, price: string, tags: { name: string; value: string }[] = []) {

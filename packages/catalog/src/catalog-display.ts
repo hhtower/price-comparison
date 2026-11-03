@@ -104,6 +104,8 @@ function ownValue<T>(values: Record<string, T>, key: string): T | undefined {
 }
 
 export const CATALOG_PRODUCT_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  'openai/chatgpt/team_5x': ['ChatGPT Premium', 'ChatGPT Team Premium', 'ChatGPT Business Premium',
+    'ChatGPT Team 5x', 'ChatGPT Team5x', 'ChatGPT Team 10x', 'ChatGPT Team10x', 'ChatGPT Business 5x', 'ChatGPT Business 10x'],
   'anthropic/claude/max_5x': ['Claude Max', 'Claude Max 5x', 'Claude Max 100'],
   'anthropic/claude/max_20x': ['Claude Ultra', 'Claude Max 20x', 'Claude Ultra 10x', 'Claude Max 200'],
   'anthropic/claude/team': ['Claude Team', 'Claude Team Standard'],

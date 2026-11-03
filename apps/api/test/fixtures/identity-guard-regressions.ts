@@ -5,6 +5,8 @@ import type { Identity } from '../../src/standardization/identity-policy.js';
 export const identityGuardRegressions: Array<{ input: ExtractionInput; identity: Identity }> = [
   ...[
     ['team-json-sub2', 'Team 5X 成品JSON', '已开通Team 5X成品账号，仅支持Sub2API。', 'team_5x'],
+    ['team-10x-sub2', 'Team 10X 成品JSON', '已开通Team 10X成品账号，仅支持Sub2API。', 'team_5x'],
+    ['team-premium-sub2', 'Business Premium 成品账号', '交付Business Premium账号，JSON发货，仅支持Sub2API。', 'team_5x'],
     ['team-rt-sub2', 'G Team 子号Token', '实时验活的ChatGPT Team子号，含RT。CPA JSON和sub2api JSON交付。', 'team'],
     ['team-negated-5x', 'Team标准席位', '提供标准席位，也不是5Xteam。', 'team'],
     ['team-usage-comparison', 'Team标准席位', '交付Team账号，额度是Plus的1.25倍。', 'team'],

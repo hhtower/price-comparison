@@ -70,9 +70,9 @@ export const standardizationFlowControls: readonly StandardizationFlowControl[] 
     expectedDisposition: 'review', expectedIdentityConflict: true, expectedReasonCode: 'identity_conflict',
   },
   {
-    id: 'team-premium-unknown', name: 'Business premium 成品账号', body: 'JSON交付，仅支持Sub2API，未注明实际档位。',
-    soldObject: 'Account credentials with unresolved premium tier', expectedIdentity: null, proposalIdentity: team5x,
-    expectedDisposition: 'review', expectedIdentityConflict: true, expectedReasonCode: 'identity_conflict',
+    id: 'team-premium-official', name: 'Business premium 成品账号', body: 'JSON交付，仅支持Sub2API。',
+    soldObject: 'Business Premium account using the existing Team 5x identity', expectedIdentity: team5x, proposalIdentity: team5x,
+    expectedDisposition: 'release',
   },
   {
     id: 'team-ban-not-capability', name: 'Team 5X成品账号', body: '交付Team 5X账号，禁止反代。',

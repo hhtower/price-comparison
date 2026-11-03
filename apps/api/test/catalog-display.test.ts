@@ -68,8 +68,23 @@ test('Claude standard names use current labels without renaming merchant offers 
     assert.equal(standardProductDisplayName(expected!), expected);
   }
   assert.equal(standardProductDisplayName('Claude Max 20x 充值资格账号'), 'Claude Max 20x 充值资格账号');
-  assert.equal(canonicalProductDisplayName({ family: 'openai', product: 'chatgpt', tier: 'team_5x' }), 'ChatGPT Team 5x');
+  assert.equal(canonicalProductDisplayName({ family: 'openai', product: 'chatgpt', tier: 'team_5x' }), 'ChatGPT Premium');
   assert.equal(canonicalProductDisplayName({ family: 'google', product: 'gemini', tier: 'ultra_20x' }), 'Gemini Ultra 20x');
+});
+
+test('ChatGPT Premium keeps the existing Team identity and searches by current and legacy names', () => {
+  const identity = { family: 'openai', product: 'chatgpt', tier: 'team_5x' };
+  assert.equal(canonicalProductDisplayName(identity), 'ChatGPT Premium');
+  for (const name of ['ChatGPT Premium', 'ChatGPT Team Premium', 'ChatGPT Business Premium',
+    'ChatGPT Team 5x', 'ChatGPT Team5x', 'ChatGPT Team 10X', 'ChatGPT Team10x',
+    'ChatGPT Business 5x', 'ChatGPT Business 10x', 'openai / chatgpt / team_5x']) {
+    assert.equal(standardProductDisplayName(name), 'ChatGPT Premium', name);
+  }
+  const labels = CATALOG_DISPLAY_SEARCH_LABELS.identities['openai/chatgpt/team_5x'];
+  for (const alias of ['ChatGPT Premium', 'Team 5x', 'Team 10x', 'Business Premium']) assert.ok(labels?.includes(alias), alias);
+  assert.equal(canonicalProductDisplayName({ ...identity, tier: 'team' }), 'ChatGPT Team');
+  for (const name of ['ChatGPT Team 10x 充值资格账号', 'Claude Team 10x', 'YouTube Premium'])
+    assert.equal(standardProductDisplayName(name), name);
 });
 
 test('existing ChatGPT Pro market names display the amount tier and remain searchable by old and new aliases', () => {

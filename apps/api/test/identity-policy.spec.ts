@@ -319,6 +319,96 @@ test('official account aliases normalize without losing quota multipliers', () =
   ] as const) assert.deepEqual(policy.normalizeIdentity({ family, product, tier }), expected);
 });
 
+test('ChatGPT Premium official and merchant names normalize to the existing Team 5x key', () => {
+  const identity = { family: 'openai', product: 'chatgpt', tier: 'team_5x' };
+  for (const tier of ['Premium', 'Team Premium', 'Business Premium', 'Team5x', 'Team 10x', '10x Team',
+    'Business 5倍', 'Business 10×', '10x Business', 'Team 10x（原5x）', 'Premium 5x/10x']) {
+    assert.deepEqual(policy.normalizeIdentity({ family: 'OpenAI', product: 'Codex', tier }), identity, tier);
+    assert.equal(buildCanonicalStandardKey({ ...identity, tier }), buildCanonicalStandardKey(identity), tier);
+  }
+  for (const tier of ['Team 20x', 'Premium 20x', 'Team 5x/20x']) {
+    assert.equal(policy.isValidCatalogIdentity({ ...identity, tier }), false, tier);
+  }
+  assert.equal(policy.isValidCatalogIdentity({ family: 'anthropic', product: 'claude', tier: 'Team 10x' }), false);
+});
+
+test('ChatGPT Premium current and legacy evidence resolves in raw and frozen inputs', () => {
+  const identity = { family: 'openai', product: 'chatgpt', tier: 'team_5x' };
+  for (const name of ['ChatGPT Premium', 'GPT Premium 账号', 'Codex Premium 订阅',
+    'ChatGPT Team Premium 席位', 'ChatGPT Business Premium 账号', 'Team Premium 席位',
+    'team 5x', 'team 10x', 'team10x账号', '10xteam账号', '【自营】Team 10X',
+    'ChatGPT Team 10倍账号', 'Business 10×席位', 'Codex 10x Team 账号',
+    'ChatGPT Team 10x（原5x）账号', 'ChatGPT Team 5x/10x账号', 'ChatGPT Premium 5x/10x账号']) {
+    for (const format of ['raw', 'text'] as const) {
+      const raw = { id: 'premium', name, spec: '' };
+      const evidence = format === 'raw' ? raw : buildExtractionPayload(raw);
+      assert.deepEqual(policy.assessProductEvidence(evidence, format).identity, identity, name + ' ' + format);
+      assert.equal(policy.identityEvidenceConflict(identity, evidence, format), null, name + ' ' + format);
+      assert.ok(policy.identityEvidenceConflict({ ...identity, tier: 'team' }, evidence, format), name + ' ' + format);
+    }
+  }
+});
+
+test('ChatGPT Premium preserves unsupported tiers and contradictory delivery for review', () => {
+  for (const raw of [
+    { name: 'ChatGPT Premium 20x账号' },
+    { name: 'ChatGPT Team 10x/20x账号' },
+    { name: 'ChatGPT Premium / Pro 100账号' },
+    { name: 'ChatGPT Team 10x账号', sourceData: { evidence: '实际只交付标准Team席位。' } },
+    { name: 'ChatGPT Premium账号', sourceData: { evidence: '实际交付标准Team席位。' } },
+    { name: 'ChatGPT Team 标准席位', spec: '标准席位', sourceData: { evidence: '实际交付Team 10x高级席位。' } },
+    { name: 'ChatGPT Team 10x账号', sourceData: { evidence: '本商品并不是10x Team。' } },
+  ]) for (const format of ['raw', 'text'] as const) {
+    const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'premium-conflict', spec: '', ...raw });
+    assert.equal(policy.assessProductEvidence(evidence, format).kind, 'ambiguous', raw.name + ' ' + format);
+    assert.ok(policy.identityEvidenceConflict({ family: 'openai', product: 'chatgpt', tier: 'team_5x' }, evidence, format), raw.name);
+  }
+  for (const name of ['Premium', 'Spotify Premium 账号', 'Claude Team 10x账号']) {
+    assert.notDeepEqual(policy.assessProductEvidence({ name }).identity,
+      { family: 'openai', product: 'chatgpt', tier: 'team_5x' }, name);
+  }
+});
+
+for (const [scenario, inputs] of [
+  ['unselected standard and premium menus', [
+    { name: 'ChatGPT Team Standard / Premium 席位' },
+    { name: 'ChatGPT Team 标准席位 / Premium 高级席位' },
+  ]],
+  ['explicit denials of equivalent Premium names', [
+    { name: 'ChatGPT Premium账号', sourceData: { evidence: '本商品不是Premium账号。' } },
+    { name: 'ChatGPT Premium账号', sourceData: { evidence: '本商品并非10x Team。' } },
+    { name: 'ChatGPT Team 5x账号', sourceData: { evidence: '本商品并非Business Premium。' } },
+  ]],
+  ['standard delivery or selection contradicting Premium', [
+    { name: 'ChatGPT Premium 席位', sourceData: { evidence: '实际交付普通Team席位。' } },
+    { name: 'ChatGPT Premium seats', sourceData: { evidence: 'Delivered plan: Team Standard seats only.' } },
+    { name: 'ChatGPT Team 席位', spec: 'Standard', sourceData: { evidence: '套餐可选 Team Standard / Premium 席位。实际交付Premium席位。' } },
+  ]],
+  ['unsupported qualifiers in advanced seat mappings', [
+    { name: 'ChatGPT Team 订阅套餐', spec: '高级席位', sourceData: { evidence: '套餐可选标准或高级席位。高级席位=Premium 20x。' } },
+    { name: 'ChatGPT Team 订阅套餐', spec: '高级席位', sourceData: { evidence: '套餐可选标准或高级席位。高级席位=Team Premium Plus。' } },
+    { name: 'Claude Team 订阅套餐', spec: '高级席位', sourceData: { evidence: '套餐可选标准或高级席位。高级席位=10x Team。' } },
+  ]],
+] as const) test(`Premium aliases cannot conceal ${scenario}`, () => {
+  for (const raw of inputs) for (const format of ['raw', 'text'] as const) {
+    const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'premium-review', spec: '', ...raw });
+    assert.equal(policy.assessProductEvidence(evidence, format).kind, 'ambiguous', JSON.stringify(raw) + ' ' + format);
+    assert.ok(policy.identityEvidenceConflict({ family: 'openai', product: 'chatgpt', tier: 'team_5x' }, evidence, format));
+  }
+});
+
+test('selected Standard and Premium seats resolve a shared menu without changing tier', () => {
+  for (const [spec, tier] of [['Standard', 'team'], ['Premium', 'team_5x']] as const) {
+    const raw = { name: 'ChatGPT Team Standard / Premium 席位', spec,
+      sourceData: { evidence: '套餐可选 Team Standard / Premium 席位。' } };
+    for (const format of ['raw', 'text'] as const) {
+      const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'premium-selection', ...raw });
+      assert.deepEqual(policy.assessProductEvidence(evidence, format).identity,
+        { family: 'openai', product: 'chatgpt', tier }, spec + ' ' + format);
+    }
+  }
+});
+
 test('ChatGPT Pro official dollar names and market multiplier aliases normalize to stable catalog tiers', () => {
   for (const [tier, expected] of [
     ['Pro 5x', 'pro_5x'], ['5x Pro', 'pro_5x'], ['Pro 5倍', 'pro_5x'], ['5倍 Pro', 'pro_5x'], ['Pro 100', 'pro_5x'], ['100 Pro', 'pro_5x'], ['Pro 100美元', 'pro_5x'], ['100美元 Pro', 'pro_5x'],
@@ -448,7 +538,7 @@ test('catalog accepts official combinations and retains other complete product i
     { family: 'anthropic', product: 'claude', tier: 'max' },
     { family: 'google', product: 'gemini', tier: 'ultra' },
     { family: 'google', product: 'chatgpt', tier: 'plus' },
-    { family: 'openai', product: 'chatgpt', tier: 'premium' },
+    { family: 'openai', product: 'chatgpt', tier: 'premium_plus' },
     { family: 'openai', product: 'chatgpt', tier: 'unknow' },
     { family: 'gpu', product: 'rtx 4090', tier: 'not applicable' },
     { family: 'gpu', product: 'rtx 4090', tier: 'pro\u200b' },
@@ -525,8 +615,8 @@ test('account evidence preserves ambiguous plans and conflicting brands for revi
 });
 
 for (const [name, identity] of [
-  ['Team 10x', { family: 'openai', product: 'chatgpt', tier: 'team' }],
-  ['ChatGPT Team 10x 账号', { family: 'openai', product: 'chatgpt', tier: 'team' }],
+  ['Team 20x', { family: 'openai', product: 'chatgpt', tier: 'team' }],
+  ['ChatGPT Team 20x 账号', { family: 'openai', product: 'chatgpt', tier: 'team' }],
   ['Claude Team 20倍 Premium 账号', { family: 'anthropic', product: 'claude', tier: 'team_5x' }],
   ['ChatGPT Pro 0.5x', { family: 'openai', product: 'chatgpt', tier: 'pro_5x' }],
 ] as const) test(`unsupported or contradictory quota cannot be published: ${name}`, () => {
@@ -537,7 +627,7 @@ for (const [name, identity] of [
 });
 
 test('quota recognition rejects unsupported numeric values without matching a decimal suffix', () => {
-  for (const name of ['Team 0.5x', 'ChatGPT Team 0x', 'ChatGPT Team 1x', 'ChatGPT Team 100x', 'ChatGPT Pro 20.5x', 'Claude Max .5倍', 'ChatGPT Team 5x/10x']) {
+  for (const name of ['Team 0.5x', 'ChatGPT Team 0x', 'ChatGPT Team 1x', 'ChatGPT Team 100x', 'ChatGPT Pro 20.5x', 'Claude Max .5倍', 'ChatGPT Team 5x/20x']) {
     assert.equal(policy.assessProductEvidence({ name }).kind, 'ambiguous', name);
     assert.equal(policy.assessProductEvidence({ name }).identity, undefined, name);
   }

@@ -27,11 +27,13 @@ test('all product metadata reads retain identities used for matching translated 
     for (const sample of [
       { family: 'openai', product: 'chatgpt', name: row.name, tier: 'business', alias: 'ChatGPT 企业版', requested: 'ChatGPT Business', display: 'ChatGPT 商业版' },
       { family: 'openai', product: 'chatgpt', name: 'ChatGPT Pro 5x', tier: 'pro_5x', alias: 'ChatGPT Pro 100', requested: 'ChatGPT Pro 5x', display: 'ChatGPT Pro 100' },
+      { family: 'openai', product: 'chatgpt', name: 'ChatGPT Team 5x', tier: 'team_5x', alias: 'ChatGPT Team 10x', requested: 'ChatGPT Premium', display: 'ChatGPT Premium' },
+      { family: 'openai', product: 'chatgpt', name: 'ChatGPT Premium', tier: 'team_5x', alias: 'ChatGPT Business Premium', requested: 'ChatGPT Team 5x', display: 'ChatGPT Premium' },
       { family: 'anthropic', product: 'claude', name: 'Claude Max 20x', tier: 'max_20x', alias: 'Claude Ultra', requested: 'Claude Max 20x', display: 'Claude Ultra' },
       { family: 'anthropic', product: 'claude', name: 'Claude Ultra', tier: 'max_20x', alias: 'Claude Ultra 10x', requested: 'Claude Max 20x', display: 'Claude Ultra' },
       { family: 'anthropic', product: 'claude', name: 'Claude Team 5x', tier: 'team_5x', alias: 'Claude Team Premium', requested: 'Claude Team 5x', display: 'Claude Team Premium' },
     ]) {
-      row = { ...row, family: sample.family, product: sample.product, name: sample.name, tier: sample.tier, aliases: sample.family === 'anthropic' ? [] : [sample.alias] };
+      row = { ...row, family: sample.family, product: sample.product, name: sample.name, tier: sample.tier, aliases: sample.family === 'anthropic' || sample.tier === 'team_5x' ? [] : [sample.alias] };
       for (const product of [(await repository.publicProducts()).items[0], await repository.publicProduct('42'),
         await repository.resolvePublicProductIdentity({ platform: sample.family, product: sample.product, tier: sample.tier })]) {
         assert.ok(product);

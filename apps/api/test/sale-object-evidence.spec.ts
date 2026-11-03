@@ -9,11 +9,13 @@ const team = { family: 'openai', product: 'chatgpt', tier: 'team' };
 const team5x = { ...team, tier: 'team_5x' };
 for (const [name, description, expected] of [
   ['Team 标准席位', '提供标准席位。也不是5Xteam。', team],
+  ['Team 标准席位', '提供标准席位。也不是10Xteam。', team],
   ['Team 标准席位', '标准席位的额度是 Plus 的1.25倍。交付Team订阅账号。', team],
   ['Team 5X 成品 JSON', '已开通Team 5X。成品JSON交付，仅支持Sub2API。', team5x],
   ['G Team 子号Token', '实时验活的 ChatGPT Team 子号，含refresh_token，CPA JSON + sub2api 导入 JSON。', team],
   ['Team 5X Gmail邮箱', '本商品为Team 5X成品账号，Gmail注册，交付账号密码2FA。', team5x],
   ['Team 5X 成品账号', '提供Team 5X账号，禁止反代。', team5x],
+  ['Business premium 成品账号', 'JSON发货，仅支持Sub2API。', team5x],
 ] as const) test('reviewed Team sale: ' + name + ' / ' + description, () => {
   const raw = { name, sourceData: { evidence: description } };
   const frozen = buildExtractionPayload({ id: 'team-review', ...raw, spec: '' });
@@ -40,8 +42,8 @@ for (const [name, description] of [
   }
 });
 
-test('premium and K12 alone cannot establish a Team subscription tier', () => {
-  for (const name of ['Business premium 成品账号', 'G Team K12 成品']) {
+test('K12 alone cannot establish a Team subscription tier', () => {
+  for (const name of ['G Team K12 成品']) {
     const raw = { name, sourceData: { evidence: 'JSON发货，仅支持Sub2API。' } };
     assert.ok(identityEvidenceConflict(team, raw));
     assert.ok(identityEvidenceConflict(team5x, raw));
@@ -50,12 +52,15 @@ test('premium and K12 alone cannot establish a Team subscription tier', () => {
 });
 
 test('selected standard and mixed advanced seats resolve the offered menu without erasing real delivery conflicts', () => {
-  const menu = '套餐可选：标准席位、5X高级席位。高级席位=5X Team。';
-  for (const [spec, expected] of [['2个标准席位', team], ['1个高级席位+1个标准席位', team5x]] as const) {
-    const raw = { name: 'Team 订阅套餐', spec, sourceData: { evidence: menu } };
-    for (const [input, format] of [[raw, 'raw'], [buildExtractionPayload({ id: 'selected', ...raw }), 'text']] as const) {
-      assert.equal(identityEvidenceConflict(expected, input, format), null, spec);
-      assert.ok(identityEvidenceConflict(expected.tier === 'team' ? team5x : team, input, format));
+  for (const menu of ['套餐可选：标准席位、5X高级席位。高级席位=5X Team。',
+    '套餐可选：标准席位、10X高级席位。高级席位=10X Team。',
+    '套餐可选：标准席位、Premium高级席位。高级席位=Business Premium。']) {
+    for (const [spec, expected] of [['2个标准席位', team], ['1个高级席位+1个标准席位', team5x]] as const) {
+      const raw = { name: 'Team 订阅套餐', spec, sourceData: { evidence: menu } };
+      for (const [input, format] of [[raw, 'raw'], [buildExtractionPayload({ id: 'selected', ...raw }), 'text']] as const) {
+        assert.equal(identityEvidenceConflict(expected, input, format), null, spec);
+        assert.ok(identityEvidenceConflict(expected.tier === 'team' ? team5x : team, input, format));
+      }
     }
   }
   const conflict = { name: 'Team 5X 成品账号', sourceData: { evidence: '实际只交付标准 Team 席位，不是5Xteam。' } };

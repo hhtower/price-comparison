@@ -13,7 +13,7 @@ const platformPatterns = [/(?<![a-z])(?:chat\s*gpt|open\s*ai|codex)(?![a-z])/giu
 const platformsIn = (value: string) => platformPatterns.filter(pattern => [...value.matchAll(pattern)].length);
 const descriptionKeys = new Set(['evidence', 'description', 'descriptions', 'detail', 'details', 'intro']);
 const explicitSale = /实际(?:仅|只)?(?:交付|出售|提供|售)|(?:只|仅)售(?!后)|(?:本|此)(?:商品|产品)(?:为|是)|(?:商品|产品)内容\s*[:：]|(?:成品|商品|产品)(?:拆成|拆分为|分为)|^(?:交付|出售|提供|发货)/u;
-const accountClaim = /(?<![a-z])(?:(?:chat\s*gpt|open\s*ai|codex|claude|gemini|grok)[\s_-]*)?(?:free|go|plus|pro|max|ultra|team|business|super|heavy)(?![a-z])[^,，。;；\n]*(?:账号|账户|成品|订阅|会员|席位)/iu;
+const accountClaim = /(?<![a-z])(?:(?:chat\s*gpt|open\s*ai|codex|claude|gemini|grok)[\s_-]*)?(?:free|go|plus|pro|max|ultra|team|business|premium|super|heavy)(?![a-z])[^,，。;；\n]*(?:账号|账户|成品|订阅|会员|席位)/iu;
 const ancillaryClause = /教程|教学|请勿|勿下|禁止|不能充|无法升级|充值要求|账号限制|账号现有|如果|如若|若显示|首次登录|第一次登录|不保证|不担保|售后|质保|使用规范|使用说明|推荐|建议|浏览器|网络|支付渠道|登录方式|登录方法|验证码|进阶操作|(?:^|[^a-z])ip(?:[^a-z]|$)|(?:同样|也)(?:可能|会).*(?:波动|不稳定)|(?:必须|需要).*免费版|账号必须|原\s*(?:plus|pro|team).*订阅|加入\s*team.*(?:退出|切换)|不是.*(?:账号|套餐)|(?:额度|用量).*是.*(?:额度|用量)|额外购买|升级需要|(?:与|和).*(?:并存|共存)|不想升级|如介意.*(?:去买|购买)/iu;
 const prerequisiteOrComparison = /(?:账号|账户)(?:目前没有|需为|现有|必须)|(?:仅限|只限)(?:当前|目前)?没有|只能充值|不能充|无法升级|原\s*(?:plus|pro|team).*订阅|加入\s*team.*(?:退出|切换)|如需|复制|点(?:击|一下)|查看.*(?:是否|显示)|必须先退出|不是给|并不是固定|就去玩|不包.*可开|不要(?:再)?(?:去)?开通|plantype.*(?:改成|改为|提交)|普通.*(?:的|约为).*\d.*倍|(?:额度|用量).*约为|免费账号本身/iu;
 const exclusionHeading = /以下.*不(?:属于|在|包含).*(?:售后|质保)(?:范围)?|(?:售后|质保)(?:范围)?.*不(?:包括|包含)/u;
@@ -24,7 +24,7 @@ function cleanAssertion(value: string, description = false): string {
   // Keep actual-delivery claims even when a seller appends them to instructions.
   let text = value.normalize('NFKC')
     // Negated plan names and comparisons do not supply a delivered multiplier.
-    .replace(/(?:也)?(?:并非|并不是|不是|非)\s*(?:(?:5|20)\s*[x×倍]\s*(?:team|business)|(?:team|business)\s*(?:5|20)\s*[x×倍])\s*(?:账号|套餐)?/giu, ' ')
+    .replace(/(?:也)?(?:并非|并不是|不是|非)\s*(?:(?:5|10|20)\s*[x×倍]\s*(?:team|business)|(?:team|business)\s*(?:5|10|20)\s*[x×倍])\s*(?:账号|套餐)?/giu, ' ')
     .replace(/(?:额度|用量|配额)[^,，。;；\n]*?(?:是|为|约为|相当于)\s*(?:plus|pro|team|business)(?:\s*的)?\s*\d+(?:\.\d+)?\s*倍/giu, ' ')
     .replace(/(?<![a-z])(?:chat\s*g(?=\s*(?:free|go|plus|pro|team|business)\b)|g[!.\s]*p[!.\s]*t(?![a-z])|gp梯)/giu, 'chatgpt')
     .replace(/(?=实际(?:仅|只)?(?:交付|出售|提供|售)|(?:只|仅)售(?!后)|(?:本|此)(?:商品|产品)(?:为|是))/gu, '\n')
@@ -113,20 +113,25 @@ export function saleEvidenceView(evidence: Record<string, unknown>, format: 'raw
     return result;
   };
   const result = walk(evidence) as Record<string, unknown>;
-  const selected = strings(result.spec).join(' ').toLowerCase();
-  const selectedSeats = /标准席位|高级席位/u.test(selected);
+  let selected = strings(result.spec).join(' ').toLowerCase();
   const teamMenu = strings(result).join('\n');
+  if (/(?<![a-z])standard(?![a-z])/u.test(selected) && !/premium|高级席位/u.test(selected)
+    && /(?<![a-z])(?:team|business)(?![a-z])/iu.test(teamMenu)) {
+    result.spec = `${strings(result.spec).join(' ')} Team`;
+    selected += ' team';
+  }
+  const selectedSeats = /标准席位|高级席位/u.test(selected);
   if (selectedSeats && /(?:team|business)/iu.test(teamMenu) && /(?:可选|套餐选择)/u.test(teamMenu)) {
     const advanced = /高级席位/u.test(selected);
-    const mapped5x = /高级席位\s*(?:=|为|是|[:：])\s*5\s*[x×倍]\s*(?:team|business)?/iu.test(teamMenu);
-    if (!advanced || mapped5x) {
+    const mappedPlan = teamMenu.match(/高级席位\s*(?:=|为|是|[:：])\s*([^。;；\n]+)/iu);
+    if (!advanced || mappedPlan) {
       const selectedView = (value: unknown): unknown => typeof value === 'string'
         ? value.split(/[\n。;；]/u).filter(clause => explicitSale.test(clause) || (!/可选|套餐选择/u.test(clause)
           && !/^\s*高级席位\s*(?:=|为|是|[:：])/u.test(clause))).join('\n')
         : value && typeof value === 'object' ? Array.isArray(value) ? value.map(selectedView)
           : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, selectedView(item)])) : value;
       const view = selectedView(result) as Record<string, unknown>;
-      if (advanced) view.spec = `${view.spec ?? ''} 5x Team`;
+      if (advanced) view.spec = `${view.spec ?? ''} ${mappedPlan![1]} Team`;
       return view;
     }
   }

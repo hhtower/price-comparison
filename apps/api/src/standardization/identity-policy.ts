@@ -1,7 +1,7 @@
 import { canonicalizeMatchText } from './fingerprint.js';
 import { saleEvidenceView } from './sale-evidence.js';
 
-export const IDENTITY_POLICY_VERSION = 'catalog-identity-20261101-v31';
+export const IDENTITY_POLICY_VERSION = 'catalog-identity-20261103-v32';
 
 export interface Identity { family: string; product: string; tier: string }
 
@@ -156,6 +156,13 @@ export function normalizeIdentity(input: { family?: unknown; product?: unknown; 
       for (const multiplier of multipliers) if (CHATGPT_PRO_MULTIPLIERS[multiplier]) proTiers.add(CHATGPT_PRO_MULTIPLIERS[multiplier]!);
       if (proTiers.size === 1 && [...multipliers].every(multiplier => CHATGPT_PRO_MULTIPLIERS[multiplier])) tier = [...proTiers][0]!;
     }
+    const teamText = tier.replace(/_/gu, ' ').replace(/^(?:openai\s*)?(?:chatgpt|codex)\s*/u, '');
+    const teamLabelRemainder = teamText.replace(/team|business|premium|原|旧|现|10|5|[\sx×倍/|、()（）._-]/gu, '');
+    if (product === 'chatgpt' && !teamLabelRemainder && /team|business|premium/u.test(teamText)) {
+      const multipliers = quotaMultipliers(teamText.replace(/(?<=[x×倍])(?=team|business)/gu, ' '));
+      if ((multipliers.size || /premium/u.test(teamText)) && [...multipliers].every(multiplier => ['5', '10'].includes(multiplier)))
+        tier = 'team_5x';
+    }
     tier = product === 'claude' && value === 'teampremium' ? 'team_5x' : (aliases[value] ?? tier);
     // These developer products share account plans, but still sell non-account goods.
     if (/^(?:openaicodex|codex|anthropicclaudecode|claudecode)$/u.test(compact(rawProduct)) &&
@@ -233,11 +240,11 @@ function evidenceText(evidence: Record<string, unknown>): string {
     // Strip support lists before whitespace folding, otherwise a mention of
     // "可用" can consume every later sales assertion across paragraph breaks.
     .replace(/(?:支持|可用(?:的)?模型|可使用|可调用|available models?\s*:|supports?\s+)[^,，。;；\n]*/giu, ' '))
-    .replace(/(?<![a-z])(codex|chatgpt|claude|gemini)(?=plus|pro|team|free|max|ultra)/gu, '$1 ')
+    .replace(/(?<![a-z])(codex|chatgpt|claude|gemini)(?=plus|pro|team|free|max|ultra|premium)/gu, '$1 ')
     .replace(/(?<![a-z])g(?=codex)/gu, '')
-    .replace(/(?<![\d.])(5|20)x(?=team|business)/gu, '$1x ')
+    .replace(/(?<![\d.])(5|10|20)x(?=team|business)/gu, '$1x ')
     .replace(/(?<=\d)\s*×/gu, 'x')
-    .replace(/(?<![a-z\d])x(5|20)(?![\d.])/gu, '$1x')).join(' ');
+    .replace(/(?<![a-z\d])x(5|10|20)(?![\d.])/gu, '$1x')).join(' ');
 }
 
 const BRAND_MARKERS: Record<string, RegExp> = {
@@ -250,7 +257,10 @@ const ACCOUNT = /账号|帐号|账户|帐户|成品|会员|订阅|合租|独享|
 const DISCOUNT_CODE = /优惠码|优惠券|减席位|discount\s+code|promo\s+code|coupon/iu;
 const TIME_EXTENSION_CARD = /(?<!(?:不含|不包含|不提供|另购|另售)\s*)(?:续时|延时)\s*(?:\d+(?:\.\d+)?\s*(?:小时|h(?:rs?)?)\s*)?卡(?!\s*(?:另购|另售|单独购买))/iu;
 const OTHER_PRODUCT = /(?<![a-z])(?:steam|teamviewer|cursor|perplexity|midjourney|deepseek|copilot|grok|netflix|spotify|adobe|notion|canva|youtube|windsurf)(?![a-z])/u;
-const TITLE_PLAN = /(?<![a-z])(?:free|go|plus|pro|max|ultra|team|business)(?![a-z])|普号|普通(?:账号|账户|帐号|帐户)|未订阅/u;
+const TITLE_PLAN = /(?<![a-z])(?:free|go|plus|pro|max|ultra|team|business|premium)(?![a-z])|普号|普通(?:账号|账户|帐号|帐户)|未订阅/u;
+const TEAM_PREMIUM_PLAN = /(?<![a-z])(?:premium(?![a-z])|(?:team|business)\s*(?:5|10)\s*[x×倍]|(?:5|10)\s*[x×倍]\s*(?:team|business))(?![a-z\d])/u;
+const TEAM_STANDARD_PLAN = /(?:标准|普通)\s*(?:(?:team|business)\s*)?席位|(?<![a-z])standard(?![a-z])/u;
+const TEAM_DELIVERY_ASSERTION = /实际(?:只|仅)?(?:交付|提供)|^(?:交付|提供)|(?:只|仅)交付|(?<![a-z])delivered(?:\s+plan)?\s*:/u;
 // An unconditional non-activation claim describes the delivered account; a
 // recharge prerequisite ("需要账号状态为free才可充值") describes the buyer's account.
 const NOT_ACTIVATED = /(?:未|尚未|没有|无)(?:开通)?(?:订阅|会员)|^\s*(?:普号|普通(?:账号|账户|帐号|帐户))\s*$/u;
@@ -394,9 +404,9 @@ function assessTeamDiscountCode(evidence: Record<string, unknown>): ProductEvide
 
 export function assessProductEvidence(evidence: Record<string, unknown>, format: 'raw' | 'text' = 'raw'): ProductEvidenceAssessment {
   const rawTitle = evidenceText({ name: evidence.name, spec: evidence.spec });
-  if (/(?:5\s*[x×倍]\s*(?:team|business)|(?:team|business)\s*5\s*[x×倍])/iu.test(rawTitle)
-    && evidenceStrings(evidence).some(value => /(?:本商品|本产品|实际交付|实际提供)[^。;；\n]*(?:不是|并非|并不是)\s*(?:5\s*[x×倍]\s*(?:team|business)|(?:team|business)\s*5\s*[x×倍])/iu.test(value)))
-    return ambiguous('The Team 5X title conflicts with an explicit delivered-tier denial', ['conflicting_sale_objects']);
+  if (TEAM_PREMIUM_PLAN.test(rawTitle)
+    && evidenceStrings(evidence).some(value => /(?:本商品|本产品|实际交付|实际提供)[^。;；\n]*(?:不是|并非|并不是)\s*(?:(?:chatgpt|codex)\s*)?(?:(?:5|10)\s*[x×倍]\s*(?:team|business)|(?:team|business)\s*(?:5|10)\s*[x×倍]|(?:(?:team|business)\s*)?premium(?![a-z]))/iu.test(value)))
+    return ambiguous('The Team Premium title conflicts with an explicit delivered-tier denial', ['conflicting_sale_objects']);
   evidence = saleEvidenceView(evidence, format);
   if (TIME_EXTENSION_CARD.test(evidenceText({ name: evidence.name, spec: evidence.spec })))
     return { kind: 'other', rules: ['non_account_product', 'time_extension_card'] };
@@ -405,12 +415,12 @@ export function assessProductEvidence(evidence: Record<string, unknown>, format:
   // expanded in the title/spec only; descriptions mention them as uses or upgrades.
   const withoutUse = (value: unknown) => typeof value === 'string' ? value
     .replace(/(?:正好)?(?:可以|可|能|用于|用来)(?:充值|开通|订阅)[^,，。;；|]*/gu, ' ')
-    .replace(/(?<!升级\s*)(?<![a-z])(?:g[.\s]*t[.\s]*p|c[.\s]*p[.\s]*t|gpt|gt|g)[\s\-–·]*(?=(?:free|go|plus|pro|team|business)(?![a-z]))/giu, 'ChatGPT ') : value;
+    .replace(/(?<!升级\s*)(?<![a-z])(?:g[.\s]*t[.\s]*p|c[.\s]*p[.\s]*t|gpt|gt|g)[\s\-–·]*(?=(?:free|go|plus|pro|team|business|premium)(?![a-z]))/giu, 'ChatGPT ') : value;
   evidence = { ...evidence, name: withoutUse(evidence.name), spec: withoutUse(evidence.spec) };
   const service = assessSmsService(evidence);
   if (service) {
     const title = evidenceText({ name: evidence.name, spec: evidence.spec });
-    if (service.kind === 'sms_service' && ACCOUNT.test(title) && /(?<![a-z])(?:plus|pro|max|ultra|team|business)(?![a-z])/u.test(title)
+    if (service.kind === 'sms_service' && ACCOUNT.test(title) && /(?<![a-z])(?:plus|pro|max|ultra|team|business|premium)(?![a-z])/u.test(title)
       && !/接[码马]|短信|sms/u.test(title)) return ambiguous('The account title conflicts with the explicitly offered SMS service', ['conflicting_sale_objects']);
     return service;
   }
@@ -454,7 +464,7 @@ export function assessProductEvidence(evidence: Record<string, unknown>, format:
     && bodyClauses.some(clause => ACCOUNT_PRODUCT.test(clause) && /(?:交付|提供|发货).*(?:账密|(?:账号|账户)(?:和|及)?密码)/u.test(clause));
   const deliveredTeam = /(?<![a-z])(?:team|business)(?![a-z])/u.test(title)
     && bodyClauses.some(clause => /(?<![a-z])(?:team|business)(?![a-z])/u.test(clause) && /成品|订阅|账号|账户|席位/u.test(clause));
-  const subscribedAccount = deliveredTeam || registeredFreeAccount || (ACCOUNT_PRODUCT.test(title) && /(?<![a-z])(?:free|go|plus|pro|max|ultra|team|business)(?![a-z])/u.test(title)
+  const subscribedAccount = deliveredTeam || registeredFreeAccount || (ACCOUNT_PRODUCT.test(title) && /(?<![a-z])(?:free|go|plus|pro|max|ultra|team|business|premium)(?![a-z])/u.test(title)
     && (!mailboxProductTitle || /成品|订阅/u.test(title)));
   if (subscribedAccount && bodyClauses.some(clause => /(?:仅|只)(?:交付|出售|提供|售)[^,，。;；]*(?:邮箱|邮件)/u.test(clause) && !ACCOUNT_PRODUCT.test(clause)))
     return ambiguous('The account title conflicts with explicitly exclusive mailbox delivery', ['conflicting_sale_objects']);
@@ -490,15 +500,16 @@ export function assessProductEvidence(evidence: Record<string, unknown>, format:
   const products = brandsIn(titleAnchored && brandsIn(title).length ? anchorText : text);
   if (products.length > 1) return ambiguous('Conflicting explicit account brands', ['conflicting_brands']);
   // A future upgrade is not the plan delivered by the current listing.
-  const withoutUpgrades = (value: string) => value.replace(/可(?:以)?升级(?:(?:至|为|到)\s*)?(?:pro|plus|max|ultra|team|business)[^，。;；]*/gu, ' ');
+  const withoutUpgrades = (value: string) => value.replace(/可(?:以)?升级(?:(?:至|为|到)\s*)?(?:pro|plus|max|ultra|team|business|premium)[^，。;；]*/gu, ' ');
   const planText = products[0] === 'claude' ? claudePlanText(withoutUpgrades(anchorText)) : withoutUpgrades(anchorText);
   const dollarTiers = chatgptProDollarTiers(planText);
   const dollarTier = dollarTiers.size === 1 ? [...dollarTiers][0] : undefined;
   const plans = new Set<string>();
   for (const match of planText.matchAll(/(?<![a-z])(?:free|go|plus|pro|max|ultra|team|business)(?![a-z])/gu)) plans.add(match[0] === 'business' ? 'team' : match[0]);
+  if (products[0] === 'chatgpt' && /(?<![a-z])premium(?![a-z])/u.test(planText)) plans.add('team');
   if (/普号|普通(?:账号|账户|帐号|帐户)|未订阅|未开通(?:订阅|会员)|免费(?:版|账号|账户)/u.test(planText)) plans.add('free');
   if (dollarTiers.size && !plans.size) plans.add('pro');
-  const shortTeamTitle = /^(?:【自营】|\[自营\])?\s*(?:team|business)\s*(?:(?:\d+(?:\.\d+)?|\.\d+)\s*(?:x|倍))?$/u.test(canonicalizeMatchText(evidence.name));
+  const shortTeamTitle = /^(?:【自营】|\[自营\])?\s*(?:team|business)\s*(?:premium|(?:\d+(?:\.\d+)?|\.\d+)\s*(?:x|倍))?$/u.test(canonicalizeMatchText(evidence.name));
   const accountContext = accountCredentials || ACCOUNT.test(text) || shortTeamTitle || (ACCOUNT_PRODUCT.test(text) && products.length === 1 && plans.size > 0);
   if (!accountContext) return { kind: 'other', rules: [] };
 
@@ -517,15 +528,19 @@ export function assessProductEvidence(evidence: Record<string, unknown>, format:
   if (plans.size === 0) return ambiguous('Account plan is unspecified', [...rules, 'missing_plan']);
   if (plans.size > 1) return ambiguous('Multiple account plans are offered without a selected plan', [...rules, 'conflicting_plans']);
   let tier = [...plans][0]!;
-  if (tier === 'team' && /标准席位/u.test(String(evidence.spec ?? '')) && !/高级席位/u.test(String(evidence.spec ?? ''))
-    && bodyClauses.some(clause => /实际(?:只|仅)?(?:交付|提供)|^(?:交付|提供)/u.test(clause)
-      && /(?:5\s*x\s*(?:team|business)|(?:team|business)\s*5\s*x)/u.test(clause)))
-    return ambiguous('The selected standard seats conflict with explicitly delivered Team 5X', [...rules, 'conflicting_plans']);
-  if (tier === 'team' && /(?:5\s*x\s*(?:team|business)|(?:team|business)\s*5\s*x)/u.test(title)
-    && bodyClauses.some(clause => /实际(?:只|仅)?交付|(?:只|仅)交付/u.test(clause) && /标准\s*(?:team|business)?\s*席位/u.test(clause)))
-    return ambiguous('The Team 5X title conflicts with explicitly delivered standard seats', [...rules, 'conflicting_plans']);
-  if (product === 'chatgpt' && tier === 'team' && /premium|高级席位/u.test(planText)
-    && !/(?<![\d.])5\s*(?:x|倍)(?![a-z\d])/u.test(planText))
+  const chatgptTeam = product === 'chatgpt' && tier === 'team';
+  const selectedTeamText = evidenceText({ spec: evidence.spec });
+  const selectedTeamPremium = TEAM_PREMIUM_PLAN.test(selectedTeamText);
+  if (tier === 'team' && TEAM_STANDARD_PLAN.test(selectedTeamText) && !/高级席位/u.test(selectedTeamText) && !selectedTeamPremium
+    && bodyClauses.some(clause => TEAM_DELIVERY_ASSERTION.test(clause) && TEAM_PREMIUM_PLAN.test(clause)))
+    return ambiguous('The selected standard seats conflict with explicitly delivered Team Premium', [...rules, 'conflicting_plans']);
+  if (tier === 'team' && TEAM_PREMIUM_PLAN.test(title)
+    && bodyClauses.some(clause => TEAM_DELIVERY_ASSERTION.test(clause) && TEAM_STANDARD_PLAN.test(clause)))
+    return ambiguous('The Team Premium title conflicts with explicitly delivered standard seats', [...rules, 'conflicting_plans']);
+  if (chatgptTeam && TEAM_STANDARD_PLAN.test(planText) && TEAM_PREMIUM_PLAN.test(planText) && !selectedTeamPremium)
+    return ambiguous('Standard and Premium seats are offered without a selected plan', [...rules, 'conflicting_plans']);
+  const teamPremium = tier === 'team' && /(?<![a-z])premium(?![a-z])/u.test(planText);
+  if (chatgptTeam && /高级席位/u.test(planText) && !teamPremium && !TEAM_PREMIUM_PLAN.test(planText))
     return ambiguous('The Team premium label needs explicit tier evidence', [...rules, 'missing_multiplier']);
   let multipliers = quotaMultipliers(planText);
   // An anchored Pro/Max/Ultra title may leave its required multiplier to the description.
@@ -535,20 +550,20 @@ export function assessProductEvidence(evidence: Record<string, unknown>, format:
   }
   const chatgptPro = product === 'chatgpt' && tier === 'pro';
   const multiplierTiers = new Set([...multipliers].map(multiplier => CHATGPT_PRO_MULTIPLIERS[multiplier]));
-  if (multipliers.size > 1 && (!chatgptPro || multiplierTiers.size > 1)) return ambiguous('Multiple quota multipliers are offered without a selected plan', [...rules, 'conflicting_multipliers']);
+  const chatgptTeamMultiplier = chatgptTeam && multipliers.size > 0 && [...multipliers].every(multiplier => ['5', '10'].includes(multiplier));
+  if (multipliers.size > 1 && !chatgptTeamMultiplier && (!chatgptPro || multiplierTiers.size > 1)) return ambiguous('Multiple quota multipliers are offered without a selected plan', [...rules, 'conflicting_multipliers']);
   const multiplier = [...multipliers][0];
   const chatgptMultiplierTier = chatgptPro ? CHATGPT_PRO_MULTIPLIERS[multiplier ?? ''] : undefined;
-  if (multiplier && !chatgptMultiplierTier && ((product === 'chatgpt' && tier === 'pro') || (multiplier !== '5' && multiplier !== '20')))
+  if (multiplier && !chatgptMultiplierTier && !chatgptTeamMultiplier && ((product === 'chatgpt' && tier === 'pro') || (multiplier !== '5' && multiplier !== '20')))
     return ambiguous('The quota multiplier is not supported by an official account plan', [...rules, 'unsupported_multiplier']);
   if (chatgptPro && (dollarTiers.size > 1 || (dollarTier && chatgptMultiplierTier && dollarTier !== chatgptMultiplierTier)))
     return ambiguous('The official amount tiers or quota multipliers conflict', [...rules, 'conflicting_multipliers']);
-  const teamPremium = product === 'claude' && tier === 'team' && /(?<![a-z])premium(?![a-z])/u.test(planText);
-  if (teamPremium && multiplier && multiplier !== '5') return ambiguous('Team Premium conflicts with the stated quota multiplier', [...rules, 'conflicting_multipliers']);
+  if (teamPremium && multiplier && !(chatgptTeam ? chatgptTeamMultiplier : multiplier === '5')) return ambiguous('Team Premium conflicts with the stated quota multiplier', [...rules, 'conflicting_multipliers']);
   const requiresMultiplier = (product === 'chatgpt' && tier === 'pro') || (product === 'claude' && tier === 'max') || (product === 'gemini' && tier === 'ultra');
   if (requiresMultiplier && !multiplier && !dollarTier) return ambiguous('The account plan requires an explicit official plan amount or multiplier', [...rules, 'missing_multiplier']);
   if (product === 'chatgpt' && tier === 'pro' && (chatgptMultiplierTier || dollarTier)) tier = chatgptMultiplierTier ?? dollarTier!;
   else if (requiresMultiplier) tier = `${tier}_${multiplier}x`;
-  else if (tier === 'team' && (multiplier === '5' || teamPremium)) tier = 'team_5x';
+  else if (tier === 'team' && (multiplier === '5' || chatgptTeamMultiplier || teamPremium)) tier = 'team_5x';
   else if (multiplier) return ambiguous('The quota multiplier does not match an official account plan', [...rules, 'unsupported_multiplier']);
   const identity = product === 'gemini' && tier === 'free' ? { family: 'google', product: 'email', tier: 'standard' }
     : { family: FAMILIES[product]!, product, tier };
@@ -662,8 +677,8 @@ export function identityEvidenceConflict(input: Identity, evidence: Record<strin
 export const IDENTITY_POLICY_PROMPT = `Official account identity policy (${IDENTITY_POLICY_VERSION}):
 - Approved finite platform sale objects (family/product: allowed tiers): ${JSON.stringify(FINITE_CATALOG)}. For these platforms use only these identities; unrelated evidenced software/tools, installation services and complete bundles belong to their actual generic/software sale object, never an invented official subscription. Claude tutorials require independent sold instructional evidence and are not prebuilt.
 - No fitting candidate does not authorize another platform identity. Unknown or newly advertised genuine plans require insufficient_evidence and manual review, never not_sellable solely for being absent here. In particular Cursor/Grok Plus/Premium/Super/Ultra new pricing has no verified mapping to historical Cursor Pro/Pro+/Ultra or SuperGrok/Heavy; Super alone is NOT a SuperGrok alias. Historical Heavy remains distinct.
-- User-facing ChatGPT names remain Team and Team 5x. Official Business naming does not merge them; no fixed 5-fold entitlement is promised by the Team 5x name or legacy technical keys. Preserve actual SKU limitations.
-- Time extension cards such as "team 续时1h卡" do not establish a ChatGPT Team/Team 5x subscription. Do not assign them to account plans based on Team keywords or seller categories. Normal Team seat/subscription renewals remain distinct.
+- User-facing ChatGPT names are Team and Premium. Keep the stable team and team_5x keys respectively; renaming Premium does not create another identity or merge it with standard Team. No fixed multiplier entitlement is promised by a display name or legacy key. Preserve actual SKU limitations.
+- Time extension cards such as "team 续时1h卡" do not establish a ChatGPT Team/Premium subscription. Do not assign them to account plans based on Team keywords or seller categories. Normal Team seat/subscription renewals remain distinct.
 - Google ordinary login accounts and Gmail share google/email/standard; Gmail availability is not guaranteed by this identity. Eligibility/student-verified but unpaid accounts remain ordinary accounts with original qualification/payment conditions. Never infer activated subscription or student eligibility from EDU/alumni domains. Google/Gmail/YouTube SMS shares google/google_sms/standard.
 - Mailbox accounts use their explicit hosting provider: google/email/standard, microsoft/outlook/standard (Outlook/Hotmail/OAuth2), netease/163_mail/standard (all evidenced NetEase domains, NOT only 163), yahoo/email/standard, mail.com/email/standard, or edu/email/standard when educational hosting is unknown. Domain, institution, education, OAuth2/IMAP/POP3/API delivery, age and region are source attributes. OAuth2 does not intrinsically imply receive-only; retain seller restrictions. Google login without Gmail, admin-controlled accounts and receive/send/login restrictions must stay in evidence, not become unqualified capabilities.
 - Only-mail/URL/query-code delivery without usable provider login credentials is a receiving service, separate from accounts: google/gmail_code_service/standard, microsoft/mail_receive_service_mixed_domains/standard, apple/icloud_mail/standard, email/domain_email/standard. Email receiving credit/CDK recharge uses email/receive_credits/standard; ambiguous delivery or conflicting quantities require review. APIs used for email or SMS delivery are not model relay exclusions. Toolkits needing the buyer's iCloud+/Apple account are software, not an included account or subscription. Preserve independent gifts and bundle rights.
@@ -674,13 +689,13 @@ export const IDENTITY_POLICY_PROMPT = `Official account identity policy (${IDENT
 - ChatGPT tiers: free, go, plus, pro_5x, pro_20x, pro_500, team, team_5x. The user-facing names are Pro 100, Pro 200 and Pro 500. Pro 5x/5X and Pro 100 are aliases for the first tier; Pro 10x/10X, Pro 20x/20X and Pro 200 are aliases for the second; Pro 25x/25X, Pro 50x/50X and Pro 500 are aliases for the third. Accept both Pro 10x/10x Pro and the legacy Pro 20x/20x Pro spellings, and likewise Pro 25x/25x Pro and legacy Pro 50x/50x Pro. Equivalent current/legacy aliases may coexist (10x with 20x; 25x with 50x). Compare canonical tiers before declaring a conflict. Different unselected amount tiers (Pro 100/200/500) or contradictory delivered tiers require review; never select the largest amount. Merchant sale prices, balances and usage amounts are not plan names and must not override a named Pro tier or multiplier. Do not infer unsupported decimal multipliers.
 - Gemini paid tiers: plus, pro, ultra_5x, ultra_20x. Ordinary Google/Gemini Free accounts use google/email/standard, subject to their actual login/mail availability.
 - Claude tiers keep stable keys: free, pro, max_5x, max_20x, team, team_5x. Display max_5x as Max, max_20x as Ultra, and team_5x as Team Premium. Ultra (including its current 10x weekly label) and legacy Max 20x are the same plan; Max 5x/Max 100 and Max 20x/Max 200 are supported plan names. Equivalent Ultra/Max 20x labels may coexist; Ultra and Max 5x conflict. A bare Max remains ambiguous without explicit plan amount or multiplier evidence; merchant prices and credit balances do not establish a tier. Name changes and billing-price changes do not create new identities. Ultra's lack of a five-hour limit applies only to verified accounts; never infer verification or credits received from the plan name.
-- Team and Business are aliases of team. Team 5x, team5x, 5x Team and Business 5x are team_5x. Claude Team Premium is team_5x.
+- Team and Business without an explicit premium plan are aliases of team. ChatGPT Premium, Team Premium and Business Premium are team_5x. Team 5x/team5x/5x Team and Team 10x/team10x/10x Team (including Business spellings) are current/legacy aliases of the same ChatGPT Premium tier; equivalent 5x and 10x labels may coexist and are not a conflict. Compare canonical tiers before declaring a conflict. Unsupported multipliers, unselected standard/premium menus and contradictory actual delivery still require review. Claude Team Premium remains team_5x with its existing 5x mapping; ChatGPT's 10x alias does not apply to Claude.
 - Team JSON/RT/Token credentials with actual subscribed-account evidence remain Team accounts, including software-only or reverse-proxy-only use. Delivery format, registered email domain and supported client do not change family/product/tier and do not alone prove entitlement. Negated 5X and comparison quantities are not positive tier evidence; ChatGPT premium/高级 without explicit selected 5X mapping remains unresolved.
 - Codex account subscriptions are ChatGPT. Claude Code account subscriptions are Claude. Decide model relay exclusions from the sold object: explicit model API relay credits, prepaid relay balances, request passes and API pool access are not catalog products. Relay/API mentions in after-sales or policy warnings, comparisons, instructions, possible extra services, categories, URLs, balances or dollar amounts alone do not establish the sold object; ambiguous sale evidence requires review. Login Token instructions, standalone tutorial headings, registration mailbox domains and buyer account restrictions are not sold goods.
 - Consolidate sold tutorials at the underlying product level with tier=tutorial (教程): ChatGPT/Codex tutorials use openai/chatgpt/tutorial; Claude/Claude Code use anthropic/claude/tutorial; Gemini uses google/gemini/tutorial. Other tutorials keep their evidenced family/product and use tier=tutorial, e.g. facebook/facebook/tutorial. Name them '<Product> 教程'. Never split tutorials by plan, multiplier, region, payment method, topic, video/PDF format or difficulty, or concatenate these into product. Keep those details in original SKU evidence. Tutorials remain separate from actual accounts, API credits, software tools and installation services; incidental/free usage instructions do not make an account a tutorial. Multi-product bundles keep their own evidenced bundle product; never arbitrarily select one subject.
 - Google AI Plus/Pro/Ultra are Gemini plans. Google One storage is an entitlement, not a separate account brand or tier.
 - Free account labels include 普号, 普通账户, 普通账号 and 未订阅. 普号可升级Pro is currently free, not Pro.
-- Explicit brands override defaults. Brandless team/plus/go/pro names default to ChatGPT when account subscription context is clear. Standalone team, team 5x and 【自营】Team 5X listings also default to ChatGPT. Unrelated explicit products (Steam, TeamViewer, Cursor, etc.) never default.
+- Explicit brands override defaults. Brandless team/plus/go/pro names default to ChatGPT when account subscription context is clear. Standalone team, team 5x, team 10x, Team Premium, Business Premium and 【自营】Team 5X/10X listings also default to ChatGPT. Premium alone has no default brand. Unrelated explicit products (Steam, TeamViewer, Cursor, etc.) never default.
 - ChatGPT Pro, Claude Max and Gemini Ultra REQUIRE explicit supported amount or multiplier evidence. For ChatGPT Pro, supported aliases are Pro 100/200/500 and 5x/10x/25x (with legacy 20x/50x); never invent a multiplier or collapse a known multiplier into pro/max/ultra. 5人 and 5个 are seat/count quantities, not 5x.
 - Multiple offered brands/plans or unselected multipliers are ambiguous: request review instead of choosing one. Available model lists do not override the account brand.
 - Determine what is sold and the selected SKU before using identity keywords. Buyer self-verification, login tutorials, after-sales exclusions, plan comparisons and possible upgrades do not change the delivered plan. An explicit selected plan resolves an offered menu, but never overrides contradictory actual-delivery claims. Eligibility-only/K12 accounts are not already-activated subscription rights. Mailboxes and sold PDF/tutorial products remain distinct catalog goods. A Team discount/coupon code that only lets the buyer complete payment is openai/chatgpt_team_discount_code/standard, not a Team subscription; actual Team seat redemption codes remain openai/chatgpt/team.
