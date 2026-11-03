@@ -46,7 +46,7 @@ test('measures only the search toolbar and updates the sticky offset on resize',
     expect(toolbar).not.toContainElement(header);
     expect(within(header).getByRole('button', { name: '提交商铺' })).toBeInTheDocument();
     expect(within(header).getByRole('button', { name: '免责声明' })).toBeInTheDocument();
-    expect(screen.queryByText(/本站展示第三方商铺报价/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/本站汇总、整理和展示公开渠道及商家主动提交的/)).not.toBeInTheDocument();
     const observer = observers.find(instance => instance.observe.mock.calls.some(([element]) => element === toolbar));
     expect(observer).toBeDefined();
     expect(observer.observe).toHaveBeenCalledWith(toolbar, { box: 'border-box' });

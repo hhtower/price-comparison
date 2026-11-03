@@ -1131,8 +1131,10 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
       {communityOpen && <CommunityDialog onClose={() => setCommunityOpen(false)} />}
       {disclaimerOpen ? createPortal(<ModalDialog open id="catalog-disclaimer-dialog" className="catalog-disclaimer-dialog" aria-labelledby="catalog-disclaimer-title" onClose={() => setDisclaimerOpen(false)}>
         <header className="dialog-header"><h2 id="catalog-disclaimer-title">免责声明</h2><button type="button" aria-label="关闭免责声明" onClick={() => setDisclaimerOpen(false)}>×</button></header>
-        <p>本站展示第三方商铺报价，信息仅供比较参考。价格、库存、商品内容及交易条件可能变化，请在下单前以商家页面的实际信息为准。</p>
-        <p>本站不参与交易，交易与售后请联系商家。发现价格不符、链接失效或可疑商品，可在对应报价下方举报。</p>
+        <p>本站汇总、整理和展示公开渠道及商家主动提交的商品、商家与报价信息，仅供用户查询和价格比较参考。本站不销售商品，不参与交易，不代收货款，也不提供交易担保或商品售后服务。</p>
+        <p>信息可能存在更新延迟、缺失或偏差，商家提交的内容亦不代表已获本站认可或担保。商品价格、库存、规格、优惠条件及售后政策，请以商家最新说明及实际确认为准。信息的收录、展示或排序，不构成购买建议，也不代表本站对商家资质、商品质量或履约能力作出保证。</p>
+        <p>如需购买，请自行核实商品信息、商家资质及交易条件。下单、付款、交付、退款及售后等事项，由您与商家直接沟通处理。</p>
+        <p>如发现信息错误、链接失效、疑似违规内容或涉及您的合法权益，请通过对应报价的举报入口反馈，我们将核实处理。</p>
       </ModalDialog>, document.body) : null}
       <ModalDialog className="shop-dialog" open={shopDialogOpen} onClose={() => setShopDialogOpen(false)} aria-labelledby="shop-submit-title"><form onSubmit={submitShop}><div className="dialog-header"><h2 id="shop-submit-title">提交商铺地址</h2><button type="button" aria-label="关闭" onClick={() => setShopDialogOpen(false)}>×</button></div><label>商铺名称<input name="name" required /></label><label>商铺地址<input name="url" type="url" placeholder="https://" required /></label><button className="dialog-submit" disabled={submittingShop}>{submittingShop ? '提交中…' : '提交审核'}</button></form></ModalDialog>
     </main>

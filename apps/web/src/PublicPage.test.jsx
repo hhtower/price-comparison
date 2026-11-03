@@ -816,7 +816,7 @@ test('filters one standard product card by all selected tags', async () => {
     }));
     render(<PublicPage />);
     await user.click(screen.getByRole('button', { name: '免责声明', exact: true }));
-    expect(await screen.findByText(/本站展示第三方商铺报价/)).toBeInTheDocument();
+    expect(await screen.findByText(/本站汇总、整理和展示公开渠道及商家主动提交的/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '关闭免责声明' }));
     await user.click(await screen.findByRole('button', { name: '商品说明' }));
     expect(screen.getByRole('dialog', { name: 'Plus 报价' })).toHaveTextContent('自建站，风险相对更高');

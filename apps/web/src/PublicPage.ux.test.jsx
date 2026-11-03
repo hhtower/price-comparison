@@ -40,7 +40,7 @@ function mount() {
   return render(<VirtuosoMockContext.Provider value={{ viewportHeight: 3000, itemHeight: 300 }}><PublicPage /></VirtuosoMockContext.Provider>);
 }
 
-test('keeps a compact disclaimer below the brand and opens its original wording in a dismissible dialog', async () => {
+test('keeps a compact disclaimer below the brand and opens the full disclaimer in a dismissible dialog', async () => {
   window.history.replaceState({}, '', '/?q=Plus&platform=openai');
   const user = userEvent.setup();
   mount();
@@ -51,11 +51,13 @@ test('keeps a compact disclaimer below the brand and opens its original wording 
   expect(notice).toHaveTextContent('本站不参与交易');
   expect(trigger).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByRole('dialog', { name: '免责声明' })).not.toBeInTheDocument();
-  const original = [
-    '本站展示第三方商铺报价，信息仅供比较参考。价格、库存、商品内容及交易条件可能变化，请在下单前以商家页面的实际信息为准。',
-    '本站不参与交易，交易与售后请联系商家。发现价格不符、链接失效或可疑商品，可在对应报价下方举报。',
+  const paragraphs = [
+    '本站汇总、整理和展示公开渠道及商家主动提交的商品、商家与报价信息，仅供用户查询和价格比较参考。本站不销售商品，不参与交易，不代收货款，也不提供交易担保或商品售后服务。',
+    '信息可能存在更新延迟、缺失或偏差，商家提交的内容亦不代表已获本站认可或担保。商品价格、库存、规格、优惠条件及售后政策，请以商家最新说明及实际确认为准。信息的收录、展示或排序，不构成购买建议，也不代表本站对商家资质、商品质量或履约能力作出保证。',
+    '如需购买，请自行核实商品信息、商家资质及交易条件。下单、付款、交付、退款及售后等事项，由您与商家直接沟通处理。',
+    '如发现信息错误、链接失效、疑似违规内容或涉及您的合法权益，请通过对应报价的举报入口反馈，我们将核实处理。',
   ];
-  for (const text of original) expect(screen.queryByText(text, { exact: true })).not.toBeInTheDocument();
+  for (const text of paragraphs) expect(screen.queryByText(text, { exact: true })).not.toBeInTheDocument();
   const guide = within(notice).getByRole('link', { name: '选购指南 →' });
   fireEvent.contextMenu(guide);
   expect(new URL(guide.href).searchParams.get('returnTo')).toBe(window.location.pathname + window.location.search);
@@ -63,7 +65,7 @@ test('keeps a compact disclaimer below the brand and opens its original wording 
   const dialog = screen.getByRole('dialog', { name: '免责声明' });
   expect(trigger).toHaveAttribute('aria-expanded', 'true');
   expect(notice).not.toContainElement(dialog);
-  for (const text of original) expect(within(dialog).getByText(text, { exact: true })).toBeVisible();
+  for (const text of paragraphs) expect(within(dialog).getByText(text, { exact: true })).toBeVisible();
   expect(within(dialog).getByRole('button', { name: '关闭免责声明' })).toHaveFocus();
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('dialog', { name: '免责声明' })).not.toBeInTheDocument();
