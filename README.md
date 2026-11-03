@@ -90,7 +90,9 @@ docs/               产品截图、商铺评分规则与部署说明
 
 更多说明见 [文档索引](docs/README.md)，安全问题请按 [SECURITY.md](SECURITY.md) 反馈。
 
-致谢：[LINUX DO 社区](https://linux.do/)
+## 致谢
+
+[LINUX DO 社区](https://linux.do/)
 
 ## 许可证
 
