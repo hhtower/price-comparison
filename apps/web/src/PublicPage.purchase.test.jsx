@@ -1,6 +1,7 @@
 import React from 'react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import App from './App.jsx';
 
 const measurement = vi.hoisted(() => ({ automatic: true, callback: null }));
@@ -482,6 +483,55 @@ test('direct product page is nonmodal, defaults to CNY and loads batches with de
   expect(document.title).toContain('Codex 手机接码价格比较');
   expect(document.querySelector('link[rel="canonical"]').href).toContain('/products/42');
   expect(new URLSearchParams(window.location.search).has('detailPage')).toBe(false);
+});
+
+test('product search keeps the query toolbar in view after debounced SEO intro pushes it down', async () => {
+  window.history.replaceState({}, '', '/products/42');
+  mockApi();
+  const scrollTo = vi.fn();
+  vi.stubGlobal('scrollTo', scrollTo);
+  vi.spyOn(window, 'scrollY', 'get').mockReturnValue(500);
+  render(<App />);
+  const input = await screen.findByRole('textbox', { name: '搜索商铺或报价' });
+  vi.spyOn(input.closest('.detail-query-panel'), 'getBoundingClientRect').mockReturnValue({ top: 120 });
+  fireEvent.change(input, { target: { value: '月付' } });
+  await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 620));
+});
+
+test.each(['/', '/products/42'])('keeps SEO answers, facts and FAQs visible after client rendering on %s', async path => {
+  window.history.replaceState({}, '', path);
+  mockApi();
+  render(<App />);
+  await screen.findAllByText('¥12.5');
+  const answer = document.querySelector('.seo-answer');
+  expect(answer).toBeVisible();
+  expect(document.querySelectorAll('.catalog-seo-intro')).toHaveLength(1);
+  expect(document.querySelectorAll('.seo-answer')).toHaveLength(1);
+  if (path === '/') {
+    const panel = document.querySelector('.catalog-seo-panel');
+    expect(panel).toContainElement(document.querySelector('.catalog-seo-intro'));
+    expect(panel).toContainElement(document.querySelector('.seo-faq'));
+  }
+  expect([...answer.textContent].length).toBeLessThanOrEqual(50);
+  expect(document.querySelectorAll('main h1')).toHaveLength(1);
+  const quotes = document.getElementById('catalog-quotes');
+  if (path === '/') {
+    expect(quotes.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(quotes.compareDocumentPosition(document.querySelector('main h1')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(answer.closest('.catalog-seo-intro')).toContainElement(document.querySelector('main h1'));
+  } else {
+    expect(answer.compareDocumentPosition(quotes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
+  for (const fact of document.querySelectorAll('.seo-fact')) {
+    expect(within(fact).getByRole('heading', { level: 2 })).toBeVisible();
+    expect(fact.textContent).toMatch(/\d/u);
+  }
+  const faq = document.querySelector('.seo-faq');
+  expect(faq).toBeVisible();
+  expect(answer.compareDocumentPosition(faq) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  for (const answer of faq.querySelectorAll('p')) expect([...answer.textContent].length).toBeLessThanOrEqual(80);
+  expect(within(faq).getByRole('heading', { name: SITE_NAME + '是否销售账号或提供交易担保？' })).toBeVisible();
+  expect(document.querySelector('main')).not.toHaveTextContent(/PriceAI|OpenPrice|AICheap|AIDeal/);
 });
 
 test('refresh keeps product page filters and starts continuous loading from the first batch', async () => {

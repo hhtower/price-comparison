@@ -2,6 +2,7 @@ import React from 'react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import PublicPage from './PublicPage.jsx';
 
 let clipboardDescriptor;
@@ -48,7 +49,7 @@ test('opens the community from the homepage with a selectable number and downloa
   expect(modal.getByRole('textbox', { name: 'QQ 群号' })).toHaveAttribute('readonly');
   const image = modal.getByRole('img', { name: 'QQ 群二维码' });
   expect(modal.getByRole('link', { name: '保存二维码' })).toHaveAttribute('href', image.getAttribute('src'));
-  expect(modal.getByRole('link', { name: '保存二维码' })).toHaveAttribute('download', '知途拾价-QQ群二维码.png');
+  expect(modal.getByRole('link', { name: '保存二维码' })).toHaveAttribute('download', SITE_NAME + '-QQ群二维码.png');
   await user.click(modal.getByRole('button', { name: '关闭交流群弹窗' }));
   expect(screen.queryByRole('dialog', { name: 'QQ 交流群' })).not.toBeInTheDocument();
   expect(trigger).toHaveAttribute('aria-expanded', 'false');

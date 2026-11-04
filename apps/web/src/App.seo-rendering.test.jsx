@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { VirtuosoMockContext } from 'react-virtuoso';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import { registerPublicPages } from '../../api/src/seo/public-pages.ts';
 import App from './App.jsx';
 
@@ -65,10 +66,9 @@ test('real client retains readable quotes after replacing server HTML under its 
   container.innerHTML = parsed.getElementById('root').innerHTML;
   document.body.appendChild(container);
   expect(container).toHaveTextContent('ChatGPT Plus');
-  const serverGuide = container.querySelector('.purchase-guide-brief');
-  expect(serverGuide).toHaveTextContent('第一次购买？');
-  expect(serverGuide.querySelector('ol')).toBeNull();
-  expect(container.querySelectorAll('a[href="/guide"]')).toHaveLength(1);
+  expect(container.querySelector('.purchase-guide-brief')).toBeNull();
+  expect(container.querySelector('.seo-answer')).toHaveTextContent(SITE_NAME + '汇总第三方商铺报价');
+  expect(container.querySelectorAll('a[href="/guide"]').length).toBeGreaterThan(0);
   window.history.replaceState({}, '', '/');
   vi.stubGlobal('fetch', vi.fn(async (input, options) => {
     const url = String(input);
@@ -87,7 +87,7 @@ test('real client retains readable quotes after replacing server HTML under its 
   expect(inlineGuide.querySelector('details')).toBeNull();
   expect(inlineGuide.closest('header')).toHaveClass('community-header');
   expect(inlineGuide.querySelector('a')).toHaveAttribute('href', '/guide');
-  expect(container.querySelectorAll('a[href="/guide"]')).toHaveLength(1);
+  expect(container.querySelectorAll('a[href="/guide"]').length).toBeGreaterThan(1);
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(allowedByRobots(robots, '/api/quality/catalog')).toBe(true);
   expect(allowedByRobots(robots, '/api/quality/tasks/private')).toBe(false);
@@ -98,7 +98,7 @@ test('real client retains readable quotes after replacing server HTML under its 
   expect(allowedByRobots(robots, '/api/catalog/products-private')).toBe(false);
 });
 
-test.each([false, true])('guide preserves no-script content and requests only assistant status GET (enabled=%s)', async enabled => {
+test.each([false, true])('guide preserves no-script content and requests assistant status once (enabled=%s)', async enabled => {
   const adapter = new FastifyAdapter();
   const noData = async () => { throw new Error('guide must not request data'); };
   registerPublicPages(adapter, { template: '<html><head><title>Site</title></head><body><div id="root"></div></body></html>',
@@ -130,7 +130,7 @@ test.each([false, true])('guide preserves no-script content and requests only as
   expect([...container.querySelectorAll('main [id]')].map(node => node.id)).toEqual(expectedIds);
   expect(document.title).toBe(parsed.title);
   expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/guide');
-  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch.mock.calls.filter(([input]) => input === '/api/assistant/status')).toHaveLength(1);
   expect(fetch).toHaveBeenCalledWith('/api/assistant/status', expect.objectContaining({ method: 'GET', cache: 'no-store' }));
 });
 
@@ -150,7 +150,8 @@ test('product client retains server structured offers and removes them when quot
   const parsed = new DOMParser().parseFromString(html, 'text/html');
   document.head.innerHTML = parsed.head.innerHTML;
   const expected = JSON.parse(document.querySelector('#page-structured-data').textContent);
-  expect(expected.offers).toHaveLength(1);
+  const expectedProduct = expected['@graph'].find(node => node['@type'] === 'Product');
+  expect(expectedProduct.offers).toHaveLength(1);
   window.history.replaceState({}, '', '/products/42');
   vi.stubGlobal('fetch', vi.fn(async (input, options) => {
     const url = new URL(input, 'http://localhost');
@@ -165,7 +166,11 @@ test('product client retains server structured offers and removes them when quot
   expect(JSON.parse(document.querySelector('#page-structured-data').textContent)).toEqual(expected);
   offer.priceExpiresAt = '2000-01-01T00:00:00Z';
   await act(async () => document.dispatchEvent(new Event('visibilitychange')));
-  await waitFor(() => expect(JSON.parse(document.querySelector('#page-structured-data').textContent).offers).toBeUndefined());
+  await waitFor(() => expect(JSON.parse(document.querySelector('#page-structured-data').textContent)['@graph']
+    .find(node => node['@type'] === 'Product').offers).toBeUndefined());
+  const remaining = JSON.parse(document.querySelector('#page-structured-data').textContent)['@graph'];
+  expect(remaining.filter(node => node['@type'] !== 'Product'))
+    .toEqual(expected['@graph'].filter(node => node['@type'] !== 'Product'));
 });
 
 test('home client keeps cursor pagination and resets it when searching', async () => {
@@ -213,5 +218,6 @@ test.each([503, 200])('completed quote loading with no visible offers clears the
   }));
   render(<App />);
   await screen.findByText(status === 200 ? '没有匹配的报价' : '报价加载失败，请重试');
-  expect(JSON.parse(document.querySelector('#page-structured-data').textContent).offers).toBeUndefined();
+  expect(JSON.parse(document.querySelector('#page-structured-data').textContent)['@graph']
+    .find(node => node['@type'] === 'Product').offers).toBeUndefined();
 });

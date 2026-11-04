@@ -1,5 +1,6 @@
 import { PURCHASE_GUIDE_CONTENT as guide, PURCHASE_GUIDE_FIELDS, PURCHASE_GUIDE_GROUPS } from '@price-comparison/catalog/purchase-guide-content';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
+import { CATALOG_SEO_CONTENT, PRODUCT_SEO_CONTENT } from '@price-comparison/catalog/seo-content';
 import type { FastifyAdapter } from '@nestjs/platform-fastify';
 import { decodeCatalogCursor } from '../catalog/catalog.repository.js';
 import type { CatalogOffer, CatalogPage, PublicCatalogProduct, PublicCatalogProducts } from '../catalog/catalog.repository.js';
@@ -45,15 +46,31 @@ function renderOffer(offer: CatalogOffer): string {
     + (offer.stale ? '（报价可能已过期）' : '') + '</p></li>';
 }
 
+function seoIntroduction(product = false): string {
+  const content = product ? PRODUCT_SEO_CONTENT : CATALOG_SEO_CONTENT;
+  return '<div class="catalog-seo-intro">'
+    + (product ? '' : '<h1 class="catalog-page-title">' + escapeHtml(CATALOG_SEO_CONTENT.title) + '</h1>')
+    + '<p class="seo-answer">' + escapeHtml(content.conclusion) + '</p><div class="seo-facts">'
+    + content.facts.map(fact => '<section class="seo-fact"><h2>' + escapeHtml(fact.title) + '</h2><p>'
+      + escapeHtml(fact.text) + '</p><a href="' + escapeHtml(fact.href) + '">' + escapeHtml(fact.link) + '</a></section>').join('')
+    + '</div></div>';
+}
+
+function seoFaq(product = false): string {
+  const content = product ? PRODUCT_SEO_CONTENT : CATALOG_SEO_CONTENT;
+  return '<section class="seo-faq" aria-labelledby="catalog-faq-title"><h2 id="catalog-faq-title">报价与购买常见问题</h2>'
+    + content.faq.map(item => '<div><h3>' + escapeHtml(item.question) + '</h3><p>' + escapeHtml(item.answer) + '</p></div>').join('')
+    + '</section>';
+}
+
 function catalogContent(page: CatalogPage): string {
-  return '<h1>AI 商品价格比较</h1><p>' + escapeHtml(PAGE_METADATA.public.description) + '</p>'
-    + '<p>本站提供第三方报价信息，不参与交易；价格和库存以来源商铺为准，商品规格与售后以商家说明为准。</p>'
-    + '<p class="purchase-guide-brief">第一次购买？<a href="/guide">查看选购说明 →</a></p>'
-    + (page.items.length ? page.items.map(item => '<article><h2><a href="/products/' + escapeHtml(item.id) + '">' + escapeHtml(standardProductDisplayName(item.name)) + '</a></h2><p>平台：'
+  return '<h2 id="catalog-quotes">本站商品报价与来源</h2>'
+    + (page.items.length ? page.items.map(item => '<article><h3><a href="/products/' + escapeHtml(item.id) + '">' + escapeHtml(standardProductDisplayName(item.name)) + '</a></h3><p>平台：'
       + escapeHtml(item.platform) + '</p><ul>' + item.offers.map(renderOffer).join('') + '</ul></article>').join('')
       : '<p>暂无可用报价，请稍后再试。</p>')
     + (page.nextCursor ? '<nav aria-label="商品分页"><a rel="next" href="' + escapeHtml(catalogPageMetadata(page.nextCursor).path) + '">下一页商品</a></nav>' : '')
-    + '<p>以上为商品报价摘要。启用 JavaScript 可搜索、筛选及加载更多商品和报价。</p>';
+    + '<p>以上为商品报价摘要。启用 JavaScript 可搜索、筛选及加载更多商品和报价。</p>'
+    + '<section class="catalog-seo-panel" aria-label="比价说明与常见问题">' + seoIntroduction() + seoFaq() + '</section>';
 }
 
 function guideContent(): string {
@@ -104,7 +121,7 @@ function renderPage(template: string, kind: PageKind, origin: string, content: s
     + (schema ? '<script id="page-structured-data" type="application/ld+json">' + JSON.stringify(schema).replace(/</gu, '\\u003c') + '</script>' : '');
   const navigation = kind === 'guide'
     ? ''
-    : '<nav aria-label="网站导航"><a href="/">知途 · 拾价</a> · <a href="/tools">检测工具</a>'
+    : '<nav aria-label="网站导航"><a href="/">' + escapeHtml(SITE_NAME) + '</a> · <a href="/tools">检测工具</a>'
       + (kind === 'public' && !page.path.startsWith('/products/') && !unavailable ? '' : ' · <a href="/guide">新手指南</a>') + '</nav>';
   const body = '<main class="seo-document' + (kind === 'guide' ? ' purchase-guide-page' : '') + '">' + navigation + content + '</main>';
   return template.replace(/<title>[\s\S]*?<\/title>/u, () => '<title>' + escapeHtml(page.title) + '</title>')
@@ -164,12 +181,13 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
       if (pageNumber > 1 && (pageNumber - 1) * PRODUCT_PAGE_SIZE >= total) return missing('商品分页不存在');
       const page = productPageMetadata(product, pageNumber);
       const schema = productPageSchema(product, origin, offers, pageNumber);
-      const content = '<h1>' + escapeHtml(standardProductDisplayName(product.name)) + '</h1><p>' + escapeHtml(page.description) + '</p>'
+      const content = '<h1>' + escapeHtml(standardProductDisplayName(product.name)) + '</h1>' + seoIntroduction(true)
+        + '<h2 id="catalog-quotes">商铺报价与来源</h2>'
         + (offers.length ? '<ul>' + offers.map(renderOffer).join('') + '</ul>' : '<p>暂无可用报价，请稍后再试。</p>')
         + '<nav aria-label="报价分页">'
         + (pageNumber > 1 ? '<a rel="prev" href="' + productPagePath(id, pageNumber - 1) + '">上一页报价</a> · ' : '')
         + '<span>第' + pageNumber + '页</span>'
-        + (pageNumber * PRODUCT_PAGE_SIZE < total ? ' · <a rel="next" href="' + productPagePath(id, pageNumber + 1) + '">下一页报价</a>' : '') + '</nav>';
+        + (pageNumber * PRODUCT_PAGE_SIZE < total ? ' · <a rel="next" href="' + productPagePath(id, pageNumber + 1) + '">下一页报价</a>' : '') + '</nav>' + seoFaq(true);
       return reply.send(renderPage(options.template, 'public', origin, content, false, { page, schema }));
     } catch {
       request.log.warn('public product HTML unavailable');

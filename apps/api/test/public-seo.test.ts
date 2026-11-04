@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { JSDOM } from 'jsdom';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import { registerPublicPages } from '../src/seo/public-pages.js';
 import type { CatalogPage } from '../src/catalog/catalog.repository.js';
 import { encodeCatalogCursor } from '../src/catalog/catalog.repository.js';
@@ -27,6 +28,35 @@ function setup(t: { after: (fn: () => Promise<void>) => void }, overrides = {}) 
   t.after(() => server.close());
   return server;
 }
+
+function schemaNode(document: Document, type: string): Record<string, any> {
+  const data = JSON.parse(document.querySelector('#page-structured-data')!.textContent!);
+  return data['@type'] === type ? data : data['@graph'].find((node: Record<string, any>) => node['@type'] === type);
+}
+
+test('public schema uses the configured origin and only marks visible FAQ answers', async t => {
+  const origin = 'https://comparison.example';
+  const server = setup(t, { siteUrl: origin });
+  for (const path of ['/', '/guide', '/tools', '/products/42']) {
+    const response = await server.inject(path);
+    const document = new JSDOM(response.body).window.document;
+    const graph = JSON.parse(document.querySelector('#page-structured-data')!.textContent!);
+    assert.doesNotMatch(JSON.stringify(graph), /price\.yufu\.pub/);
+    assert.equal(schemaNode(document, 'Organization')['@id'], origin + '/#organization');
+    const faq = schemaNode(document, 'FAQPage');
+    const visible = [...document.querySelectorAll('.seo-faq > div')].map(element => ({
+      question: element.querySelector('h3')!.textContent,
+      answer: element.querySelector('p')!.textContent,
+    }));
+    assert.deepEqual(faq?.mainEntity.map((item: Record<string, any>) => ({
+      question: item.name, answer: item.acceptedAnswer.text,
+    })) ?? [], visible);
+    if (path !== '/') {
+      assert.deepEqual(schemaNode(document, 'BreadcrumbList').itemListElement
+        .map((item: Record<string, any>) => [item.position, item.item]), [[1, origin + '/'], [2, origin + path]]);
+    }
+  }
+});
 
 test('robots allows public crawling and advertises the canonical sitemap', async t => {
   const response = await setup(t).inject('/robots.txt');
@@ -57,14 +87,56 @@ test('home exposes real quotes, source links and timestamps before JavaScript ex
   assert.ok(document.querySelector('a[href="https://shop.example/product/9"]'));
   assert.ok(document.querySelector('a[href="/tools"]'));
   assert.equal(document.querySelectorAll('a[href="/guide"]').length, 1);
-  assert.match(document.querySelector('.purchase-guide-brief')!.textContent!, /第一次购买？.*查看选购说明/);
-  assert.equal(document.querySelector('.purchase-guide-brief ol'), null);
+  assert.match(document.querySelector('.seo-fact')!.textContent!, /5 项购买条件.*查看选购说明/);
   assert.equal(document.querySelector('time')!.getAttribute('datetime'), '2026-09-27T00:00:00.000Z');
   assert.ok(document.querySelector('script[type="module"]'));
   const data = JSON.parse(document.querySelector('script[type="application/ld+json"]')!.textContent!);
   assert.equal(data['@context'], 'https://schema.org');
   assert.ok(data['@graph'].some((entry: Record<string, unknown>) => entry['@type'] === 'WebSite'));
+  assert.equal(schemaNode(document, 'Organization').name, SITE_NAME);
+  assert.equal(schemaNode(document, 'FAQPage').mainEntity.length, 4);
+  assert.equal(data['@graph'].some((entry: Record<string, unknown>) => entry['@type'] === 'BreadcrumbList'), false);
   assert.doesNotMatch(JSON.stringify(data), /AggregateOffer|aggregateRating|priceValidUntil/);
+});
+
+for (const path of ['/', '/products/42']) test(`SEO answers and purchase facts are readable without JavaScript on ${path}`, async t => {
+  const response = await setup(t).inject(path);
+  const document = new JSDOM(response.body).window.document;
+  const answer = document.querySelector('.seo-answer');
+  assert.ok(answer, 'lead with a complete answer');
+  assert.equal(document.querySelectorAll('main h1').length, 1);
+  assert.equal(document.querySelectorAll('.catalog-seo-intro').length, 1);
+  if (path === '/') {
+    const panel = document.querySelector('.catalog-seo-panel');
+    assert.ok(panel);
+    assert.ok(panel.contains(document.querySelector('.catalog-seo-intro')));
+    assert.ok(panel.contains(document.querySelector('.seo-faq')));
+  }
+  assert.equal(document.querySelectorAll('.seo-answer').length, 1);
+  if (path === '/') {
+    const lastProduct = [...document.querySelectorAll('main article')].at(-1)!;
+    assert.ok(lastProduct.compareDocumentPosition(answer) & document.defaultView!.Node.DOCUMENT_POSITION_FOLLOWING,
+      'home buying notes follow the product list');
+    assert.ok(answer.closest('.catalog-seo-intro')!.contains(document.querySelector('main h1')),
+      'the homepage title moves with its buying notes');
+  } else {
+    assert.equal(document.querySelector('main p'), answer);
+  }
+  assert.ok([...answer.textContent!].length <= 50);
+  const facts = [...document.querySelectorAll('.seo-fact')];
+  assert.equal(facts.length, 3);
+  for (const fact of facts) {
+    assert.ok(fact.querySelector('h2'));
+    assert.match(fact.textContent!, /\d/u);
+    assert.ok(fact.querySelector('a[href]'), 'facts link to their verification context');
+  }
+  const faq = document.querySelector('.seo-faq');
+  assert.ok(faq);
+  assert.ok(faq.querySelectorAll('h3').length >= 3);
+  for (const answer of faq.querySelectorAll('p')) assert.ok([...answer.textContent!].length <= 80);
+  assert.ok(document.querySelector('a[href="https://shop.example/product/9"]'));
+  assert.equal(document.querySelector('main')!.lastElementChild, path === '/' ? document.querySelector('.catalog-seo-panel') : faq);
+  assert.doesNotMatch(document.body.textContent!, /PriceAI|OpenPrice|AICheap|AIDeal|谷歌前三|保证收录/u);
 });
 
 test('canonical metadata uses configured origin and ignores tracking and forged host headers', async t => {
@@ -84,6 +156,8 @@ test('tools serves distinct readable metadata without a catalog dependency', asy
   assert.match(document.title, /AI.*IP/);
   assert.match(document.querySelector('#root')!.textContent!, /AI.*IP/s);
   assert.equal(document.querySelector('link[rel="canonical"]')!.getAttribute('href'), 'https://price.yufu.pub/tools');
+  assert.ok(schemaNode(document, 'BreadcrumbList').itemListElement.some((item: Record<string, any>) => item.name === 'AI 与 IP 检测工具'));
+  assert.equal(schemaNode(document, 'WebSite').publisher['@id'], 'https://price.yufu.pub/#organization');
 });
 
 test('admin and API responses opt out of indexing', async t => {
@@ -145,7 +219,7 @@ test('merchant text is escaped and unsafe purchase URLs are not links', async t 
   assert.equal(document.querySelectorAll('#root script, #root img, #root [onerror]').length, 0);
   assert.equal(document.querySelector('a[href^="javascript:"]'), null);
   assert.match(document.querySelector('#root')!.textContent!, /A & B/);
-  assert.match(document.querySelector('h2')!.textContent!, /<script>/);
+  assert.match(document.querySelector('article h3')!.textContent!, /<script>/);
 });
 
 test('site URL rejects credentials and non-origins and supports a custom HTTPS origin', async t => {
@@ -179,9 +253,11 @@ test('product HTML has canonical metadata, paginated real quotes and verified st
   assert.equal(document.querySelector('h1')?.textContent, 'ChatGPT Plus');
   for (const selector of ['link[rel="canonical"]', 'meta[property="og:url"]']) assert.equal(document.querySelector(selector)?.getAttribute(selector.startsWith('link') ? 'href' : 'content'), 'https://price.yufu.pub/products/42');
   assert.match(document.querySelector('#root')!.textContent!, /12.50.*CNY/s);
-  const schema = JSON.parse(document.querySelector('#page-structured-data')!.textContent!);
-  assert.equal(schema['@type'], 'Product');
+  const schema = schemaNode(document, 'Product');
   assert.equal(schema.offers[0].price, '12.50');
+  assert.equal(schemaNode(document, 'BreadcrumbList').itemListElement.at(-1).name, 'ChatGPT Plus');
+  assert.equal(schemaNode(document, 'FAQPage').mainEntity.length, 5);
+  assert.equal(schemaNode(document, 'Organization').url, 'https://price.yufu.pub/');
 });
 
 for (const path of ['/', '/products/42']) test(`SSR shows the exact unit price and database minimum quantity on ${path}`, async t => {
@@ -204,8 +280,7 @@ test('multi-unit quotes keep Product metadata but never emit bare unit-price str
     const response = await setup(t, { getCatalog: async () => ({ ...page, items: [{ ...page.items[0]!, offers }] }) }).inject('/products/42');
     assert.equal(response.statusCode, 200);
     const document = new JSDOM(response.body).window.document;
-    const schema = JSON.parse(document.querySelector('#page-structured-data')!.textContent!);
-    assert.equal(schema['@type'], 'Product');
+    const schema = schemaNode(document, 'Product');
     assert.equal(schema.name, 'ChatGPT Plus');
     assert.deepEqual(schema.offers?.map((offer: { price: string }) => offer.price), offers.length === 1 ? undefined : ['12.50']);
     assert.match(document.querySelector('#root')!.textContent!, /0\.333333333333 CNY/);
@@ -218,7 +293,7 @@ for (const status of ['expired', 'estimated'] as const) for (const path of ['/',
   const response = await setup(t, { getCatalog: async () => ({ ...page, items: [{ ...page.items[0]!, offers: [offer] }] }) }).inject(path);
   const document = new JSDOM(response.body).window.document;
   assert.match(document.querySelector('#root')!.textContent!, /12\.50 CNY.*预估/);
-  if (path !== '/') assert.equal(JSON.parse(document.querySelector('#page-structured-data')!.textContent!).offers, undefined);
+  if (path !== '/') assert.equal(schemaNode(document, 'Product').offers, undefined);
 });
 
 test('public product without a valid price keeps its page and never emits a false offer', async t => {
@@ -226,8 +301,8 @@ test('public product without a valid price keeps its page and never emits a fals
   assert.equal(response.statusCode, 200);
   const document = new JSDOM(response.body).window.document;
   assert.match(document.querySelector('#root')!.textContent!, /—/);
-  assert.doesNotMatch(document.querySelector('#root')!.textContent!, /标价|9\.00|待更新|待核验/);
-  assert.equal(JSON.parse(document.querySelector('#page-structured-data')!.textContent!).offers, undefined);
+  assert.doesNotMatch(document.querySelector('main ul')!.textContent!, /标价|9\.00|待更新|待核验/);
+  assert.equal(schemaNode(document, 'Product').offers, undefined);
   const empty = await setup(t, { getCatalog: async () => ({ items: [], total: 0, platformFacets: [] }) }).inject('/products/42');
   assert.equal(empty.statusCode, 200);
   assert.match(empty.body, /暂无可用报价/);
@@ -242,7 +317,7 @@ test('payment-method estimates and unavailable prices never become structured of
   ]) {
     const response = await setup(t, { getCatalog: async () => ({ ...page, items: [{ ...page.items[0]!, offers: [{ ...single, ...change }] }] }) }).inject('/products/42');
     const document = new JSDOM(response.body).window.document;
-    assert.equal(JSON.parse(document.querySelector('#page-structured-data')!.textContent!).offers, undefined, JSON.stringify(change));
+    assert.equal(schemaNode(document, 'Product').offers, undefined, JSON.stringify(change));
   }
 });
 

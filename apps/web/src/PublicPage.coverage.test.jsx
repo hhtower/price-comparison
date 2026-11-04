@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { VirtuosoMockContext } from 'react-virtuoso';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import PublicPage from './PublicPage.jsx';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -42,7 +43,7 @@ test('measures only the search toolbar and updates the sticky offset on resize',
     const catalog = search.closest('.compact-catalog');
     await waitFor(() => expect(catalog.style.getPropertyValue('--catalog-toolbar-height')).toBe('138px'));
     const toolbar = search.closest('.catalog-sticky-header');
-    const header = screen.getByRole('link', { name: '知途 · 拾价' }).closest('header');
+    const header = screen.getByRole('link', { name: SITE_NAME }).closest('header');
     expect(toolbar).not.toContainElement(header);
     expect(within(header).getByRole('button', { name: '提交商铺' })).toBeInTheDocument();
     expect(within(header).getByRole('button', { name: '免责声明' })).toBeInTheDocument();
@@ -71,7 +72,7 @@ test('shows a small home link only while the complete brand header is out of vie
   mockCatalog({ shopCount: 20, productCount: 100 });
   const mounted = renderPage();
   await screen.findByRole('heading', { name: /可比价商品/ });
-  const header = screen.getByRole('link', { name: '知途 · 拾价' }).closest('header');
+  const header = screen.getByRole('link', { name: SITE_NAME }).closest('header');
   const observer = observers.find(instance => instance.target === header);
   expect(screen.queryByRole('link', { name: '返回首页' })).not.toBeInTheDocument();
   await act(async () => observer.callback([{ isIntersecting: false }]));
@@ -93,7 +94,7 @@ test('shows static collection scale beside the brand with compact numbers and no
   expect(summary).toHaveTextContent('1,234 家商铺·314.9万条报价');
   expect(within(summary).getByText('收录')).toBeInTheDocument();
   const brandRow = summary.closest('.public-brand-row');
-  expect(within(brandRow).getByRole('link', { name: '知途 · 拾价' })).toBeInTheDocument();
+  expect(within(brandRow).getByRole('link', { name: SITE_NAME })).toBeInTheDocument();
   expect(within(brandRow).queryByRole('button')).not.toBeInTheDocument();
   expect(screen.queryByText(/数据覆盖：/)).not.toBeInTheDocument();
   expect(summary.closest('details')).toBeNull();

@@ -17,6 +17,16 @@ test('catalog keeps the compact search toolbar opaque and sticky', () => {
   expect(shared).toMatch(/\.compact-catalog \.search-panel\{display:grid;/u);
 });
 
+test('homepage SEO section matches the catalog surface and uses separated fact and FAQ columns', () => {
+  const css = readFileSync('apps/web/src/seo-document.css', 'utf8');
+  expect(css).toMatch(/\.compact-catalog \.catalog-seo-panel\s*\{[^}]*background:\s*#fff/u);
+  expect(css).toMatch(/\.catalog-seo-panel\s*\{[^}]*border-radius:\s*12px/u);
+  expect(css).toMatch(/\.catalog-seo-panel \.seo-facts\s*\{[^}]*grid-template-columns:\s*repeat\(3,/u);
+  expect(css).toMatch(/\.catalog-seo-panel \.seo-faq\s*\{[^}]*grid-template-columns:\s*repeat\(2,/u);
+  expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.catalog-seo-panel \.seo-facts\s*\{[^}]*grid-template-columns:\s*1fr/u);
+  expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.catalog-seo-panel \.seo-faq\s*\{[^}]*grid-template-columns:\s*1fr/u);
+});
+
 test.each([
   ['public-catalog.css', 'styles.css'],
   ['styles.css', 'public-catalog.css'],

@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import ModalDialog from './components/ModalDialog.jsx';
 import qrCodeUrl from './assets/qq-group.png';
 import './community.css';
@@ -52,6 +53,6 @@ export default function CommunityDialog({ onClose }) {
     </div>
     <span className="community-copy-feedback" role="status" aria-live="polite">{copyState === 'copied' ? '群号已复制' : ''}</span>
     {copyState === 'error' && <p className="community-copy-error" role="alert">复制失败，已选中群号，请长按或手动复制。</p>}
-    {!qrFailed && <a className="community-save" href={qrCodeUrl} download="知途拾价-QQ群二维码.png">保存二维码</a>}
+    {!qrFailed && <a className="community-save" href={qrCodeUrl} download={`${SITE_NAME}-QQ群二维码.png`}>保存二维码</a>}
   </ModalDialog>;
 }

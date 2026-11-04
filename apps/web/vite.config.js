@@ -1,10 +1,14 @@
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
-  plugins: [react()],
+  plugins: [react(), {
+    name: 'site-brand-html',
+    transformIndexHtml: html => html.replaceAll('%SITE_NAME%', SITE_NAME),
+  }],
   envDir: false,
   build: { outDir: '../../dist/client', emptyOutDir: true },
   server: {

@@ -1,6 +1,7 @@
 import React from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/react';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import App from './App.jsx';
 
 vi.mock('./PublicPage.jsx', () => ({ default: () => <main>商品比价</main> }));
@@ -15,10 +16,13 @@ function navigate(path) { window.history.pushState({}, '', path); fireEvent(wind
 test('client navigation keeps metadata aligned and removes private page structured data', () => {
   window.history.replaceState({}, '', '/');
   render(<App />);
-  expect(document.title).toContain('AI 商品价格比较');
+  expect(document.title).toBe('AI 订阅与账号价格比较 - ' + SITE_NAME);
   expect(canonical()).toBe('https://price.yufu.pub/');
   expect(meta('robots')).toContain('index, follow');
   navigate('/tools');
+  expect(document.title).toBe('AI 与 IP 检测工具 - ' + SITE_NAME);
+  expect(document.querySelector('meta[property="og:title"]').content).toBe(document.title);
+  expect(meta('twitter:title')).toBe(document.title);
   expect(canonical()).toBe('https://price.yufu.pub/tools');
   expect(meta('description')).toContain('IP');
   expect(document.querySelector('meta[property="og:url"]')?.content).toBe('https://price.yufu.pub/tools');
@@ -37,4 +41,5 @@ test('client preserves server configured canonical origin rather than browser ho
   window.history.replaceState({}, '', '/tools?utm_source=example');
   render(<App />);
   expect(canonical()).toBe('https://comparison.example/tools');
+  expect(document.title).toBe('AI 与 IP 检测工具 - ' + SITE_NAME);
 });

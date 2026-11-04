@@ -10,6 +10,11 @@ function setMeta(attribute, name, content) {
   element.content = content;
 }
 
+function hasProductSchema(data, url) {
+  const nodes = Array.isArray(data?.['@graph']) ? data['@graph'] : [data];
+  return nodes.some(node => node?.['@type'] === 'Product' && node.url === url);
+}
+
 export function updatePageMetadata(kind, product, offers, pageNumber = 1) {
   const page = kind === 'product-error' ? { path: '/products/' + product.id, title: product.name + ' - ' + SITE_NAME,
     description: product.name + '。请返回商品列表或稍后重试。' } : product ? productPageMetadata(product, pageNumber)
@@ -22,8 +27,7 @@ export function updatePageMetadata(kind, product, offers, pageNumber = 1) {
     document.head.appendChild(canonical);
   }
   canonical.href = origin + page.path;
-  // QualityToolsPage owns its active AI/IP tab title.
-  if (kind !== 'tools') document.title = page.title;
+  document.title = page.title;
   setMeta('name', 'description', page.description);
   setMeta('name', 'robots', kind === 'admin' || kind === 'assistant' || kind === 'product-error' ? 'noindex, nofollow' : 'index, follow, max-image-preview:large');
   for (const [name, value] of Object.entries({ 'og:type': product ? 'product' : 'website', 'og:locale': 'zh_CN', 'og:site_name': SITE_NAME,
@@ -36,7 +40,7 @@ export function updatePageMetadata(kind, product, offers, pageNumber = 1) {
   if (product && kind !== 'product-error' && offers === undefined && script) {
     try {
       const existing = JSON.parse(script.textContent);
-      if (existing['@type'] === 'Product' && existing.url === canonical.href) return;
+      if (hasProductSchema(existing, canonical.href)) return;
     } catch { /* Replace malformed metadata with the current product. */ }
   }
   const data = product && kind !== 'product-error' ? productPageSchema(product, origin, offers, pageNumber)

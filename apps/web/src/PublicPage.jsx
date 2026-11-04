@@ -17,6 +17,7 @@ import { updatePageMetadata } from './page-metadata.js';
 import { PRODUCT_PAGE_SIZE, catalogPageMetadata, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
 import { formatMoney } from './money.js';
 import PriceHistory from './PriceHistory.jsx';
+import { CatalogSeoIntro, CatalogSeoFaq } from './CatalogSeoContent.jsx';
 import { displayPurchaseTagText, displayPurchaseTagValue } from './purchase-tag-values.js';
 
 const OFFER_PAGE_SIZE = 4;
@@ -645,9 +646,10 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   const loadNextPage = useCallback(() => {
     if (detailQuery.hasNextPage && !detailQuery.isFetching && !detailQuery.isError) void detailQuery.fetchNextPage({ cancelRefetch: false });
   }, [detailQuery.hasNextPage, detailQuery.isFetching, detailQuery.isError, detailQuery.fetchNextPage]);
+  const queryScrollTop = () => window.scrollY + (toolbar.current?.getBoundingClientRect().top ?? 0);
   const update = patch => {
     restoreScroll.current = null;
-    if (standalone) window.scrollTo(0, 0);
+    if (standalone) window.scrollTo(0, queryScrollTop());
     else if (scrollElement) scrollElement.scrollTop = 0;
     setState(current => ({ ...current, scrollTop: 0, page: 1, ...patch }));
   };
@@ -672,7 +674,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   }
   function navigate(patch) {
     restoreScroll.current = patch.scrollTop ?? null;
-    if (standalone) window.scrollTo(0, 0);
+    if (standalone) window.scrollTo(0, patch.scrollTop ?? queryScrollTop());
     else if (scrollElement) scrollElement.scrollTop = patch.scrollTop ?? 0;
     const values = { ...state, scrollTop: 0, page: 1, ...patch };
     setState(values); setKeyword(values.keyword); setDraft({ ...values, tags: new Set(values.tags) }); setRangeError(''); setFilterOpen(false);
@@ -693,8 +695,9 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   const Container = standalone ? 'section' : ModalDialog;
   const Controls = standalone ? 'div' : React.Fragment;
   return <Container {...(standalone ? {} : { open: true, onClose })} className={standalone ? 'product-page-details' : 'catalog-detail-dialog'} aria-labelledby="catalog-detail-title">
-    <Controls {...(standalone ? { className: 'product-detail-controls' } : {})}>
     {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><h1>{formatStandardName(detail.item.name)}</h1><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span><span className="official-reference-slot" ref={referenceRef} /></header> : null}
+    {standalone ? <CatalogSeoIntro product /> : null}
+    <Controls {...(standalone ? { className: 'product-detail-controls', id: 'catalog-quotes' } : {})}>
     <header className="dialog-header"><div>{state.shopId ? <button type="button" className="text-button" onClick={() => navigate(shopListState.current || { shopId: '', shopName: '', kind: 'shops' })}>← 返回商铺列表</button> : null}<h2 id="catalog-detail-title">{standalone ? label : formatStandardName(detail.item.name) + ' · ' + label}{state.shopName ? ` · ${state.shopName}` : ''}</h2><p>{loading ? '…' : total} {isShops ? '家商铺' : '条报价'}</p></div><div className="detail-header-actions">{comparison.length ? <button type="button" className="text-button" onClick={onOpenComparison}>对比（{comparison.length}）</button> : null}{standalone ? <div className="detail-kind-tabs" role="group" aria-label="报价视图"><button type="button" aria-pressed={!isShops} onClick={() => navigate({ kind: 'offers', shopId: '', shopName: '' })}>全部报价</button><button type="button" aria-pressed={isShops} onClick={() => navigate({ kind: 'shops', shopId: '', shopName: '' })}>按商铺</button></div> : <button type="button" aria-label={`关闭${label}详情`} onClick={onClose}>×</button>}</div></header>
     <div className="detail-query-panel" ref={toolbar} onKeyDown={event => {
       if (event.key === 'Escape' && filterOpen) { event.preventDefault(); event.stopPropagation(); setFilterOpen(false); }
@@ -729,6 +732,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
         </nav> : null}
       {standalone ? <p className="product-trade-note">报价仅供比较参考，下单前请以商家页面的实际价格和交易条件为准。本站不参与交易，交易与售后请联系商家。</p> : null}
     </div>
+    {standalone ? <CatalogSeoFaq product /> : null}
   </Container>;
 }
 
@@ -1116,11 +1120,15 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
         {selectedCount ? <div className="selected-filters" aria-label="已选筛选条件">{selectedProduct ? <button type="button" onClick={() => { setSelectedProduct(''); setDraftProduct(''); trackUsage('filter'); }}>{selectedProductName} ×</button> : null}{selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}{warrantyDaysMin ? <button type="button" onClick={() => { setWarrantyDaysMin(''); setDraftWarrantyDaysMin(''); trackUsage('filter'); }}>质保至少{warrantyDaysMin}天 ×</button> : null}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
         {error ? <div className="catalog-error" role="alert"><span>{error}</span><button type="button" onClick={() => catalogQuery.isFetchNextPageError ? catalogQuery.fetchNextPage() : catalogQuery.refetch()}>重新加载</button></div> : null}
         {loading && !visibleItems.length ? <CatalogSkeleton /> : null}
-        <section className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={newcomer} /></section>
+        <section id="catalog-quotes" className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={newcomer} /></section>
         {unfilteredCatalog && data.nextCursor ? <nav className="catalog-pagination" aria-label="商品分页"><a rel="next" href={catalogPageMetadata(data.nextCursor).path}>下一页商品</a></nav> : null}
-        {!catalogQuery.hasNextPage && visibleItems.length ? <p className="catalog-infinite-end">逛到这里，好价就这么多啦</p> : null}
+        {!catalogQuery.hasNextPage && visibleItems.length ? <p className="catalog-infinite-end">已显示当前条件下的全部商品</p> : null}
         <section className="empty-state" hidden={Boolean(data.items?.length) || loading || Boolean(error)}><strong>{hasRecognizedIntent || selectedCount ? '没有同时满足这些条件的报价' : '还没有匹配结果'}</strong><span>{hasRecognizedIntent ? '可以移除一个条件，或换个关键词继续找。' : selectedCount ? '清除部分筛选，或换个关键词试试。' : '试试其他关键词或商品平台。'}</span>{hasRecognizedIntent ? <button type="button" className="primary-button" onClick={() => { setQuery(parseCatalogSearch(query).text); }}>清除已识别条件</button> : selectedCount ? <button type="button" className="primary-button" onClick={clearFilters}>清除筛选</button> : null}</section>
       </div>
+      <section className="catalog-seo-panel" aria-label="比价说明与常见问题">
+        <CatalogSeoIntro />
+        <CatalogSeoFaq />
+      </section>
       </>}
       {toast ? <div className="catalog-toast" role="status" aria-live="polite">{toast}</div> : null}
       {comparison.length ? <div className="comparison-bar"><button type="button" className="primary-button" onClick={() => setComparisonOpen(true)}>对比（{comparison.length}）</button><button type="button" className="text-button" onClick={() => setComparison([])}>清空</button></div> : null}

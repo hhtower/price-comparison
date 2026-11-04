@@ -1,6 +1,7 @@
 import React from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import QualityToolsPage from './QualityToolsPage.jsx';
 import { catalog, report } from './quality-test-fixtures.js';
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
@@ -165,7 +166,7 @@ test.each([['fingerprint-match','指纹一致性']])('does not present successfu
 test.each([':::1','2001:db8:::1','999.1.2.3','01.2.3.4','socks5://host:0','socks5://host:65536','socks5://host:1080/path'])('rejects malformed IP/proxy %s',async target=>{server({kind:'ip'});await ready();fireEvent.click(screen.getByRole('tab',{name:/IP检测/}));fireEvent.change(screen.getByLabelText('IP 地址或 SOCKS5 地址'),{target:{value:target}});start();expect(screen.getByRole('alert')).toHaveTextContent('有效的 IP 地址或 SOCKS5 地址');});
 test('clears SOCKS credentials and shows server applicability',async()=>{server({kind:'ip'});await ready();fireEvent.click(screen.getByRole('tab',{name:/IP检测/}));const input=screen.getByLabelText('IP 地址或 SOCKS5 地址');fireEvent.change(input,{target:{value:'socks5://user:proxy-secret@proxy.example:1080'}});expect(screen.getByText('已识别：SOCKS5 代理')).toBeInTheDocument();start();await screen.findByText('存在风险');expect(input).toHaveValue('');expect(screen.getAllByText('需 SOCKS5').length).toBeGreaterThan(0);expect(screen.getByText('1.2.3.4')).toBeInTheDocument();});
 test('switching tools preserves each form and the custom AI scope in separate accessible panels',async()=>{
- server();await ready();fill({'API Key':''});
+ document.title='AI 与 IP 检测工具 - '+SITE_NAME;server();await ready();fill({'API Key':''});
  fireEvent.change(screen.getByLabelText('检测档位'),{target:{value:'full'}});
  fireEvent.change(screen.getByLabelText('检测次数'),{target:{value:'5'}});
  fireEvent.click(screen.getByRole('button',{name:'展开检测项目'}));
@@ -175,12 +176,14 @@ test('switching tools preserves each form and the custom AI scope in separate ac
  const aiTab=screen.getByRole('tab',{name:'AI检测'});
  const ipTab=screen.getByRole('tab',{name:'IP检测'});
  fireEvent.click(ipTab);
+ expect(document.title).toBe('AI 与 IP 检测工具 - '+SITE_NAME);
  expect(aiPanel).toBeInTheDocument();expect(aiPanel).not.toBeVisible();expect(aiPanel).toHaveAttribute('inert');
  expect(screen.queryByRole('textbox',{name:'被测 Base URL'})).not.toBeInTheDocument();
  const ipPanel=screen.getByRole('tabpanel',{name:'IP检测'});
  expect(aiTab).toHaveAttribute('aria-controls',aiPanel.id);expect(ipTab).toHaveAttribute('aria-controls',ipPanel.id);expect(aiPanel.id).not.toBe(ipPanel.id);
  fireEvent.change(screen.getByLabelText('IP 地址或 SOCKS5 地址'),{target:{value:'8.8.8.8'}});
  fireEvent.click(aiTab);
+ expect(document.title).toBe('AI 与 IP 检测工具 - '+SITE_NAME);
  expect(screen.getByLabelText('被测 Base URL')).toHaveValue('https://relay.example/v1');expect(screen.getByLabelText('目标模型')).toHaveValue('test-model');
  expect(screen.getByLabelText('检测档位')).toHaveValue('full');expect(screen.getByLabelText('检测次数')).toHaveValue('5');
  expect(screen.getByText('自定义检测 · 16 项检测')).toBeVisible();

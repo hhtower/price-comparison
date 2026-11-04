@@ -3,6 +3,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { VirtuosoMockContext } from 'react-virtuoso';
+import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import PublicPage from './PublicPage.jsx';
 
 // Drive batch loading explicitly; real scrolling is verified in the browser.
@@ -47,7 +48,7 @@ test('keeps a compact disclaimer below the brand and opens the full disclaimer i
   await screen.findByRole('heading', { name: /ChatGPT Plus/ });
   const trigger = screen.getByRole('button', { name: '免责声明', exact: true });
   const notice = trigger.closest('.catalog-notice');
-  expect(within(trigger.closest('header')).getByRole('link', { name: '知途 · 拾价' })).toBeInTheDocument();
+  expect(within(trigger.closest('header')).getByRole('link', { name: SITE_NAME })).toBeInTheDocument();
   expect(notice).toHaveTextContent('本站不参与交易');
   expect(trigger).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByRole('dialog', { name: '免责声明' })).not.toBeInTheDocument();

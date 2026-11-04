@@ -173,7 +173,6 @@ export default function QualityToolsPage({ referenceRef }) {
   const [catalog, setCatalog] = useState(null);
   const [catalogError, setCatalogError] = useState('');
   const [catalogAttempt, setCatalogAttempt] = useState(0);
-  useEffect(() => { document.title = '知途 · 拾价 · ' + TOOL_LABELS[tool]; }, [tool]);
   useEffect(() => {
     const controller = new AbortController();
     setCatalogError('');
