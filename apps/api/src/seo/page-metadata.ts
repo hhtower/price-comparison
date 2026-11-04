@@ -85,7 +85,7 @@ export function productPageSchema(product: { readonly id: string; readonly name:
   const productId = pageUrl + '#product';
   const breadcrumb = breadcrumbSchema(origin, productPagePath(product.id), standardProductDisplayName(product.name))!;
   const verified = offers.filter(offer => (offer.settlementQuantity ?? 1) === 1 && offer.priceStatus === 'verified'
-    && !offer.paymentMethod?.includes('预估') && !offer.stale && offer.inStock !== false
+    && !offer.paymentMethod?.includes('预估') && !offer.stale && offer.inStock === true
     && offer.price != null && String(offer.price).trim() !== '' && Number.isFinite(Number(offer.price)) && Number(offer.price) >= 0
     && (offer.priceExpiresAt == null || Date.parse(offer.priceExpiresAt) > Date.now())
     && (offer.inventoryExpiresAt == null || Date.parse(offer.inventoryExpiresAt) > Date.now())
@@ -94,13 +94,16 @@ export function productPageSchema(product: { readonly id: string; readonly name:
     organizationSchema(origin),
     websiteSchema(origin),
     { '@type': 'WebPage', '@id': pageUrl + '#webpage', url: pageUrl, name: metadata.title, description: metadata.description,
-      inLanguage: 'zh-CN', isPartOf: { '@id': origin + '/#website' }, mainEntity: { '@id': productId },
+      inLanguage: 'zh-CN', isPartOf: { '@id': origin + '/#website' },
+      ...(verified.length ? { mainEntity: { '@id': productId } } : {}),
       breadcrumb: { '@id': breadcrumb['@id'] } },
     breadcrumb,
     faqSchema(origin, metadata.path, PRODUCT_SEO_CONTENT.faq),
-    { '@type': 'Product', '@id': productId, name: standardProductDisplayName(product.name), url: pageUrl,
-      ...(verified.length ? { offers: verified.map(offer => ({ '@type': 'Offer', price: offer.price, priceCurrency: offer.currency,
-        url: publicSourceUrl(offer.productUrl), seller: { '@type': 'Organization', name: offer.shop } })) } : {}) },
+    // Product snippets require offers or genuine reviews; omit incomplete Product markup.
+    ...(verified.length ? [{ '@type': 'Product', '@id': productId, name: standardProductDisplayName(product.name), url: pageUrl,
+      offers: verified.map(offer => ({ '@type': 'Offer', price: offer.price, priceCurrency: offer.currency,
+        availability: 'https://schema.org/InStock',
+        url: publicSourceUrl(offer.productUrl), seller: { '@type': 'Organization', name: offer.shop } })) }] : []),
   ] };
 }
 

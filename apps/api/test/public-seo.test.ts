@@ -255,6 +255,10 @@ test('product HTML has canonical metadata, paginated real quotes and verified st
   assert.match(document.querySelector('#root')!.textContent!, /12.50.*CNY/s);
   const schema = schemaNode(document, 'Product');
   assert.equal(schema.offers[0].price, '12.50');
+  assert.equal(schema.offers[0].availability, 'https://schema.org/InStock');
+  assert.deepEqual(schemaNode(document, 'WebPage').mainEntity, { '@id': schema['@id'] });
+  assert.equal(schema.review, undefined);
+  assert.equal(schema.aggregateRating, undefined);
   assert.equal(schemaNode(document, 'BreadcrumbList').itemListElement.at(-1).name, 'ChatGPT Plus');
   assert.equal(schemaNode(document, 'FAQPage').mainEntity.length, 5);
   assert.equal(schemaNode(document, 'Organization').url, 'https://price.yufu.pub/');
@@ -273,7 +277,7 @@ for (const path of ['/', '/products/42']) test(`SSR shows the exact unit price a
   assert.doesNotMatch(content, /10件起购|1件起购|0\.01 CNY/);
 });
 
-test('multi-unit quotes keep Product metadata but never emit bare unit-price structured Offers', async t => {
+test('multi-unit quotes never emit bare unit-price Offers or an incomplete Product', async t => {
   const single = page.items[0]!.offers[0]!;
   const multi = { ...single, productId: '10', price: '0.333333333333', settlementQuantity: 3 };
   for (const offers of [[multi], [multi, single], [multi, { ...single, settlementQuantity: undefined }]]) {
@@ -281,8 +285,13 @@ test('multi-unit quotes keep Product metadata but never emit bare unit-price str
     assert.equal(response.statusCode, 200);
     const document = new JSDOM(response.body).window.document;
     const schema = schemaNode(document, 'Product');
-    assert.equal(schema.name, 'ChatGPT Plus');
-    assert.deepEqual(schema.offers?.map((offer: { price: string }) => offer.price), offers.length === 1 ? undefined : ['12.50']);
+    if (offers.length === 1) {
+      assert.equal(schema, undefined);
+      assert.equal(schemaNode(document, 'WebPage').mainEntity, undefined);
+    } else {
+      assert.equal(schema.name, 'ChatGPT Plus');
+      assert.deepEqual(schema.offers.map((offer: { price: string }) => offer.price), ['12.50']);
+    }
     assert.match(document.querySelector('#root')!.textContent!, /0\.333333333333 CNY/);
     assert.doesNotMatch(document.querySelector('#root')!.textContent!, /1件起购|1\.00 CNY/);
   }
@@ -293,7 +302,7 @@ for (const status of ['expired', 'estimated'] as const) for (const path of ['/',
   const response = await setup(t, { getCatalog: async () => ({ ...page, items: [{ ...page.items[0]!, offers: [offer] }] }) }).inject(path);
   const document = new JSDOM(response.body).window.document;
   assert.match(document.querySelector('#root')!.textContent!, /12\.50 CNY.*预估/);
-  if (path !== '/') assert.equal(schemaNode(document, 'Product').offers, undefined);
+  if (path !== '/') assert.equal(schemaNode(document, 'Product'), undefined);
 });
 
 test('public product without a valid price keeps its page and never emits a false offer', async t => {
@@ -302,22 +311,28 @@ test('public product without a valid price keeps its page and never emits a fals
   const document = new JSDOM(response.body).window.document;
   assert.match(document.querySelector('#root')!.textContent!, /—/);
   assert.doesNotMatch(document.querySelector('main ul')!.textContent!, /标价|9\.00|待更新|待核验/);
-  assert.equal(schemaNode(document, 'Product').offers, undefined);
+  assert.equal(schemaNode(document, 'Product'), undefined);
   const empty = await setup(t, { getCatalog: async () => ({ items: [], total: 0, platformFacets: [] }) }).inject('/products/42');
   assert.equal(empty.statusCode, 200);
   assert.match(empty.body, /暂无可用报价/);
+  const emptyDocument = new JSDOM(empty.body).window.document;
+  assert.equal(schemaNode(emptyDocument, 'Product'), undefined);
+  assert.equal(schemaNode(emptyDocument, 'WebPage').mainEntity, undefined);
+  assert.ok(schemaNode(emptyDocument, 'BreadcrumbList'));
+  assert.ok(schemaNode(emptyDocument, 'FAQPage'));
 });
 
 test('payment-method estimates and unavailable prices never become structured offers', async t => {
   const single = page.items[0]!.offers[0]!;
   for (const change of [
-    { paymentMethod: '支付价（预估：售价）' }, { stale: true }, { inStock: false },
-    { price: '' }, { price: ' ' }, { priceExpiresAt: '2000-01-01T00:00:00Z' },
+    { paymentMethod: '支付价（预估：售价）' }, { stale: true }, { inStock: false }, { inStock: undefined },
+    { price: '' }, { price: ' ' }, { price: '-1' }, { price: 'NaN' }, { productUrl: 'javascript:alert(1)' },
+    { priceExpiresAt: '2000-01-01T00:00:00Z' },
     { inventoryExpiresAt: '2000-01-01T00:00:00Z' },
   ]) {
     const response = await setup(t, { getCatalog: async () => ({ ...page, items: [{ ...page.items[0]!, offers: [{ ...single, ...change }] }] }) }).inject('/products/42');
     const document = new JSDOM(response.body).window.document;
-    assert.equal(schemaNode(document, 'Product').offers, undefined, JSON.stringify(change));
+    assert.equal(schemaNode(document, 'Product'), undefined, JSON.stringify(change));
   }
 });
 

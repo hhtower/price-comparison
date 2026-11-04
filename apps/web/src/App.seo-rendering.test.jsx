@@ -152,6 +152,7 @@ test('product client retains server structured offers and removes them when quot
   const expected = JSON.parse(document.querySelector('#page-structured-data').textContent);
   const expectedProduct = expected['@graph'].find(node => node['@type'] === 'Product');
   expect(expectedProduct.offers).toHaveLength(1);
+  expect(expectedProduct.offers[0].availability).toBe('https://schema.org/InStock');
   window.history.replaceState({}, '', '/products/42');
   vi.stubGlobal('fetch', vi.fn(async (input, options) => {
     const url = new URL(input, 'http://localhost');
@@ -167,10 +168,11 @@ test('product client retains server structured offers and removes them when quot
   offer.priceExpiresAt = '2000-01-01T00:00:00Z';
   await act(async () => document.dispatchEvent(new Event('visibilitychange')));
   await waitFor(() => expect(JSON.parse(document.querySelector('#page-structured-data').textContent)['@graph']
-    .find(node => node['@type'] === 'Product').offers).toBeUndefined());
+    .find(node => node['@type'] === 'Product')).toBeUndefined());
   const remaining = JSON.parse(document.querySelector('#page-structured-data').textContent)['@graph'];
-  expect(remaining.filter(node => node['@type'] !== 'Product'))
-    .toEqual(expected['@graph'].filter(node => node['@type'] !== 'Product'));
+  expect(remaining.find(node => node['@type'] === 'WebPage').mainEntity).toBeUndefined();
+  expect(remaining.filter(node => node['@type'] !== 'WebPage'))
+    .toEqual(expected['@graph'].filter(node => !['Product', 'WebPage'].includes(node['@type'])));
 });
 
 test('home client keeps cursor pagination and resets it when searching', async () => {
@@ -219,5 +221,5 @@ test.each([503, 200])('completed quote loading with no visible offers clears the
   render(<App />);
   await screen.findByText(status === 200 ? '没有匹配的报价' : '报价加载失败，请重试');
   expect(JSON.parse(document.querySelector('#page-structured-data').textContent)['@graph']
-    .find(node => node['@type'] === 'Product').offers).toBeUndefined();
+    .find(node => node['@type'] === 'Product')).toBeUndefined();
 });
