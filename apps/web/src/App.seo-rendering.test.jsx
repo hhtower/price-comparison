@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { VirtuosoMockContext } from 'react-virtuoso';
 import { SITE_NAME } from '@price-comparison/catalog/site-brand';
@@ -134,7 +134,7 @@ test.each([false, true])('guide preserves no-script content and requests assista
   expect(fetch).toHaveBeenCalledWith('/api/assistant/status', expect.objectContaining({ method: 'GET', cache: 'no-store' }));
 });
 
-test('product client retains server structured offers and removes them when quotes expire', async () => {
+test('comparison client retains server collection metadata when quotes refresh', async () => {
   const product = { id: '42', name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅' };
   const offer = { shopId: '7', productId: '9', shop: '示例商铺', name: '月付报价', price: '12.50', settlementQuantity: 1,
     currency: 'CNY', priceStatus: 'verified', priceExpiresAt: '2099-01-01T00:00:00Z', inventoryExpiresAt: '2099-01-01T00:00:00Z',
@@ -150,9 +150,8 @@ test('product client retains server structured offers and removes them when quot
   const parsed = new DOMParser().parseFromString(html, 'text/html');
   document.head.innerHTML = parsed.head.innerHTML;
   const expected = JSON.parse(document.querySelector('#page-structured-data').textContent);
-  const expectedProduct = expected['@graph'].find(node => node['@type'] === 'Product');
-  expect(expectedProduct.offers).toHaveLength(1);
-  expect(expectedProduct.offers[0].availability).toBe('https://schema.org/InStock');
+  expect(expected['@graph'].find(node => node['@type'] === 'CollectionPage')).toBeDefined();
+  expect(expected['@graph'].find(node => node['@type'] === 'Product')).toBeUndefined();
   window.history.replaceState({}, '', '/products/42');
   vi.stubGlobal('fetch', vi.fn(async (input, options) => {
     const url = new URL(input, 'http://localhost');
@@ -167,12 +166,7 @@ test('product client retains server structured offers and removes them when quot
   expect(JSON.parse(document.querySelector('#page-structured-data').textContent)).toEqual(expected);
   offer.priceExpiresAt = '2000-01-01T00:00:00Z';
   await act(async () => document.dispatchEvent(new Event('visibilitychange')));
-  await waitFor(() => expect(JSON.parse(document.querySelector('#page-structured-data').textContent)['@graph']
-    .find(node => node['@type'] === 'Product')).toBeUndefined());
-  const remaining = JSON.parse(document.querySelector('#page-structured-data').textContent)['@graph'];
-  expect(remaining.find(node => node['@type'] === 'WebPage').mainEntity).toBeUndefined();
-  expect(remaining.filter(node => node['@type'] !== 'WebPage'))
-    .toEqual(expected['@graph'].filter(node => !['Product', 'WebPage'].includes(node['@type'])));
+  expect(JSON.parse(document.querySelector('#page-structured-data').textContent)).toEqual(expected);
 });
 
 test('home client keeps cursor pagination and resets it when searching', async () => {

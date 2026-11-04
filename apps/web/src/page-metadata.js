@@ -10,12 +10,7 @@ function setMeta(attribute, name, content) {
   element.content = content;
 }
 
-function hasProductSchema(data, url) {
-  const nodes = Array.isArray(data?.['@graph']) ? data['@graph'] : [data];
-  return nodes.some(node => node?.['@type'] === 'Product' && node.url === url);
-}
-
-export function updatePageMetadata(kind, product, offers, pageNumber = 1) {
+export function updatePageMetadata(kind, product, pageNumber = 1) {
   const page = kind === 'product-error' ? { path: '/products/' + product.id, title: product.name + ' - ' + SITE_NAME,
     description: product.name + '。请返回商品列表或稍后重试。' } : product ? productPageMetadata(product, pageNumber)
       : kind === 'public' ? catalogPageMetadata(new URLSearchParams(window.location.search).get('cursor')) : PAGE_METADATA[kind];
@@ -36,14 +31,7 @@ export function updatePageMetadata(kind, product, offers, pageNumber = 1) {
   setMeta('name', 'twitter:title', page.title);
   setMeta('name', 'twitter:description', page.description);
   let script = document.getElementById('page-structured-data');
-  // Keep the server quote snapshot until the matching client request completes.
-  if (product && kind !== 'product-error' && offers === undefined && script) {
-    try {
-      const existing = JSON.parse(script.textContent);
-      if (hasProductSchema(existing, canonical.href)) return;
-    } catch { /* Replace malformed metadata with the current product. */ }
-  }
-  const data = product && kind !== 'product-error' ? productPageSchema(product, origin, offers, pageNumber)
+  const data = product && kind !== 'product-error' ? productPageSchema(product, origin, pageNumber)
     : kind === 'product-error' ? null : pageSchema(kind, origin, page);
   if (!data) { script?.remove(); return; }
   if (!script) {

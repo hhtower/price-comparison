@@ -619,10 +619,8 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
       updatePageMetadata('product-error', { id: detail.item.id, name: '商品分页不存在' });
       return;
     }
-    const quotes = firstDetailItem?.detail?.kind === 'offers' ? firstDetailItem.detail.entries
-      : firstDetailItem?.offers ?? (detailQuery.isSuccess || detailQuery.isError ? [] : undefined);
-    updatePageMetadata('product', detail.item, quotes, state.page);
-  }, [standalone, detail.item, firstDetailItem, detailQuery.isSuccess, detailQuery.isError, state.page, priceRevision, missingPage]);
+    updatePageMetadata('product', detail.item, state.page);
+  }, [standalone, detail.item, state.page, missingPage]);
   const facetParams = queryFor(state).toString();
   const facets = useQuery({ queryKey: ['detail-facets', facetParams], enabled: filterOpen,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog/facets?' + facetParams, signal) });

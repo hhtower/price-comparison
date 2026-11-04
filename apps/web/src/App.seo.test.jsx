@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import App from './App.jsx';
+import { updatePageMetadata } from './page-metadata.js';
 
 vi.mock('./PublicPage.jsx', () => ({ default: () => <main>商品比价</main> }));
 vi.mock('./QualityToolsPage.jsx', () => ({ default: () => <main>检测工具</main> }));
@@ -12,6 +13,16 @@ afterEach(() => { cleanup(); document.head.innerHTML = originalHead; window.hist
 const meta = name => document.querySelector('meta[name="' + name + '"]')?.content;
 const canonical = () => document.querySelector('link[rel="canonical"]')?.getAttribute('href');
 function navigate(path) { window.history.pushState({}, '', path); fireEvent(window, new PopStateEvent('popstate')); }
+
+test('comparison metadata replaces legacy merchant markup even before quotes finish loading', () => {
+  document.head.insertAdjacentHTML('beforeend', '<script id="page-structured-data" type="application/ld+json">'
+    + JSON.stringify({ '@type': 'Product', url: 'https://price.yufu.pub/products/42',
+      offers: [{ '@type': 'Offer', price: '12.50', priceCurrency: 'CNY' }] }) + '</script>');
+  updatePageMetadata('product', { id: '42', name: 'ChatGPT Plus' });
+  const graph = JSON.parse(document.querySelector('#page-structured-data').textContent)['@graph'];
+  expect(graph.find(node => node['@type'] === 'CollectionPage')?.url).toBe('https://price.yufu.pub/products/42');
+  expect(graph.find(node => node['@type'] === 'Product')).toBeUndefined();
+});
 
 test('client navigation keeps metadata aligned and removes private page structured data', () => {
   window.history.replaceState({}, '', '/');

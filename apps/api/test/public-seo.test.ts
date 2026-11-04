@@ -243,7 +243,7 @@ test('search crawlers receive the same public content as ordinary visitors', asy
   }
 });
 
-test('product HTML has canonical metadata, paginated real quotes and verified structured offers', async t => {
+test('comparison HTML keeps visible quotes and describes a collection instead of a merchant product', async t => {
   let query: unknown;
   const response = await setup(t, { getCatalog: async (input: unknown) => { query = input; return { ...page, items: [{ ...page.items[0]!, offers: [{ ...page.items[0]!.offers[0]!, priceStatus: 'verified' }] }] }; } }).inject('/products/42?utm_source=test');
   assert.equal(response.statusCode, 200);
@@ -253,12 +253,12 @@ test('product HTML has canonical metadata, paginated real quotes and verified st
   assert.equal(document.querySelector('h1')?.textContent, 'ChatGPT Plus');
   for (const selector of ['link[rel="canonical"]', 'meta[property="og:url"]']) assert.equal(document.querySelector(selector)?.getAttribute(selector.startsWith('link') ? 'href' : 'content'), 'https://price.yufu.pub/products/42');
   assert.match(document.querySelector('#root')!.textContent!, /12.50.*CNY/s);
-  const schema = schemaNode(document, 'Product');
-  assert.equal(schema.offers[0].price, '12.50');
-  assert.equal(schema.offers[0].availability, 'https://schema.org/InStock');
-  assert.deepEqual(schemaNode(document, 'WebPage').mainEntity, { '@id': schema['@id'] });
-  assert.equal(schema.review, undefined);
-  assert.equal(schema.aggregateRating, undefined);
+  const schema = schemaNode(document, 'CollectionPage');
+  assert.ok(schema);
+  assert.equal(schema.url, 'https://price.yufu.pub/products/42');
+  assert.equal(schema.description, document.querySelector('meta[name="description"]')!.getAttribute('content'));
+  assert.equal(schema.mainEntity, undefined);
+  assert.doesNotMatch(document.querySelector('#page-structured-data')!.textContent!, /"(?:Product|Offer|AggregateOffer)"/);
   assert.equal(schemaNode(document, 'BreadcrumbList').itemListElement.at(-1).name, 'ChatGPT Plus');
   assert.equal(schemaNode(document, 'FAQPage').mainEntity.length, 5);
   assert.equal(schemaNode(document, 'Organization').url, 'https://price.yufu.pub/');
@@ -284,14 +284,8 @@ test('multi-unit quotes never emit bare unit-price Offers or an incomplete Produ
     const response = await setup(t, { getCatalog: async () => ({ ...page, items: [{ ...page.items[0]!, offers }] }) }).inject('/products/42');
     assert.equal(response.statusCode, 200);
     const document = new JSDOM(response.body).window.document;
-    const schema = schemaNode(document, 'Product');
-    if (offers.length === 1) {
-      assert.equal(schema, undefined);
-      assert.equal(schemaNode(document, 'WebPage').mainEntity, undefined);
-    } else {
-      assert.equal(schema.name, 'ChatGPT Plus');
-      assert.deepEqual(schema.offers.map((offer: { price: string }) => offer.price), ['12.50']);
-    }
+    assert.equal(schemaNode(document, 'Product'), undefined);
+    assert.ok(schemaNode(document, 'CollectionPage'));
     assert.match(document.querySelector('#root')!.textContent!, /0\.333333333333 CNY/);
     assert.doesNotMatch(document.querySelector('#root')!.textContent!, /1件起购|1\.00 CNY/);
   }
@@ -317,7 +311,7 @@ test('public product without a valid price keeps its page and never emits a fals
   assert.match(empty.body, /暂无可用报价/);
   const emptyDocument = new JSDOM(empty.body).window.document;
   assert.equal(schemaNode(emptyDocument, 'Product'), undefined);
-  assert.equal(schemaNode(emptyDocument, 'WebPage').mainEntity, undefined);
+  assert.equal(schemaNode(emptyDocument, 'CollectionPage').mainEntity, undefined);
   assert.ok(schemaNode(emptyDocument, 'BreadcrumbList'));
   assert.ok(schemaNode(emptyDocument, 'FAQPage'));
 });
@@ -353,6 +347,7 @@ test('product quote pages have unique canonicals and crawlable previous and next
     assert.equal(query.detailPage, current);
     const document = new JSDOM(response.body).window.document;
     assert.equal(document.querySelector('link[rel="canonical"]')!.getAttribute('href'), 'https://price.yufu.pub/products/42' + (current ? '?page=' + (current + 1) : ''));
+    assert.equal(schemaNode(document, 'CollectionPage').url, document.querySelector('link[rel="canonical"]')!.getAttribute('href'));
     assert.match(document.querySelector('main')!.textContent!, new RegExp('报价页' + current));
     assert.equal(document.querySelector('a[rel="prev"]')?.getAttribute('href') ?? null, previous);
     assert.equal(document.querySelector('a[rel="next"]')?.getAttribute('href') ?? null, next);

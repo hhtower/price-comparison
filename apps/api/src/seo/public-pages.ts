@@ -180,7 +180,7 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
       const total = item?.detail?.total ?? offers.length;
       if (pageNumber > 1 && (pageNumber - 1) * PRODUCT_PAGE_SIZE >= total) return missing('商品分页不存在');
       const page = productPageMetadata(product, pageNumber);
-      const schema = productPageSchema(product, origin, offers, pageNumber);
+      const schema = productPageSchema(product, origin, pageNumber);
       const content = '<h1>' + escapeHtml(standardProductDisplayName(product.name)) + '</h1>' + seoIntroduction(true)
         + '<h2 id="catalog-quotes">商铺报价与来源</h2>'
         + (offers.length ? '<ul>' + offers.map(renderOffer).join('') + '</ul>' : '<p>暂无可用报价，请稍后再试。</p>')

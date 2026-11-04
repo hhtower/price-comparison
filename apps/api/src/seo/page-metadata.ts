@@ -1,7 +1,6 @@
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { CATALOG_SEO_CONTENT, PRODUCT_SEO_CONTENT } from '@price-comparison/catalog/seo-content';
 import { SITE_NAME } from '@price-comparison/catalog/site-brand';
-import type { CatalogOffer } from '../catalog/catalog.repository.js';
 
 export const DEFAULT_SITE_URL = 'https://price.yufu.pub';
 export { SITE_NAME };
@@ -79,31 +78,19 @@ function faqSchema(origin: string, path: string, items: readonly { question: str
 }
 
 export function productPageSchema(product: { readonly id: string; readonly name: string }, origin: string,
-  offers: readonly CatalogOffer[] = [], page = 1): Record<string, unknown> {
+  page = 1): Record<string, unknown> {
   const metadata = productPageMetadata(product, page);
   const pageUrl = origin + metadata.path;
-  const productId = pageUrl + '#product';
   const breadcrumb = breadcrumbSchema(origin, productPagePath(product.id), standardProductDisplayName(product.name))!;
-  const verified = offers.filter(offer => (offer.settlementQuantity ?? 1) === 1 && offer.priceStatus === 'verified'
-    && !offer.paymentMethod?.includes('预估') && !offer.stale && offer.inStock === true
-    && offer.price != null && String(offer.price).trim() !== '' && Number.isFinite(Number(offer.price)) && Number(offer.price) >= 0
-    && (offer.priceExpiresAt == null || Date.parse(offer.priceExpiresAt) > Date.now())
-    && (offer.inventoryExpiresAt == null || Date.parse(offer.inventoryExpiresAt) > Date.now())
-    && publicSourceUrl(offer.productUrl));
+  // These pages mix third-party terms and variants, rather than sell one purchasable product.
   return { '@context': 'https://schema.org', '@graph': [
     organizationSchema(origin),
     websiteSchema(origin),
-    { '@type': 'WebPage', '@id': pageUrl + '#webpage', url: pageUrl, name: metadata.title, description: metadata.description,
+    { '@type': 'CollectionPage', '@id': pageUrl + '#webpage', url: pageUrl, name: metadata.title, description: metadata.description,
       inLanguage: 'zh-CN', isPartOf: { '@id': origin + '/#website' },
-      ...(verified.length ? { mainEntity: { '@id': productId } } : {}),
       breadcrumb: { '@id': breadcrumb['@id'] } },
     breadcrumb,
     faqSchema(origin, metadata.path, PRODUCT_SEO_CONTENT.faq),
-    // Product snippets require offers or genuine reviews; omit incomplete Product markup.
-    ...(verified.length ? [{ '@type': 'Product', '@id': productId, name: standardProductDisplayName(product.name), url: pageUrl,
-      offers: verified.map(offer => ({ '@type': 'Offer', price: offer.price, priceCurrency: offer.currency,
-        availability: 'https://schema.org/InStock',
-        url: publicSourceUrl(offer.productUrl), seller: { '@type': 'Organization', name: offer.shop } })) }] : []),
   ] };
 }
 
