@@ -8,15 +8,29 @@
   <a href="README.md">简体中文</a> · English
 </p>
 
-**Describe what you need, and let AI help you find and compare offers.**
+**Let AI help you choose offers—and let your own AI tools query them.**
 
-知途 · 拾价 is a subscription and account price comparison platform with an AI shopping assistant. It aggregates offers for ChatGPT / Codex, Claude / Claude Code, Gemini, Grok, Cursor, and more from digital goods shops and automated storefronts. Listings cover top-up services, ready-to-use accounts, shared accounts, redemption codes, and related services such as email accounts, SMS verification, and residential IPs. Features include conversational shopping, cross-shop comparison, price history, official regional pricing references, and AI / IP testing tools.
+知途 · 拾价 is a subscription and account price comparison platform built around an **AI shopping assistant and an MCP pricing service**. Find and compare offers through conversations on the website, or connect the pricing data to your own AI clients and workflows through MCP.
 
-## ✨ Meet the AI shopping assistant
+It aggregates offers for ChatGPT / Codex, Claude / Claude Code, Gemini, Grok, Cursor, and more from digital goods shops and automated storefronts. Listings cover top-up services, ready-to-use accounts, shared accounts, redemption codes, and related services such as email accounts, SMS verification, and residential IPs. Features include cross-shop comparison, price history, official regional pricing references, and AI / IP testing tools.
+
+## ✨ AI shopping assistant and MCP pricing service
+
+Use the same product and pricing data for conversational shopping on the website or queries from your favorite AI tools.
+
+### AI shopping assistant: describe your needs and compare offers
 
 Describe your needs and budget. The AI shopping assistant helps you find and compare catalog offers, explaining recharge channels, warranty coverage, and purchase conditions. Ask follow-up questions to narrow down your choices.
 
 > I already have a GPT account and want a Plus top-up under CNY 100 per month, preferably with warranty coverage.
+
+### MCP pricing service: bring price queries to your own AI tools
+
+Connect the catalog to an MCP-capable AI client so your own assistant can **search products, compare merchant offers, and query price history**. Results retain source links, capture times, and purchase conditions for follow-up checks. You can also use the service to build your own comparison tools and automated workflows.
+
+> Find ChatGPT Plus top-up offers and list the merchants, prices, warranty terms, and capture times.
+
+Register through the homepage's MCP entry, submit an application, and collect your key after approval. Clients must support HTTP MCP and custom authentication headers. See the [MCP setup guide](docs/mcp.md) for details.
 
 ## Product aggregation and comparison
 
