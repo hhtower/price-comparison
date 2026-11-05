@@ -7,7 +7,7 @@ import { Global, Module, Scope, type INestApplication } from '@nestjs/common';
 import { AppModule } from '../src/app.module.js';
 import { AuthModule } from '../src/auth/auth.module.js';
 import { AuthGuard } from '../src/auth/auth.guard.js';
-import { AuthService } from '../src/auth/auth.service.js';
+import { AuthService, REDIS } from '../src/auth/auth.service.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DATABASE, DatabaseService, PG_POOL } from '../src/database/database.providers.js';
 
@@ -25,8 +25,9 @@ describe('GET /health', () => {
       providers: [
         AuthGuard,
         { provide: AuthService, useValue: { validate: async () => null } },
+        { provide: REDIS, useValue: {} },
       ],
-      exports: [AuthGuard, AuthService],
+      exports: [AuthGuard, AuthService, REDIS],
     })(ProbeAuthModule);
     Global()(ProbeDatabaseModule);
     Module({

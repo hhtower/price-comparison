@@ -16,6 +16,18 @@ vi.mock('./AdminPage.jsx', async () => {
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.history.replaceState({}, '', '/'); });
 
+test('MCP route renders its application, cleans credentials and applies private referrer policy', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ enabled: true, endpoint: '/api/mcp' })));
+  window.history.replaceState({}, '', '/mcp#verify=route-token');
+  render(<App />);
+  expect(window.location.hash).toBe('');
+  expect(await screen.findByRole('button', { name: '验证邮箱' })).toBeInTheDocument();
+  expect(document.title).toContain('MCP');
+  expect(document.querySelector('meta[name="referrer"]')).toHaveAttribute('content', 'no-referrer');
+  expect(document.querySelector('meta[name="robots"]')?.content).toContain('noindex');
+  expect(document.querySelector('link[rel="canonical"]')?.href).toBe('https://price.yufu.pub/mcp');
+});
+
 test('tools route keeps its SEO title on mount and keyboard switching', () => {
   vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
   window.history.replaceState({}, '', '/tools');

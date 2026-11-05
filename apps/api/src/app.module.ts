@@ -17,6 +17,8 @@ import { QualityModule } from './quality/quality.module.js';
 import { AnalyticsModule } from './analytics/analytics.module.js';
 import { OfficialReferenceModule } from './official-reference/official-reference.module.js';
 import { AssistantModule } from './assistant/assistant.module.js';
+import { McpModule } from './mcp/mcp.module.js';
+import { AccountModule } from './account/account.module.js';
 
-@Module({ imports: [CrawlerRedisModule, DatabaseModule, AuthModule, AdminModule, HealthModule, ShopsModule, ProductsModule, CatalogModule, JobsModule, AiModule, ObservabilityModule, ShopSubmissionsModule, StandardizationModule, ProductReportsModule, QualityModule, AnalyticsModule, OfficialReferenceModule, AssistantModule] })
+@Module({ imports: [CrawlerRedisModule, DatabaseModule, AuthModule, AdminModule, HealthModule, ShopsModule, ProductsModule, CatalogModule, JobsModule, AiModule, ObservabilityModule, ShopSubmissionsModule, StandardizationModule, ProductReportsModule, QualityModule, AnalyticsModule, OfficialReferenceModule, AssistantModule, McpModule, AccountModule] })
 export class AppModule {}

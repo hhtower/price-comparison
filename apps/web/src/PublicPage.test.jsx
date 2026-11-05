@@ -30,6 +30,19 @@ beforeEach(() => {
   virtualListEvents.autoEndReached = false;
 });
 
+test('public header exposes the MCP access page', () => {
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+  render(<PublicPage />);
+  const link = screen.getByRole('link', { name: 'MCP 接入' });
+  expect(link).toHaveAttribute('href', '/mcp');
+  expect(link).toHaveAttribute('title', 'MCP 接入');
+  expect(link.textContent).toBe('');
+  expect(link.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+  expect(link.querySelector('svg')).toHaveAttribute('width', '24');
+  expect(link.querySelector('svg')).toHaveAttribute('viewBox', '0 0 180 180');
+  expect(link.querySelectorAll('svg path')).toHaveLength(3);
+});
+
 test('shows IP navigation, requests its product group and reports the active platform', async () => {
   const user = userEvent.setup();
   const calls = [];

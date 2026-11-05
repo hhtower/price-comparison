@@ -6,6 +6,7 @@ import AiWorkbench from './AiWorkbench.jsx';
 import Brand from './Brand.jsx';
 import ShopProtocolReview from './ShopProtocolReview.jsx';
 import VisitorAnalytics from './VisitorAnalytics.jsx';
+import McpAdmin from './McpAdmin.jsx';
 import ModalDialog from './components/ModalDialog.jsx';
 import StandardProductPicker, { StandardProductFilter } from './components/StandardProductPicker.jsx';
 import './admin.css';
@@ -1242,6 +1243,7 @@ export default function AdminPage({ initialAuthenticated = false }) {
 
   const sections = {
     'visitor-analytics': <VisitorAnalytics />,
+    'mcp-access': <McpAdmin />,
     'pending-shops': <PendingShops setMessage={setMessage} />,
     'product-reports': <ProductReports setMessage={setMessage} />,
     'connected-shops': <ConnectedShops setMessage={setMessage} />,
@@ -1257,7 +1259,7 @@ export default function AdminPage({ initialAuthenticated = false }) {
       <aside className="admin-sidebar">
         <Brand admin />
         <nav>
-          {[['pending-shops', '商铺审核'], ['product-reports', '商品举报'], ['connected-shops', '商铺管理'], ['standard-products', '商品管理'], ['visitor-analytics', '访问统计']].map(([id, label]) => (
+          {[['pending-shops', '商铺审核'], ['product-reports', '商品举报'], ['connected-shops', '商铺管理'], ['standard-products', '商品管理'], ['mcp-access', 'MCP 接入'], ['visitor-analytics', '访问统计']].map(([id, label]) => (
             <button key={id} type="button" className={`nav-item ${activeSection === id ? 'active' : ''}`} onClick={() => { setActiveSection(id); setMessage(''); }}>{label}</button>
           ))}
         </nav>

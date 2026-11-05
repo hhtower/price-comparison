@@ -13,6 +13,7 @@ import { MetricsService } from './observability/metrics.js';
 import { CatalogService } from './catalog/catalog.service.js';
 import { registerPublicPages } from './seo/public-pages.js';
 import { registerStaticAssets } from './seo/static-assets.js';
+import { registerMcpEndpoint } from './mcp/mcp-server.js';
 import {
   createRequestId,
   StructuredLogger,
@@ -37,6 +38,9 @@ export async function createApp(): Promise<NestFastifyApplication> {
       request.headers['x-request-id'] ?? request.id,
     );
     reply.header('x-request-id', requestId);
+    if (/^\/v1\/(?:(?:admin\/)?mcp|account)(?:\/|$)/u.test(request.url.split('?', 1)[0]!)) {
+      reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer').header('X-Robots-Tag', 'noindex, nofollow');
+    }
     done();
   });
   fastify.get('/metrics', async (_request, reply) => {
@@ -53,6 +57,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
       return { ok: false };
     }
   });
+  registerMcpEndpoint(app);
   if (existsSync(resolve(clientRoot, 'index.html'))) {
     registerPublicPages(adapter, {
       template: readFileSync(resolve(clientRoot, 'index.html'), 'utf8'),

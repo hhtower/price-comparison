@@ -5,6 +5,7 @@ import QualityToolsPage from './QualityToolsPage.jsx';
 import OfficialReference from './OfficialReference.jsx';
 import AssistantWidget from './AssistantWidget.jsx';
 import AssistantLoading from './AssistantLoading.jsx';
+import McpPage from './McpPage.jsx';
 import { logoUrl } from './Brand.jsx';
 import { updatePageMetadata } from './page-metadata.js';
 import './styles.css';
@@ -32,6 +33,7 @@ function currentRoute() {
   if (pathname === '/guide') return 'guide';
   if (pathname === '/admin') return 'admin';
   if (pathname === '/assistant') return 'assistant';
+  if (pathname === '/mcp') return 'mcp';
   if (pathname === '/tools' || pathname.startsWith('/tools/')) return 'tools';
   if (pathname.startsWith('/products/')) return pathname;
   return 'public';
@@ -60,6 +62,7 @@ export default function App() {
   }, [route]);
   if (route === 'admin') return <AdminRouteBoundary><Suspense fallback={<main className="route-state" role="status">正在加载管理端…</main>}><AdminPage /></Suspense></AdminRouteBoundary>;
   if (route === 'assistant') return <Suspense fallback={<AssistantLoading />}><AssistantPage /></Suspense>;
+  if (route === 'mcp') return <McpPage />;
   return <>
     {route === 'guide' ? <PurchaseGuidePage /> : route === 'tools' ? <QualityToolsPage referenceRef={setReferenceTarget} />
       : <PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} onPlatformChange={setCatalogPlatform} assistantEnabled={assistantEnabled} referenceRef={setReferenceTarget} />}

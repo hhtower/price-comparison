@@ -142,7 +142,7 @@ export async function hashPassword(password: string): Promise<string> {
   return `scrypt$${cost}$${blockSize}$${parallelization}$${salt.toString('base64')}$${derived.toString('base64')}`;
 }
 
-async function verifyPassword(password: string, encoded: string): Promise<boolean> {
+export async function verifyPassword(password: string, encoded: string): Promise<boolean> {
   const parts = encoded.split('$');
   if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
   const n = Number(parts[1]);

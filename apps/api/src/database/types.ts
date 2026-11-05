@@ -507,6 +507,9 @@ export interface ProductReportTable {
 }
 
 export interface DatabaseSchema {
+  user_accounts: UserAccountTable;
+  account_email_challenges: AccountEmailChallengeTable;
+  mcp_applications: McpApplicationTable;
   assistant_sessions: AssistantSessionTable;
   assistant_turns: AssistantTurnTable;
   ai_tag_job_requests: {request_id:string;job_id:bigint};
@@ -541,6 +544,60 @@ export interface DatabaseSchema {
   ai_job_progress: AiJobProgressTable;
   standardization_catalog_versions: StandardizationCatalogVersionTable;
   catalog_index_changes: CatalogIndexChangeTable;
+}
+
+export interface UserAccountTable {
+  id: string;
+  email: string;
+  password_hash: string;
+  email_verified_at: GeneratedTimestamp;
+  created_at: GeneratedTimestamp;
+}
+
+export interface AccountEmailChallengeTable {
+  email: string;
+  challenge_id: string;
+  code_hash: string | null;
+  code_expires_at: Timestamp;
+  attempts: Generated<number>;
+  retry_hash: string;
+  retry_address_hash: string;
+  retry_expires_at: Timestamp;
+  send_after: Timestamp;
+  send_count: number;
+  send_window_start: Timestamp;
+  registration_hash: string | null;
+  registration_expires_at: NullableTimestamp;
+}
+
+export interface McpApplicationTable {
+  id: string;
+  name: string;
+  email: string;
+  purpose: string;
+  expected_usage: string;
+  status: Generated<'unverified' | 'pending' | 'approved' | 'rejected'>;
+  created_at: GeneratedTimestamp;
+  email_verified_at: NullableTimestamp;
+  verification_hash: string | null;
+  verification_expires_at: NullableTimestamp;
+  reviewed_at: NullableTimestamp;
+  reviewed_by: string | null;
+  review_note: Generated<string>;
+  notification_status: Generated<'pending' | 'sent' | 'failed'>;
+  notification_version: Generated<number>;
+  claim_hash: string | null;
+  claim_expires_at: NullableTimestamp;
+  claimed_at: NullableTimestamp;
+  key_hash: string | null;
+  key_prefix: string | null;
+  key_expires_at: NullableTimestamp;
+  key_revoked_at: NullableTimestamp;
+  key_updated_at: NullableTimestamp;
+  key_updated_by: string | null;
+  requests_per_minute: Generated<number>;
+  last_used_at: NullableTimestamp;
+  request_count: Generated<bigint>;
 }
 
 export interface AssistantSessionTable {

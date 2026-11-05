@@ -27,6 +27,7 @@
   background: transparent; color: #21675e; font: inherit; text-decoration: none; cursor: pointer;
 }
 .community-trigger:hover { background: #f1f5f2; color: #133f38; }
+.community-trigger.mcp-access-link svg { display: block; }
 .community-trigger::after {
   content: attr(aria-label); position: absolute; top: 100%; left: 50%; transform: translateX(-50%); z-index: 20;
   width: max-content; padding: 6px 8px; border-radius: 6px; background: #20352f; color: #fff;

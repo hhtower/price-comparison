@@ -6,9 +6,13 @@
   "license": "GPL-3.0-only",
   "dependencies": {
     "@keyv/redis": "^6.1.0",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@nestjs/common": "^12.3.2",
     "@nestjs/core": "^12.3.2",
     "@nestjs/platform-fastify": "^12.3.2",
+    "@price-comparison/catalog": "*",
+    "@resvg/resvg-js": "^2.6.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "fastify": "^5.12.7",
@@ -17,11 +21,12 @@
     "keyv": "^6.1.0",
     "kysely": "^0.29.7",
     "lru-cache": "^11.5.3",
+    "nodemailer": "^10.3.1",
     "openai": "^7.45.1",
     "parse5": "^8.0.1",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
     "undici": "^8.12.3",
-    "@price-comparison/catalog": "*"
+    "zod": "^4.6.7"
   }
 }

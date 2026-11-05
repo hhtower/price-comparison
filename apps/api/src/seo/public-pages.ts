@@ -227,7 +227,12 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
     .send(renderPage(options.template, 'admin', origin, '<h1>管理端</h1><p>请启用 JavaScript 并登录。</p>')));
   server.get('/assistant', async (_request, reply) => reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-store')
     .send(renderPage(options.template, 'assistant', origin, '<h1>导购助手</h1><p>启用 JavaScript 后查看服务状态并开始独立对话。</p><p><a href="/guide">查看选购指南</a> · <a href="/">返回商品列表</a></p>')));
-  for (const path of ['/tools', '/admin', '/guide', '/assistant']) server.get(path + '/', async (request, reply) => {
+  server.get('/mcp', async (_request, reply) => reply.type('text/html; charset=utf-8')
+    .header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer').header('X-Robots-Tag', 'noindex, nofollow')
+    .send(renderPage(options.template, 'public', origin,
+      '<h1>MCP 报价服务接入</h1><p>通过邮箱申请只读报价服务，验证邮箱后由管理员审核。审核通过后邮件发送限时链接，在网站主动领取密钥。</p><p>启用 JavaScript 后提交申请、验证邮箱或领取密钥。</p>',
+      true, { page: { path: '/mcp', title: 'MCP 报价服务接入 - ' + SITE_NAME, description: '通过邮箱申请、审核并领取报价查询密钥，将本站商品、商铺报价和价格历史接入 MCP 客户端。' } })));
+  for (const path of ['/tools', '/admin', '/guide', '/assistant', '/mcp']) server.get(path + '/', async (request, reply) => {
     const queryIndex = request.url.indexOf('?');
     return reply.code(308).redirect(path + (queryIndex < 0 ? '' : request.url.slice(queryIndex)));
   });

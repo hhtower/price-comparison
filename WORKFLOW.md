@@ -8,6 +8,8 @@
 
 可选能力按 [.env.example](.env.example)配置，默认不启用模型调用。标准化使用 `AI_STANDARDIZATION_ENABLED`，导购使用 `ASSISTANT_ENABLED` 和 `ASSISTANT_MODEL`，共用现有服务商和代理；导购独立执行，不占用共享 `AI_CONCURRENCY`，不设模型并发上限。`npm run dev`会启动已启用能力所需的 worker；单独调试导购可运行 `npm run worker:assistant`。
 
+MCP 服务的账号申请、邮件配置与客户端接入见 [MCP 报价服务](docs/mcp.md)，无需额外 worker。
+
 ## 版本迭代
 
 版本采用 `年.月.当月发布序号`，月份和序号不补零，每月序号从 1 开始。每个版本迭代开始前，先统一更新根项目、各工作区包及锁文件中的版本号，后续功能开发沿用该迭代版本。
