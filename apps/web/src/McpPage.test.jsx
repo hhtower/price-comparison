@@ -52,6 +52,29 @@ test('landing page defers account and application requests until access is opene
   expect(calls.every(call => call.cache === 'no-store' && call.referrerPolicy === 'no-referrer')).toBe(true);
 });
 
+test('the registration dialog uses the password minimum published by the server', async () => {
+  handler = path => {
+    if (path === '/api/mcp/config') return Response.json({ enabled: true, endpoint: '/api/mcp', passwordMinLength: 16 });
+    if (path === '/api/account/email-code') return Response.json({
+      challengeId: 'challenge', retryToken: 'retry', retryAfterSeconds: 60, expiresInSeconds: 600,
+    });
+    if (path === '/api/account/verify-email') return Response.json({ registrationToken: 'registration', email: USER.email });
+  };
+  const user = userEvent.setup();
+  render(<McpPage />);
+  await openAccess(user);
+  await user.type(await screen.findByLabelText('邮箱'), USER.email);
+  await user.click(screen.getByRole('button', { name: '发送验证码' }));
+  await user.type(await screen.findByLabelText('图形验证码'), '12345');
+  await user.click(screen.getByRole('button', { name: '验证并发送' }));
+  await user.type(screen.getByLabelText('邮件验证码'), '123456');
+  await user.click(screen.getByRole('button', { name: '继续', exact: true }));
+  const password = await screen.findByLabelText('密码');
+  expect(password).toHaveAttribute('minlength', '16');
+  await user.type(password, 'a'.repeat(15));
+  expect(screen.getByRole('button', { name: '创建账号并登录' })).toBeDisabled();
+});
+
 test('copy installation feedback is visible on the landing page without opening access', async () => {
   const user = userEvent.setup();
   const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();

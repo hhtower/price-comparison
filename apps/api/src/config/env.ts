@@ -22,6 +22,12 @@ function positiveEnv(name: string, fallback: number, environment: NodeJS.Process
   return value;
 }
 
+export function readAccountPasswordMinLength(environment: NodeJS.ProcessEnv = process.env): number {
+  const minimum = positiveEnv('ACCOUNT_PASSWORD_MIN_LENGTH', 8, environment);
+  if (minimum < 8 || minimum > 128) throw new Error('ACCOUNT_PASSWORD_MIN_LENGTH must be between 8 and 128');
+  return minimum;
+}
+
 export function readAiBatchLimits(environment: NodeJS.ProcessEnv = process.env) {
   return {
     maxItems: positiveEnv('AI_BATCH_MAX_ITEMS', 32, environment),

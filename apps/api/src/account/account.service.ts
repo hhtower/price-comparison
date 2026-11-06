@@ -10,6 +10,7 @@ import { RATE_LIMIT_STORE, type RateLimitStore } from '../common/rate-limit.guar
 import { DomainConflictError, DomainError, DomainValidationError } from '../common/errors.js';
 import { McpMailer } from '../mcp/mcp-mailer.js';
 import { McpCaptcha } from '../mcp/mcp-captcha.js';
+import { readAccountPasswordMinLength } from '../config/env.js';
 
 export const ACCOUNT_SESSION_SECONDS = 7 * 86_400;
 export interface AccountUser { id: string; email: string }
@@ -18,12 +19,11 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const secret = () => randomBytes(32).toString('base64url');
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
 const emailSchema = z.string().trim().max(254).toLowerCase().email();
-const passwordSchema = z.string().min(12).max(128);
 const sessionKey = (token: string) => `account:session:${hash(token)}`;
 const invalidCode = () => new DomainValidationError('ACCOUNT_CODE_INVALID', '邮件验证码错误、已使用或已过期，请重新获取');
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
-  if (!result.success) throw new DomainValidationError('ACCOUNT_INPUT_INVALID', '请检查邮箱、验证码和密码，密码需为 12–128 个字符');
+  if (!result.success) throw new DomainValidationError('ACCOUNT_INPUT_INVALID', '请检查邮箱、验证码和密码是否填写正确');
   return result.data;
 }
 function equal(a: string | null, b: string) {
@@ -123,6 +123,7 @@ export class AccountService {
   }
 
   async register(input: unknown): Promise<AccountLogin> {
+    const passwordSchema = z.string().min(readAccountPasswordMinLength()).max(128);
     const data = parse(z.object({ registrationToken: tokenSchema, password: passwordSchema }).strict(), input);
     const user = await this.database.transaction().execute(async transaction => {
       const row = await transaction.selectFrom('account_email_challenges').selectAll()

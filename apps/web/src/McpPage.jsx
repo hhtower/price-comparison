@@ -250,7 +250,7 @@ export default function McpPage() {
           <button type="button" disabled={busy} onClick={() => void submit('/api/mcp/applications/' + credential.action, { token: credential.token }, credential.action)}>{credential.action === 'verify' ? '验证邮箱' : '领取密钥'}</button>
           <div className="mcp-manual-actions"><button type="button" disabled={busy} onClick={() => { setCredential(null); setError(''); }}>返回账号</button><ContactAdminButton /></div>
         </div> : <>
-          {showAccount && <AccountPanel emailEnabled={config.enabled} onAuthenticated={account => { setUser(account); setApplication(undefined); setError(''); setMessage(''); }} />}
+          {showAccount && <AccountPanel emailEnabled={config.enabled} passwordMinLength={config.passwordMinLength} onAuthenticated={account => { setUser(account); setApplication(undefined); setError(''); setMessage(''); }} />}
           {user && config && !configError && <>
             {applicationError && <p className="mcp-error" role="alert">{applicationError}</p>}
             {applicationLoading && application === undefined && <p role="status">正在读取申请…</p>}

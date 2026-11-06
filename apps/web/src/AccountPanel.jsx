@@ -3,7 +3,7 @@ import ContactAdminButton from './ContactAdminButton.jsx';
 import ModalDialog from './components/ModalDialog.jsx';
 import { requestJson } from './api.js';
 
-export default function AccountPanel({ onAuthenticated, emailEnabled = true }) {
+export default function AccountPanel({ onAuthenticated, emailEnabled = true, passwordMinLength = 8 }) {
   const [email, setEmail] = useState('');
   const [mode, setMode] = useState(emailEnabled ? 'email' : 'password');
   const [password, setPassword] = useState('');
@@ -86,7 +86,7 @@ export default function AccountPanel({ onAuthenticated, emailEnabled = true }) {
   const openSecurity = action => {
     if (activeRequest.current || suspended || !emailInput.current?.reportValidity()) return;
     if (action === 'email-code' && (!emailEnabled || Date.now() < retryAt)) return;
-    if (action === 'login' && (password.length < 12 || password.length > 128)) return;
+    if (action === 'login' && (!password || password.length > 128)) return;
     setError(''); setNotice(''); setCaptchaError(''); setCaptcha(null); setCaptchaAnswer('');
     setCaptchaValid(false); setCaptchaLoading(true); setPendingAction(action);
   };
@@ -107,8 +107,8 @@ export default function AccountPanel({ onAuthenticated, emailEnabled = true }) {
     if ((action === 'email-code' || action === 'login') && (pendingAction !== action || !graphicReady)) return;
     if (action === 'email-code' && (!emailEnabled || Date.now() < retryAt)) return;
     if (action === 'verify-email' && (!codeReady || Date.now() >= delivery.expiresAt)) return;
-    if (action === 'login' && (password.length < 12 || password.length > 128)) return;
-    if (action === 'register' && (!registration || password.length < 12 || password.length > 128)) return;
+    if (action === 'login' && (!password || password.length > 128)) return;
+    if (action === 'register' && (!registration || password.length < passwordMinLength || password.length > 128)) return;
     const body = action === 'email-code'
       ? { email, captchaId: captcha.id, captchaAnswer, ...(delivery?.retryToken ? { retryToken: delivery.retryToken } : {}) }
       : action === 'verify-email' ? { challengeId: delivery.challengeId, code }
@@ -138,7 +138,7 @@ export default function AccountPanel({ onAuthenticated, emailEnabled = true }) {
     } catch (failure) {
       if (controller.signal.aborted) return;
       const details = failure.data?.error?.details;
-      if (body.captchaId && failure.status === 400) {
+      if (body.captchaId && failure.data?.error?.code === 'MCP_CAPTCHA_INVALID') {
         setCaptchaError('图形验证码错误或已过期，请输入新验证码后重试。');
         setCaptchaReload(value => value + 1);
         return;
@@ -151,9 +151,14 @@ export default function AccountPanel({ onAuthenticated, emailEnabled = true }) {
         setError(failure.status === 429 ? '发送较频繁，请等待倒计时结束后重试。'
           : failure.status === 403 ? '暂时无法发送，请按提示重试或刷新图形验证码。'
             : '验证码未能发送，请稍后重试。');
+      } else if (action === 'login') {
+        setError(failure.status === 401 ? '邮箱或密码不正确，请重新输入。'
+          : failure.status === 429 ? '登录尝试过于频繁，请稍后重试。'
+            : failure.status >= 500 ? '登录服务暂不可用，请稍后重试。'
+              : failure.status === 400 ? '登录信息无效，请检查邮箱和密码。'
+                : '登录未完成，请稍后重试。');
       } else {
-        setError(action === 'login' ? '登录未完成，请检查邮箱、密码和图形验证码后重试。'
-          : action === 'register' ? '创建账号未完成，请重试；凭证过期时请重新验证邮箱。'
+        setError(action === 'register' ? '创建账号未完成，请重试；凭证过期时请重新验证邮箱。'
             : '邮件验证码无效、已过期或尝试次数过多，请检查或重新发送。');
       }
     } finally {
@@ -187,13 +192,13 @@ export default function AccountPanel({ onAuthenticated, emailEnabled = true }) {
         </div>
         {error && mode !== 'password' && <p id="account-error" className="mcp-error" role="alert">{error}</p>}
         {registration || mode === 'password'
-          ? <label htmlFor="account-password">密码<input id="account-password" type="password" required minLength={12} maxLength={128}
+          ? <label htmlFor="account-password">密码<input id="account-password" type="password" required minLength={registration ? passwordMinLength : 1} maxLength={128}
             autoComplete={registration ? 'new-password' : 'current-password'} value={password} onChange={event => setPassword(event.target.value)}
-            placeholder="12–128 个字符" /></label>
+            placeholder={registration ? `${passwordMinLength}–128 个字符` : '请输入密码'} /></label>
           : <label htmlFor="account-code">邮件验证码<input id="account-code" required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code"
             value={code} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} placeholder="6 位数字，10 分钟内有效" /></label>}
-        <button type="submit" disabled={Boolean(busy) || (registration ? password.length < 12
-          : mode === 'password' ? password.length < 12 : !codeReady)}>
+        <button type="submit" disabled={Boolean(busy) || (registration ? password.length < passwordMinLength
+          : mode === 'password' ? !password : !codeReady)}>
           {busy && busy !== 'email-code' ? '正在处理…' : registration ? '创建账号并登录' : mode === 'password' ? '登录' : '继续'}
         </button>
       </fieldset>

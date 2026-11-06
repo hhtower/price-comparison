@@ -99,11 +99,13 @@ test('verifies email then registers directly with one password and no additional
   fireEvent.change(screen.getByLabelText('邮件验证码'), { target: { value: '123456' } });
   await click('继续');
   const password = screen.getByLabelText('密码');
-  expect(password).toHaveAttribute('minlength', '12');
+  expect(password).toHaveAttribute('minlength', '8');
   expect(password).toHaveAttribute('maxlength', '128');
   expect(password).toHaveAttribute('autocomplete', 'new-password');
   expect(document.querySelectorAll('input[type="password"]')).toHaveLength(1);
-  fireEvent.change(password, { target: { value: 'secure-password-123' } });
+  fireEvent.change(password, { target: { value: '1234567' } });
+  expect(screen.getByRole('button', { name: '创建账号并登录' })).toBeDisabled();
+  fireEvent.change(password, { target: { value: '12345678' } });
   await click('创建账号并登录');
   expect(authenticated).toHaveBeenCalledWith(USER);
   expect(requests('/email-code')[0].body).toEqual({
@@ -111,11 +113,53 @@ test('verifies email then registers directly with one password and no additional
   });
   expect(requests('/verify-email')[0].body).toEqual({ challengeId: 'challenge-1', code: '123456' });
   expect(requests('/register')[0].body).toEqual({
-    registrationToken: 'registration-1', password: 'secure-password-123',
+    registrationToken: 'registration-1', password: '12345678',
   });
   expect(requests('/captcha')).toHaveLength(1);
   expect(persist).not.toHaveBeenCalled();
   expect(window.location.href).not.toMatch(/registration-1|retry-1|123456|secure-password/);
+});
+
+test('registration follows the server minimum while password login accepts an existing shorter password', async () => {
+  const authenticated = vi.fn();
+  const { unmount } = render(<AccountPanel onAuthenticated={authenticated} passwordMinLength={16} />);
+  await send();
+  fireEvent.change(screen.getByLabelText('邮件验证码'), { target: { value: '123456' } });
+  await click('继续');
+  expect(screen.getByLabelText('密码')).toHaveAttribute('minlength', '16');
+  fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'a'.repeat(15) } });
+  expect(screen.getByRole('button', { name: '创建账号并登录' })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'a'.repeat(16) } });
+  await click('创建账号并登录');
+  expect(authenticated).toHaveBeenCalledWith(USER);
+  unmount();
+  authenticated.mockClear();
+  render(<AccountPanel onAuthenticated={authenticated} passwordMinLength={16} />);
+  enterEmail();
+  await click('密码登录');
+  fireEvent.change(screen.getByLabelText('密码'), { target: { value: '12345678' } });
+  await click('登录');
+  await confirmSecurity('12345', '验证并登录');
+  expect(authenticated).toHaveBeenCalledWith(USER);
+});
+
+test.each([
+  [401, undefined, '邮箱或密码不正确'],
+  [429, 'ACCOUNT_TOO_FREQUENT', '登录尝试过于频繁'],
+  [503, 'ACCOUNT_SESSION_UNAVAILABLE', '登录服务暂不可用'],
+  [400, 'ACCOUNT_INPUT_INVALID', '登录信息无效'],
+])('login reports %s/%s distinctly without exposing internal errors or blaming the captcha', async (status, code, message) => {
+  handler = path => path.endsWith('/login') && Response.json({ error: { code, message: 'private backend details' } }, { status });
+  render(<AccountPanel onAuthenticated={vi.fn()} />);
+  enterEmail();
+  await click('密码登录');
+  fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'saved-password-123' } });
+  await click('登录');
+  await confirmSecurity('12345', '验证并登录');
+  expect(screen.getByRole('alert')).toHaveTextContent(message);
+  expect(screen.getByRole('alert')).not.toHaveTextContent('private backend');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(requests('/captcha')).toHaveLength(1);
 });
 
 test('an existing email authenticates after mail verification without an optional graphic validity blocker', async () => {

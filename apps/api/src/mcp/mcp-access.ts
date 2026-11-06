@@ -8,6 +8,7 @@ import { DomainConflictError, DomainNotFoundError, DomainValidationError } from 
 import { RATE_LIMIT_STORE, RateLimitExceededException, type RateLimitStore } from '../common/rate-limit.guard.js';
 import { McpMailer } from './mcp-mailer.js';
 import { decryptMcpKey, encryptMcpKey } from './mcp-key-storage.js';
+import { readAccountPasswordMinLength } from '../config/env.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
@@ -46,7 +47,7 @@ export class McpAccess {
     @Inject(RATE_LIMIT_STORE) private readonly limits: RateLimitStore,
   ) {}
 
-  config() { return { enabled: this.mailer.enabled(), endpoint: '/api/mcp' }; }
+  config() { return { enabled: this.mailer.enabled(), endpoint: '/api/mcp', passwordMinLength: readAccountPasswordMinLength() }; }
 
   async applyForAccount(input: unknown, accountEmail: string) {
     const data = parse(accountApplicationSchema, input);
