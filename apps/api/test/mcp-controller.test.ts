@@ -20,7 +20,7 @@ async function harness(t: TestContext) {
     controllers: [McpController, AdminMcpController],
     providers: [
       AuthGuard,
-      { provide: AuthService, useValue: { validate: async () => null } },
+      { provide: AuthService, useValue: { validate: async (token?: string) => token === 'b'.repeat(43) ? { userId: 'admin' } : null } },
       AccountGuard,
       { provide: AccountService, useValue: {
         validate: async (token?: string) => token === 'a'.repeat(43) ? { id: 'account-a', email: 'owner@example.com' } : null,
@@ -46,6 +46,10 @@ async function harness(t: TestContext) {
         verify: async (token: string) => token === 'valid' ? { status: 'pending' } : assert.fail('Unexpected token'),
         claim: async () => ({ apiKey: 'test-secret', endpoint: '/api/mcp', expiresAt: '2027-01-01', requestsPerMinute: 60 }),
         recover: async () => ({ ok: true }), list: () => assert.fail('Unauthenticated admin access'),
+        viewKey: async (id: string) => {
+          assert.equal(id, 'applicant-id');
+          return { apiKey: 'admin-visible-key' };
+        },
       } },
     ],
   }).compile();
@@ -73,6 +77,20 @@ test('MCP application HTTP routes validate credential envelopes and disable key 
     const response = await http.inject({ method: 'POST', url: `/v1/admin/mcp/applications/example/${action}`, payload: {} });
     assert.equal(response.statusCode, 401, action);
   }
+});
+
+test('full keys require an administrator session and are never cacheable', async t => {
+  const http = await harness(t);
+  const url = '/v1/admin/mcp/applications/applicant-id/key';
+  for (const cookie of ['', `account_session=${'a'.repeat(43)}`, 'admin_session=invalid']) {
+    const response = await http.inject({ url, headers: { cookie } });
+    assert.equal(response.statusCode, 401);
+    assert.ok(!response.body.includes('admin-visible-key'));
+  }
+  const response = await http.inject({ url, headers: { cookie: `admin_session=${'b'.repeat(43)}` } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['cache-control'], 'no-store');
+  assert.deepEqual(response.json(), { apiKey: 'admin-visible-key' });
 });
 
 test('account application routes require a user session and derive identity from it', async t => {
@@ -119,7 +137,7 @@ test('MCP application page renders on direct email navigation with no-store and 
   assert.equal(page.headers['cache-control'], 'no-store');
   assert.equal(page.headers['referrer-policy'], 'no-referrer');
   assert.match(page.body, /MCP/);
-  assert.match(page.body, /邮箱/);
+  assert.match(page.body, /提交申请/);
   const trailingSlash = await http.inject('/mcp/');
   assert.equal(trailingSlash.statusCode, 308);
   assert.equal(trailingSlash.headers.location, '/mcp');

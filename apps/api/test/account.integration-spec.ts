@@ -21,10 +21,12 @@ import { AuthService } from '../src/auth/auth.service.js';
 import { McpAccess } from '../src/mcp/mcp-access.js';
 import { McpController, AdminMcpController } from '../src/mcp/mcp.controller.js';
 import { up as mcpUp } from '../src/database/migrations/031_mcp_access_20261104.js';
+import { up as keyStorageUp } from '../src/database/migrations/033_mcp_key_storage_20261106.js';
 import { DomainValidationError } from '../src/common/errors.js';
 
 const schema = `account_${randomUUID().replaceAll('-', '')}`;
 const enabled = !!process.env.TEST_DATABASE_URL;
+const previousEncryptionKey = process.env.MCP_KEY_ENCRYPTION_KEY;
 const integration = (name: string, run: () => Promise<void>) => test(name, { skip: !enabled && 'TEST_DATABASE_URL is required' }, run);
 let db: Kysely<DatabaseSchema>;
 let admin: Pool;
@@ -65,6 +67,7 @@ const details = (error: unknown) => ((error as { getResponse(): { error: { detai
 
 before(async () => {
   if (!enabled) return;
+  process.env.MCP_KEY_ENCRYPTION_KEY = '8'.repeat(64);
   admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   await admin.query(`create schema "${schema}"`);
   db = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({
@@ -72,6 +75,7 @@ before(async () => {
   }) });
   await up(db);
   await mcpUp(db);
+  await keyStorageUp(db);
   account = new AccountService(db, {
     get: async (key: string) => { if (failRedis) throw new Error('private Redis credentials'); return sessions.get(key) ?? null; },
     set: async (key: string, value: string) => { if (failRedis) throw new Error('private Redis credentials'); sessions.set(key, value); return 'OK'; },
@@ -80,6 +84,8 @@ before(async () => {
 });
 
 after(async () => {
+  if (previousEncryptionKey === undefined) delete process.env.MCP_KEY_ENCRYPTION_KEY;
+  else process.env.MCP_KEY_ENCRYPTION_KEY = previousEncryptionKey;
   await db?.destroy();
   if (admin) { await admin.query(`drop schema "${schema}" cascade`); await admin.end(); }
 });

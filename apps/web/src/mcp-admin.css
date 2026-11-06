@@ -1,0 +1,71 @@
+.mcp-admin .mcp-admin-table table {
+  width: 100%;
+  min-width: 780px;
+  table-layout: auto;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.mcp-admin .mcp-admin-table :is(th, td) {
+  padding: 12px 14px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--line, #d7e3df);
+}
+
+.mcp-admin .mcp-admin-table th {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mcp-admin .mcp-admin-table td:first-child {
+  max-width: 240px;
+  overflow-wrap: anywhere;
+}
+
+.mcp-admin .mcp-admin-table td:last-child { white-space: nowrap; }
+.mcp-admin .mcp-admin-table tr:last-child td { border-bottom: 0; }
+
+.mcp-admin .mcp-table-secondary {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted, #536963);
+  font-size: 12px;
+}
+
+.mcp-admin .mcp-admin-detail {
+  box-sizing: border-box;
+  width: 680px;
+  padding: 24px;
+  border: 1px solid var(--line, #d7e3df);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink, #17212b);
+  box-shadow: 0 18px 60px #17212b30;
+}
+
+.mcp-admin .mcp-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.mcp-admin .mcp-detail-header > div { min-width: 0; }
+.mcp-admin .mcp-detail-header p { margin: 5px 0 0; overflow-wrap: anywhere; font-size: 13px; }
+.mcp-admin .mcp-detail-header strong { overflow-wrap: anywhere; }
+.mcp-admin .mcp-detail-header button { flex-shrink: 0; }
+.mcp-admin .mcp-admin-detail > .mcp-notice,
+.mcp-admin .mcp-admin-detail > .mcp-error { margin-top: 16px; }
+
+.mcp-admin .mcp-admin-secret { display: grid; gap: 10px; margin-top: 14px; }
+.mcp-admin .mcp-admin-secret > button { justify-self: start; }
+.mcp-admin .mcp-admin-secret label { display: grid; gap: 7px; }
+.mcp-admin .mcp-admin-secret input { font-family: Consolas, monospace; font-size: 12px; }
+.mcp-admin .mcp-admin-secret :is(.mcp-error, .mcp-notice) { margin: 0; }
+
+@media (max-width: 760px) {
+  .mcp-admin .mcp-admin-detail { padding: 18px; }
+  .mcp-admin .mcp-admin-detail .mcp-review-limits { grid-template-columns: 1fr 1fr; gap: 12px; }
+}

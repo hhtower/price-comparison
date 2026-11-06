@@ -7,6 +7,7 @@ import type { DatabaseSchema, McpApplicationTable } from '../database/types.js';
 import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
 import { RATE_LIMIT_STORE, RateLimitExceededException, type RateLimitStore } from '../common/rate-limit.guard.js';
 import { McpMailer } from './mcp-mailer.js';
+import { decryptMcpKey, encryptMcpKey } from './mcp-key-storage.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('base64url');
@@ -115,10 +116,11 @@ export class McpAccess {
 
   private async issueKey(identity: { email: string } | { token: string }) {
     const apiKey = `mcp_${secret()}`;
+    const encrypted = encryptMcpKey(apiKey);
     // Both account and legacy claims consume the same credential in one conditional UPDATE.
     let update = this.database.updateTable('mcp_applications').set({
       claim_hash: null, claim_expires_at: null, claimed_at: sql<Date>`now()`,
-      key_hash: hash(apiKey), key_prefix: apiKey.slice(0, 12), key_updated_at: sql<Date>`now()`,
+      key_hash: hash(apiKey), key_ciphertext: encrypted, key_prefix: apiKey.slice(0, 12), key_updated_at: sql<Date>`now()`,
     }).where('status', '=', 'approved').where('key_hash', 'is', null)
       .where('key_revoked_at', 'is', null).where('key_expires_at', '>', sql<Date>`now()`);
     update = 'email' in identity
@@ -142,6 +144,18 @@ export class McpAccess {
       base.select(eb => eb.fn.countAll().as('count')).executeTakeFirstOrThrow(),
     ]);
     return { items: rows.map(publicApplication), total: Number(total.count), page: query.page, pageSize: query.pageSize };
+  }
+
+  async viewKey(inputId: unknown) {
+    const id = parse(idSchema, inputId);
+    const row = await this.database.selectFrom('mcp_applications').select(['key_hash', 'key_ciphertext'])
+      .where('id', '=', id).executeTakeFirst();
+    if (!row) throw new DomainNotFoundError('MCP_APPLICATION_NOT_FOUND', '申请不存在');
+    if (!row.key_hash) throw new DomainConflictError('MCP_KEY_UNCLAIMED', '用户尚未领取密钥');
+    if (!row.key_ciphertext) {
+      throw new DomainConflictError('MCP_KEY_UNAVAILABLE', '密钥暂不可查看，请重新发放并由用户领取');
+    }
+    return { apiKey: decryptMcpKey(row.key_ciphertext, row.key_hash) };
   }
 
   async approve(inputId: unknown, input: unknown, reviewer: string) {
@@ -176,7 +190,7 @@ export class McpAccess {
     const review = parse(reviewSchema, input);
     this.requireMail();
     const row = await this.database.updateTable('mcp_applications').set({
-      key_hash: null, key_prefix: null, claimed_at: null, claim_hash: null, claim_expires_at: null,
+      key_hash: null, key_ciphertext: null, key_prefix: null, claimed_at: null, claim_hash: null, claim_expires_at: null,
       key_revoked_at: null, key_expires_at: new Date(Date.now() + review.expiresInDays * 86_400_000),
       requests_per_minute: review.requestsPerMinute, review_note: review.reviewNote,
       key_updated_at: sql<Date>`now()`, key_updated_by: reviewer, last_used_at: null, request_count: 0n,
@@ -295,7 +309,7 @@ export class McpAccess {
       } else {
         if (!recovery) throw new DomainConflictError('MCP_KEY_NOT_CLAIMABLE', '密钥已领取、撤销或过期，需重新发放');
         subject = 'MCP 密钥状态';
-        text = '此邮箱的密钥已领取、撤销或过期。密钥无法找回明文，请联系管理员重新发放。';
+        text = '此邮箱的密钥已领取、撤销或过期。请登录网站查看状态，或联系管理员处理。密钥不会通过邮件发送。';
       }
       const version = row.notification_version + 1;
       await transaction.updateTable('mcp_applications').set({
@@ -330,6 +344,7 @@ function publicApplication(row: Application) {
       prefix: row.key_prefix, status: row.key_revoked_at ? 'revoked' : row.key_expires_at <= new Date() ? 'expired' : row.key_hash ? 'active' : 'unclaimed',
       expiresAt: row.key_expires_at.toISOString(), lastUsedAt: row.last_used_at?.toISOString() ?? null,
       requestsPerMinute: row.requests_per_minute, requestCount: row.request_count.toString(),
+      canReveal: !!row.key_ciphertext,
     } : null,
   };
 }

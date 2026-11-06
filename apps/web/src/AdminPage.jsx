@@ -1259,7 +1259,7 @@ export default function AdminPage({ initialAuthenticated = false }) {
       <aside className="admin-sidebar">
         <Brand admin />
         <nav>
-          {[['pending-shops', '商铺审核'], ['product-reports', '商品举报'], ['connected-shops', '商铺管理'], ['standard-products', '商品管理'], ['mcp-access', 'MCP 接入'], ['visitor-analytics', '访问统计']].map(([id, label]) => (
+          {[['pending-shops', '商铺审核'], ['product-reports', '商品举报'], ['connected-shops', '商铺管理'], ['standard-products', '商品管理'], ['mcp-access', 'Skill / MCP 接入'], ['visitor-analytics', '访问统计']].map(([id, label]) => (
             <button key={id} type="button" className={`nav-item ${activeSection === id ? 'active' : ''}`} onClick={() => { setActiveSection(id); setMessage(''); }}>{label}</button>
           ))}
         </nav>

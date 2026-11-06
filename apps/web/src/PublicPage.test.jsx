@@ -30,12 +30,12 @@ beforeEach(() => {
   virtualListEvents.autoEndReached = false;
 });
 
-test('public header exposes the MCP access page', () => {
+test('public header exposes the shared Skill and MCP access page', () => {
   vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
   render(<PublicPage />);
-  const link = screen.getByRole('link', { name: 'MCP 接入' });
+  const link = screen.getByRole('link', { name: 'Skill / MCP 接入' });
   expect(link).toHaveAttribute('href', '/mcp');
-  expect(link).toHaveAttribute('title', 'MCP 接入');
+  expect(link).toHaveAttribute('title', 'Skill / MCP 接入');
   expect(link.textContent).toBe('');
   expect(link.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
   expect(link.querySelector('svg')).toHaveAttribute('width', '24');

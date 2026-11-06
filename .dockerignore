@@ -6,7 +6,9 @@ dist/
 .superpowers/
 .claude/
 .local/
-docs/
+docs/*
+!docs/skill.md
+!docs/mcp.md
 output/
 .playwright-cli/
 .playwright-mcp/

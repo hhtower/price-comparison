@@ -590,6 +590,7 @@ export interface McpApplicationTable {
   claim_expires_at: NullableTimestamp;
   claimed_at: NullableTimestamp;
   key_hash: string | null;
+  key_ciphertext: Generated<string | null>;
   key_prefix: string | null;
   key_expires_at: NullableTimestamp;
   key_revoked_at: NullableTimestamp;

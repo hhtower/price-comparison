@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 
 const CONTENT_TYPES: Record<string, string> = {
   js: 'application/javascript', css: 'text/css', png: 'image/png', svg: 'image/svg+xml', woff2: 'font/woff2',
+  md: 'text/plain; charset=utf-8', mjs: 'text/plain; charset=utf-8',
 };
 
 export function registerStaticAssets(server: FastifyInstance, clientRoot: string): void {

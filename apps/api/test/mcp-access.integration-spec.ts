@@ -7,6 +7,7 @@ import { Pool } from 'pg';
 import '../src/config/env.js';
 import type { DatabaseSchema } from '../src/database/types.js';
 import { up } from '../src/database/migrations/031_mcp_access_20261104.js';
+import { up as keyStorageUp } from '../src/database/migrations/033_mcp_key_storage_20261106.js';
 import { McpAccess } from '../src/mcp/mcp-access.js';
 import type { McpMailer } from '../src/mcp/mcp-mailer.js';
 import { VersioningType } from '@nestjs/common';
@@ -46,20 +47,25 @@ const limits = {
   },
 };
 const enabled = !!process.env.TEST_DATABASE_URL;
+const previousEncryptionKey = process.env.MCP_KEY_ENCRYPTION_KEY;
 const integration = (name: string, fn: () => Promise<void>) => test(name, { skip: !enabled && 'TEST_DATABASE_URL is required' }, fn);
 
 before(async () => {
   if (!enabled) return;
+  process.env.MCP_KEY_ENCRYPTION_KEY = '8'.repeat(64);
   admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   await admin.query(`create schema "${schema}"`);
   db = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({
     pool: new Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path=${schema},public`, max: 6 }),
   }) });
   await up(db);
+  await keyStorageUp(db);
   access = new McpAccess(db, mailer, limits);
 });
 
 after(async () => {
+  if (previousEncryptionKey === undefined) delete process.env.MCP_KEY_ENCRYPTION_KEY;
+  else process.env.MCP_KEY_ENCRYPTION_KEY = previousEncryptionKey;
   await access?.beforeApplicationShutdown();
   await db?.destroy();
   if (admin) {
@@ -169,7 +175,7 @@ integration('account reapplication and reads preserve pending, approved, issued,
     const after = await db.selectFrom('mcp_applications').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
     assert.deepEqual(after, before, state);
     assert.equal(messages.length, sent);
-    for (const hidden of ['verification_hash', 'claim_hash', 'key_hash', 'reviewed_by', 'key_updated_by']) {
+    for (const hidden of ['verification_hash', 'claim_hash', 'key_hash', 'key_ciphertext', 'reviewed_by', 'key_updated_by']) {
       assert.ok(!JSON.stringify(result).includes(hidden), hidden);
     }
     for (const value of [before.verification_hash, before.claim_hash, before.key_hash].filter(Boolean)) {
@@ -259,13 +265,34 @@ integration('concurrent claims produce exactly one usable key and never expose i
   const row = await db.selectFrom('mcp_applications').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
   assert.equal(row.claim_hash, null);
   assert.equal(row.key_hash?.length, 64);
+  assert.ok(row.key_ciphertext);
+  assert.deepEqual(await access.viewKey(id), { apiKey });
   assert.ok(!serialized(row).includes(apiKey));
   assert.ok(!JSON.stringify(messages).includes(apiKey));
   assert.equal((await access.authenticate(`Bearer ${apiKey}`)).id, id);
   assert.ok(!JSON.stringify(await access.list({})).includes(apiKey));
   assert.ok(!JSON.stringify(await access.list({})).includes(row.key_hash!));
+  assert.ok(!JSON.stringify(await access.list({})).includes(row.key_ciphertext!));
   await assert.rejects(access.authenticate(undefined), error => statusCode(error) === 401);
   await assert.rejects(access.authenticate(`Bearer mcp_${apiKey[4] === 'x' ? 'y' : 'x'}${apiKey.slice(5)}`), error => statusCode(error) === 401);
+});
+
+integration('reissue clears the encrypted key until the user claims a new credential', async () => {
+  const email = 'key-storage-reissue@example.com';
+  const { id, claim } = await approved(email);
+  const first = await access.claim(claim);
+  assert.equal((await access.authenticate(`Bearer ${first.apiKey}`)).id, id);
+  assert.equal((await access.getForAccount(email)).application!.key!.canReveal, true);
+  await access.reissue(id, review, '1');
+  const awaitingClaim = await db.selectFrom('mcp_applications').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
+  assert.equal(awaitingClaim.key_ciphertext, null);
+  assert.equal((await access.getForAccount(email)).application!.key!.canReveal, false);
+  await assert.rejects(access.viewKey(id), error => statusCode(error) === 409);
+  await assert.rejects(access.authenticate(`Bearer ${first.apiKey}`), error => statusCode(error) === 401);
+  const second = await access.claim(token('claim'));
+  assert.notEqual(second.apiKey, first.apiKey);
+  assert.deepEqual(await access.viewKey(id), { apiKey: second.apiKey });
+  assert.equal((await access.getForAccount(email)).application!.key!.canReveal, true);
 });
 
 integration('expired verification and claim links cannot be redeemed', async () => {

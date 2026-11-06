@@ -1,6 +1,10 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:http';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import test, { type TestContext } from 'node:test';
 import { HttpException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -113,6 +117,40 @@ test('stateless HTTP initializes and lists only the three read-only tools', asyn
   const notified = await http.inject({ method: 'POST', url: '/v1/mcp', headers,
     payload: { jsonrpc: '2.0', method: 'notifications/initialized' } });
   assert.equal(notified.statusCode, 202);
+  assert.equal(admissions(), 3);
+});
+
+test('the distributed skill queries the real MCP transport with the same authorization and limits', async t => {
+  const { app, http, admissions } = await harness(t);
+  const key = 'mcp_' + 'a'.repeat(43);
+  t.mock.method(app.get(McpAccess), 'authenticate', async (authorization?: string) => {
+    assert.equal(authorization, 'Bearer ' + key);
+    return { id: 'key-id', requestsPerMinute: 7 };
+  });
+  const proxy = createServer(async (request, reply) => {
+    let payload = '';
+    for await (const chunk of request) payload += chunk;
+    assert.equal(request.url, '/api/mcp');
+    const response = await http.inject({ method: 'POST', url: '/v1/mcp', headers: {
+      authorization: request.headers.authorization,
+      accept: request.headers.accept,
+      'content-type': request.headers['content-type'],
+      'mcp-protocol-version': request.headers['mcp-protocol-version'],
+    }, payload });
+    reply.writeHead(response.statusCode, response.headers).end(response.rawPayload);
+  });
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>(resolve => { proxy.closeAllConnections(); proxy.close(() => resolve()); }));
+  const address = proxy.address();
+  assert.ok(address && typeof address === 'object');
+  const { stdout } = await promisify(execFile)(process.execPath, [
+    fileURLToPath(new URL('../../../skills/price-comparison/scripts/query.mjs', import.meta.url)),
+    'get_product_offers', '{"standardProductId":"1"}',
+  ], { env: { ...process.env, PRICE_COMPARISON_URL: `http://127.0.0.1:${address.port}`, PRICE_COMPARISON_API_KEY: key }, timeout: 20000 });
+  const result = JSON.parse(stdout);
+  assert.equal(result.offers[0].price, '19.90');
+  assert.equal(result.offers[0].settlementQuantity, 2);
+  assert.match(result.snapshotWarning, /snapshots/);
   assert.equal(admissions(), 3);
 });
 

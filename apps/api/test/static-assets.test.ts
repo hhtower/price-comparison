@@ -12,6 +12,8 @@ async function setup(t: { after: (fn: () => Promise<void>) => void }) {
   await mkdir(join(root, 'assets-sibling'));
   await writeFile(join(root, 'assets', 'index-1234abcd.js'), 'export const ready = true;');
   await writeFile(join(root, 'assets', 'plain.css'), 'body { color: black; }');
+  await mkdir(join(root, 'assets', 'skills'));
+  await writeFile(join(root, 'assets', 'skills', 'SKILL.md'), '# Price comparison');
   await writeFile(join(root, 'assets-sibling', 'private.js'), 'private');
   const server = new FastifyAdapter().getInstance();
   registerStaticAssets(server, root);
@@ -35,6 +37,11 @@ test('hashed assets stream with immutable caching while plain assets require rev
   assert.equal(plain.statusCode, 200);
   assert.match(plain.headers['content-type']!, /text\/css/);
   assert.equal(plain.headers['cache-control'], 'public, max-age=0, must-revalidate');
+  const skill = await server.inject('/assets/skills/SKILL.md');
+  assert.equal(skill.statusCode, 200);
+  assert.match(skill.headers['content-type']!, /text\/plain/);
+  assert.equal(skill.body, '# Price comparison');
+  assert.equal(skill.headers['cache-control'], 'public, max-age=0, must-revalidate');
 });
 
 test('conditional asset requests return no body and honor ETag before modification time', async t => {

@@ -7,6 +7,18 @@
 .mcp-intro>p:not(.eyebrow){margin:0;color:var(--mcp-muted);font-size:14px;line-height:1.7}
 .mcp-steps{display:flex;flex-wrap:wrap;gap:8px 24px;padding:12px 0 0 18px;margin:14px 0 0;border-top:1px solid #c9ddd2;font-size:12px;color:var(--mcp-accent)}
 .mcp-steps li{padding-left:0}
+.mcp-application-link{display:inline-block;margin-top:16px;color:var(--mcp-accent);font-size:13px;font-weight:650;text-underline-offset:3px}
+#access-application{scroll-margin-top:20px}
+.mcp-methods{display:grid;gap:14px;margin-bottom:24px}
+.mcp-method{padding:18px;border:1px solid var(--mcp-line);border-radius:12px;background:#fff}
+.mcp-method-heading{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px}
+.mcp-method-heading h2{margin:0}.mcp-method-heading span{color:var(--mcp-accent);font-size:12px}
+.mcp-method>p{margin:10px 0 14px;color:var(--mcp-muted);font-size:13px;line-height:1.7}
+.mcp-method-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:12px}
+.mcp-method-actions a{font-size:13px;color:var(--mcp-accent);text-underline-offset:3px}
+.mcp-method-actions button{padding:8px 12px;font-size:13px}
+.mcp-method textarea[readonly]{resize:vertical;background:#f5f8f6;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.mcp-method>.mcp-help:last-child{margin-bottom:0}
 .mcp-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px;align-items:start;margin-top:24px}
 .mcp-layout>*{min-width:0}.mcp-page h2,.mcp-admin h2{margin:0 0 14px;font-size:22px;letter-spacing:-.02em}.mcp-page h2{margin-bottom:10px;font-size:20px}.mcp-page h3{font-size:16px}
 .mcp-capabilities{padding:0 4px}.mcp-capabilities dl{margin:12px 0}.mcp-capabilities dl>div{padding:12px 0;border-top:1px solid var(--mcp-line)}
@@ -22,7 +34,7 @@
 .mcp-page input,.mcp-page textarea{padding:9px 10px}
 .mcp-page textarea,.mcp-admin textarea{resize:vertical}.mcp-page input[readonly]{background:#f5f8f6;font-family:Consolas,monospace;font-size:12px}
 .mcp-page button{border:1px solid var(--mcp-accent);border-radius:7px;background:var(--mcp-accent);color:#fff;padding:12px 16px;font:inherit;font-size:14px;cursor:pointer}
-.mcp-page button.mcp-secondary{background:#fff;color:var(--mcp-accent)}.mcp-page button:disabled,.mcp-admin button:disabled{opacity:.55;cursor:wait}
+.mcp-page button.mcp-secondary{background:#fff;color:var(--mcp-accent)}.mcp-page button:disabled,.mcp-admin button:disabled{opacity:.55;cursor:default}
 .mcp-page :is(button,a,input,textarea):focus-visible,.mcp-admin :is(button,input,textarea,select):focus-visible{outline:3px solid #0f817955;outline-offset:3px}
 .mcp-captcha-row{display:grid;grid-template-columns:minmax(0,1fr) 140px 36px;gap:8px;align-items:end}
 .mcp-captcha-row input{height:48px}

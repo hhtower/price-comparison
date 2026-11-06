@@ -78,6 +78,11 @@ export class AdminMcpController {
   @Header('Cache-Control', 'no-store')
   list(@Query() query: Record<string, unknown>) { return this.access.list(query); }
 
+  @Get(':id/key')
+  @Header('Cache-Control', 'no-store')
+  @Header('Referrer-Policy', 'no-referrer')
+  key(@Param('id') id: string) { return this.access.viewKey(id); }
+
   @Post(':id/approve')
   approve(@Param('id') id: string, @Body() body: unknown, @Req() request: Request) {
     return this.access.approve(id, body, request.user!.userId);

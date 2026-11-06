@@ -163,26 +163,26 @@ export default function AccountPanel({ onAuthenticated, emailEnabled = true }) {
   const action = registration ? 'register' : mode === 'password' ? 'login' : 'verify-email';
 
   return <div className="mcp-account">
-    <div className="mcp-account-heading"><h2>{registration ? '设置账号密码' : '登录 / 注册'}</h2>
-      {!registration && emailEnabled && <button type="button" className="mcp-text-button" disabled={Boolean(busy)} onClick={() => {
-        closeSecurity();
-        setMode(mode === 'email' ? 'password' : 'email'); setPassword(''); setError(''); setNotice('');
-      }}>{mode === 'email' ? '密码登录' : '验证码登录'}</button>}
-    </div>
-    <p className="mcp-help">{registration ? '邮箱已验证。设置一个密码，供以后直接登录。'
-      : mode === 'password' ? '使用已保存的账号密码，登录后查看 MCP 接入。' : '先验证邮箱，登录后申请或查看 MCP 接入。'}</p>
+    {registration && <div className="mcp-account-heading"><h2>设置账号密码</h2></div>}
+    {registration && <p className="mcp-help">邮箱已验证。设置一个密码，供以后直接登录。</p>}
     {error && mode === 'password' && <p id="account-error" className="mcp-error" role="alert">{error}</p>}
     {notice && <p className="mcp-notice" role="status">{notice}</p>}
     <form onSubmit={event => { event.preventDefault(); if (action === 'login') openSecurity(action); else void submit(action); }}>
       <fieldset disabled={Boolean(busy) || suspended}>
         <div className="mcp-email-row">
-          <label htmlFor="account-email">邮箱<input ref={emailInput} id="account-email" type="email" required maxLength={254} autoComplete="email"
+          <div className="mcp-email-label-row"><label htmlFor="account-email">邮箱</label>
+            {!registration && emailEnabled && <button type="button" className="mcp-text-button" disabled={Boolean(busy)} onClick={() => {
+              closeSecurity();
+              setMode(mode === 'email' ? 'password' : 'email'); setPassword(''); setError(''); setNotice('');
+            }}>{mode === 'email' ? '密码登录' : '验证码登录'}</button>}
+          </div>
+          <input ref={emailInput} id="account-email" type="email" required maxLength={254} autoComplete="email"
             value={registration?.email || email} readOnly={Boolean(registration)} onChange={event => changeEmail(event.target.value)}
-            aria-describedby={error ? 'account-error' : undefined} /></label>
+            aria-describedby={error ? 'account-error' : undefined} />
           {!registration && mode === 'email' && <div className="mcp-send-code">
             <button type="button" disabled={Boolean(busy) || wait > 0 || !email} onClick={() => openSecurity('email-code')}>
               {busy === 'email-code' ? '正在发送…' : delivery ? '重新发送' : '发送验证码'}
-            </button><span className="mcp-retry-countdown" aria-live="polite">{wait > 0 ? `${wait}秒后重试` : '\u00a0'}</span>
+            </button><span className="mcp-retry-countdown" aria-live="polite">{wait > 0 ? `${wait}秒后重试` : ''}</span>
           </div>}
         </div>
         {error && mode !== 'password' && <p id="account-error" className="mcp-error" role="alert">{error}</p>}
@@ -194,7 +194,7 @@ export default function AccountPanel({ onAuthenticated, emailEnabled = true }) {
             value={code} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} placeholder="6 位数字，10 分钟内有效" /></label>}
         <button type="submit" disabled={Boolean(busy) || (registration ? password.length < 12
           : mode === 'password' ? password.length < 12 : !codeReady)}>
-          {busy && busy !== 'email-code' ? '正在处理…' : registration ? '创建账号并登录' : mode === 'password' ? '登录' : '验证并继续'}
+          {busy && busy !== 'email-code' ? '正在处理…' : registration ? '创建账号并登录' : mode === 'password' ? '登录' : '继续'}
         </button>
       </fieldset>
     </form>

@@ -2,10 +2,11 @@ import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { SITE_NAME } from '@price-comparison/catalog/site-brand';
+import { accessAssets } from './access-assets.js';
 
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
-  plugins: [react(), {
+  plugins: [react(), accessAssets(), {
     name: 'site-brand-html',
     transformIndexHtml: html => html.replaceAll('%SITE_NAME%', SITE_NAME),
   }],

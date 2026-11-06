@@ -1051,7 +1051,7 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
         <div className="brand-block"><div className="public-brand-row"><Brand /><CatalogCoverage data={coverageQuery.data} /></div></div>
         <div className="public-header-actions">
           <span className="community-links">
-            <a className="community-trigger mcp-access-link" href="/mcp" aria-label="MCP 接入" title="MCP 接入">
+            <a className="community-trigger mcp-access-link" href="/mcp" aria-label="Skill / MCP 接入" title="Skill / MCP 接入">
               {/* Official symbol geometry: modelcontextprotocol/modelcontextprotocol docs/favicon.svg. */}
               <svg width="24" height="24" viewBox="0 0 180 180" fill="none" stroke="currentColor" strokeWidth="11.0667" strokeLinecap="round" aria-hidden="true" focusable="false">
                 <path d="M23.5996 85.2532L86.2021 22.6507C94.8457 14.0071 108.86 14.0071 117.503 22.6507C126.147 31.2942 126.147 45.3083 117.503 53.9519L70.2254 101.23" />

@@ -97,7 +97,7 @@ test('verifies email then registers directly with one password and no additional
   expect(screen.queryByLabelText('密码')).not.toBeInTheDocument();
   expect(screen.getByText('60秒后重试')).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('邮件验证码'), { target: { value: '123456' } });
-  await click('验证并继续');
+  await click('继续');
   const password = screen.getByLabelText('密码');
   expect(password).toHaveAttribute('minlength', '12');
   expect(password).toHaveAttribute('maxlength', '128');
@@ -127,7 +127,7 @@ test('an existing email authenticates after mail verification without an optiona
   await click('密码登录');
   await click('验证码登录');
   await user.type(screen.getByLabelText('邮件验证码'), '123456');
-  await user.click(screen.getByRole('button', { name: '验证并继续' }));
+  await user.click(screen.getByRole('button', { name: '继续' }));
   await waitFor(() => expect(authenticated).toHaveBeenCalledWith(USER));
   expect(requests('/captcha')).toHaveLength(1);
   expect(requests('/register')).toHaveLength(0);
@@ -208,7 +208,7 @@ test('editing email discards its mail challenge and retry credential without eag
   await send();
   fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'other@example.com' } });
   expect(screen.queryByText('60秒后重试')).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: '验证并继续' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '继续' })).toBeDisabled();
   expect(requests('/captcha')).toHaveLength(1);
   await click('发送验证码');
   await confirmSecurity('54321');
@@ -360,9 +360,9 @@ test('expired graphic and mail codes block submission without clearing the email
   await click('刷新图形验证码');
   await confirmSecurity('54321');
   fireEvent.change(screen.getByLabelText('邮件验证码'), { target: { value: '123456' } });
-  expect(screen.getByRole('button', { name: '验证并继续' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: '继续' })).toBeEnabled();
   act(() => vi.advanceTimersByTime(600_000));
-  expect(screen.getByRole('button', { name: '验证并继续' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '继续' })).toBeDisabled();
   expect(screen.getByLabelText('邮箱')).toHaveValue(USER.email);
 });
 
@@ -408,7 +408,7 @@ test('pagehide clears credentials and aborts registration; pageshow does not fet
   render(<AccountPanel onAuthenticated={authenticated} />);
   await send();
   fireEvent.change(screen.getByLabelText('邮件验证码'), { target: { value: '123456' } });
-  await click('验证并继续');
+  await click('继续');
   fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'secure-password-123' } });
   let resolve;
   handler = path => path.endsWith('/register') && new Promise(done => { resolve = done; });

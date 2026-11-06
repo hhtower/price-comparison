@@ -1,0 +1,103 @@
+.mcp-access-page {
+  max-width: 1240px;
+  padding: 20px 32px 16px;
+}
+
+.mcp-access-page .mcp-header {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--mcp-line);
+}
+
+.mcp-access-content { animation: mcp-access-enter .3s ease-out; }
+.mcp-access-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 30px 0 26px;
+  background: radial-gradient(ellipse at 75% 40%, #d9eee3a0, transparent 65%);
+}
+
+.mcp-access-intro .eyebrow { margin: 0 0 10px; font-size: 10px; }
+.mcp-access-intro h1 { margin: 0; font-size: clamp(28px, 3vw, 38px); line-height: 1.25; letter-spacing: -.04em; }
+.mcp-access-intro p:last-child { margin: 12px 0 0; color: var(--mcp-muted); font-size: 14px; }
+.mcp-access-cta { display: grid; flex-shrink: 0; gap: 8px; min-width: 150px; text-align: center; }
+.mcp-access-cta > button:first-child { display: flex; align-items: center; justify-content: space-between; gap: 28px; font-weight: 700; }
+.mcp-access-cta > button:first-child:not(:disabled):hover { background: #115e59; }
+.mcp-access-page .mcp-access-cta .mcp-text-button { padding: 5px 8px; }
+.mcp-access-feedback:empty { display: none; }
+.mcp-access-feedback .mcp-notice, .mcp-access-feedback .mcp-error { margin-bottom: 12px; padding: 8px 12px; }
+.mcp-access-service-error { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.mcp-access-service-error .mcp-error { margin: 0; }
+.mcp-access-service-error button { padding: 7px 12px; }
+
+.mcp-access-page .mcp-methods { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 0; }
+.mcp-access-page .mcp-method {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 22px 24px 18px;
+  border-top: 3px solid var(--mcp-accent);
+  background: linear-gradient(145deg, #fff 65%, #f2f8f5);
+}
+
+.mcp-access-page .mcp-method + .mcp-method { border-top-color: #85a89e; }
+.mcp-access-method-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: var(--mcp-muted); font-size: 11px; }
+.mcp-access-index { color: var(--mcp-accent); font-family: Consolas, monospace; letter-spacing: .1em; }
+.mcp-access-page .mcp-method-heading h2 { margin: 0; font-size: 25px; line-height: 1.2; }
+.mcp-access-page .mcp-method > p { margin: 10px 0 16px; line-height: 1.65; }
+.mcp-access-page .mcp-method label { font-size: 12px; color: var(--mcp-muted); }
+.mcp-access-page .mcp-method textarea { min-height: 78px; resize: none; color: var(--ink); }
+.mcp-access-page .mcp-method input { height: 40px; color: var(--ink); }
+.mcp-access-page .mcp-method-actions { gap: 18px; margin-top: auto; padding-top: 16px; min-height: 52px; }
+.mcp-access-page .mcp-method-actions a { font-size: 12px; }
+.mcp-access-page .mcp-method-actions a:hover { color: #115e59; }
+.mcp-access-page .mcp-method > .mcp-help:last-child { margin: 12px 0 0; font-size: 11px; }
+.mcp-access-transport { display: flex; flex-wrap: wrap; gap: 8px 24px; padding-top: 12px; color: var(--mcp-muted); font-size: 11px; }
+.mcp-access-transport strong { margin-left: 6px; color: var(--ink); font-weight: 500; }
+
+.mcp-access-page .mcp-capabilities { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 16px; padding: 22px 0 0; }
+.mcp-access-page .mcp-capabilities h2 { margin: 0; font-size: 14px; }
+.mcp-access-shared { color: var(--mcp-muted); font-size: 11px; }
+.mcp-access-page .mcp-capabilities dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; flex-basis: 100%; margin: 12px 0 0; }
+.mcp-access-page .mcp-capabilities dl > div { padding: 12px 0; }
+.mcp-access-page .mcp-capabilities dt { font-size: 13px; }
+.mcp-access-page .mcp-capabilities dd { margin-top: 4px; font-size: 12px; }
+.mcp-access-footer { display: flex; justify-content: space-between; gap: 12px 24px; padding-top: 10px; color: var(--mcp-muted); font-size: 11px; }
+
+.mcp-access-page .mcp-access-dialog { box-sizing: border-box; width: 460px; padding: 28px; border-radius: 16px; color: var(--ink); box-shadow: 0 24px 80px #17352d30; }
+.mcp-access-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+.mcp-access-page .mcp-access-dialog-header h2 { margin: 0; font-size: 18px; line-height: 28px; }
+.mcp-access-page .mcp-dialog-close { display: grid; place-items: center; width: 28px; height: 28px; margin-right: -6px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--mcp-muted); font-size: 24px; line-height: 1; }
+.mcp-access-page .mcp-dialog-close:hover { background: #edf4f1; color: var(--mcp-accent); }
+.mcp-access-dialog .mcp-key > p, .mcp-access-dialog .mcp-credential > p { font-size: 13px; }
+.mcp-access-dialog .mcp-account-bar { margin-bottom: 16px; }
+.mcp-access-dialog .mcp-account fieldset { gap: 16px; }
+.mcp-access-dialog .mcp-account label { line-height: 20px; font-weight: 500; }
+.mcp-access-dialog .mcp-email-label-row { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; min-height: 20px; }
+.mcp-access-dialog .mcp-email-label-row .mcp-text-button { padding: 0; line-height: 20px; }
+.mcp-access-dialog .mcp-send-code { padding-top: 0; }
+.mcp-access-dialog .mcp-account input, .mcp-access-dialog .mcp-send-code button { height: 42px; }
+.mcp-access-dialog .mcp-retry-countdown:empty { display: none; }
+.mcp-access-dialog .mcp-account fieldset > button { min-height: 42px; padding: 10px 16px; font-weight: 650; }
+.mcp-access-dialog .mcp-account > .mcp-manual-actions { justify-content: center; margin-top: 18px; }
+.mcp-access-dialog .mcp-account > .mcp-manual-actions > button { padding: 0; border: 0; background: transparent; color: var(--mcp-muted); font-size: 12px; }
+
+@keyframes mcp-access-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .mcp-access-content { animation: none; } }
+
+@media (max-width: 760px) {
+  .mcp-access-page { padding: 18px 18px 24px; }
+  .mcp-access-page .mcp-header { gap: 12px; padding-bottom: 14px; }
+  .mcp-access-page .mcp-header nav { flex-wrap: wrap; gap: 10px 20px; }
+  .mcp-access-intro { align-items: flex-start; flex-direction: column; gap: 20px; padding: 24px 0; }
+  .mcp-access-intro h1 { font-size: 28px; }
+  .mcp-access-intro p:last-child { font-size: 13px; line-height: 1.7; }
+  .mcp-access-cta { display: flex; align-items: center; gap: 20px; }
+  .mcp-access-page .mcp-methods { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .mcp-access-page .mcp-method { padding: 20px 18px 18px; }
+  .mcp-access-page .mcp-capabilities { gap: 6px; }
+  .mcp-access-page .mcp-capabilities dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .mcp-access-footer { flex-direction: column; gap: 8px; line-height: 1.6; }
+  .mcp-access-page .mcp-access-dialog { padding: 18px; }
+}
