@@ -7,6 +7,7 @@ import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { buildSourceEvidence } from '../src/platforms/source-evidence.js';
 import type { JsonValue } from '../src/database/types.js';
 import type { CandidateDocument } from '../src/standardization/candidate-index.js';
+import { isExcludedApiRelay } from '../src/standardization/catalog-exclusion.js';
 
 const evidence = [{ path: 'name', quote: 'ChatGPT Plus' }];
 const base = { id: '11', ruleIds: [], evidence, reason: 'Explicit offer' };
@@ -29,8 +30,11 @@ test('identity prompt example passes the current protocol and item evidence vali
   assert.equal(blocks.length, 2, 'one complete input/output example');
   const example = JSON.parse(blocks[0]![1]!) as {
     candidates: Record<string, Omit<CandidateDocument, 'id'>>;
-    items: Array<{ id: string; name: string; sourceData?: Record<string, JsonValue>; candidateRefs: Record<string, string> }>;
+    items: Array<{ id: string; name: string; category?: string; sourceData?: Record<string, JsonValue>; candidateRefs: Record<string, string> }>;
   };
+  const semanticRelay = example.items.find(item => item.id === '104')!;
+  assert.equal(semanticRelay.category, '算力补给');
+  assert.equal(isExcludedApiRelay(semanticRelay), false, 'the example must require semantic model judgment');
   const candidateIds = new Map(Object.keys(example.candidates).map((key, index) => [key, String(91 + index)]));
   const inputs = example.items.map(item => ({ id: item.id,
     candidateRefs: Object.fromEntries(Object.entries(item.candidateRefs).map(([ref, tableRef]) => [ref, candidateIds.get(tableRef)!])),
@@ -38,7 +42,7 @@ test('identity prompt example passes the current protocol and item evidence vali
   const parsed = schemas.parseStandardizationProtocolResponse(JSON.parse(blocks[1]![1]!), inputs);
   const validated = validateStandardizationEvidence(parsed,
     example.items.map(item => ({ id: item.id, payload: buildExtractionPayload({
-      id: item.id, name: item.name, spec: '', sourceData: buildSourceEvidence(item.sourceData ?? {}),
+      id: item.id, name: item.name, spec: '', category: item.category, sourceData: buildSourceEvidence(item.sourceData ?? {}),
     }) })),
     Object.entries(example.candidates).map(([id, candidate]) => ({ ...candidate, id: candidateIds.get(id)! })));
   assert.deepEqual(validated.items.map(item => [item.id, item.status, item.reasonCode]), [

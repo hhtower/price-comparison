@@ -4,7 +4,7 @@ import { IDENTITY_POLICY_PROMPT } from '../standardization/identity-policy.js';
 import { standardizationProtocolSchema, type StandardizationProtocolInput } from './ai.schemas.js';
 import { buildModelRequestOptions, readModelRequestOptions, type ModelRequestOptions } from './model-request-options.js';
 
-export const STANDARDIZATION_PROMPT_VERSION = 'standardization-identity-prompt-20261028-v19';
+export const STANDARDIZATION_PROMPT_VERSION = 'standardization-identity-prompt-20261107-v20';
 export interface StandardizationRequest {
   readonly model: string;
   readonly candidates: readonly CandidateDocument[];
@@ -117,7 +117,7 @@ Return exactly one decision per supplied string ID, including uncertain items as
 # Example
 Input:
 \`\`\`json
-{"candidates":{"c1":{"family":"openai","product":"chatgpt","tier":"plus","aliases":[]}},"items":[{"id":"101","name":"ChatGPT Plus","candidateRefs":{"i1c1":"c1"}},{"id":"102","name":"Claude Pro","candidateRefs":{}},{"id":"103","name":"ChatGPT Pro","candidateRefs":{}},{"id":"104","name":"模型 API 中转额度","candidateRefs":{}},{"id":"105","name":"ChatGPT Plus 账号","sourceData":{"evidence":"提供账号密码。实际交付不提供账号密码。"},"candidateRefs":{"i5c1":"c1"}}]}
+{"candidates":{"c1":{"family":"openai","product":"chatgpt","tier":"plus","aliases":[]}},"items":[{"id":"101","name":"ChatGPT Plus","candidateRefs":{"i1c1":"c1"}},{"id":"102","name":"Claude Pro","candidateRefs":{}},{"id":"103","name":"ChatGPT Pro","candidateRefs":{}},{"id":"104","name":"星云用量补充卡","category":"算力补给","sourceData":{"evidence":"兑换后增加本站点数，可在统一入口按调用量扣费使用多个厂商的大模型，不提供官方订阅。"},"candidateRefs":{}},{"id":"105","name":"ChatGPT Plus 账号","sourceData":{"evidence":"提供账号密码。实际交付不提供账号密码。"},"candidateRefs":{"i5c1":"c1"}}]}
 \`\`\`
 Output:
 \`\`\`json
@@ -145,8 +145,8 @@ Output:
     },
     {
       "id": "104", "action": "not_sellable",
-      "evidence": [{"path": "name", "quote": "模型 API 中转额度"}], "ruleIds": [],
-      "reason": "The sold object is excluded model API relay credits."
+      "evidence": [{"path": "sourceData.evidence", "quote": "兑换后增加本站点数，可在统一入口按调用量扣费使用多个厂商的大模型，不提供官方订阅。"}], "ruleIds": [],
+      "reason": "中转站: the sold object is prepaid third-party model gateway usage, not an official subscription."
     },
     {
       "id": "105", "action": "insufficient_evidence",

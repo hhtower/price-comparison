@@ -86,7 +86,7 @@ const limits: StandardizationRequestLimits = {
 test('review request keeps frozen payloads, item-local candidate permissions and original proposals without history', () => {
   const before = structuredClone({ request, proposals });
   const built = buildStandardizationReviewRequest(request, proposals);
-  assert.equal(STANDARDIZATION_REVIEW_PROMPT_VERSION, 'standardization-review-20261025-v1');
+  assert.equal(STANDARDIZATION_REVIEW_PROMPT_VERSION, 'standardization-review-20261107-v2');
   assert.equal(built.model, request.model);
   assert.deepEqual(built.responseFormat, { type: 'json_object' });
   assert.deepEqual(built.messages.map(message => message.role), ['system', 'user']);
@@ -124,6 +124,23 @@ test('prompt uses shared identity policy and treats source, candidates and propo
   assert.match(prompt, /unknown.*false|ambiguous.*false/iu);
   assert.match(prompt, /no corrections/iu);
   assert.match(prompt, /"approved":true/u);
+});
+
+test('identity and review prompts exclude relay offers by meaning beyond enumerated categories', () => {
+  const prompts = [
+    standardization.buildStandardizationRequest(request).messages[0]!.content,
+    buildStandardizationReviewRequest(request, proposals).messages[0]!.content,
+  ];
+  for (const prompt of prompts) {
+    assert.match(prompt, /Classify relay offers by meaning, not by an exhaustive keyword or category list/u);
+    assert.match(prompt, /额度兑换码.*中转/u);
+    assert.match(prompt, /third-party gateway.*pooled or resold model access/u);
+    assert.match(prompt, /not_sellable.*never reuse or create/u);
+    assert.match(prompt, /Relay\/API mentions in after-sales or policy warnings.*alone do not establish the sold object/u);
+  }
+  assert.match(prompts[1]!, /Reject classified proposals for excluded relay offers/u);
+  assert.match(prompts[1]!, /For relay-related not_sellable proposals, verify/u);
+  assert.match(prompts[1]!, /not_sellable must correctly identify no actual offer or an excluded sold object/u);
 });
 
 test('true votes preserve exact decisions and identity objects in proposal order, including unclassified outcomes', () => {

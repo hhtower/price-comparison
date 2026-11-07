@@ -2,7 +2,7 @@ import { IDENTITY_POLICY_PROMPT } from '../standardization/identity-policy.js';
 import type { ParsedStandardizationResponse, StandardizationDecision } from './ai.schemas.js';
 import { aliasStandardizationContent, estimateStandardizationRequest, type StandardizationRequest, type StandardizationRequestLimits } from './standardization-request.js';
 
-export const STANDARDIZATION_REVIEW_PROMPT_VERSION = 'standardization-review-20261025-v1';
+export const STANDARDIZATION_REVIEW_PROMPT_VERSION = 'standardization-review-20261107-v2';
 
 export function isReviewableStandardizationDecision(item: StandardizationDecision): boolean {
   return item.status === 'classified' || item.reasonCode === 'insufficient_evidence' || item.reasonCode === 'not_sellable';
@@ -23,6 +23,7 @@ ${IDENTITY_POLICY_PROMPT}
 # Judging criteria
 - Read every field of the full payload, including uncited source text and the selected spec string and its attribute labels. You are responsible for full source semantics: determine the actual sold object, subject, negation, conditions, scope, prerequisites and conflicts. A matching name or verbatim quote alone does not establish the proposed decision.
 - A classified decision must identify the actual sold product and plan under the policy. For an existing identity, check that its ID is in that product's candidateStandardProductIds and its candidate document fits. For a new identity, check the exact referenced identity and its supporting evidence. Every citation must use a real scalar path and a contiguous verbatim quote from that product's payload.
+- Reject classified proposals for excluded relay offers even when a candidate name matches. Independently apply the semantic relay policy to categories and actual delivery. For relay-related not_sellable proposals, verify the relay explanation and citations, not merely whether API or relay appears in incidental text.
 - Judge unclassified decisions too. not_sellable must correctly identify no actual offer or an excluded sold object; insufficient_evidence must correctly identify missing, ambiguous or contradictory material evidence. Do not approve an unclassified decision just because it is conservative. Missing optional SKU attributes alone do not justify insufficient_evidence.
 - Resolve sold object and same-SKU conflicts from the complete source, including product/plan, credential delivery, selected verification status, warranty scope/window and renewal eligibility. Contradictory promises require insufficient_evidence even when a broad identity matches. Different scopes, prerequisites, comparisons, gifts, registration mailboxes and recommendations are not automatically conflicting delivered offers.
 - Return true only if that exact whole decision is supported. Unknown or ambiguous judgments are false. If any material part needs correction, return false. Judge each product independently; one rejection does not reject another product.

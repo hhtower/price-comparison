@@ -1,5 +1,4 @@
 import { saleEvidenceView } from './sale-evidence.js';
-import { extractServiceEvidence } from './service-evidence.js';
 
 export const API_RELAY_EXCLUSION_REASON = '目录不收录模型中转站的 API 额度、余额、请求套餐或号池接口';
 
@@ -11,22 +10,19 @@ const unrelatedService = /接[码马]|短信|邮箱|邮件|教程|教学|sms|gma
 const actualDelivery = /(?:实际(?:仅|只)?(?:交付|出售|提供)|(?:只|仅)(?:交付|出售|提供|售)|本(?:商品|产品)(?:为|是)|发货)/iu;
 const soldModelApi = /(?:(?:codex|claude|openai|chatgpt|gemini|grok|deepseek|模型)[\s_-]*(?:(?:中转|relay)[\s_-]*)?api|api[\s_-]*(?:(?:中转|relay)[\s_-]*)?(?:codex|claude|openai|chatgpt|gemini|grok|deepseek|模型))/iu;
 const soldAccount = /(?:账号|账户|密码|账密|充值到[^,，。;；\n]*(?:自己|买家|用户))/iu;
-const relayCategory = /模型\s*api\s*中转|模型中转|api\s*中转|中转站/iu;
+const relayCategory = /^(?:额度\s*兑换码|(?:模型\s*)?(?:api\s*)?中转(?:站)?|api\s+relay)$/iu;
 
 /** Reject only high-confidence model API relay offers. */
 export function isExcludedApiRelay(evidence: Record<string, unknown>, format: 'raw' | 'text' = 'raw'): boolean {
+  const categories = [evidence.category, evidence.sourceCategory,
+    evidence.sourceData && typeof evidence.sourceData === 'object' && !Array.isArray(evidence.sourceData)
+      ? (evidence.sourceData as Record<string, unknown>).category : undefined]
+    .filter((value): value is string => typeof value === 'string');
+  if (categories.some(category => relayCategory.test(category.trim()))) return true;
+
   const sale = saleEvidenceView(evidence, format);
   const title = [sale.name, sale.spec].filter((value): value is string => typeof value === 'string').join(' ');
   const text = JSON.stringify({ name: sale.name, spec: sale.spec, evidence: sale.evidence, sourceData: sale.sourceData });
-  const category = [evidence.category, evidence.sourceCategory,
-    evidence.sourceData && typeof evidence.sourceData === 'object' && !Array.isArray(evidence.sourceData)
-      ? (evidence.sourceData as Record<string, unknown>).category : undefined]
-    .filter((value): value is string => typeof value === 'string').join(' ');
-  const hasEndpoint = extractServiceEvidence(evidence).endpoints.length > 0;
-
-  // These fields are independent of the cleaned sale view: together they identify
-  // a relay balance SKU even when the title contains no model name.
-  if (relayCategory.test(category) && hasEndpoint && commercial.test(title)) return true;
   const titleRelay = (model.test(title) && api.test(title) && commercial.test(title))
     || (api.test(title) && /额度|余额|积分|请求|充值|credits?|quota/iu.test(title))
     || /sub2api.*(?:充值|兑换|余额)/iu.test(title);

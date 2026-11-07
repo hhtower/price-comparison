@@ -19,16 +19,37 @@ test('explicit model API relay products are excluded before an LLM request', asy
   assert.equal(isExcludedApiRelay(frozen, 'text'), true);
 });
 
-test('catalog relay metadata and endpoint evidence are excluded before an LLM request', async () => {
+test('explicit relay categories exclude listings without requiring title or endpoint evidence', () => {
+  for (const category of ['额度兑换码', '中转', 'API 中转', '模型 API 中转', '中转站', 'API relay']) {
+    for (const fields of [{ category }, { sourceCategory: category }, { sourceData: { category } }]) {
+      assert.equal(isExcludedApiRelay({ name: '通用服务', ...fields }), true, JSON.stringify(fields));
+    }
+    const frozen = buildExtractionPayload({ id: 'category-relay', name: '通用服务', spec: '', category });
+    assert.equal(isExcludedApiRelay(frozen, 'text'), true, category);
+  }
   assert.equal(isExcludedApiRelay({
-    name: '100元余额卡', category: '模型 API 中转', sourceData: { apiEndpoint: 'https://relay.invalid/v1' },
-  }), true);
-  assert.equal(isExcludedApiRelay({
-    name: '100元余额卡', category: '模型 API 中转', sourceData: {},
-  }), false);
+    name: 'ChatGPT Plus 账号', category: '额度兑换码', sourceData: { evidence: '实际只交付 ChatGPT Plus 账号。' },
+  }), true, 'explicit relay categories take precedence over account title and delivery claims');
+});
+
+test('generic categories and standalone endpoints stay eligible for LLM review', () => {
+  for (const category of ['兑换码', '账号', '订阅', 'API 服务', '游戏充值卡', '邮箱']) {
+    assert.equal(isExcludedApiRelay({ name: '通用服务', category }), false, category);
+  }
   assert.equal(isExcludedApiRelay({
     name: '100元余额卡', sourceData: { apiEndpoint: 'https://relay.invalid/v1' },
   }), false);
+});
+
+test('non-model and negated relay categories stay eligible for semantic assessment', () => {
+  for (const input of [
+    { name: 'Gmail 邮箱 API 服务', category: '邮件中转' },
+    { name: '邮箱 API 取件服务', category: 'SMTP relay' },
+    { name: 'OpenAI 短信 API 接码服务', category: 'SMS relay' },
+    { name: 'ChatGPT Plus 账号', category: '官方订阅（非中转）' },
+    { name: 'API 接入教程', category: 'API 中转教程' },
+    { name: '信号继电器', category: 'relay' },
+  ]) assert.equal(isExcludedApiRelay(input), false, input.category);
 });
 
 test('model API relay risk disclaimers alone remain eligible for LLM review', async () => {
