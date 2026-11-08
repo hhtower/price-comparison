@@ -90,13 +90,13 @@ test('ChatGPT Premium keeps the existing Team identity and searches by current a
 test('existing ChatGPT Pro market names display the amount tier and remain searchable by old and new aliases', () => {
   for (const [name, expected] of [
     ['ChatGPT Pro 5x', 'ChatGPT Pro 100'], ['ChatGPT Pro 20x', 'ChatGPT Pro 200'],
-    ['ChatGPT Pro 10X', 'ChatGPT Pro 200'], ['ChatGPT Pro 25×', 'ChatGPT Pro 500'],
+    ['ChatGPT Pro 10X', 'ChatGPT Pro 100'], ['ChatGPT Pro 25×', 'ChatGPT Pro 500'],
     ['ChatGPT Pro 50倍', 'ChatGPT Pro 500'], ['ChatGPT Pro 200', 'ChatGPT Pro 200'],
     ['ChatGPT Pro 35x', 'ChatGPT Pro 35x'], ['ChatGPT Pro 20x 充值资格账号（非付费订阅）', 'ChatGPT Pro 20x 充值资格账号（非付费订阅）'],
   ]) assert.equal(standardProductDisplayName(name!), expected);
   for (const [tier, aliases] of [
-    ['pro_5x', ['Pro 100', 'Pro 5x']],
-    ['pro_20x', ['Pro 200', 'Pro 10x', 'Pro 20x']],
+    ['pro_5x', ['Pro 100', 'Pro 10x', 'Pro 5x']],
+    ['pro_20x', ['Pro 200', 'Pro 20x']],
     ['pro_500', ['Pro 500', 'Pro 25x', 'Pro 50x']],
   ] as const) for (const alias of aliases) assert.ok(CATALOG_DISPLAY_SEARCH_LABELS.tiers[tier].includes(alias), alias);
 });

@@ -1,7 +1,7 @@
 import { canonicalizeMatchText } from './fingerprint.js';
 import { saleEvidenceView } from './sale-evidence.js';
 
-export const IDENTITY_POLICY_VERSION = 'catalog-identity-20261107-v33';
+export const IDENTITY_POLICY_VERSION = 'catalog-identity-20261108-v34';
 
 export interface Identity { family: string; product: string; tier: string }
 
@@ -61,8 +61,11 @@ const SMS_DEFAULTS: Record<string, string> = { openai: 'codex_sms', anthropic: '
 const TUTORIAL_TIERS = new Set(['tutorial', 'guide', 'course', '教程', '教学', '课程']);
 type ChatgptProDollarTier = 'pro_5x' | 'pro_20x' | 'pro_500';
 
+// 2026-10-29 official restore: Pro 100 quota doubled to 10x, Pro 200 back to 20x.
+// '10x' names the Pro 100 tier; the Sep–Oct 2026 transitional Pro 200 cohort keeps
+// its 10x label only when an explicit $200 amount anchors the listing.
 const CHATGPT_PRO_MULTIPLIERS: Record<string, ChatgptProDollarTier> = {
-  '5': 'pro_5x', '10': 'pro_20x', '20': 'pro_20x', '25': 'pro_500', '50': 'pro_500',
+  '5': 'pro_5x', '10': 'pro_5x', '20': 'pro_20x', '25': 'pro_500', '50': 'pro_500',
 };
 const CHATGPT_PRO_AMOUNTS: Record<string, ChatgptProDollarTier> = { '100': 'pro_5x', '200': 'pro_20x', '500': 'pro_500' };
 
@@ -142,7 +145,7 @@ export function normalizeIdentity(input: { family?: unknown; product?: unknown; 
       // Canonical keys stay stable for existing catalog rows; official names and
       // current/legacy merchant multipliers all normalize to those keys.
       pro5x: 'pro_5x', '5xpro': 'pro_5x', pro100: 'pro_5x', '100pro': 'pro_5x',
-      pro10x: 'pro_20x', '10xpro': 'pro_20x', pro200: 'pro_20x', '200pro': 'pro_20x',
+      pro10x: 'pro_5x', '10xpro': 'pro_5x', pro200: 'pro_20x', '200pro': 'pro_20x',
       pro20x: 'pro_20x', '20xpro': 'pro_20x',
       pro25x: 'pro_500', '25xpro': 'pro_500', pro500: 'pro_500', '500pro': 'pro_500',
       pro50x: 'pro_500', '50xpro': 'pro_500',
@@ -151,10 +154,14 @@ export function normalizeIdentity(input: { family?: unknown; product?: unknown; 
     };
     const proLabelRemainder = tier.replace(/pro|usd|dollars?|美元|美金|美刀|刀|原|旧|现|100|200|500|10|20|25|50|5|[\s$×倍x/|、()（）._-]/gu, '');
     if (product === 'chatgpt' && !proLabelRemainder && /(?<![a-z])pro(?![a-z])/u.test(tier)) {
-      const proTiers = chatgptProDollarTiers(tier);
+      const amountTiers = chatgptProDollarTiers(tier);
+      const proTiers = new Set(amountTiers);
       const multipliers = quotaMultipliers(tier);
       for (const multiplier of multipliers) if (CHATGPT_PRO_MULTIPLIERS[multiplier]) proTiers.add(CHATGPT_PRO_MULTIPLIERS[multiplier]!);
       if (proTiers.size === 1 && [...multipliers].every(multiplier => CHATGPT_PRO_MULTIPLIERS[multiplier])) tier = [...proTiers][0]!;
+      else if (amountTiers.has('pro_20x') && multipliers.size
+        && [...multipliers].every(multiplier => CHATGPT_PRO_MULTIPLIERS[multiplier] === 'pro_20x' || multiplier === '10'))
+        tier = 'pro_20x';
     }
     const teamText = tier.replace(/_/gu, ' ').replace(/^(?:openai\s*)?(?:chatgpt|codex)\s*/u, '');
     const teamLabelRemainder = teamText.replace(/team|business|premium|原|旧|现|10|5|[\sx×倍/|、()（）._-]/gu, '');
@@ -551,9 +558,13 @@ export function assessProductEvidence(evidence: Record<string, unknown>, format:
   const chatgptPro = product === 'chatgpt' && tier === 'pro';
   const multiplierTiers = new Set([...multipliers].map(multiplier => CHATGPT_PRO_MULTIPLIERS[multiplier]));
   const chatgptTeamMultiplier = chatgptTeam && multipliers.size > 0 && [...multipliers].every(multiplier => ['5', '10'].includes(multiplier));
-  if (multipliers.size > 1 && !chatgptTeamMultiplier && (!chatgptPro || multiplierTiers.size > 1)) return ambiguous('Multiple quota multipliers are offered without a selected plan', [...rules, 'conflicting_multipliers']);
+  // Sep–Oct 2026 transitional Pro 200 cohort: an explicit $200 amount keeps
+  // listings that still carry the cut-window 10x label (with or without 20x) on Pro 200.
+  const transitionPro200 = chatgptPro && dollarTier === 'pro_20x' && multipliers.size > 0
+    && [...multipliers].every(multiplier => CHATGPT_PRO_MULTIPLIERS[multiplier] === 'pro_20x' || multiplier === '10');
+  if (multipliers.size > 1 && !chatgptTeamMultiplier && (!chatgptPro || (multiplierTiers.size > 1 && !transitionPro200))) return ambiguous('Multiple quota multipliers are offered without a selected plan', [...rules, 'conflicting_multipliers']);
   const multiplier = [...multipliers][0];
-  const chatgptMultiplierTier = chatgptPro ? CHATGPT_PRO_MULTIPLIERS[multiplier ?? ''] : undefined;
+  const chatgptMultiplierTier = chatgptPro ? (transitionPro200 ? 'pro_20x' : CHATGPT_PRO_MULTIPLIERS[multiplier ?? '']) : undefined;
   if (multiplier && !chatgptMultiplierTier && !chatgptTeamMultiplier && ((product === 'chatgpt' && tier === 'pro') || (multiplier !== '5' && multiplier !== '20')))
     return ambiguous('The quota multiplier is not supported by an official account plan', [...rules, 'unsupported_multiplier']);
   if (chatgptPro && (dollarTiers.size > 1 || (dollarTier && chatgptMultiplierTier && dollarTier !== chatgptMultiplierTier)))
@@ -686,7 +697,7 @@ export const IDENTITY_POLICY_PROMPT = `Official account identity policy (${IDENT
 - Use canonical family/product pairs: openai/chatgpt, google/gemini, anthropic/claude.
 - ChatGPT Pro 200 recharge/代充/直充 uses openai/chatgpt/pro_20x. Delivery methods do not change family/product/tier. The same applies to Codex, Claude/Claude Code and Gemini subscription recharge offers.
 - Grok accounts use xai/grok. Current unified Grok/X/Cursor subscriptions use tiers plus, premium, super, ultra (shared AI usage; 1x/4x/15x/50x respectively). A named Grok Plus/Premium/Ultra plan or explicitly new/unified X plan is distinct from historical X Premium/Premium+ and SuperGrok/Heavy. Grok Super needs explicit new/unified or 15x evidence; Super alone never proves historical SuperGrok. Preserve old/legacy SKU identities; no automatic migration or mapping from old plans, dollar prices, gifts, shared menus or supported software. A unified subscription's included Cursor/Grok/X benefits are not three separately purchased subscriptions and do not establish standalone Cursor Pro/Pro+. gro, gr0k and Grok in an account title refer to Grok; 普号/free means tier free. For Grok products only, provider aliases x, grok and x.ai normalize to xai. X/Twitter social accounts, Grok API credits, mirrors and SMS services remain separate products; never infer or collapse different paid tiers.
-- ChatGPT tiers: free, go, plus, pro_5x, pro_20x, pro_500, team, team_5x. The user-facing names are Pro 100, Pro 200 and Pro 500. Pro 5x/5X and Pro 100 are aliases for the first tier; Pro 10x/10X, Pro 20x/20X and Pro 200 are aliases for the second; Pro 25x/25X, Pro 50x/50X and Pro 500 are aliases for the third. Accept both Pro 10x/10x Pro and the legacy Pro 20x/20x Pro spellings, and likewise Pro 25x/25x Pro and legacy Pro 50x/50x Pro. Equivalent current/legacy aliases may coexist (10x with 20x; 25x with 50x). Compare canonical tiers before declaring a conflict. Different unselected amount tiers (Pro 100/200/500) or contradictory delivered tiers require review; never select the largest amount. Merchant sale prices, balances and usage amounts are not plan names and must not override a named Pro tier or multiplier. Do not infer unsupported decimal multipliers.
+- ChatGPT tiers: free, go, plus, pro_5x, pro_20x, pro_500, team, team_5x. The user-facing names are Pro 100, Pro 200 and Pro 500. Pro 10x/10X and Pro 100 are aliases for the first tier (legacy Pro 5x/5X likewise); Pro 20x/20X and Pro 200 are aliases for the second; Pro 50x/50X and Pro 500 are aliases for the third (legacy Pro 25x/25X). Listings from the 2026 Sep–Oct cut window may pair an explicit Pro 200/$200 amount with the 10x label (with or without 原20x); the explicit amount wins and they stay Pro 200. 10x together with 20x or 5x without a selected amount requires review. Compare canonical tiers before declaring a conflict. Different unselected amount tiers (Pro 100/200/500) or contradictory delivered tiers require review; never select the largest amount. Merchant sale prices, balances and usage amounts are not plan names and must not override a named Pro tier or multiplier. Do not infer unsupported decimal multipliers.
 - Gemini paid tiers: plus, pro, ultra_5x, ultra_20x. Ordinary Google/Gemini Free accounts use google/email/standard, subject to their actual login/mail availability.
 - Claude tiers keep stable keys: free, pro, max_5x, max_20x, team, team_5x. Display max_5x as Max, max_20x as Ultra, and team_5x as Team Premium. Ultra (including its current 10x weekly label) and legacy Max 20x are the same plan; Max 5x/Max 100 and Max 20x/Max 200 are supported plan names. Equivalent Ultra/Max 20x labels may coexist; Ultra and Max 5x conflict. A bare Max remains ambiguous without explicit plan amount or multiplier evidence; merchant prices and credit balances do not establish a tier. Name changes and billing-price changes do not create new identities. Ultra's lack of a five-hour limit applies only to verified accounts; never infer verification or credits received from the plan name.
 - Team and Business without an explicit premium plan are aliases of team. ChatGPT Premium, Team Premium and Business Premium are team_5x. Team 5x/team5x/5x Team and Team 10x/team10x/10x Team (including Business spellings) are current/legacy aliases of the same ChatGPT Premium tier; equivalent 5x and 10x labels may coexist and are not a conflict. Compare canonical tiers before declaring a conflict. Unsupported multipliers, unselected standard/premium menus and contradictory actual delivery still require review. Claude Team Premium remains team_5x with its existing 5x mapping; ChatGPT's 10x alias does not apply to Claude.
@@ -697,7 +708,7 @@ export const IDENTITY_POLICY_PROMPT = `Official account identity policy (${IDENT
 - Google AI Plus/Pro/Ultra are Gemini plans. Google One storage is an entitlement, not a separate account brand or tier.
 - Free account labels include 普号, 普通账户, 普通账号 and 未订阅. 普号可升级Pro is currently free, not Pro.
 - Explicit brands override defaults. Brandless team/plus/go/pro names default to ChatGPT when account subscription context is clear. Standalone team, team 5x, team 10x, Team Premium, Business Premium and 【自营】Team 5X/10X listings also default to ChatGPT. Premium alone has no default brand. Unrelated explicit products (Steam, TeamViewer, Cursor, etc.) never default.
-- ChatGPT Pro, Claude Max and Gemini Ultra REQUIRE explicit supported amount or multiplier evidence. For ChatGPT Pro, supported aliases are Pro 100/200/500 and 5x/10x/25x (with legacy 20x/50x); never invent a multiplier or collapse a known multiplier into pro/max/ultra. 5人 and 5个 are seat/count quantities, not 5x.
+- ChatGPT Pro, Claude Max and Gemini Ultra REQUIRE explicit supported amount or multiplier evidence. For ChatGPT Pro, supported aliases are Pro 100/200/500 and 10x/20x/50x (with legacy 5x/25x); never invent a multiplier or collapse a known multiplier into pro/max/ultra. 5人 and 5个 are seat/count quantities, not 5x.
 - Multiple offered brands/plans or unselected multipliers are ambiguous: request review instead of choosing one. Available model lists do not override the account brand.
 - Determine what is sold and the selected SKU before using identity keywords. Buyer self-verification, login tutorials, after-sales exclusions, plan comparisons and possible upgrades do not change the delivered plan. An explicit selected plan resolves an offered menu, but never overrides contradictory actual-delivery claims. Eligibility-only/K12 accounts are not already-activated subscription rights. Mailboxes and sold PDF/tutorial products remain distinct catalog goods. A Team discount/coupon code that only lets the buyer complete payment is openai/chatgpt_team_discount_code/standard, not a Team subscription; actual Team seat redemption codes remain openai/chatgpt/team.
 - SMS verification/接码/接马 services ARE catalog products. Provider aliases MUST share one identity: OpenAI/Codex/ChatGPT use openai/codex_sms/standard; Anthropic/Claude/Claude Code use anthropic/claude_sms/standard; Google/Gemini/Google AI use google/google_sms/standard; Microsoft/微软 use microsoft/microsoft_sms/standard. Do not create openai_sms, chatgpt_sms, anthropic_sms, claude_code_sms, gemini_sms or a separate generic sms identity. Other evidenced platforms use platform/platform_sms/standard. Name them '<Platform> 接码服务'. Never merge these with accounts or exclude them.

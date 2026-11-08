@@ -412,7 +412,7 @@ test('selected Standard and Premium seats resolve a shared menu without changing
 test('ChatGPT Pro official dollar names and market multiplier aliases normalize to stable catalog tiers', () => {
   for (const [tier, expected] of [
     ['Pro 5x', 'pro_5x'], ['5x Pro', 'pro_5x'], ['Pro 5倍', 'pro_5x'], ['5倍 Pro', 'pro_5x'], ['Pro 100', 'pro_5x'], ['100 Pro', 'pro_5x'], ['Pro 100美元', 'pro_5x'], ['100美元 Pro', 'pro_5x'],
-    ['Pro 10x', 'pro_20x'], ['10x Pro', 'pro_20x'], ['Pro 10倍', 'pro_20x'], ['10倍 Pro', 'pro_20x'], ['Pro 20x', 'pro_20x'], ['20x Pro', 'pro_20x'], ['Pro 200', 'pro_20x'], ['200 Pro', 'pro_20x'],
+    ['Pro 10x', 'pro_5x'], ['10x Pro', 'pro_5x'], ['Pro 10倍', 'pro_5x'], ['10倍 Pro', 'pro_5x'], ['Pro 20x', 'pro_20x'], ['20x Pro', 'pro_20x'], ['Pro 200', 'pro_20x'], ['200 Pro', 'pro_20x'],
     ['Pro 25x', 'pro_500'], ['25x Pro', 'pro_500'], ['Pro 25倍', 'pro_500'], ['25倍 Pro', 'pro_500'], ['Pro 50x', 'pro_500'], ['50x Pro', 'pro_500'], ['Pro 50×', 'pro_500'], ['Pro 500', 'pro_500'], ['500 Pro', 'pro_500'], ['Pro 500美金', 'pro_500'], ['500美金 Pro', 'pro_500'],
   ] as const) {
     assert.deepEqual(policy.normalizeIdentity({ family: 'OpenAI', product: 'ChatGPT', tier }),
@@ -427,7 +427,7 @@ test('ChatGPT Pro dollar names and current/legacy multiplier evidence resolve wi
     ['ChatGPT 100 Pro 账号', { family: 'openai', product: 'chatgpt', tier: 'pro_5x' }],
     ['ChatGPT Pro 5x 账号', { family: 'openai', product: 'chatgpt', tier: 'pro_5x' }],
     ['ChatGPT Pro 200 账号', { family: 'openai', product: 'chatgpt', tier: 'pro_20x' }],
-    ['ChatGPT Pro 10x 账号', { family: 'openai', product: 'chatgpt', tier: 'pro_20x' }],
+    ['ChatGPT Pro 10x 账号', { family: 'openai', product: 'chatgpt', tier: 'pro_5x' }],
     ['ChatGPT Pro 20x 账号', { family: 'openai', product: 'chatgpt', tier: 'pro_20x' }],
     ['ChatGPT 200 Pro 账号', { family: 'openai', product: 'chatgpt', tier: 'pro_20x' }],
     ['ChatGPT Pro 500 账号', { family: 'openai', product: 'chatgpt', tier: 'pro_500' }],
@@ -458,8 +458,8 @@ test('ChatGPT Pro equivalent current and legacy multipliers may coexist', () => 
   for (const [name, tier] of [
     ['ChatGPT Pro 200 10x（原20x）账号', 'pro_20x'],
     ['ChatGPT Pro 500 25x（原50x）账号', 'pro_500'],
-    ['ChatGPT Pro 10x / 20x账号', 'pro_20x'],
     ['ChatGPT Pro 25× / 50倍账号', 'pro_500'],
+    ['ChatGPT Pro 100 10x（原5x）账号', 'pro_5x'],
   ]) for (const format of ['raw', 'text'] as const) {
     const raw = { name: name! };
     const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'pro-alias', spec: '', ...raw });
@@ -478,6 +478,7 @@ test('ChatGPT Pro multiple unselected amount tiers and contradictory delivery re
     { name: 'ChatGPT Pro $200 / $500账号' },
     { name: 'ChatGPT Pro 200 25x账号' },
     { name: 'ChatGPT Pro 500 20x账号' },
+    { name: 'ChatGPT Pro 10x / 20x账号' },
     { name: 'ChatGPT Pro 10x / 25x账号' },
     { name: 'ChatGPT Pro 10x / 35x账号' },
     { name: 'ChatGPT Pro 200账号', sourceData: { evidence: '实际交付Pro 500订阅账号。' } },
@@ -496,7 +497,7 @@ test('ChatGPT Pro sale prices balances and usage amounts do not select a subscri
     ['ChatGPT Pro 100账号 附赠余额500美元', 'pro_5x'],
     ['ChatGPT Pro 200账号 使用额度500美元', 'pro_20x'],
     ['ChatGPT Pro 20x 500刀账号', 'pro_20x'],
-    ['ChatGPT Pro 10x账号 售价$500', 'pro_20x'],
+    ['ChatGPT Pro 10x账号 售价$500', 'pro_5x'],
   ]) {
     assert.deepEqual(policy.assessProductEvidence({ name }).identity, { family: 'openai', product: 'chatgpt', tier }, name);
   }
@@ -633,7 +634,7 @@ test('quota recognition rejects unsupported numeric values without matching a de
   }
   for (const [name, identity] of [
     ['ChatGPT Pro 5x', { family: 'openai', product: 'chatgpt', tier: 'pro_5x' }],
-    ['ChatGPT Pro 10x', { family: 'openai', product: 'chatgpt', tier: 'pro_20x' }],
+    ['ChatGPT Pro 10x', { family: 'openai', product: 'chatgpt', tier: 'pro_5x' }],
     ['ChatGPT Pro 25x', { family: 'openai', product: 'chatgpt', tier: 'pro_500' }],
     ['ChatGPT Pro 20x', { family: 'openai', product: 'chatgpt', tier: 'pro_20x' }],
     ['Claude Max 20倍', { family: 'anthropic', product: 'claude', tier: 'max_20x' }],

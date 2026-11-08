@@ -120,7 +120,7 @@ export const CATALOG_DISPLAY_SEARCH_LABELS = {
     ...Object.fromEntries(Object.entries(SERVICES).map(([key, [, name]]) => [key, name])) },
   families: FAMILIES,
   tiers: { ...TIERS, free: '普通账号 免费版',
-    pro_5x: 'Pro 100 Pro 5x', pro_20x: 'Pro 200 Pro 10x Pro 20x', pro_500: 'Pro 500 Pro 25x Pro 50x' },
+    pro_5x: 'Pro 100 Pro 10x Pro 5x', pro_20x: 'Pro 200 Pro 20x', pro_500: 'Pro 500 Pro 25x Pro 50x' },
   tierTerms: TIER_TERMS,
 };
 
@@ -161,7 +161,7 @@ export function standardProductDisplayName(name: string): string {
     if (aliases.some(alias => alias.toLowerCase() === normalized)) return aliases[0]!;
   if (/^(?:X Premium(?: Plus|\+)?|SuperGrok|Grok Heavy)$/u.test(name)) return `${name}（旧版）`;
   const pro = name.match(/^ChatGPT\s+Pro\s*(5|10|20|25|50)\s*[x×倍]$/iu);
-  if (pro) return `ChatGPT Pro ${{ '5': 100, '10': 200, '20': 200, '25': 500, '50': 500 }[pro[1]!]}`;
+  if (pro) return `ChatGPT Pro ${{ '5': 100, '10': 100, '20': 200, '25': 500, '50': 500 }[pro[1]!]}`;
   const parts = name.split(/\s*\/\s*/u);
   if (parts.length === 3 && parts.every(part => part.trim()) && parts.some(part => /^[a-z0-9][a-z0-9_.+-]*$/iu.test(part.trim()))) {
     const display = canonicalProductDisplayName({ family: parts[0]!, product: parts[1]!, tier: parts[2]! });
