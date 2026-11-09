@@ -10,6 +10,7 @@ const CONTENT_TYPES: Record<string, string> = {
 
 export function registerStaticAssets(server: FastifyInstance, clientRoot: string): void {
   const root = resolve(clientRoot, 'assets');
+  server.get('/favicon.ico', async (_request, reply) => reply.code(308).redirect('/assets/favicon.png'));
   server.get('/assets/*', async (request, reply) => {
     const relative = String((request.params as { '*': string })['*'] ?? '');
     const file = resolve(root, relative);

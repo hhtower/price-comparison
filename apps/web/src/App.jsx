@@ -6,7 +6,6 @@ import OfficialReference from './OfficialReference.jsx';
 import AssistantWidget from './AssistantWidget.jsx';
 import AssistantLoading from './AssistantLoading.jsx';
 import McpPage from './McpPage.jsx';
-import { logoUrl } from './Brand.jsx';
 import { updatePageMetadata } from './page-metadata.js';
 import './styles.css';
 import './public-catalog.css';
@@ -52,13 +51,6 @@ export default function App() {
   useEffect(() => {
     document.body.className = route === 'admin' ? 'admin-shell' : route === 'assistant' ? 'assistant-shell' : route === 'tools' ? 'tools-shell' : route === 'guide' ? 'guide-shell' : 'public-shell';
     if (!route.startsWith('/products/')) updatePageMetadata(route);
-    let favicon = document.querySelector('link[rel="icon"]');
-    if (!favicon) {
-      favicon = document.createElement('link');
-      favicon.rel = 'icon';
-      document.head.appendChild(favicon);
-    }
-    favicon.setAttribute('href', logoUrl);
   }, [route]);
   if (route === 'admin') return <AdminRouteBoundary><Suspense fallback={<main className="route-state" role="status">正在加载管理端…</main>}><AdminPage /></Suspense></AdminRouteBoundary>;
   if (route === 'assistant') return <Suspense fallback={<AssistantLoading />}><AssistantPage /></Suspense>;

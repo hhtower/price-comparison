@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { registerStaticAssets } from '../src/seo/static-assets.js';
@@ -42,6 +43,23 @@ test('hashed assets stream with immutable caching while plain assets require rev
   assert.match(skill.headers['content-type']!, /text\/plain/);
   assert.equal(skill.body, '# Price comparison');
   assert.equal(skill.headers['cache-control'], 'public, max-age=0, must-revalidate');
+});
+
+test('default favicon redirects to the square PNG declared in the initial HTML', async t => {
+  const server = new FastifyAdapter().getInstance();
+  registerStaticAssets(server, fileURLToPath(new URL('../../web/public/', import.meta.url)));
+  t.after(() => server.close());
+  const response = await server.inject('/favicon.ico');
+  assert.equal(response.statusCode, 308);
+  assert.equal(response.headers.location, '/assets/favicon.png');
+  const icon = await server.inject(response.headers.location!);
+  assert.equal(icon.statusCode, 200);
+  assert.match(icon.headers['content-type']!, /image\/png/);
+  assert.equal(icon.rawPayload.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.equal(icon.rawPayload.readUInt32BE(16), 96);
+  assert.equal(icon.rawPayload.readUInt32BE(20), 96);
+  const template = await readFile(new URL('../../web/index.html', import.meta.url), 'utf8');
+  assert.match(template, /<link rel="icon" type="image\/png" sizes="96x96" href="\/assets\/favicon\.png"/);
 });
 
 test('conditional asset requests return no body and honor ETag before modification time', async t => {
