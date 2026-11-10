@@ -9,7 +9,7 @@ export function offerConditions(offer, formatValue = displayPurchaseTagValue) {
   const facts = new Map();
   for (const raw of offer.tags || []) {
     for (const tag of normalizePurchaseTag(raw)) {
-      if (!tag || tag.name === 'minimum_quantity' || !PURCHASE_GUIDE_FIELDS[tag.name] || !tag.value || ['unknown', 'unspecified'].includes(tag.value)) continue;
+      if (!tag || ['minimum_quantity', 'warranty'].includes(tag.name) || !PURCHASE_GUIDE_FIELDS[tag.name] || !tag.value || ['unknown', 'unspecified'].includes(tag.value)) continue;
       const value = formatValue(tag);
       facts.set(`${tag.name}:${value}`, { ...tag, value, ...PURCHASE_GUIDE_FIELDS[tag.name] });
     }
@@ -37,8 +37,16 @@ export function OfferFacts({ tags, settlementQuantity, formatValue = displayPurc
 
 export default function OfferTagDetails({ offer, item, onClose, onReport, formatValue, children, footer }) {
   const conditions = offerConditions(offer, formatValue);
-  const facts = conditions.filter(fact => !(fact.name === 'warranty_window'
-    && conditions.some(other => other.name === 'warranty_days' && fact.value === other.value.replace(/^质保/u, ''))));
+  const warranty = purchaseWarrantyLabel(offer.tags || []);
+  const facts = conditions.filter(fact => {
+    if (fact.name === 'warranty_scope') return false;
+    if (!['warranty_days', 'warranty_window', 'warranty_detail'].includes(fact.name)) return true;
+    if (!warranty) return false;
+    const term = fact.value.replace(/^质保/u, '');
+    return ![fact.value, `质保${term}`, `保订阅${term}`].includes(warranty)
+      && !(fact.name === 'warranty_detail' && fact.value === '订阅保障' && warranty.startsWith('保订阅'));
+  });
+  if (warranty) facts.push({ name: 'warranty', value: warranty, ...PURCHASE_GUIDE_FIELDS.warranty });
   const displayName = sanitizeOfferName(offer.name || item.name);
   return <ModalDialog open className="offer-tag-details" aria-labelledby="offer-tag-details-title" onClose={onClose}>
     <header className="dialog-header"><div className="offer-tag-details-summary"><h2 id="offer-tag-details-title" title={displayName}>{displayName}</h2><p>店铺：{offer.shop || '未知商铺'}{offer.independentShop ? <span className="offer-shop-risk-note"> · 自建站，风险相对更高</span> : ''}{offer.spec ? ` · ${offer.spec}` : ''}</p></div><button type="button" aria-label="关闭商品说明" onClick={onClose}>×</button></header>

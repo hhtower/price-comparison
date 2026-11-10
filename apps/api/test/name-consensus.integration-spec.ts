@@ -237,7 +237,7 @@ test('unassigned products recover from consensus or explicit rules without AI hi
   assert.equal((await reconcileNameConsensus(db)).changes.length, 0);
 });
 
-test('rule fallback holds unassigned Team accounts with actual commercial conflicts', async () => {
+test('rule fallback assigns an explicit AI plan without product features', async () => {
   const target = await db.insertInto('standard_products').values({ name: 'Team 5X', canonical_family: 'openai', canonical_product: 'chatgpt',
     canonical_tier: 'team_5x', verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
   const conflict = await product('Team 5X 独立成品账号 质保3小时', target.id, { evidence: 'Team 5X账号，账密2FA，仅用于反代，质保2小时。' });
@@ -246,6 +246,24 @@ test('rule fallback holds unassigned Team accounts with actual commercial confli
   const preview = await reconcileNameConsensus(db);
   assert.equal(preview.changes.find(row => row.productId === conflict.id), undefined);
   assert.equal(preview.changes.find(row => row.productId === clean.id)?.method, 'identity_rule');
+});
+
+test('same-name repair resolves AI plan identity without requiring product features', async () => {
+  const standards = await db.insertInto('standard_products').values(['plus', 'team'].map(tier => ({
+    name: 'ChatGPT ' + tier, canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: tier,
+    verification_state: 'verified' as const,
+  }))).returning('id').execute();
+  const name = 'ChatGPT Plus 同名会员独立验证样本';
+  const ids = [];
+  for (let count = 0; count < 3; count++) {
+    ids.push((await product(name, standards[0]!.id, { evidence: 'ChatGPT Plus 账号' })).id);
+  }
+  const minority = await product(name, standards[1]!.id, { evidence: 'ChatGPT Plus 账号' });
+  const result = await reconcileNameConsensus(db, { apply: true, beforeApply: async () => {} });
+  assert.equal(result.changes.find(change => change.productId === minority.id)?.toStandardProductId, standards[0]!.id);
+  assert.ok(result.changes.every(change => !ids.includes(change.productId)));
+  assert.equal((await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', minority.id).executeTakeFirstOrThrow()).standard_product_id, standards[0]!.id);
+  assert.equal((await db.selectFrom('products').select('membership_features').where('id', '=', minority.id).executeTakeFirstOrThrow()).membership_features, null);
 });
 
 for (const apply of [false, true] as const) {

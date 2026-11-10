@@ -135,12 +135,46 @@ test('failure while updating needs rolls back the previously written complete re
   }
 });
 
-test('invalid understanding saves an independent question and accepts the next selection at the new revision', async () => {
+test('invalid understanding persists no reply or needs and permits an explicit retry at the same revision', async () => {
   const session = await repository.createSession();
   const accepted = await repository.acceptTurn(session.sessionId, session.accessToken, input('读论文'));
   const claim = await claimTurn(accepted.snapshot.id);
   const model = createStreamingCall({ AI_BASE_URL: 'http://model.invalid/v1', AI_API_KEY: 'local-mock' }, async () =>
     new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: '{"intent":"clarify"}' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
+      { headers: { 'content-type': 'text/event-stream' } }));
+  const service = new AssistantService(repository, {} as CatalogService, model, 'mock');
+  await assert.rejects(service.runTurn(claim, new AbortController().signal), {
+    message: 'MODEL_INVALID_RESPONSE', retryable: false, validationReason: 'understanding_fields',
+  });
+  await jobs.fail('assistant_turn', claim.id, claim.claimed_by, 'MODEL_INVALID_RESPONSE', {
+    retry: false, retryClass: 'invalid_response', claimToken: String(claim.row.claim_token),
+  });
+  const stored = validateSessionSnapshot(await repository.readSession(session.sessionId, session.accessToken));
+  assert.equal(stored.revision, 0);
+  assert.equal(stored.turns[0]?.status, 'failed');
+  assert.equal(stored.turns[0]?.errorCode, 'MODEL_INVALID_RESPONSE');
+  assert.equal(stored.turns[0]?.reply, null);
+  assert.deepEqual(stored.needs, emptyShoppingNeeds());
+  const row = await db.selectFrom('assistant_turns').select(['request_in_flight', 'requests_started'])
+    .where('id', '=', claim.id).executeTakeFirstOrThrow();
+  assert.equal(row.request_in_flight, false);
+  assert.equal(Number(row.requests_started), 1);
+  const next = await repository.acceptTurn(session.sessionId, session.accessToken, input('读论文'));
+  const nextClaim = await claimTurn(next.snapshot.id);
+  const context = await repository.readTurnContext(next.snapshot.id, nextClaim.claimed_by, String(nextClaim.row.claim_token));
+  assert.deepEqual(context.history, []);
+  assert.equal(context.snapshot.expectedRevision, 0);
+  await repository.cancelTurn(session.sessionId, next.snapshot.id, session.accessToken);
+});
+
+test('validated clarification saves a question and accepts the next selection at the new revision', async () => {
+  const session = await repository.createSession();
+  const accepted = await repository.acceptTurn(session.sessionId, session.accessToken, input('读论文'));
+  const claim = await claimTurn(accepted.snapshot.id);
+  const understanding = { intent: 'clarify', patch: {}, evidence: [],
+    question: '你想了解哪个平台或套餐？', options: ['Claude'] };
+  const model = createStreamingCall({ AI_BASE_URL: 'http://model.invalid/v1', AI_API_KEY: 'local-mock' }, async () =>
+    new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: JSON.stringify(understanding) }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
       { headers: { 'content-type': 'text/event-stream' } }));
   const service = new AssistantService(repository, {} as CatalogService, model, 'mock');
   await service.runTurn(claim, new AbortController().signal);

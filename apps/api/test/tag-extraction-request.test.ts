@@ -69,9 +69,10 @@ test('tag prompt examples survive the same citation and business validation as w
 });
 
 test('product-scoped prompt expires v5 while retaining the per-tag protocol', () => {
-  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261025-v7');
+  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261110-v8');
   assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261101-v4');
   assert.equal(TAG_EXTRACTION_PROTOCOL_VERSION, 'tag-json-object-per-tag-20261023-v2');
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261015-v5' }), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261025-v7' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-object-closed-v1' }), false);
 });

@@ -30,7 +30,8 @@ test('two-stage counts describe batches independently of terminal member outcome
   assert.equal(progressSnapshotFromRow({ job_type: 'identity_extraction', review_completed: 4 }).tagStages, undefined);
 });
 
-test('progress query counts stored acceptance for all completed members, excluding queued and processing output', { skip: !process.env.TEST_DATABASE_URL }, async () => {
+for (const jobType of ['tag_extraction', 'membership_features'] as const) {
+test(`${jobType} progress counts stored acceptance for completed members and its own review stages`, { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const schema = `tag_progress_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
   const admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   const db = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path=${schema},public` }) }) });
@@ -42,7 +43,7 @@ test('progress query counts stored acceptance for all completed members, excludi
     const products = await db.insertInto('products').values(Array.from({ length: 9 }, (_, i) => ({
       shop_id: shop.id, external_id: String(i), name: '测试商品', spec: '一个月', source_category: '', source_data: jsonb({}), normalized_key: `progress-${i}`, url: 'https://test.invalid/p',
     }))).returning('id').execute();
-    const job = await db.insertInto('ai_jobs').values({ total: 9n, model: 'mock', job_type: 'tag_extraction', status: 'running' }).returning('id').executeTakeFirstOrThrow();
+    const job = await db.insertInto('ai_jobs').values({ total: 9n, model: 'mock', job_type: jobType, status: 'running' }).returning('id').executeTakeFirstOrThrow();
     const inputId = products[0]!.id;
     await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: inputId, fingerprint: 'test', payload: jsonb({}), content_version: 1n, input_bytes: 10n, estimated_tokens: 1n }).execute();
     const duration = { name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '一个月' }] };
@@ -85,6 +86,7 @@ test('progress query counts stored acceptance for all completed members, excludi
     }).execute();
     await db.insertInto('ai_job_progress').values({ job_id: job.id, total: 9n }).execute();
     const p = await getJobProgress(db, job.id);
+    assert.equal(p?.jobType, jobType);
     assert.deepEqual(p?.tagAcceptance, { acceptedTags: 6, rejectedTags: 6, partialProducts: 2 });
     assert.deepEqual(p?.tagResults, { updated: 2, unchanged: 1, empty: 1, review: 1, skipped: 1, failed: 0, cancelled: 0, unrecorded: 1 });
     assert.equal(p?.processed, '7'); assert.equal(p?.queued, '1'); assert.equal(p?.running, '1');
@@ -107,6 +109,7 @@ test('progress query counts stored acceptance for all completed members, excludi
         status: 'queued', step: 'request', reference_snapshot: jsonb({ tagStage: 'review' }) },
     ]).execute();
     const standardization = await getJobProgress(db, standardizationJob.id);
+    assert.equal(standardization?.jobType, 'manual_full');
     assert.deepEqual(standardization?.standardizationStages, {
       generationCompleted: 2, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
     });
@@ -119,3 +122,4 @@ test('progress query counts stored acceptance for all completed members, excludi
     await admin.end();
   }
 });
+}

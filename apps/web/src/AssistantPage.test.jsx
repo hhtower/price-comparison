@@ -365,7 +365,7 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
     const dialog = screen.getByRole('dialog', { name: cards[index].offer.name });
     expect(dialog).toHaveTextContent(cards[index].offer.shop);
     expect(dialog).toHaveTextContent(`¥${cards[index].price}`);
-    expect(dialog).toHaveTextContent('仅保掉订阅');
+    expect(dialog).toHaveTextContent('保订阅');
     expect(within(dialog).getByRole('link', { name: '前往商家核对报价' })).toHaveAttribute('href', cards[index].offer.productUrl);
     expect(within(dialog).queryByRole('button', { name: '举报此报价' })).not.toBeInTheDocument();
     fireEvent.keyDown(dialog, { key: 'Escape' });
@@ -376,7 +376,7 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
 
 test('quote cards show compact facts and grouped purchase notes without repeating warranty prose', async () => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
-  const warranty = '商家质保说明：质保30天（仅保掉订阅；附售后条款；不保封号）；具体限制以该报价的售后条款为准。';
+  const warranty = '商家质保说明：保订阅30天；具体限制以该报价的售后条款为准。';
   const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
     price: '64.90', currency: 'CNY', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
     detailPath: '/products/42', reasons: [warranty], caveats: [warranty, '不保事项：不保封号'], evidenceIds: ['e1'],
@@ -398,7 +398,7 @@ test('quote cards show compact facts and grouped purchase notes without repeatin
   expect(article).not.toHaveTextContent('另 5 个标签');
   fireEvent.click(within(article).getByText('购买须知'));
   const notes = article.querySelector('.assistant-purchase-notes');
-  expect(notes).toHaveTextContent('质保：30天（仅保掉订阅）');
+  expect(notes).toHaveTextContent('质保：保订阅30天');
   expect(notes).toHaveTextContent('购买条件：需半价资格号');
   expect(notes).toHaveTextContent('注意事项：不保封号');
   expect(within(notes).getAllByText(/不保封号/)).toHaveLength(1);
@@ -413,10 +413,14 @@ test('quote cards show compact facts and grouped purchase notes without repeatin
 });
 
 test.each([
-  [[{ name: 'warranty', value: 'none' }], '无质保'],
-  [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_window', value: '24 hours' }], '仅保首登（24小时内）'],
+  [[{ name: 'warranty', value: 'none' }], ''],
+  [[{ name: 'warranty', value: 'unknown' }], ''],
+  [[{ name: 'warranty', value: 'covered' }], ''],
+  [[{ name: 'warranty_scope', value: 'subscription' }], '保订阅'],
+  [[{ name: 'warranty_days', value: '30' }], '质保30天'],
+  [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_window', value: '24 hours' }], '仅保首登'],
   [[{ name: 'warranty_days', value: '30' }, { name: 'warranty_days', value: '60' }], '资料冲突，需核实'],
-])('compact warranty retains negative, limited and conflicting facts: %s', async (tags, expected) => {
+])('compact warranty omits empty states and retains explicit promises and conflicts: %s', async (tags, expected) => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
     price: '49', currency: 'USD', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
@@ -424,8 +428,14 @@ test.each([
     offer: { name: '方案', shop: '店铺', spec: '', productUrl: '', tags } };
   render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
     needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
-  fireEvent.click(await screen.findByText('购买须知'));
-  expect(screen.getByText(expected)).toBeVisible();
+  await screen.findByRole('heading', { name: 'ChatGPT Plus' });
+  if (expected) {
+    fireEvent.click(screen.getByText('购买须知'));
+    expect(screen.getByText(expected)).toBeVisible();
+  } else {
+    expect(screen.queryByText('质保：')).not.toBeInTheDocument();
+    expect(screen.queryByText(/无质保|有质保|未说明|未注明/)).not.toBeInTheDocument();
+  }
   expect(screen.getByText('$49')).toBeVisible();
 });
 
@@ -461,12 +471,13 @@ test('quote details reuse cleaned merchant titles and facts, with the update tim
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
 
-test('legacy quotes keep warranty and delivery notes when structured facts are missing', async () => {
+test.each(['售后保障：有质保', '售后保障：无质保', '售后保障：质保未说明', '保障范围：范围未说明'])('legacy quotes preserve sale terms and omit the generated state %s', async state => {
   const reasons = ['购买内容：成品号：商家提供一个账号，下单前确认登录方式、是否独享及能否改密。', '质保天数：质保45天'];
-  const caveats = ['售后条款：二次验证不换号', '商家未明确质保时长与保障范围，请在商品详情核实不保事项和售后条款。'];
+  const caveats = ['售后条款：二次验证不换号', '商家未明确质保时长与保障范围，请在商品详情核实不保事项和售后条款。', state];
   await renderReferenceCards([], [{ ...referenceCard, reasons, caveats, offer: { ...referenceCard.offer, tags: [] } }]);
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
-  for (const note of [...reasons, ...caveats]) expect(screen.getByRole('dialog')).toHaveTextContent(note);
+  for (const note of [...reasons, caveats[0]]) expect(screen.getByRole('dialog')).toHaveTextContent(note);
+  for (const note of caveats.slice(1)) expect(screen.getByRole('dialog')).not.toHaveTextContent(note);
 });
 
 test.each([

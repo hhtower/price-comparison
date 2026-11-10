@@ -28,7 +28,11 @@ export type StandardizationExecutionStatus = 'registered' | 'processing' | 'comp
 export type StandardizationOutboxStatus = 'queued' | 'running' | 'succeeded' | 'deferred' | 'failed' | 'cancelled';
 export type ProductChangeEventType = 'created' | 'evidence_changed' | 'restored';
 export type ProductDeletionSource = 'manual' | 'linked' | 'crawler_missing' | 'legacy';
-export type AiJobType = 'incremental' | 'calibration' | 'manual_full' | 'tag_extraction';
+export type AttributeJobType = 'tag_extraction' | 'membership_features';
+export type AiJobType = 'incremental' | 'calibration' | 'manual_full' | AttributeJobType;
+export function isAttributeJobType(value: string): value is AttributeJobType {
+  return value === 'tag_extraction' || value === 'membership_features';
+}
 export type StandardVerificationState = 'provisional' | 'verified' | 'quarantined';
 export type PublicationState = 'provisional' | 'published' | 'quarantined';
 
@@ -74,6 +78,7 @@ export interface ProductTable {
   source_category: Generated<string>;
   source_data: GeneratedJsonbColumn;
   text_review: NullableJsonbColumn;
+  membership_features: NullableJsonbColumn;
   text_review_key: ColumnType<string | null, never, never>;
   normalized_key: string;
   url: string;

@@ -56,8 +56,8 @@ test('guide entry carries the product URL including search and filters', () => {
   expect(url.searchParams.get('returnTo')).toBe(source);
 });
 
-test('guide returns to the originating product after opening a field anchor', () => {
-  const source = '/products/42?keyword=%E6%9C%88%E4%BB%98&offerSort=priceDesc';
+test.each(['/products/42', '/products/42/features/account', '/products/42/features/top_up', '/products/42/features/rental', '/products/42/features/short_term'])('guide returns to the originating detail %s after opening a field anchor', path => {
+  const source = path + '?keyword=%E6%9C%88%E4%BB%98&offerSort=priceDesc';
   window.history.replaceState({}, '', `/guide?returnTo=${encodeURIComponent(source)}#duration`);
   render(<App />);
   expect(screen.getByRole('link', { name: '返回商品详情' })).toHaveAttribute('href', source);
@@ -80,7 +80,7 @@ test('guide returns to the filtered homepage', () => {
   expect(screen.getByRole('link', { name: '返回商品列表' })).toHaveAttribute('href', source);
 });
 
-test.each(['https://example.com/products/42', '//example.com/products/42', '/admin', 'javascript:alert(1)'])('guide rejects unrelated return destinations: %s', source => {
+test.each(['https://example.com/products/42', '//example.com/products/42', '/admin', 'javascript:alert(1)', '/products/42/features/invalid', '/products/42/features/rental/extra', 'https://example.com/products/42/features/rental'])('guide rejects unrelated return destinations: %s', source => {
   window.history.replaceState({}, '', `/guide?returnTo=${encodeURIComponent(source)}`);
   render(<App />);
   expect(screen.getByRole('link', { name: '返回商品列表' })).toHaveAttribute('href', '/');

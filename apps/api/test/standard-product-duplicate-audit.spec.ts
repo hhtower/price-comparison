@@ -12,6 +12,15 @@ const fixture = JSON.parse(await readFile(new URL('./fixtures/standard-product-d
 };
 type Product = { id: string; family: string; product: string; tier: string; canonicalKey?: string };
 
+test('product features do not distinguish duplicate standard identities', () => {
+  const base = { family: 'openai', product: 'chatgpt', tier: 'plus' };
+  const left = { id: 'a', ...base, membershipKind: 'account' };
+  const right = { id: 'b', ...base, membershipKind: 'short_term' };
+  const features = extractDuplicateFeatures(left, right, DUPLICATE_LINKAGE_POLICY);
+  assert.equal(classifyDuplicatePair(features, DUPLICATE_LINKAGE_POLICY).conclusion, 'deterministic_match');
+  assert.deepEqual(features.hardConflicts, []);
+});
+
 test('linkage decisions preserve deterministic edges and hard conflicts', () => {
   for (const pair of fixture.pairs) {
     const features = extractDuplicateFeatures(pair.left, pair.right, DUPLICATE_LINKAGE_POLICY);

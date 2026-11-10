@@ -14,8 +14,9 @@ import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
-import { jsonb, type DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
+import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
 before(async () => {
@@ -115,6 +116,13 @@ for (const enabled of [false, true]) test(`identity completion derives tag extra
     if (enabled) delete process.env.AI_TAG_EXTRACTION_ENABLED;
     else process.env.AI_TAG_EXTRACTION_ENABLED = 'false';
     const f = await fixture();
+    for (const product of f.products) {
+      const current = await db.selectFrom('products as p').innerJoin('shops as s', 's.id', 'p.shop_id').selectAll('p')
+        .select(['s.url as shop_url', 's.protocol as shop_protocol', 's.platform as shop_platform'])
+        .where('p.id', '=', product.id).executeTakeFirstOrThrow();
+      await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], current, [], 'account') as unknown as JsonValue) })
+        .where('id', '=', product.id).execute();
+    }
     const batch = await approve(f);
     await claimBatch(batch.id);
     await f.repo.publishBatch(batch.id, claim);

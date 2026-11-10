@@ -15,6 +15,8 @@ function catalogFilters(query: Record<string, unknown>): CatalogQueryInput {
     q: typeof query.q === 'string' ? query.q : undefined,
     searchMode: query.searchMode,
     newcomer: query.newcomer,
+    membershipKind: query.membershipKind,
+    membershipKinds: query.membershipKinds,
     warrantyDaysMin: typeof query.warrantyDaysMin === 'string' ? Number(query.warrantyDaysMin) : undefined,
     tag: query.tag === undefined ? undefined : (Array.isArray(query.tag) ? query.tag : [query.tag]).map(String),
   };
@@ -34,7 +36,7 @@ export class CatalogController {
   async getProducts() {
     try {
       const result = await this.service.getProducts();
-      return { ...result, items: result.items.map(({ platformGroup: _group, identityNames: _names, ...product }) => product) };
+      return { ...result, items: result.items.map(({ platformGroup: _group, identityNames: _names, identity: _identity, ...product }) => product) };
     }
     catch (error) { throw new ServiceUnavailableException('商品目录暂时不可用', { cause: error }); }
   }
@@ -45,13 +47,15 @@ export class CatalogController {
       throw new ServiceUnavailableException('商品信息暂时不可用', { cause: error });
     });
     if (!product) throw new NotFoundException('商品不存在');
-    const { platformGroup: _group, identityNames: _names, ...publicProduct } = product;
+    const { platformGroup: _group, identityNames: _names, identity: _identity, ...publicProduct } = product;
     return publicProduct;
   }
 
   @Get('products/:id/price-history')
   async getPriceHistory(@Param('id') id: string, @Query() query: Record<string, unknown>) {
-    const history = await this.service.getPriceHistory(id, query.productId, query.currency);
+    const history = await this.service.getPriceHistory(id, query.productId, query.currency, {
+      membershipKind: query.membershipKind, membershipKinds: query.membershipKinds, newcomer: query.newcomer,
+    });
     if (!history) throw new NotFoundException('商品不存在');
     return history;
   }

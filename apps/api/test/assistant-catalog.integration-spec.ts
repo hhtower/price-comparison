@@ -6,11 +6,12 @@ import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import { createPostgresPool } from '../src/database/database.providers.js';
-import type { DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type JsonValue, type DatabaseSchema } from '../src/database/types.js';
 import { createCache } from '../src/cache/cache.js';
 import { CatalogRepository } from '../src/catalog/catalog.repository.js';
 import { CatalogService } from '../src/catalog/catalog.service.js';
 import { selectCandidates } from '../src/assistant/assistant-candidates.js';
+import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
 
 // An explicit test URL is mandatory; never fall back to the configured DATABASE_URL.
 describe('assistant public identity and real offers', { skip: !process.env.TEST_DATABASE_URL }, () => {
@@ -90,6 +91,11 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
         canonical_platform: family, canonical_family: family, canonical_product: product, platform,
         aliases: ['标准商品别名'],
       }).where('id', '=', sample.standard.id).execute();
+      if (family === 'anthropic' && product === 'claude') {
+        const source = await database.selectFrom('products').selectAll().where('id', '=', sample.source.id).executeTakeFirstOrThrow();
+        await database.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], source, [], 'account') as unknown as JsonValue) })
+          .where('id', '=', sample.source.id).execute();
+      }
       const identity = { ...sample.identity, platform: family, product };
       const resolved = await service.resolvePublicProductIdentity(identity);
       assert.equal(resolved?.platformGroup, platformGroup);

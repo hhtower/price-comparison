@@ -15,7 +15,8 @@ import { AssistantService } from '../src/assistant/assistant.service.js';
 import { createCache } from '../src/cache/cache.js';
 import { CatalogRepository } from '../src/catalog/catalog.repository.js';
 import { CatalogService } from '../src/catalog/catalog.service.js';
-import type { DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type JsonValue, type DatabaseSchema } from '../src/database/types.js';
+import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
 import { WorkerRuntime } from '../src/workers/worker-runtime.js';
 
@@ -70,7 +71,7 @@ test('real catalog recommendation persists canonical UTC cards from PostgreSQL o
     }).returning('id').executeTakeFirstOrThrow();
     const standard = await database.insertInto('standard_products').values({
       name: 'Claude Pro', platform: 'anthropic', canonical_platform: 'anthropic',
-      canonical_vendor: 'anthropic', canonical_family: 'claude', canonical_product: 'claude',
+      canonical_vendor: 'anthropic', canonical_family: 'anthropic', canonical_product: 'claude',
       canonical_tier: 'pro', verification_state: 'verified',
     }).returning('id').executeTakeFirstOrThrow();
     // Reserve a source ID so the two independent identity sequences cannot accidentally match.
@@ -90,6 +91,9 @@ test('real catalog recommendation persists canonical UTC cards from PostgreSQL o
       { name: 'access', value: 'dedicated' }, { name: 'duration', value: '1 month' },
       { name: 'warranty', value: 'covered' }, { name: 'warranty_days', value: '30' },
     ].map(tag => ({ product_id: source.id, ...tag }))).execute();
+    const current = await database.selectFrom('products').selectAll().where('id', '=', source.id).executeTakeFirstOrThrow();
+    await database.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], current, [], 'account') as unknown as JsonValue) })
+      .where('id', '=', source.id).execute();
     const capturedAt = sql<Date>`timestamptz '2026-10-31T11:59:00.123456Z'`;
     await database.insertInto('offers').values({
       product_id: source.id, price: '49.00', currency: 'CNY', settlement_price: '49.00',
@@ -110,7 +114,7 @@ test('real catalog recommendation persists canonical UTC cards from PostgreSQL o
     assert.equal(rawOffer.productId, String(source.id));
     // Exercise PostgreSQL's actual JSON representation, not a JavaScript Date fixture.
     assert.match(rawOffer.capturedAt, /\.123456\+05:30$/u);
-    assert.match(rawOffer.priceExpiresAt!, /\.123456\+05:30$/u);
+    assert.equal(rawOffer.priceExpiresAt, null);
 
     redis = new Redis(redisUrl, { enableOfflineQueue: false, maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 2000 });
     redis.on('error', () => undefined);

@@ -16,6 +16,57 @@ describe('AdminPage', () => {
     vi.unstubAllGlobals();
   });
 
+  test.each([
+    ['account', '成品号', 'warranty_covers_subscription', '质保覆盖订阅周期'],
+    ['rental', '租号', 'rental_or_shared_account', '租用或共享账号'],
+    ['rental', '租号', 'rental_or_shared_account', '租用或共享账号', 'explicit'],
+    ['short_term', '短期', 'ownership_invalid_or_conflicting', '账号归属不明确或存在冲突'],
+  ])('成员判定 %s 展示原因与事实，仅非租号展示分类周期', async (kind, label, reason, reasonLabel, durationSource = 'default') => {
+    vi.stubGlobal('fetch', vi.fn(async input => jsonResponse(paged(new URL(input, 'http://localhost').pathname === '/api/admin/products' ? [{
+      id: '1', name: '测试会员', membershipFeatures: {
+        decision: { kind, reason, durationSource, requiredWarrantyDays: kind === 'rental' ? null : 28 },
+        tags: [{ name: 'warranty_days', value: '30' }, { name: 'duration', value: '1 month' }],
+        evidence: [{ name: 'warranty_days', value: '30', path: 'sourceData.evidence', quote: '售后保障30天' }],
+      },
+    }] : []))));
+    render(<AdminPage initialAuthenticated />);
+    await userEvent.click(await screen.findByRole('button', { name: '商品管理' }));
+    expect(await screen.findByText('会员判定：' + label)).toBeInTheDocument();
+    if (kind === 'rental') expect(screen.queryByText(/^分类周期：/)).not.toBeInTheDocument();
+    else expect(screen.getByText('分类周期：默认一个月（非商家承诺）')).toBeInTheDocument();
+    expect(screen.getByText(reasonLabel)).toBeInTheDocument();
+    expect(screen.getByText('warranty_days：30')).toBeInTheDocument();
+    expect(screen.getByText('duration：1 month')).toBeInTheDocument();
+    expect(screen.getByText('描述：「售后保障30天」')).toBeInTheDocument();
+  });
+
+  test('标准身份编辑只提交 family/product/tier 和平台', async () => {
+    const bodies = [];
+    vi.stubGlobal('fetch', vi.fn(async (input, init) => {
+      const url = new URL(input, 'http://localhost');
+      if (init?.method === 'PATCH') {
+        bodies.push(JSON.parse(init.body));
+        return jsonResponse({ ok: true });
+      }
+      if (url.pathname === '/api/admin/standard-products') return jsonResponse(paged([{
+        id: '11', name: 'ChatGPT Plus', canonicalFamily: 'openai', canonicalProduct: 'chatgpt',
+        canonicalTier: 'plus', platform: 'openai',
+      }]));
+      if (url.pathname === '/api/admin/platforms') return jsonResponse(paged([{ id: 'openai', name: 'openai' }]));
+      return jsonResponse(paged([]));
+    }));
+    render(<AdminPage initialAuthenticated />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '商品管理' }));
+    await user.click(await screen.findByRole('button', { name: '标准商品' }));
+    await screen.findByLabelText('标准商品 family ChatGPT Plus');
+    expect(screen.queryByLabelText('标准商品会员特性 ChatGPT Plus')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(bodies).toEqual([{
+      platform: 'openai', canonicalFamily: 'openai', canonicalProduct: 'chatgpt', canonicalTier: 'plus',
+    }]));
+  });
+
   test('待处理商品显示失败摘要，并为未记录的历史摘要提供说明', async () => {
     vi.stubGlobal('fetch', vi.fn(async input => {
       const url = new URL(input, 'http://localhost');
@@ -146,23 +197,26 @@ describe('AdminPage', () => {
     await user.click(await screen.findByRole('button', { name: '商品管理' }));
     await user.click(await screen.findByRole('button', { name: '标准商品' }));
     const search = screen.getByRole('textbox', { name: '搜索标准商品' });
-    await user.type(search, names[0]);
+    await user.click(search);
+    await user.paste(names[0]);
     await user.click(await screen.findByRole('checkbox', { name: `选择 ${names[0]}` }));
     await user.clear(search);
-    await user.type(search, names[1]);
+    await user.paste(names[1]);
     expect(screen.getByText('已选 1 个')).toBeInTheDocument();
     await user.click(await screen.findByRole('checkbox', { name: `选择 ${names[1]}` }));
+    expect(screen.queryByRole('checkbox', { name: `选择 ${names[0]}` })).not.toBeInTheDocument();
     await user.selectOptions(screen.getByRole('combobox', { name: '合并后保留' }), '11');
     await user.clear(search);
-    await user.type(search, names[2]);
+    await user.paste(names[2]);
     await user.click(await screen.findByRole('checkbox', { name: `选择 ${names[2]}` }));
+    expect(screen.queryByRole('checkbox', { name: `选择 ${names[1]}` })).not.toBeInTheDocument();
     expect(screen.getByText('已选 3 个')).toBeInTheDocument();
     const target = screen.getByRole('combobox', { name: '合并后保留' });
     expect(target).toHaveValue('11');
     expect(within(target).getAllByRole('option').map(option => option.textContent)).toEqual(['选择保留商品', ...names]);
 
     await user.clear(search);
-    await user.type(search, '没有匹配的商品');
+    await user.paste('没有匹配的商品');
     expect(await screen.findByText('暂无标准商品')).toBeInTheDocument();
     expect(screen.getByText('已选 3 个')).toBeInTheDocument();
     expect(target).toHaveValue('11');
@@ -328,7 +382,7 @@ describe('AdminPage', () => {
     expect(screen.queryByText('相同 family、product、tier 的标准商品已经存在')).not.toBeInTheDocument();
   });
 
-  test.each([null, '已有标准商品'])('creates a standard product with selected products whose current standard is %s', async (standardProductName) => {
+  test.each([null, '已有标准商品'])('creates a standard identity from %s without a membership feature', async standardProductName => {
     const user = userEvent.setup();
     const calls = [];
     vi.stubGlobal('fetch', vi.fn(async (input, init) => {
@@ -371,16 +425,17 @@ describe('AdminPage', () => {
     expect(within(dialog).getByText('选择')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '创建并绑定' })).toBeEnabled();
     await user.click(within(dialog).getByRole('button', { name: /待绑定商品.*选择/ }));
-    await user.type(within(dialog).getByLabelText('family'), 'openai');
-    await user.type(within(dialog).getByLabelText('product'), 'chatgpt');
-    await user.type(within(dialog).getByLabelText('tier'), 'plus');
+    await user.type(within(dialog).getByLabelText('family'), 'OpenAI');
+    await user.type(within(dialog).getByLabelText('product'), 'ChatGPT');
+    await user.type(within(dialog).getByLabelText('tier'), 'Plus');
+    expect(within(dialog).queryByLabelText('会员特性')).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '创建并绑定' })).toBeEnabled();
     await user.click(within(dialog).getByRole('combobox', { name: '平台' }));
     await user.clear(within(dialog).getByRole('combobox', { name: '平台' }));
     await user.type(within(dialog).getByRole('combobox', { name: '平台' }), '平台 A');
     await user.click(within(dialog).getByRole('option', { name: '平台 A' }));
     await user.click(within(dialog).getByRole('button', { name: '创建并绑定' }));
-    await waitFor(() => expect(calls.find(call => call.method === 'POST' && call.path === '/api/admin/standard-products')?.body).toEqual({ family: 'openai', product: 'chatgpt', tier: 'plus', platform: '平台 A', productIds: ['3'], confirmEvidenceConflict: false }));
+    await waitFor(() => expect(calls.find(call => call.method === 'POST' && call.path === '/api/admin/standard-products')?.body).toEqual({ family: 'OpenAI', product: 'ChatGPT', tier: 'Plus', platform: '平台 A', productIds: ['3'], confirmEvidenceConflict: false }));
     expect(screen.queryByRole('dialog', { name: '新增标准商品' })).not.toBeInTheDocument();
   });
 
@@ -518,7 +573,7 @@ describe('AdminPage', () => {
     await user.click(screen.getByRole('button', { name: '任务台' }));
     expect(screen.queryByRole('button', { name: '抓取记录' })).not.toBeInTheDocument();
     const workbench = screen.getByRole('region', { name: '后台任务' });
-    expect(within(workbench).getAllByRole('tab').map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '标准化', '标准化记录', '标签抽取', '标签抽取记录']);
+    expect(within(workbench).getAllByRole('tab').map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '特性识别', '特性识别记录', '标准化', '标准化记录', '标签抽取', '标签抽取记录']);
     expect(within(workbench).getByRole('tab', { name: '抓取' })).toHaveAttribute('aria-selected', 'true');
     expect(within(workbench).getByRole('region', { name: '抓取任务' })).toBeInTheDocument();
     expect(runRequests).toEqual([]);

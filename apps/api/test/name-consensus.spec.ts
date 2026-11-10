@@ -57,10 +57,29 @@ test('historical X Premium Plus votes cannot promote a monthly blue-badge code',
   assert.equal(compatibleNameConsensus(source, chooseNameConsensus([source])), undefined);
 });
 
-test('same-name votes cannot publish contradictory Team delivery or genuine relay credits', () => {
+test('same-name votes reject contradictory delivery while allowing supported Team identity', () => {
   const account = member(1, 1, { name: 'Team 5X 成品账号 质保1小时', identity: { family: 'openai', product: 'chatgpt', tier: 'team_5x' },
     sourceData: { evidence: 'Team 5X成品JSON，仅支持Sub2API，质保2小时。' } });
   const winners = chooseNameConsensus([account, { ...account, id: 2n }]);
   assert.equal(compatibleNameConsensus(account, winners), undefined);
   assert.equal(compatibleNameConsensus({ ...account, sourceData: { evidence: 'Team 5X成品JSON，仅支持Sub2API，质保1小时。' } }, winners)?.standardProductId, 1n);
+});
+
+test('AI membership identity votes do not require or infer product features', () => {
+  const source = member(1, 1, {
+    name: 'ChatGPT Plus monthly subscription account',
+    identity: { family: 'openai', product: 'chatgpt', tier: 'plus' },
+  });
+  const winners = chooseNameConsensus([source, { ...source, id: 2n }]);
+  assert.equal(winners.size, 1);
+  assert.deepEqual(compatibleNameConsensus(source, winners)?.identity, source.identity);
+  assert.equal('membershipKind' in compatibleNameConsensus(source, winners)!.identity, false);
+});
+
+test('name consensus repairs an incorrect prior identity from supported product evidence', () => {
+  const source = member(1, 1);
+  const winners = chooseNameConsensus([source, { ...source, id: 2n }]);
+  assert.equal(compatibleNameConsensus({
+    ...source, identity: { family: 'openai', product: 'chatgpt', tier: 'plus' },
+  }, winners)?.standardProductId, 1n);
 });

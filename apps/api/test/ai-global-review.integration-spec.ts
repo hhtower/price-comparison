@@ -5,9 +5,10 @@ import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
-import { jsonb, type DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { recordManualDecisions } from '../src/standardization/decision-history.js';
 import { hasActiveStandardizationWork, hasCurrentStandardizationResult, productStandardizationOutcome } from '../src/ai/product-standardization-state.js';
+import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
 
 describe('global standard product review', () => {
   let db: Kysely<DatabaseSchema>;
@@ -37,6 +38,12 @@ describe('global standard product review', () => {
     return db.insertInto('standard_products').values({ name, platform: 'test', standard_key: null, verification_state: verified ? 'verified' : 'quarantined' }).returning('id').executeTakeFirstOrThrow();
   }
   async function result(productId: bigint, standardId: bigint | null, reasonCode = 'provider_error') {
+    const source = await db.selectFrom('products as p').innerJoin('shops as s', 's.id', 'p.shop_id').selectAll('p')
+      .select(['s.url as shop_url', 's.protocol as shop_protocol', 's.platform as shop_platform'])
+      .where('p.id', '=', productId).executeTakeFirstOrThrow();
+    // These fixtures exercise identity outcomes after the prerequisite fact check.
+    await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], source, [], 'short_term') as unknown as JsonValue) })
+      .where('id', '=', productId).execute();
     const job = await repository.createJob({ model: 'mock', productIds: [productId] });
     const input = await db.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', job.id).executeTakeFirstOrThrow();
     await db.insertInto('ai_standardization_results').values({

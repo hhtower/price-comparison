@@ -7,9 +7,10 @@ import { migrateToLatest } from '../scripts/migrate.js';
 import { ProductsRepository } from '../src/products/products.repository.js';
 import { AdminRepository } from '../src/admin/admin.repository.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
-import { jsonb, type DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { isManualDecisionForCurrentEvidence, readLatestManualDecisions, recordManualDecisions } from '../src/standardization/decision-history.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
+import { buildMembershipFeatures, readCurrentMembershipFeatures } from '../src/standardization/membership-classification.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
 before(async () => {
@@ -31,7 +32,12 @@ async function fixture() {
   const identity = { family: 'openai', product: 'chatgpt', tier: 'plus' };
   const standard = await db.selectFrom('standard_products').select('id').where('standard_key', '=', buildCanonicalStandardKey(identity)).executeTakeFirst()
     ?? await db.insertInto('standard_products').values({ name: 'ChatGPT Plus', canonical_family: identity.family, canonical_product: identity.product, canonical_tier: identity.tier, standard_key: buildCanonicalStandardKey(identity), verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
+  await reviewMembership(id);
   return { id, standardId: standard.id, repository };
+}
+async function reviewMembership(id: bigint) {
+  const product = await db.selectFrom('products').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
+  await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], product, [], 'short_term') as unknown as JsonValue) }).where('id', '=', id).execute();
 }
 async function history(id: bigint) { return (await sql<Record<string, unknown>>`select * from product_standardization_decisions where product_id = ${id} order by id`.execute(db)).rows; }
 
@@ -64,6 +70,9 @@ test('application assignment and unbinding record sanitized review evidence with
   assert.equal(JSON.stringify(rows[0]?.evidence_snapshot).includes('private-api-key'), false);
   assert.equal(rows[0]?.content_version, before!.content_version);
   assert.equal(rows[0]?.standardization_revision, before!.standardization_revision + 1n);
+  const assigned = (await repository.findById(id))!;
+  assert.equal(readCurrentMembershipFeatures(assigned.membership_features, assigned)?.decision.kind, 'short_term');
+  assert.equal('membershipKind' in (rows[0]?.target_snapshot as object), false);
   await repository.assignStandardProduct(id, null);
   rows = await history(id);
   assert.deepEqual(rows.map(row => row.action), ['assign', 'unbind']);
@@ -94,6 +103,7 @@ test('bulk binding reports contradictory evidence per item and binds only after 
   const sourceData = { evidence: '<p>发货为:账密2fa</p>' };
   await db.updateTable('products').set({ name, source_data: jsonb(sourceData),
     content_fingerprint: productContentFingerprint({ name, sourceData }) }).where('id', '=', blocked.id).execute();
+  await reviewMembership(blocked.id);
   const repository = new AdminRepository(db);
   const first = await repository.bindProducts([blocked.id, clean.id], blocked.standardId, true);
   assert.deepEqual(first.success, [clean.id.toString()]);
@@ -133,20 +143,20 @@ test('review decisions are append-only and never set a permanent lock', async ()
   await assert.rejects(sql`delete from product_standardization_decisions where product_id=${id}`.execute(db), /append-only/);
 });
 
-test('editing canonical identity records the new target per member while preserving prior reviewed identity', async () => {
+test('editing canonical identity does not require product feature facts', async () => {
   const { id, standardId, repository } = await fixture();
   await repository.assignStandardProduct(id, standardId);
   await new AdminRepository(db).updateStandardProduct(standardId, { canonicalTier: 'team' });
   const rows = await history(id);
   assert.deepEqual(rows.map(row => row.action), ['assign', 'identity_update']);
-  assert.equal((rows[0]?.target_snapshot as { tier: string }).tier, 'plus');
-  assert.equal((rows[1]?.target_snapshot as { tier: string }).tier, 'team');
+  assert.equal((rows.at(-1)?.target_snapshot as { tier: string }).tier, 'team');
 });
 
 test('known reviews preserve the stored source fingerprint despite processed evidence changes', async () => {
   const { id, standardId, repository } = await fixture();
   const fingerprint = 'stored-source-hash';
   await db.updateTable('products').set({ content_fingerprint: fingerprint, spec: 'processed spec' }).where('id', '=', id).execute();
+  await reviewMembership(id);
   await repository.assignStandardProduct(id, standardId);
   const current = (await repository.findById(id))!;
   const decision = (await readLatestManualDecisions(db, [id])).get(id)!;
@@ -194,8 +204,8 @@ test('admin confirmation overrides the evidence gate when creating and merging s
 
 test('admin confirmation overrides identity conflicts and unverified targets for one product', async () => {
   const { id, repository } = await fixture();
-  const claude = { family: 'anthropic', product: 'claude', tier: 'pro' };
-  const target = await db.insertInto('standard_products').values({ name: 'Claude Pro', canonical_family: claude.family, canonical_product: claude.product, canonical_tier: claude.tier, standard_key: `${buildCanonicalStandardKey(claude)}:${randomUUID()}`, verification_state: 'quarantined' }).returning('id').executeTakeFirstOrThrow();
+  const identity = { family: 'microsoft', product: 'outlook', tier: 'standard' };
+  const target = await db.insertInto('standard_products').values({ name: 'Outlook', canonical_family: identity.family, canonical_product: identity.product, canonical_tier: identity.tier, standard_key: `${buildCanonicalStandardKey(identity)}:${randomUUID()}`, verification_state: 'quarantined' }).returning('id').executeTakeFirstOrThrow();
   await assert.rejects(repository.assignStandardProduct(id, target.id), { code: 'STANDARD_PRODUCT_UNVERIFIED' });
   assert.deepEqual(await history(id), []);
   await repository.assignStandardProduct(id, target.id, undefined, true);

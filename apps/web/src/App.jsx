@@ -7,6 +7,7 @@ import AssistantWidget from './AssistantWidget.jsx';
 import AssistantLoading from './AssistantLoading.jsx';
 import McpPage from './McpPage.jsx';
 import { updatePageMetadata } from './page-metadata.js';
+import { MEMBERSHIP_KINDS } from '@price-comparison/catalog/membership-policy';
 import './styles.css';
 import './public-catalog.css';
 import './quality-tools.css';
@@ -55,9 +56,12 @@ export default function App() {
   if (route === 'admin') return <AdminRouteBoundary><Suspense fallback={<main className="route-state" role="status">正在加载管理端…</main>}><AdminPage /></Suspense></AdminRouteBoundary>;
   if (route === 'assistant') return <Suspense fallback={<AssistantLoading />}><AssistantPage /></Suspense>;
   if (route === 'mcp') return <McpPage />;
+  const productRoute = /^\/products\/([^/]+)(?:\/features\/([^/]+))?$/.exec(route);
+  const membershipKind = productRoute?.[2];
+  const invalidProductRoute = route.startsWith('/products/') && (!productRoute || membershipKind !== undefined && !MEMBERSHIP_KINDS.includes(membershipKind));
   return <>
     {route === 'guide' ? <PurchaseGuidePage /> : route === 'tools' ? <QualityToolsPage referenceRef={setReferenceTarget} />
-      : <PublicPage productId={route.startsWith('/products/') ? route.slice('/products/'.length) : undefined} onPlatformChange={setCatalogPlatform} assistantEnabled={assistantEnabled} referenceRef={setReferenceTarget} />}
+      : <PublicPage productId={route.startsWith('/products/') ? productRoute?.[1] || route.slice('/products/'.length) : undefined} membershipKind={membershipKind} invalidProductRoute={invalidProductRoute} onPlatformChange={setCatalogPlatform} assistantEnabled={assistantEnabled} referenceRef={setReferenceTarget} />}
     {route !== 'guide' && <OfficialReference target={referenceTarget} />}
     <AssistantWidget catalogPlatform={route === 'public' ? catalogPlatform : null} onEnabledChange={setAssistantEnabled} />
   </>;

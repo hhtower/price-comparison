@@ -37,6 +37,8 @@ test('all product metadata reads retain identities used for matching translated 
       for (const product of [(await repository.publicProducts()).items[0], await repository.publicProduct('42'),
         await repository.resolvePublicProductIdentity({ platform: sample.family, product: sample.product, tier: sample.tier })]) {
         assert.ok(product);
+        assert.equal('membershipKind' in product, false, 'membership features belong to offers, never standard identities');
+        assert.equal('splitInto' in product, false);
         assert.equal(product.name, sample.display);
         for (const requested of [sample.requested, sample.alias]) {
           assert.equal(matchesRequestedProduct(product, { ...emptyShoppingNeeds(), product: requested }), true, requested);

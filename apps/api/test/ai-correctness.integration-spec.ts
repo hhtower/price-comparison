@@ -325,19 +325,21 @@ test('a failed sibling identity is removed before batch storage and canonical pu
 });
 
 test('admin identity edits refresh warm candidate indexes and reject changed frozen candidates', async () => {
-  const seed = await product('ChatGPT Plus seed correctness');
+  const seed = await product('YouTube Individual seed correctness');
   const initial = await prepare([seed]);
-  await save(initial, decision([seed])); await publish(initial);
+  const initialDecision = decision([seed], 'individual');
+  Object.assign(initialDecision.identities[0]!, { family: 'youtube', product: 'youtube' });
+  await save(initial, initialDecision); await publish(initial);
   const standard = await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', seed.id).executeTakeFirstOrThrow();
-  const source = await product('ChatGPT Plus frozen correctness');
+  const source = await product('YouTube Individual frozen correctness');
   const task = await prepare([source]);
   const before = await task.repository.getBatchRequest(task.batch);
   const id = String(standard.standard_product_id);
-  assert.equal(before.candidates.find(c => c.id === id)?.tier, 'plus');
-  await new AdminRepository(db).updateStandardProduct(standard.standard_product_id, { canonicalTier: 'team' });
-  const next = await prepare([await product('ChatGPT Plus next correctness')], task.repository);
+  assert.equal(before.candidates.find(c => c.id === id)?.tier, 'individual');
+  await new AdminRepository(db).updateStandardProduct(standard.standard_product_id, { canonicalTier: 'family' });
+  const next = await prepare([await product('YouTube Individual next correctness')], task.repository);
   const refreshed = await task.repository.getBatchRequest(next.batch);
-  assert.equal(refreshed.candidates.find(c => c.id === id)?.tier, 'team');
+  assert.equal(refreshed.candidates.find(c => c.id === id)?.tier, 'family');
   const response = decision([source]);
   response.identities = [];
   response.items[0]!.identity = { kind: 'existing', standardProductId: id };
@@ -404,17 +406,19 @@ test('entering publication starts a fresh bounded local attempt budget', async (
 });
 
 test('clearing a canonical identity removes it from an already warmed candidate index', async () => {
-  const seed = await product('ChatGPT Plus clear seed');
+  const seed = await product('Microsoft Outlook account clear seed');
   const initial = await prepare([seed]);
-  await save(initial, decision([seed]));
+  const initialDecision = decision([seed], 'standard');
+  Object.assign(initialDecision.identities[0]!, { family: 'microsoft', product: 'outlook' });
+  await save(initial, initialDecision);
   await publish(initial);
   const assigned = await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', seed.id).executeTakeFirstOrThrow();
   const repository = new AiRepository(db);
-  const source = await product('ChatGPT Plus clear candidate');
+  const source = await product('Microsoft Outlook account clear candidate');
   const task = await prepare([source], repository);
   assert.ok((await repository.getBatchRequest(task.batch)).candidates.some(row => row.id === String(assigned.standard_product_id)));
   await new AdminRepository(db).updateStandardProduct(assigned.standard_product_id, { canonicalFamily: '', canonicalProduct: '', canonicalTier: '' });
-  const next = await prepare([await product('ChatGPT Plus after clear')], repository);
+  const next = await prepare([await product('Microsoft Outlook account after clear')], repository);
   assert.ok(!(await repository.getBatchRequest(next.batch)).candidates.some(row => row.id === String(assigned.standard_product_id)));
   await repository.cancelJob(task.job.id);
   await repository.cancelJob(next.job.id);

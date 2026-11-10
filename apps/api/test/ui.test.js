@@ -25,7 +25,7 @@ test('React pages retain the public and admin workflows', () => {
   const publicPage = read('apps/web/src/PublicPage.jsx');
   const adminPage = read('apps/web/src/AdminPage.jsx');
   // Quote-detail and pagination behavior is exercised by PublicPage.test.jsx.
-  for (const token of ['catalog', 'platform-tabs', 'shop-submit', 'compact-catalog', '/api/shop-submissions', 'product-reports', '本站展示第三方商铺报价', '举报此报价']) {
+  for (const token of ['catalog', 'platform-tabs', 'shop-submit', 'compact-catalog', '/api/shop-submissions', 'product-reports', '本站不参与交易', '举报此报价']) {
     assert.match(publicPage, new RegExp(token));
   }
   for (const token of ['pending-shops', 'connected-shops', 'standard-products', 'shop-editor', 'standard-name-dialog', 'platform-dialog', 'StandardProductPicker', 'AiWorkbench']) {

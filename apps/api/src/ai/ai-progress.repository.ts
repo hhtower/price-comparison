@@ -1,8 +1,8 @@
 import { sql, type Kysely, type Transaction } from 'kysely';
-import type { DatabaseSchema } from '../database/types.js';
+import { isAttributeJobType, type DatabaseSchema } from '../database/types.js';
 
 export interface ProgressSnapshot {
-  jobId: string; version: string; phase: string; status: string;
+  jobId: string; jobType: string; version: string; phase: string; status: string;
   total: string; queued: string; running: string; processed: string; succeeded: string; failed: string;
   rawProductCount: number; uniqueInputCount: number;
   requests: { totalBatches: number; queuedBatches: number; runningBatches: number; succeededBatches: number; failedBatches: number; cancelledBatches: number; confirmed: number; unknown: number; budgetUsed: number; budgetLimit: number };
@@ -61,10 +61,10 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
         count(*) filter(where status='queued')::int member_queued,
         count(*) filter(where status='processing')::int member_running,
         coalesce(sum(jsonb_array_length(coalesce(output->'acceptedTags','[]'::jsonb)))
-          filter(where j.job_type='tag_extraction' and status not in ('queued','processing')),0)::int tag_accepted,
+          filter(where j.job_type in ('tag_extraction','membership_features') and status not in ('queued','processing')),0)::int tag_accepted,
         coalesce(sum(jsonb_array_length(coalesce(output->'rejectedTags','[]'::jsonb)))
-          filter(where j.job_type='tag_extraction' and status not in ('queued','processing')),0)::int tag_rejected,
-        count(*) filter(where j.job_type='tag_extraction' and status not in ('queued','processing')
+          filter(where j.job_type in ('tag_extraction','membership_features') and status not in ('queued','processing')),0)::int tag_rejected,
+        count(*) filter(where j.job_type in ('tag_extraction','membership_features') and status not in ('queued','processing')
           and output->>'outcome' in ('updated','review')
           and jsonb_array_length(coalesce(output->'acceptedTags','[]'::jsonb))>0
           and jsonb_array_length(coalesce(output->'rejectedTags','[]'::jsonb))>0)::int tag_partial,
@@ -90,7 +90,7 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
         coalesce(sum(confirmed_requests),0)::int confirmed_requests, coalesce(sum(unknown_requests),0)::int unknown_requests,
         coalesce(sum(request_budget_used),0)::int request_budget_used, coalesce(sum(request_budget_limit),0)::int request_budget_limit
       from ai_job_batches
-      cross join lateral (select reference_snapshot->>(case when j.job_type='tag_extraction' then 'tagStage' else 'standardizationStage' end) as stage) stage_marker
+      cross join lateral (select reference_snapshot->>(case when j.job_type in ('tag_extraction','membership_features') then 'tagStage' else 'standardizationStage' end) as stage) stage_marker
       where job_id=j.id and batch_index >= 0
     ) batches on true
     left join lateral (
@@ -119,14 +119,14 @@ export function progressSnapshotFromRow(row: Record<string, unknown>): ProgressS
   const num = (value: unknown) => Number(value ?? 0);
   const reasons = row.reason_counts && typeof row.reason_counts === 'object' && !Array.isArray(row.reason_counts)
     ? Object.fromEntries(Object.entries(row.reason_counts as Record<string, unknown>).map(([key, value]) => [key, num(value)])) : {};
-  const tag = row.job_type === 'tag_extraction';
+  const tag = isAttributeJobType(String(row.job_type));
   const tagResults = Object.fromEntries(['updated','unchanged','empty','review','skipped','failed','cancelled','unrecorded'].map(key => [key, num((row.tag_counts as Record<string, unknown> | undefined)?.[key])]));
   const terminal = Object.values(tagResults).reduce((a,b)=>a+b,0);
   return {
     ...(tag ? { tagResults, tagAcceptance: { acceptedTags: num(row.tag_accepted), rejectedTags: num(row.tag_rejected), partialProducts: num(row.tag_partial) } } : {}),
     ...(tag ? { tagStages: { extractionCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
     ...(!tag ? { standardizationStages: { generationCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
-    jobId: str(row.job_id), version: str(row.version), phase: String(row.phase ?? 'standardizing'), status: String(row.status),
+    jobId: str(row.job_id), jobType: String(row.job_type ?? ''), version: str(row.version), phase: String(row.phase ?? 'standardizing'), status: String(row.status),
     total: str(tag ? row.member_total : row.total), queued: str(tag ? row.member_queued : row.queued), running: str(tag ? row.member_running : row.running), processed: str(tag ? terminal : row.processed), succeeded: str(tag ? terminal - tagResults.failed! - tagResults.cancelled! - tagResults.unrecorded! : row.succeeded), failed: str(tag ? tagResults.failed : row.failed),
     rawProductCount: num(tag ? row.member_total : row.total), uniqueInputCount: num(row.unique_input_count),
     requests: { totalBatches: num(row.batch_total), queuedBatches: num(row.batch_queued), runningBatches: num(row.batch_running), succeededBatches: num(row.batch_succeeded), failedBatches: num(row.batch_failed), cancelledBatches: num(row.batch_cancelled), confirmed: num(row.confirmed_requests), unknown: num(row.unknown_requests), budgetUsed: num(row.request_budget_used), budgetLimit: num(row.request_budget_limit) },

@@ -34,7 +34,8 @@ async function fixture(count = 1) {
   await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: inputId, fingerprint, payload: jsonb(payload), content_version: 1n, input_bytes: 100n, estimated_tokens: 100n }).execute();
   for (const p of products) await db.insertInto('ai_job_input_members').values({ job_id: job.id, input_id: inputId, product_id: p.id, fingerprint, payload: jsonb(payload), content_version: 1n, standardization_revision: p.standardization_revision }).execute();
   const batch = await db.insertInto('ai_job_batches').values({ job_id: job.id, batch_index: 0n, product_ids: jsonb([String(inputId)]), product_count: BigInt(count), status: 'running', claimed_by: 'test', claim_token: 'claim', attempts: 1n, lease_until: new Date(Date.now()+60000), step: 'request', request_budget_limit: 2 }).returningAll().executeTakeFirstOrThrow();
-  const standard = await db.insertInto('standard_products').values({ canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus', name: 'test' }).returning('id').executeTakeFirstOrThrow();
+  // Non-membership tags retain their existing partial-update semantics.
+  const standard = await db.insertInto('standard_products').values({ canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'free', name: 'test' }).returning('id').executeTakeFirstOrThrow();
   for (const p of products) await db.insertInto('standard_product_members').values({ product_id: p.id, standard_product_id: standard.id, assignment_source: 'ai', publication_state: 'published' }).execute();
   return { repo: new AiRepository(db), job, batch, products, inputId, payload };
 }

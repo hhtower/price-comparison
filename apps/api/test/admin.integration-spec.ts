@@ -9,11 +9,12 @@ import { AppModule } from '../src/app.module.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { createPostgresPool, DATABASE, DatabaseService, PG_POOL } from '../src/database/database.providers.js';
-import { jsonb, type DatabaseSchema, type PublicationState, type StandardVerificationState } from '../src/database/types.js';
+import { jsonb, type DatabaseSchema, type JsonValue, type PublicationState, type StandardVerificationState } from '../src/database/types.js';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { ProtocolDetectionService } from '../src/platforms/protocol-detection.service.js';
 import { ShopSubmissionsService } from '../src/shop-submissions/shop-submissions.service.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
+import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
 
 const ADMIN_PASSWORD = `task7-admin-${Date.now()}`;
 
@@ -88,7 +89,7 @@ describe('admin lists over real PostgreSQL', () => {
       const server = app.getHttpAdapter().getInstance();
       const product = await server.inject('/v1/catalog/products/' + ids.standardBackup);
       assert.equal(product.statusCode, 200);
-      assert.deepEqual(product.json(), { id: String(ids.standardBackup), name: 'Alpha Backup', platform: '16688', kind: '其他' });
+    assert.deepEqual(product.json(), { id: String(ids.standardBackup), name: 'Alpha Backup', platform: '16688', kind: '其他', isAiMembership: false });
       const list = await server.inject('/v1/catalog/products');
       assert.equal(list.statusCode, 200);
       assert.ok(list.json().items.some((item: { id: string }) => item.id === String(ids.standardBackup)));
@@ -112,7 +113,7 @@ describe('admin lists over real PostgreSQL', () => {
     assert.equal(products.items[0].name, 'Alpha Red');
     assert.equal(products.items[0].shopId, ids.shopAlpha!.toString());
     assert.equal(typeof products.items[0].sourceData, 'object');
-    assert.deepEqual(Object.keys(products.items[0]).sort(), ['deletedAt', 'evidenceConflict', 'externalId', 'id', 'imageUrl', 'latestCurrency', 'latestPrice', 'name', 'normalizedKey', 'shopId', 'shopName', 'sourceCategory', 'sourceData', 'spec', 'standardProductName', 'standardizationOutcome', 'tags', 'updatedAt', 'url']);
+    assert.deepEqual(Object.keys(products.items[0]).sort(), ['deletedAt', 'evidenceConflict', 'externalId', 'id', 'imageUrl', 'latestCurrency', 'latestPrice', 'membershipFeatures', 'name', 'normalizedKey', 'shopId', 'shopName', 'sourceCategory', 'sourceData', 'spec', 'standardProductName', 'standardizationOutcome', 'tags', 'updatedAt', 'url']);
     assert.equal(products.items[0].shopName, 'Alpha Shop');
     assert.equal(products.items[0].standardProductName, 'Alpha Standard');
     assert.deepEqual(products.items[0].tags, [{ name: 'brand', value: 'Acme' }, { name: 'color', value: 'Red' }]);
@@ -424,11 +425,11 @@ describe('admin lists over real PostgreSQL', () => {
     const body = { canonicalFamily: 'openai', canonicalProduct: 'codex_credits1', canonicalTier: 'standard1' };
     const updated = await mutate('PATCH', `/standard-products/${targetId}`, { ...body, platform: 'openai' });
     assert.equal(updated.payload.id, targetId.toString());
-    assert.equal(updated.payload.name, 'openai / codex_credits1 / standard1');
+    assert.equal(updated.payload.name, 'OpenAI codex credits1 standard1');
     assert.equal(updated.payload.platform, 'openai');
     for (const [key, value] of Object.entries(body)) assert.equal(updated.payload[key], value);
     const saved = await database.selectFrom('standard_products').selectAll().where('id', 'in', standardIds).orderBy('id').execute();
-    assert.equal(saved.find(row => row.id === targetId)!.name, 'openai / codex_credits1 / standard1');
+    assert.equal(saved.find(row => row.id === targetId)!.name, 'OpenAI codex credits1 standard1');
     assert.deepEqual(saved.filter(row => row.id !== targetId), beforeStandards.filter(row => row.id !== targetId));
     assert.deepEqual(await database.selectFrom('products').selectAll().where('id', 'in', peerProductIds).orderBy('id').execute(), beforePeers);
     assert.deepEqual(await database.selectFrom('product_standardization_decisions').selectAll().where('product_id', 'in', peerProductIds).orderBy('id').execute(), beforeDecisions);
@@ -479,17 +480,51 @@ describe('admin lists over real PostgreSQL', () => {
 
   test('creates a standard product with canonical identity and a pending member', async () => {
     const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
-    const candidate = await database.insertInto('products').values({ shop_id: ids.shopAlpha!, external_id: 'pending-create', name: 'Pending Create', normalized_key: 'pending-create', url: 'https://alpha.invalid/pending-create', source_data: jsonb({}) }).returning('id').executeTakeFirstOrThrow();
+    const candidate = await database.insertInto('products').values({ shop_id: ids.shopAlpha!, external_id: 'pending-create', name: 'Pending Create', normalized_key: 'pending-create', url: 'https://alpha.invalid/pending-create', source_data: jsonb({}) }).returningAll().executeTakeFirstOrThrow();
     const body = { family: 'OpenAI', product: 'ChatGPT', tier: 'Plus', platform: 'liandong', productIds: [candidate.id.toString()] };
+    await mutate('POST', '/standard-products', { ...body, membershipKind: 'short_term' }, 400);
     const created = await mutate('POST', '/standard-products', body, 201);
     assert.equal(created.payload.name, 'ChatGPT Plus');
     assert.equal(created.payload.canonicalFamily, 'openai');
     assert.equal(created.payload.canonicalProduct, 'chatgpt');
     assert.equal(created.payload.canonicalTier, 'plus');
+    assert.equal('membershipKind' in created.payload, false);
     assert.match(created.payload.standardKey, /^v3:/);
     const member = await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', candidate.id).executeTakeFirstOrThrow();
     assert.equal(member.standard_product_id.toString(), created.payload.id);
     await mutate('POST', '/standard-products', { ...body, productIds: ['999999'] }, 400);
+  });
+
+  test('different product features share a standard while operators inspect current quotes', async () => {
+    const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
+    const identity = { family: 'cursor', product: 'cursor', tier: 'pro_plus' };
+    const target = await database.insertInto('standard_products').values({
+      name: 'Cursor Pro+', canonical_family: identity.family, canonical_product: identity.product, canonical_tier: identity.tier,
+      standard_key: buildCanonicalStandardKey(identity), verification_state: 'verified',
+    }).returning('id').executeTakeFirstOrThrow();
+    for (const kind of ['account', 'top_up'] as const) {
+      const current = await database.insertInto('products').values({
+        shop_id: ids.shopAlpha!, external_id: 'membership-review-' + kind, name: 'Cursor Pro+ membership review ' + kind,
+        normalized_key: 'membership-review-' + kind, url: '', source_data: jsonb({ evidence: '交付账号，质保28天' }),
+        standardization_locked: true,
+      }).returningAll().executeTakeFirstOrThrow();
+      const snapshot = buildMembershipFeatures([
+        { name: 'delivery', value: 'account', evidence: [{ path: 'sourceData.evidence', quote: '交付账号' }] },
+        { name: 'warranty_days', value: '28', evidence: [{ path: 'sourceData.evidence', quote: '质保28天' }] },
+      ], current, [], kind);
+      await database.updateTable('products').set({ membership_features: jsonb(snapshot as unknown as JsonValue) }).where('id', '=', current.id).execute();
+      const bound = await mutate('POST', '/products/standard-products/bind', {
+        productIds: [String(current.id)], standardProductId: String(target.id), confirmOwnershipChange: true,
+      }, 201);
+      assert.deepEqual(bound.payload.success, [String(current.id)]);
+      const listed = await get('products?keyword=membership%20review%20' + kind);
+      assert.equal(listed.items[0].membershipFeatures.decision.kind, kind);
+      assert.equal(listed.items[0].membershipFeatures.evidence[1].quote, '质保28天');
+      const member = await database.selectFrom('standard_product_members').selectAll().where('product_id', '=', current.id).executeTakeFirstOrThrow();
+      assert.equal(member.standard_product_id, target.id);
+      assert.equal(member.assignment_source, 'human');
+      assert.equal((await database.selectFrom('products').select('standardization_locked').where('id', '=', current.id).executeTakeFirstOrThrow()).standardization_locked, true);
+    }
   });
 
   test('known identity writes use friendly names and unchanged identity preserves a manual name', async () => {
@@ -501,7 +536,7 @@ describe('admin lists over real PostgreSQL', () => {
     const unchanged = await mutate('PATCH', '/standard-products/' + created.payload.id, { canonicalFamily: 'OpenAI', canonicalProduct: 'ChatGPT', canonicalTier: 'Free' });
     assert.equal(unchanged.payload.name, '人工编辑的普通账号');
     const changed = await mutate('PATCH', '/standard-products/' + created.payload.id, { canonicalFamily: 'anthropic', canonicalProduct: 'claude', canonicalTier: 'max_20x' });
-    assert.equal(changed.payload.name, 'Claude Max 20x');
+    assert.equal(changed.payload.name, 'Claude Ultra');
   });
 
   for (const source of ['human', 'ai', 'unassigned'] as const) {
@@ -847,9 +882,9 @@ describe('admin lists over real PostgreSQL', () => {
   test('standard picker finds renamed plans through platform-specific current and legacy aliases', async () => {
     const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
     const rows = await database.insertInto('standard_products').values([
-      { name: 'Claude Max 20x', canonical_family: 'anthropic', canonical_product: 'claude', canonical_tier: 'max_20x', platform: 'claude-picker-test' },
-      { name: 'Claude Team 5x', canonical_family: 'anthropic', canonical_product: 'claude', canonical_tier: 'team_5x', platform: 'claude-picker-test' },
-      { name: 'ChatGPT Team 5x', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'team_5x', platform: 'claude-picker-test' },
+      { name: 'Claude Max 20x', canonical_family: 'anthropic', canonical_product: 'claude', canonical_tier: 'max_20x', platform: 'plan-picker-test' },
+      { name: 'Claude Team 5x', canonical_family: 'anthropic', canonical_product: 'claude', canonical_tier: 'team_5x', platform: 'plan-picker-test' },
+      { name: 'ChatGPT Team 5x', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'team_5x', platform: 'plan-picker-test' },
     ]).returning('id').execute();
     try {
       for (const [keyword, index, name] of [
@@ -858,11 +893,11 @@ describe('admin lists over real PostgreSQL', () => {
         ['ChatGPT Premium', 2, 'ChatGPT Premium'], ['ChatGPT Team 5x', 2, 'ChatGPT Premium'],
         ['ChatGPT Team 10x', 2, 'ChatGPT Premium'], ['ChatGPT Business Premium', 2, 'ChatGPT Premium'],
       ] as const) {
-        const page = await get(`standard-products?${new URLSearchParams({ keyword, platform: 'claude-picker-test', page: '1' })}`);
+        const page = await get(`standard-products?${new URLSearchParams({ keyword, platform: 'plan-picker-test', page: '1' })}`);
         assert.deepEqual(page.items.map((item: { id: string }) => item.id), [String(rows[index]!.id)], keyword);
         assert.equal(page.items[0]?.name, name);
       }
-      const premium = await get('standard-products?keyword=Premium&platform=claude-picker-test&page=1');
+      const premium = await get('standard-products?keyword=Premium&platform=plan-picker-test&page=1');
       assert.deepEqual(new Map(premium.items.map((item: { id: string; name: string }) => [item.id, item.name])),
         new Map([[String(rows[1]!.id), 'Claude Team Premium'], [String(rows[2]!.id), 'ChatGPT Premium']]));
     } finally {

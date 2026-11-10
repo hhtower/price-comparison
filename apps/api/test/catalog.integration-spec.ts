@@ -486,36 +486,16 @@ describe('catalog SQL read model', () => {
     assert.ok(next.items.every(item => item.offers.every(offer => offer.shopScore === '10.00')));
   });
 
-  test('newcomer mode filters actual offers before prices, totals, facets and detail pagination', async () => {
-    const delivery = (value: string) => ({ name: 'delivery', value });
-    const days = (value: number) => ({ name: 'warranty_days', value: String(value) });
-    const topUp = await addSku(shopOne, 'newcomer-top-up', '30.00', [delivery('top_up'), days(30)]);
-    const account = await addSku(shopOne, 'newcomer-account', '90.00', [delivery('account'), days(90)]);
-    await addSku(shopOne, 'newcomer-short', '1.00', [delivery('account'), days(29)]);
-    await addSku(shopOne, 'newcomer-unknown', '2.00', [delivery('top_up')]);
-    await addSku(shopOne, 'newcomer-code', '3.00', [delivery('redemption'), days(90)]);
-    {
-      const page = await readPublished({ tags: [], newcomer: true, standardProductId: String(standardOne),
-        detailKind: 'offers', detailPageSize: 50, limit: 20 });
-      assert.equal(page.total, 1);
-      assert.equal(page.offerTotal, 2);
-      assert.equal(page.items[0]!.minPrice, '30.00');
-      assert.equal(page.items[0]!.productCount, 2);
-      assert.deepEqual(new Set(page.items[0]!.detail!.entries.map(offer => (offer as { productId: string }).productId)), new Set([String(topUp), String(account)]));
+  test('newcomer mode leaves non-AI offers, facets, counts and detail pagination unchanged', async () => {
+    await addSku(shopOne, 'non-ai-short', '1.00', [{ name: 'delivery', value: 'account' }, { name: 'warranty_days', value: '1' }]);
+    await addSku(shopOne, 'non-ai-code', '3.00', [{ name: 'delivery', value: 'redemption' }]);
+    for (const detailKind of ['offers', 'shops'] as const) {
+      const query = { standardProductId: String(standardOne), detailKind, detailPageSize: 1, detailPage: 1, tags: [], limit: 20 };
+      assert.deepEqual(await readPublished({ ...query, newcomer: true }), await readPublished(query));
     }
-    const detail = await readPublished({ tags: [], newcomer: true, standardProductId: String(standardOne),
-      detailKind: 'offers', detailPageSize: 1, detailPage: 1, limit: 1 });
-    assert.equal(detail.items[0]!.detail!.total, 2);
-    assert.equal((detail.items[0]!.detail!.entries[0] as { productId: string }).productId, String(account));
-    const stricter = await readPublished({ tags: [], newcomer: true, warrantyDaysMin: 90, limit: 20 });
-    assert.equal(stricter.offerTotal, 1);
-    assert.equal(stricter.items[0]!.minPrice, '90.00');
-    assert.equal((await readPublished({ tags: [delivery('redemption')], newcomer: true, limit: 20 })).total, 0);
-    const facets = await repository.facets({ tags: [], newcomer: true });
-    assert.ok(facets.tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'top_up'));
-    assert.ok(facets.tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'account'));
-    assert.ok(!facets.tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'redemption'));
-    assert.ok(!facets.tagFacets.some(tag => tag.name === 'warranty_days' && tag.value === '29'));
+    const values = (facets: Awaited<ReturnType<CatalogRepository['facets']>>) =>
+      facets.tagFacets.map(({ name, value }) => ({ name, value }));
+    assert.deepEqual(values(await repository.facets({ newcomer: true, tags: [] })), values(await repository.facets({ tags: [] })));
   });
 
   test('orders all public products by approved platform and product order before pagination', async () => {
@@ -585,8 +565,10 @@ describe('catalog SQL read model', () => {
     await database.deleteFrom('offers').execute();
     assert.deepEqual(await repository.publicProducts(), { items: [
       { id: String(standardOne), name: 'Codex 手机接码', platform: 'Alpha', platformGroup: 'other', kind: '手机接码',
+        identity: { family: 'openai', product: 'codex', tier: 'sms' }, isAiMembership: false,
         identityNames: ['openai / codex / sms', 'openai codex sms'] },
       { id: String(standardTwo), name: 'Widget Two', platform: 'Alpha', platformGroup: 'other', kind: '其他',
+        identity: { family: '', product: '', tier: '' }, isAiMembership: false,
         identityNames: ['Widget Two', ''] },
     ] });
     assert.equal((await repository.publicProduct(String(standardOne)))?.name, 'Codex 手机接码');
@@ -1041,7 +1023,8 @@ describe('catalog SQL read model', () => {
       const visit = (node: any) => { nodes.push(node); for (const child of node.Plans ?? []) visit(child); };
       visit(plan[0].Plan);
       const details = nodes.find(node => node['Subplan Name'] === 'CTE detail_skus');
-      assert.equal(details?.['Node Type'], 'Limit', 'detail rows must be limited before the JSON aggregation reads them');
+      assert.ok(details?.Plans?.some((node: any) => node['Node Type'] === 'Limit'),
+        'each standard product detail must be limited before JSON aggregation');
       assert.equal(details?.['Actual Rows'], 2);
     }
     await publishChanges();

@@ -1,4 +1,4 @@
-import { DEFAULT_SITE_URL, PAGE_METADATA, SITE_NAME, catalogPageMetadata, pageSchema, productPageMetadata, productPageSchema } from '../../api/src/seo/page-metadata.ts';
+import { DEFAULT_SITE_URL, PAGE_METADATA, SITE_NAME, catalogPageMetadata, pageSchema, productPagePath, productPageMetadata, productPageSchema } from '../../api/src/seo/page-metadata.ts';
 
 function setMeta(attribute, name, content) {
   let element = document.head.querySelector('meta[' + attribute + '="' + name + '"]');
@@ -10,9 +10,9 @@ function setMeta(attribute, name, content) {
   element.content = content;
 }
 
-export function updatePageMetadata(kind, product, pageNumber = 1) {
-  const page = kind === 'product-error' ? { path: '/products/' + product.id, title: product.name + ' - ' + SITE_NAME,
-    description: product.name + '。请返回商品列表或稍后重试。' } : product ? productPageMetadata(product, pageNumber)
+export function updatePageMetadata(kind, product, pageNumber = 1, membershipKind) {
+  const page = kind === 'product-error' ? { path: productPagePath(product.id, pageNumber, membershipKind), title: product.name + ' - ' + SITE_NAME,
+    description: product.name + '。请返回商品列表或稍后重试。' } : product ? productPageMetadata(product, pageNumber, membershipKind)
       : kind === 'public' ? catalogPageMetadata(new URLSearchParams(window.location.search).get('cursor'))
         : kind === 'mcp' ? { path: '/mcp', title: 'Skill / MCP 接入 - ' + SITE_NAME, description: '一次申请，共用密钥，通过 Skill 或 MCP 查询商品、商铺报价与价格历史。' } : PAGE_METADATA[kind];
   let canonical = document.head.querySelector('link[rel="canonical"]');
@@ -33,7 +33,7 @@ export function updatePageMetadata(kind, product, pageNumber = 1) {
   setMeta('name', 'twitter:title', page.title);
   setMeta('name', 'twitter:description', page.description);
   let script = document.getElementById('page-structured-data');
-  const data = product && kind !== 'product-error' ? productPageSchema(product, origin, pageNumber)
+  const data = product && kind !== 'product-error' ? productPageSchema(product, origin, pageNumber, membershipKind)
     : kind === 'product-error' ? null : pageSchema(kind, origin, page);
   if (!data) { script?.remove(); return; }
   if (!script) {

@@ -21,6 +21,7 @@ import type { JsonValue } from '../database/types.js';
 import { publicationEvidenceConflict } from '../standardization/publication-evidence.js';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { ListStandardProductPlatformsQueryDto } from './dto/admin-query.dto.js';
+import { readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
 
 const MAX_POSTGRESQL_BIGINT = 9223372036854775807n;
 
@@ -52,6 +53,7 @@ interface ProductResponse {
   readonly spec: string;
   readonly sourceCategory: string;
   readonly sourceData: JsonValue;
+  readonly membershipFeatures: ReturnType<typeof readCurrentMembershipFeatures>;
   readonly normalizedKey: string;
   readonly url: string;
   readonly imageUrl: string | null;
@@ -371,6 +373,7 @@ function toProductResponse(row: AdminProductRow): ProductResponse {
     spec: row.spec,
     sourceCategory: row.source_category,
     sourceData: row.source_data,
+    membershipFeatures: readCurrentMembershipFeatures(row.membership_features, row),
     normalizedKey: row.normalized_key,
     url: row.url,
     imageUrl: row.image_url,

@@ -232,7 +232,7 @@ test('keeps a modal drawer on mobile and preserves draft choices across a breakp
   await user.tab({ shift: true });
   expect(apply).toHaveFocus();
   await user.tab();
-  expect(drawer.getByRole('checkbox', { name: /独享/ })).toHaveFocus();
+    expect(drawer.getByRole('combobox', { name: '标准商品' })).toHaveFocus();
   await user.tab({ shift: true });
   expect(apply).toHaveFocus();
   await user.click(drawer.getByRole('button', { name: '取消筛选' }));
@@ -511,8 +511,10 @@ describe('PublicPage', () => {
     expect(screen.getByRole('button', { name: '移除质保30天' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /移除已接码/ }));
     await waitFor(() => expect(input.value).not.toContain('已接码'));
+    await waitFor(() => expect(calls.filter(url => url.pathname === '/api/catalog').at(-1).searchParams.get('q')).toBe('ChatGPT Plus 质保至少30天'));
     await user.click(screen.getByRole('button', { name: '筛选' }));
-    await user.click(screen.getByRole('checkbox', { name: /已接码/ }));
+    await screen.findByRole('combobox', { name: '标准商品' });
+    await user.click(await screen.findByRole('checkbox', { name: /已接码/ }));
     await user.click(screen.getByRole('button', { name: '应用筛选（1）' }));
     await waitFor(() => expect(calls.at(-1).searchParams.getAll('tag').some(value => JSON.parse(value).name === 'sms_verification')).toBe(true));
     await user.type(input, '  中转');
@@ -534,7 +536,7 @@ describe('PublicPage', () => {
     const facts = within(screen.getByLabelText('商品标签'));
     expect(facts.getByText('已接码')).toBeInTheDocument();
     expect(facts.getByText('速刷')).toBeInTheDocument();
-    expect(facts.getByText('有质保（时长未注明）')).toBeInTheDocument();
+    expect(facts.queryByText(/有质保|未注明/)).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('checkbox', { name: /已接码/ }));
     await user.click(screen.getByRole('button', { name: '应用筛选（1）' }));

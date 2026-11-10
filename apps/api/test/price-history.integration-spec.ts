@@ -5,7 +5,9 @@ import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import { createPostgresPool } from '../src/database/database.providers.js';
-import type { DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
+import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
+import type { MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { PriceHistoryRepository } from '../src/catalog/price-history.repository.js';
 import { CatalogService } from '../src/catalog/catalog.service.js';
 import { CatalogRepository } from '../src/catalog/catalog.repository.js';
@@ -140,6 +142,81 @@ test('validates history parameters before querying and returns no private source
   await db.updateTable('standard_products').set({ hidden: false }).where('id', '=', standard).execute();
   const point = (await points())[0]!;
   assert.equal('source_data' in point, false);
+});
+
+test('history scopes separate membership daily minima and group unknown AI features only at read time', async () => {
+  await db.updateTable('standard_products').set({ canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus' })
+    .where('id', '=', standard).execute();
+  const ids: Record<string, bigint> = { unknown: product };
+  for (const [kind, price] of [['account', '40.00'], ['top_up', '30.00'], ['rental', '10.00'], ['short_term', '8.00']] as const) {
+    const id = await addProduct(kind);
+    ids[kind] = id;
+    const current = await db.selectFrom('products').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
+    await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], current, [], kind) as unknown as JsonValue) })
+      .where('id', '=', id).execute();
+    const offer = await quote(id, price);
+    await db.updateTable('offers').set({ settlement_price: String(Number(price) - 1), settlement_verified_at: new Date('2026-10-14T10:00:00Z') })
+      .where('id', '=', offer.id).execute();
+  }
+  await quote(product, '2.00');
+  const staleId = await addProduct('stale-account');
+  const staleProduct = await db.selectFrom('products').selectAll().where('id', '=', staleId).executeTakeFirstOrThrow();
+  await db.updateTable('products').set({ membership_features: jsonb({ ...buildMembershipFeatures([], staleProduct, [], 'account'),
+    policyVersion: 'stale' } as unknown as JsonValue) }).where('id', '=', staleId).execute();
+  await quote(staleId, '3.00', '2026-10-14T10:00:00Z');
+  const dollars = await addProduct('dollar-account');
+  const dollarProduct = await db.selectFrom('products').selectAll().where('id', '=', dollars).executeTakeFirstOrThrow();
+  await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], dollarProduct, [], 'account') as unknown as JsonValue) })
+    .where('id', '=', dollars).execute();
+  await quote(dollars, '0.50', '2026-10-13T12:00:00Z', 'USD');
+
+  const controller = new CatalogController(new CatalogService(new CatalogRepository(db, { now: () => now, ttlMs: 8100000 }), {} as never));
+  const prices = async (scope: Record<string, unknown>) => (await controller.getPriceHistory(String(standard), scope)).points
+    .map(point => [point.date, point.price]);
+  assert.deepEqual(await prices({ membershipKind: 'account' }), [['2026-10-13', '40.00'], ['2026-10-14', '39']]);
+  assert.deepEqual(await prices({ membershipKind: 'top_up' }), [['2026-10-13', '30.00'], ['2026-10-14', '29']]);
+  assert.deepEqual(await prices({ membershipKind: 'rental' }), [['2026-10-13', '10.00'], ['2026-10-14', '9']]);
+  assert.deepEqual(await prices({ membershipKind: 'short_term' }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
+  assert.deepEqual(await prices({ membershipKind: ['account', 'top_up'] }), [['2026-10-13', '30.00'], ['2026-10-14', '29']]);
+  assert.deepEqual(await prices({ membershipKinds: ['account', 'top_up'] }), await prices({ membershipKind: ['account', 'top_up'] }));
+  assert.deepEqual(await prices({ newcomer: 'true' }), [['2026-10-13', '30.00'], ['2026-10-14', '29']]);
+  assert.deepEqual(await prices({ newcomer: 'true', membershipKind: ['rental', 'short_term'] }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
+  assert.deepEqual(await prices({ membershipKind: ['account'], productId: String(ids.rental) }), []);
+  assert.deepEqual(await prices({ membershipKind: 'account', currency: 'USD', productId: String(dollars) }), [['2026-10-13', '0.50']]);
+  assert.deepEqual(await prices({ membershipKind: 'short_term', productId: String(product) }), [['2026-10-13', '2.00']]);
+  assert.equal((await db.selectFrom('products').select('membership_features').where('id', '=', product).executeTakeFirstOrThrow()).membership_features, null);
+
+  const current = await db.selectFrom('products').selectAll().where('id', '=', ids.account!).executeTakeFirstOrThrow();
+  await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], current, [], 'rental') as unknown as JsonValue) })
+    .where('id', '=', ids.account!).execute();
+  assert.deepEqual(await prices({ membershipKind: 'account', productId: String(ids.account) }), []);
+  assert.deepEqual(await prices({ membershipKind: 'rental', productId: String(ids.account) }), [['2026-10-13', '40.00'], ['2026-10-14', '39']]);
+  await db.updateTable('standard_product_members').set({ publication_state: 'provisional' }).where('product_id', '=', ids.account!).execute();
+  assert.deepEqual(await prices({ membershipKind: 'rental', productId: String(ids.account) }), []);
+});
+
+test('newcomer history keeps non-AI products while explicit membership kinds exclude them', async () => {
+  await db.updateTable('standard_products').set({ canonical_family: 'google', canonical_product: 'email', canonical_tier: 'standard' })
+    .where('id', '=', standard).execute();
+  await quote();
+  assert.equal((await history.get(String(standard), undefined, 'CNY', { newcomer: true })).points.length, 1);
+  for (const kind of ['account', 'top_up', 'rental', 'short_term'] as MembershipKind[]) {
+    assert.deepEqual((await history.get(String(standard), undefined, 'CNY', { membershipKinds: [kind], newcomer: true })).points, []);
+  }
+});
+
+test('history rejects malformed membership and newcomer filters through the public service and controller', async () => {
+  const service = new CatalogService(new CatalogRepository(db), {} as never);
+  const controller = new CatalogController(service);
+  for (const scope of [
+    { membershipKind: 'unknown' }, { membershipKind: [] }, { membershipKind: ['account', 'unknown'] },
+    { membershipKind: null }, { membershipKind: {} }, { membershipKind: ['account', 'top_up', 'rental', 'short_term', 'account'] },
+    { membershipKinds: 'account' }, { membershipKind: 'account', membershipKinds: ['rental'] },
+    { newcomer: 'yes' }, { newcomer: ['true', 'false'] }, { newcomer: null },
+  ]) {
+    await assert.rejects(() => service.getPriceHistory(String(standard), undefined, 'CNY', scope), { name: 'DomainValidationError' });
+    await assert.rejects(() => controller.getPriceHistory(String(standard), scope), { name: 'DomainValidationError' });
+  }
 });
 
 test('migration seeds genuine existing quotes and downgrades without modifying offers', async () => {

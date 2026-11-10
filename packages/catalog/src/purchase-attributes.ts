@@ -249,32 +249,28 @@ export function purchaseTagLabel(tag: PurchaseTag): string {
   if (normalized.name === 'duration' && normalized.value.endsWith(' month')) return normalized.value.replace(' month', '个月');
   if (normalized.name === 'duration' && normalized.value.endsWith(' months')) return normalized.value.replace(' months', '个月');
   if (normalized.name === 'duration' && /^[0-9]+ days$/u.test(normalized.value)) return normalized.value.replace(' days', '天');
-  if (normalized.name === 'warranty_scope' && normalized.value === 'subscription') return '仅保掉订阅';
+  if (normalized.name === 'warranty_scope' && normalized.value === 'subscription') return '保订阅';
   return normalized.value || normalized.name;
 }
 
-/** A coverage scope is a limit, not a replacement for its explicit time window. */
+/** Brief promises only; operation windows, triggers and exclusions belong in details. */
 export function purchaseWarrantyLabel(tags: readonly PurchaseTag[]): string {
-  const value = (name: string) => tags.find(tag => tag.name === name)?.value;
-  if (value('warranty') === 'none') return '无质保';
-  const scope = value('warranty_scope');
+  const normalized = tags.flatMap(normalizePurchaseTag);
+  const value = (name: string) => normalized.find(tag => tag.name === name)?.value;
+  if (normalized.some(tag => tag.name === 'warranty' && ['none', 'unknown'].includes(tag.value))) return '';
+  const scope = normalized.find(tag => tag.name === 'warranty_scope'
+    && ['first_login', 'activation', 'first_code'].includes(tag.value))?.value ?? value('warranty_scope');
   const limited = scope === 'first_login' ? '仅保首登' : scope === 'activation' ? '仅保激活'
     : scope === 'first_code' ? '仅保首次接码' : '';
+  if (limited) return limited;
   const units: Record<string, string> = { minute: '分钟', hour: '小时', day: '天', week: '周', month: '个月', year: '年' };
   const window = value('warranty_window') ?? value('warranty_detail');
-  const match = window && /^([0-9]+(?:\.[0-9]+)?) (minutes?|hours?|days|weeks?|months?|years?)$/u.exec(window);
+  const match = window && /^([0-9]+(?:\.[0-9]+)?) (minutes?|hours?|days?|weeks?|months?|years?)$/u.exec(window);
   const time = match && Number(match[1]) > 0 ? match[1] + units[match[2].replace(/s$/u, '')] : '';
-  const days = !limited && /^[1-9][0-9]*$/u.test(value('warranty_days') ?? '') ? value('warranty_days') + '天' : '';
-  const term = time || days;
-  const label = limited ? limited + (time ? `（${time}内）` : '')
-    : term ? `质保${term}` : scope === 'subscription' ? '仅保掉订阅（时长未注明）'
-    : scope === 'period' || value('warranty') === 'covered' ? '有质保（时长未注明）' : '';
-  if (!label) return '';
-  const limits = [!limited && term && scope === 'subscription' ? '仅保掉订阅' : '',
-    ({ purchase: '购买起算', delivery: '交付起算', activation: '激活起算', first_login: '首登起算' } as Record<string, string>)[value('warranty_trigger') ?? ''] ?? '',
-    tags.some(tag => tag.name === 'warranty_terms') ? '附售后条款' : '',
-    tags.some(tag => tag.name === 'warranty_exclusion' && tag.value === 'ban') ? '不保封号' : ''].filter(Boolean);
-  return label + (limits.length ? `（${limits.join('；')}）` : '');
+  const days = /^[1-9][0-9]*$/u.test(value('warranty_days') ?? '') ? value('warranty_days') + '天' : '';
+  const term = days || time;
+  return scope === 'subscription' || value('warranty_detail') === 'subscription coverage'
+    ? `保订阅${term}` : term ? `质保${term}` : '';
 }
 
 const addTag = (tags: PurchaseTag[], tag: PurchaseTag): void => {

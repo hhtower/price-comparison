@@ -21,7 +21,7 @@ const product = id => ({ id: String(id), name: '商品' + id, platform: 'openai'
 const response = items => Response.json({ items, platformFacets: ['openai'] });
 const facetsResponse = () => Response.json({ tagFacets: [{ name: 'access', value: 'dedicated', priority: 1 }] });
 
-test('filter options use their dedicated endpoint without requesting a product page', async () => {
+test('filter options and the standard selector load metadata without fetching another quote page', async () => {
   const requests = [];
   vi.stubGlobal('fetch', vi.fn(async input => {
     const url = new URL(input, 'http://localhost');
@@ -38,8 +38,9 @@ test('filter options use their dedicated endpoint without requesting a product p
   expect(requests[0].pathname).toBe('/api/catalog');
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   await screen.findByRole('checkbox', { name: /独享/ });
-  expect(requests).toHaveLength(2);
-  expect(requests.some(url => url.pathname === '/api/catalog/products')).toBe(false);
+  expect(requests).toHaveLength(3);
+  expect(requests.filter(url => url.pathname === '/api/catalog/products')).toHaveLength(1);
+  expect(requests.filter(url => url.pathname === '/api/catalog')).toHaveLength(1);
   const facets = requests.find(url => url.pathname === '/api/catalog/facets');
   expect(facets).toBeTruthy();
   expect(requests[0].searchParams.has('facets')).toBe(false);

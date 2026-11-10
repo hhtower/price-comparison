@@ -1,3 +1,4 @@
+import { isAttributeJobType } from '../database/types.js';
 import { DomainNotFoundError } from '../common/errors.js';
 import { createTagJob } from './tag-extraction-jobs.js';
 import { buildTagExtractionOutcome, tagExtractionVersions } from './tag-extraction-result.js';
@@ -9,6 +10,7 @@ import { unknownRequestReason } from './request-outcome.js';
 import type { ParsedStandardizationResponse, StandardizationDecision } from './ai.schemas.js';
 import { isReviewableStandardizationDecision } from './standardization-review-request.js';
 import { readAiStandardizationFeatures } from './ai-standardization-features.js';
+import { incrementJobProgress } from './ai-progress.repository.js';
 
 function chunks<T>(items: readonly T[], size: number): T[][] {
   const result: T[][] = [];
@@ -17,6 +19,7 @@ function chunks<T>(items: readonly T[], size: number): T[][] {
 }
 
 function terminalReason(errorSource: string | null, error?: string | null): { code: string; reason: string } {
+  if (errorSource === 'membership_features_failed') return { code: 'technical_failure', reason: '前置特性识别未完成，请重试后重新标准化' };
   if (errorSource === 'provider_policy_rejection') return { code: 'provider_policy_rejection', reason: '服务方明确拒绝该请求；不自动重发相同内容' };
   if (errorSource === 'input_too_large') return { code: 'input_too_large', reason: '完整请求超过本地安全预算，需要减少候选或拆分证据范围' };
   if (errorSource === 'invalid_response') {
@@ -43,7 +46,7 @@ async function materializeFailedBatch(
   if (!inputIds.length) return;
   const job = await tx.selectFrom('ai_jobs').select(['job_type', 'pipeline_versions']).where('id', '=', jobId).executeTakeFirstOrThrow();
   const reference = batch.reference_snapshot as { standardizationStage?: string; generationBatchId?: string } | null | undefined;
-  const review = job.job_type !== 'tag_extraction' && reference?.standardizationStage === 'review';
+  const review = !isAttributeJobType(job.job_type) && reference?.standardizationStage === 'review';
   const members = await tx.selectFrom('ai_job_input_members')
     .select(['input_id', 'product_id', 'content_version', 'fingerprint', 'standardization_revision'])
     .where('job_id', '=', jobId)
@@ -56,12 +59,27 @@ async function materializeFailedBatch(
     .execute();
   if (!members.length) return;
   const terminal = terminalReason(batch.error_source, batch.error);
-  if (job.job_type === 'tag_extraction') {
+  if (isAttributeJobType(job.job_type)) {
     await tx.updateTable('ai_job_inputs').set({ status: 'failed', reason_code: terminal.code, error: terminal.reason }).where('job_id', '=', jobId).where('input_id', 'in', members.map(member => member.input_id)).execute();
     for (const member of members) await tx.updateTable('ai_job_input_members').set({ status: 'failed', reason_code: terminal.code, output: jsonb({ ...buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, [], { outcome: 'failed', reasonCode: terminal.code }), versions: tagExtractionVersions(member, job.pipeline_versions) } as unknown as JsonValue) }).where('job_id', '=', jobId).where('product_id', '=', member.product_id).where('output', 'is', null).execute();
     return;
   }
   const preserved = new Map<bigint, StandardizationDecision>();
+  if (batch.error_source === 'membership_features_failed') {
+    const failures = await tx.selectFrom('ai_job_input_members as m').innerJoin('ai_jobs as j', 'j.id', 'm.job_id')
+      .select(['m.product_id', 'm.reason_code']).distinctOn('m.product_id')
+      .where('j.parent_identity_job_id', '=', jobId).where('j.job_type', '=', 'membership_features')
+      .where('m.product_id', 'in', members.map(member => member.product_id))
+      .orderBy('m.product_id').orderBy('m.job_id', 'desc').execute();
+    for (const failure of failures) {
+      const code = failure.reason_code;
+      if (code !== 'provider_policy_rejection' && code !== 'input_too_large') continue;
+      const member = members.find(member => member.product_id === failure.product_id)!;
+      const reason = terminalReason(code);
+      preserved.set(member.input_id, { id: String(member.input_id), status: 'unclassified', ruleIds: [], evidence: [],
+        reasonCode: code, reason: `特性识别：${reason.reason}` });
+    }
+  }
   if (review) {
     if (!reference?.generationBatchId || !/^[1-9]\d*$/u.test(reference.generationBatchId)) throw new Error('standardization review source is invalid');
     const generation = await tx.selectFrom('ai_job_batches').select(['validated_decision', 'step', 'status'])
@@ -194,7 +212,7 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
       }
       const oversizedMembers = missingRows.filter(row => oversizedSet.has(row.input_id.toString()));
       for (const members of chunks(oversizedMembers, 500)) {
-        if (job.job_type === 'tag_extraction') {
+        if (isAttributeJobType(job.job_type)) {
           for (const member of members) await tx.updateTable('ai_job_input_members').set({ output: jsonb({ ...buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, [], { outcome: 'failed', reasonCode: 'input_too_large' }), versions: tagExtractionVersions(member, job.pipeline_versions) } as unknown as JsonValue) }).where('job_id', '=', jobId).where('product_id', '=', member.product_id).execute();
           continue;
         }
@@ -224,7 +242,7 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
         }).where('job_id', '=', jobId).where('input_id', 'in', ids)
           .where('round', '=', 0).where('missing_reprocess_count', '=', 0).execute();
         await tx.updateTable('ai_job_input_members').set({
-          status: 'queued', missing_reprocess_count: 1, reason_code: null, ...(job.job_type === 'tag_extraction' ? { output: null } : {}),
+          status: 'queued', missing_reprocess_count: 1, reason_code: null, ...(isAttributeJobType(job.job_type) ? { output: null } : {}),
         }).where('job_id', '=', jobId).where('input_id', 'in', ids)
           .where('missing_reprocess_count', '=', 0).where('reason_code', '=', 'missing_id').execute();
       }
@@ -256,7 +274,7 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
 
   // Tag results count original members, independently of input deduplication or request batches.
   let jobClassified = classified, jobUnclassified = unclassified;
-  if (parentJob.job_type === 'tag_extraction') {
+  if (isAttributeJobType(parentJob.job_type)) {
     const memberCounts = await tx.selectFrom('ai_job_input_members')
       .select(['status', sql<number>`count(*)::int`.as('count')])
       .where('job_id', '=', jobId).groupBy('status').execute();
@@ -273,12 +291,32 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
     failed_batches: BigInt(failed.length),
     finished_at: sql`now()`,
   }).where('id', '=', jobId).execute();
+  if (parentJob.job_type === 'membership_features') await settleMembershipFeatureDependency(tx, jobId);
 
   // Schedule tag extraction for classified products, but only from standardization jobs
   // (not from tag_extraction jobs themselves, to avoid infinite loops).
-  if (classified > 0 && parentJob.job_type !== 'tag_extraction' && readAiStandardizationFeatures().tagExtractionEnabled) {
+  if (classified > 0 && !isAttributeJobType(parentJob.job_type) && readAiStandardizationFeatures().tagExtractionEnabled) {
     await scheduleTagExtractionForJob(tx, jobId, parentJob.model);
   }
+}
+
+/** Failed feature inputs never turn into an implicit short-term identity request. */
+export async function settleMembershipFeatureDependency(tx: Transaction<DatabaseSchema>, featureJobId: bigint): Promise<void> {
+  const feature = await tx.selectFrom('ai_jobs').select(['parent_identity_job_id', 'job_type', 'status'])
+    .where('id', '=', featureJobId).executeTakeFirstOrThrow();
+  if (feature.job_type !== 'membership_features' || feature.parent_identity_job_id === null
+    || !['succeeded', 'ready_with_errors', 'failed', 'cancelled'].includes(feature.status)) return;
+  const parentId = feature.parent_identity_job_id;
+  const failedMembers = await tx.selectFrom('ai_job_input_members').select('product_id').where('job_id', '=', featureJobId)
+    .where(sql<boolean>`(status <> 'classified' or coalesce(output->>'outcome','') not in ('updated','unchanged','empty','review'))`).execute();
+  if (!failedMembers.length) return;
+  await tx.updateTable('ai_job_batches').set({ status: 'failed', error_source: 'membership_features_failed',
+    error: '前置特性识别未完成', finished_at: sql`now()` }).where('job_id', '=', parentId).where('status', '=', 'queued')
+    .where(sql<boolean>`exists (select 1 from ai_job_input_members member
+      where member.job_id=${parentId} and member.product_id in (${sql.join(failedMembers.map(row => row.product_id))})
+        and ai_job_batches.product_ids @> jsonb_build_array(member.input_id::text))`).execute();
+  await finalizeOrScheduleMissing(tx, parentId);
+  await incrementJobProgress(tx, { jobId: parentId });
 }
 
 /** Create a tag_extraction job for all classified products from the given standardization job. */

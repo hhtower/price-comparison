@@ -47,13 +47,15 @@ function HistoryChart({ points, currency, individual, startDate, endDate }) {
   </svg>;
 }
 
-export default function PriceHistory({ standardProductId, productId, currency = 'CNY' }) {
+export default function PriceHistory({ standardProductId, productId, currency = 'CNY', membershipKinds = [], newcomer = false }) {
   const [open, setOpen] = useState(!productId);
   const id = useId();
   const params = new URLSearchParams({ currency, ...(productId ? { productId } : {}) });
+  for (const kind of membershipKinds) params.append('membershipKind', kind);
+  params.set('newcomer', String(newcomer && !membershipKinds.length));
   const url = `/api/catalog/products/${encodeURIComponent(standardProductId)}/price-history?${params}`;
   const query = useQuery({ queryKey: ['price-history', url], enabled: open,
-    queryFn: ({ signal }) => requestJson(url, { signal }), staleTime: 60000, retry: false });
+    queryFn: ({ signal }) => requestJson(url, { signal }), placeholderData: undefined, staleTime: 60000, retry: false });
   const points = query.data?.points || [];
   const individual = Boolean(productId);
   return <section className={`price-history${individual ? ' price-history-individual' : ''}`} aria-label={individual ? '商家报价价格历史' : '商品价格历史'}>

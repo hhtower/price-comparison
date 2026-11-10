@@ -9,6 +9,8 @@ import { JobsRepository } from '../src/jobs/jobs.repository.js';
 import { AdminRepository } from '../src/admin/admin.repository.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
+import { validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
+import { readCurrentMembershipFeatures } from '../src/standardization/membership-classification.js';
 
 describe('global AI retry pool', () => {
   let db: Kysely<DatabaseSchema>;
@@ -42,10 +44,33 @@ describe('global AI retry pool', () => {
     return ids;
   }
   async function fail(jobId: bigint, source = 'provider_unknown') {
+    await completeFeaturePrerequisites(jobId);
     const batches = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', jobId).execute();
     for (const batch of batches) {
       await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'test', lease_until: new Date(Date.now() + 60000) }).where('id', '=', batch.id).execute();
       await new JobsRepository(db).fail('ai_batch', batch.id, 'test', 'fixture failure', { retry: false, retryClass: source });
+    }
+  }
+  async function completeFeaturePrerequisites(jobId: bigint) {
+    // These fixtures exercise identity outcomes after successful upstream fact collection.
+    const batches = await db.selectFrom('ai_job_batches as b').innerJoin('ai_jobs as j', 'j.id', 'b.job_id')
+      .select(['b.id', 'b.job_id']).where('j.parent_identity_job_id', '=', jobId)
+      .where('j.job_type', '=', 'membership_features').where('b.step', '=', 'request').execute();
+    for (const batch of batches) {
+      const claim = { workerId: 'retry-pool-features', attempt: 1n, token: randomUUID() };
+      await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: claim.workerId,
+        attempts: claim.attempt, claim_token: claim.token, lease_until: new Date(Date.now() + 60_000) })
+        .where('id', '=', batch.id).execute();
+      await repository.prepareBatch(batch.id);
+      assert.equal(await repository.reserveBatchRequest(batch.id, claim), 'reserved');
+      const { inputs } = await repository.getTagExtractionBatchInputs(batch.id);
+      await repository.persistTagExtractionBatchDecision(batch.job_id, batch.id,
+        inputs.map(input => validateReviewedTagExtractionDecision(input.productId, [], [], input.payload, [], null)), {}, claim);
+      const members = await db.selectFrom('ai_job_input_members as m').innerJoin('products as p', 'p.id', 'm.product_id')
+        .selectAll('p').where('m.job_id', '=', batch.job_id).where('m.input_id', 'in', inputs.map(input => input.productId)).execute();
+      for (const product of members) {
+        assert.deepEqual(readCurrentMembershipFeatures(product.membership_features, product)?.tags, []);
+      }
     }
   }
   async function failed(ids: bigint[], source = 'provider_unknown') {
@@ -135,6 +160,7 @@ describe('global AI retry pool', () => {
   test('a terminal batch failure enters the pool while other batches in that task still run', async () => {
     const ids = await products(2);
     const job = await repository.createJob({ model: 'mock', productIds: ids, batchSize: 1 });
+    await completeFeaturePrerequisites(job.id);
     const batch = job.batches[0]!;
     await db.updateTable('ai_jobs').set({ status: 'running' }).where('id', '=', job.id).execute();
     await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'test', lease_until: new Date(Date.now() + 60000) }).where('id', '=', batch.id).execute();
@@ -182,6 +208,7 @@ describe('global AI retry pool', () => {
     await db.updateTable('products').set({ name: 'ChatGPT Plus account', source_data: jsonb({ description: 'delivered ChatGPT Plus account' }) }).where('id', '=', id!).execute();
     const source = await failed([id!]);
     const retry = await repository.retryPool({ model: 'mock', requestId: randomUUID() });
+    await completeFeaturePrerequisites(retry.id);
     const batch = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', retry.id).executeTakeFirstOrThrow();
     const claim = { workerId: 'test', attempt: 1n, token: randomUUID() };
     await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: claim.workerId, attempts: claim.attempt,

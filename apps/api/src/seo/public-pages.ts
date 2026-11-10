@@ -1,6 +1,7 @@
 import { PURCHASE_GUIDE_CONTENT as guide, PURCHASE_GUIDE_FIELDS, PURCHASE_GUIDE_GROUPS } from '@price-comparison/catalog/purchase-guide-content';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { CATALOG_SEO_CONTENT, PRODUCT_SEO_CONTENT } from '@price-comparison/catalog/seo-content';
+import { MEMBERSHIP_KINDS, membershipKindLabel, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import type { FastifyAdapter } from '@nestjs/platform-fastify';
 import { decodeCatalogCursor } from '../catalog/catalog.repository.js';
 import type { CatalogOffer, CatalogPage, PublicCatalogProduct, PublicCatalogProducts } from '../catalog/catalog.repository.js';
@@ -64,8 +65,13 @@ function seoFaq(product = false): string {
 }
 
 function catalogContent(page: CatalogPage): string {
+  const cards = page.items.flatMap<CatalogPage['items'][number] & { membershipKind?: MembershipKind }>(item => item.isAiMembership || item.membershipGroups
+    ? (item.membershipGroups ?? []).filter(group => group.productCount > 0)
+      .map(group => ({ ...item, offers: group.offers, membershipKind: group.kind }))
+    : [{ ...item, membershipKind: undefined }]);
   return '<h2 id="catalog-quotes">本站商品报价与来源</h2>'
-    + (page.items.length ? page.items.map(item => '<article><h3><a href="/products/' + escapeHtml(item.id) + '">' + escapeHtml(standardProductDisplayName(item.name)) + '</a></h3><p>平台：'
+    + (cards.length ? cards.map(item => '<article><h3><a href="' + escapeHtml(productPagePath(item.id, 1, item.membershipKind)) + '">'
+      + escapeHtml(standardProductDisplayName(item.name) + (item.membershipKind ? ' · ' + membershipKindLabel(item.membershipKind) : '')) + '</a></h3><p>平台：'
       + escapeHtml(item.platform) + '</p><ul>' + item.offers.map(renderOffer).join('') + '</ul></article>').join('')
       : '<p>暂无可用报价，请稍后再试。</p>')
     + (page.nextCursor ? '<nav aria-label="商品分页"><a rel="next" href="' + escapeHtml(catalogPageMetadata(page.nextCursor).path) + '">下一页商品</a></nav>' : '')
@@ -161,33 +167,37 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
       return reply.code(503).header('Retry-After', '60').header('X-Robots-Tag', 'noindex, nofollow').send('Sitemap temporarily unavailable');
     }
   });
-  server.get('/products/:id', async (request, reply) => {
-    const id = (request.params as { id: string }).id;
+  for (const path of ['/products/:id', '/products/:id/features/:kind']) server.get(path, async (request, reply) => {
+    const { id, kind } = request.params as { id: string; kind?: string };
     const pageNumber = publicPageNumber((request.query as Record<string, unknown>).page);
     reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-cache');
     const missing = (message = '商品不存在') => reply.code(404).header('X-Robots-Tag', 'noindex, nofollow')
       .send(renderPage(options.template, 'public', origin, '<h1>' + message + '</h1>', true));
     if (!pageNumber) return missing('商品分页不存在');
     if (!/^[1-9][0-9]{0,18}$/u.test(id) || BigInt(id) >= 2n ** 63n) return missing();
+    if (kind !== undefined && !MEMBERSHIP_KINDS.includes(kind as MembershipKind)) return missing();
+    const membershipKind = kind as MembershipKind | undefined;
     try {
       const product = await options.getProduct(id);
       if (!product) return missing();
-      if (product.mergedIntoId) return reply.code(308).redirect(productPagePath(product.mergedIntoId, pageNumber));
-      const catalog = await options.getCatalog({ standardProductId: id, detailKind: 'offers', detailPage: pageNumber - 1, detailPageSize: PRODUCT_PAGE_SIZE, currency: 'CNY', offerSort: 'price' });
+      if (product.mergedIntoId) return reply.code(308).redirect(productPagePath(product.mergedIntoId, pageNumber, membershipKind));
+      if (membershipKind && !product.isAiMembership) return missing();
+      const catalog = await options.getCatalog({ standardProductId: id, detailKind: 'offers', detailPage: pageNumber - 1, detailPageSize: PRODUCT_PAGE_SIZE, currency: 'CNY', offerSort: 'price',
+        ...(membershipKind ? { membershipKinds: [membershipKind] } : {}) });
       const item = catalog.items[0];
       const offers = item?.detail?.kind === 'offers' ? item.detail.entries : item?.offers ?? [];
       if (pageNumber > 1 && !offers.length) return missing('商品分页不存在');
       const total = item?.detail?.total ?? offers.length;
       if (pageNumber > 1 && (pageNumber - 1) * PRODUCT_PAGE_SIZE >= total) return missing('商品分页不存在');
-      const page = productPageMetadata(product, pageNumber);
-      const schema = productPageSchema(product, origin, pageNumber);
-      const content = '<h1>' + escapeHtml(standardProductDisplayName(product.name)) + '</h1>' + seoIntroduction(true)
+      const page = productPageMetadata(product, pageNumber, membershipKind);
+      const schema = productPageSchema(product, origin, pageNumber, membershipKind);
+      const content = '<h1>' + escapeHtml(standardProductDisplayName(product.name) + (membershipKind ? ' · ' + membershipKindLabel(membershipKind) : '')) + '</h1>' + seoIntroduction(true)
         + '<h2 id="catalog-quotes">商铺报价与来源</h2>'
         + (offers.length ? '<ul>' + offers.map(renderOffer).join('') + '</ul>' : '<p>暂无可用报价，请稍后再试。</p>')
         + '<nav aria-label="报价分页">'
-        + (pageNumber > 1 ? '<a rel="prev" href="' + productPagePath(id, pageNumber - 1) + '">上一页报价</a> · ' : '')
+        + (pageNumber > 1 ? '<a rel="prev" href="' + productPagePath(id, pageNumber - 1, membershipKind) + '">上一页报价</a> · ' : '')
         + '<span>第' + pageNumber + '页</span>'
-        + (pageNumber * PRODUCT_PAGE_SIZE < total ? ' · <a rel="next" href="' + productPagePath(id, pageNumber + 1) + '">下一页报价</a>' : '') + '</nav>' + seoFaq(true);
+        + (pageNumber * PRODUCT_PAGE_SIZE < total ? ' · <a rel="next" href="' + productPagePath(id, pageNumber + 1, membershipKind) + '">下一页报价</a>' : '') + '</nav>' + seoFaq(true);
       return reply.send(renderPage(options.template, 'public', origin, content, false, { page, schema }));
     } catch {
       request.log.warn('public product HTML unavailable');

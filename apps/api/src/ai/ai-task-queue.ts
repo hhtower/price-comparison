@@ -1,7 +1,7 @@
 import { PIPELINE_VERSIONS } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from './standardization-request.js';
 import { IDENTITY_POLICY_VERSION } from '../standardization/identity-policy.js';
-import { jsonb } from '../database/types.js';
+import { isAttributeJobType, jsonb, type AttributeJobType } from '../database/types.js';
 import { sql, type Kysely } from 'kysely';
 import { DomainValidationError } from '../common/errors.js';
 import { buildCursorPage, normalizePageRequest, type PageRequest } from '../common/pagination.js';
@@ -23,15 +23,16 @@ const currentPending = (scopeShopId?: bigint) => sql<bigint>`(select count(disti
       join standard_products standard on standard.id = assignment.standard_product_id
       where assignment.product_id = p.id and (assignment.assignment_source = 'human'
         or (assignment.publication_state = 'published' and standard.verification_state = 'verified' and standard.merged_into_id is null)))
-    and not exists (select 1 from ai_job_input_members newer
+    and not exists (select 1 from ai_job_input_members newer join ai_jobs newer_job on newer_job.id = newer.job_id
       where newer.product_id = p.id and newer.job_id > m.job_id and newer.content_version = p.content_version
-        and newer.standardization_revision = p.standardization_revision))`;
+        and newer.standardization_revision = p.standardization_revision
+        and newer_job.job_type not in ('tag_extraction', 'membership_features')))`;
 
 /** Job history stays available; attention and pending counts project current product state. */
 export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQueueFilter) {
-  if (input.jobType !== undefined && !['identity','incremental','manual_full','calibration','tag_extraction'].includes(input.jobType)) throw new DomainValidationError('INVALID_TASK_TYPE','任务类型无效');
+  if (input.jobType !== undefined && !isAttributeJobType(input.jobType) && !['identity','incremental','manual_full','calibration'].includes(input.jobType)) throw new DomainValidationError('INVALID_TASK_TYPE','任务类型无效');
   if(input.scopeShopId!==undefined && input.scopeShopId<=0n) throw new DomainValidationError('INVALID_ID','店铺 ID 无效');
-  if(input.jobType==='tag_extraction') return readTagTaskQueue(db,input);
+  if(input.jobType && isAttributeJobType(input.jobType)) return readAttributeTaskQueue(db,{...input,jobType:input.jobType});
   const filter = input.status ?? 'unfinished';
   if (!['unfinished', 'attention', 'all'].includes(filter)) throw new DomainValidationError('INVALID_TASK_FILTER', '任务筛选无效');
   const page = normalizePageRequest(input);
@@ -51,7 +52,7 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
     else 'other_unclassified' end`;
   // Version-expired jobs can never run again; the board only lists jobs on the current pipeline.
   const configCurrent=sql<boolean>`j.prompt_version = ${STANDARDIZATION_PROMPT_VERSION} and j.rule_version = ${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`;
-  const typeScope=sql<boolean>`j.job_type <> 'tag_extraction' ${input.jobType==='incremental'||input.jobType==='manual_full'||input.jobType==='calibration'?sql`and j.job_type=${input.jobType}`:sql``} ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or exists(select 1 from ai_job_input_members scope_member join products scope_product on scope_product.id=scope_member.product_id where scope_member.job_id=j.id and scope_product.shop_id=${input.scopeShopId}))`}`;
+  const typeScope=sql<boolean>`j.job_type not in ('tag_extraction', 'membership_features') ${input.jobType==='incremental'||input.jobType==='manual_full'||input.jobType==='calibration'?sql`and j.job_type=${input.jobType}`:sql``} ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or exists(select 1 from ai_job_input_members scope_member join products scope_product on scope_product.id=scope_member.product_id where scope_member.job_id=j.id and scope_product.shop_id=${input.scopeShopId}))`}`;
   const statusScope=filter==='unfinished'?unfinished:filter==='attention'?attention:sql<boolean>`true`;
   let query = db.selectFrom('ai_jobs as j').leftJoin('shops as s', 's.id', 'j.scope_shop_id')
     .select(['j.id', 'j.status', 'j.total', 'j.model', 'j.job_type', 'j.source_fetch_run_id', 'j.scope_shop_id',
@@ -101,10 +102,15 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
 }
 
 /** The active board counts task members; history retains current product coverage diagnostics. */
-async function readTagTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueFilter) {
+async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueFilter & {jobType:AttributeJobType}) {
  const status=input.status??'unfinished';
  if(!['unfinished','attention','all'].includes(status)) throw new DomainValidationError('INVALID_TASK_FILTER','任务筛选无效');
  const page=normalizePageRequest(input);
+ const publication=input.jobType==='tag_extraction'?sql<boolean>`exists(
+   select 1 from standard_product_members a join standard_products standard on standard.id=a.standard_product_id
+   where a.product_id=p.id and a.assignment_source='ai' and a.publication_state='published'
+     and standard.verification_state='verified' and standard.merged_into_id is null
+ )`:sql<boolean>`true`;
  const needsAttention=sql<boolean>`(status='failed' or current_attention>0 or (not configuration_current and status in ('queued','running','paused','ready')))`;
  const result=await sql<{items: Array<Record<string,unknown>>;summary: Record<string,unknown>}>`
  with ${status==='unfinished'?sql``:sql`eligible_products as (
@@ -113,7 +119,7 @@ async function readTagTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueFilter)
  ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`}
  and not ${currentManualDecision}
  and not exists(select 1 from standard_product_members a where a.product_id=p.id and a.assignment_source='human')
- and exists(select 1 from standard_product_members a join standard_products standard on standard.id=a.standard_product_id where a.product_id=p.id and a.assignment_source='ai' and a.publication_state='published' and standard.verification_state='verified' and standard.merged_into_id is null)
+ and ${publication}
  ),`} current_members as (
   select m.job_id,m.product_id,m.status,j.status job_status,
     m.output->>'outcome' outcome,
@@ -122,20 +128,20 @@ async function readTagTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueFilter)
     jsonb_array_length(coalesce(m.output->'rejectedTags','[]'::jsonb))>0 has_rejected
   from ai_job_input_members m join ai_jobs j on j.id=m.job_id
  ${status==='unfinished'?sql`
-  where j.job_type='tag_extraction' and ${unfinished}
+  where j.job_type=${input.jobType} and ${unfinished}
     and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION}
     and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
  `:sql`
    join products p on p.id=m.product_id join shops s on s.id=p.shop_id
-  where j.job_type='tag_extraction' ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`} and m.content_version=p.content_version
+  where j.job_type=${input.jobType} ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`} and m.content_version=p.content_version
    and m.standardization_revision=p.standardization_revision and m.fingerprint=p.content_fingerprint
    and ${currentTagMemberSource('m')}
    and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
    and p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked
    and not ${currentManualDecision}
    and not exists(select 1 from standard_product_members a where a.product_id=p.id and a.assignment_source='human')
-   and exists(select 1 from standard_product_members a join standard_products standard on standard.id=a.standard_product_id where a.product_id=p.id and a.assignment_source='ai' and a.publication_state='published' and standard.verification_state='verified' and standard.merged_into_id is null)
-   and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type='tag_extraction' and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentTagMemberSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${IDENTITY_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`}
+   and ${publication}
+   and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type=${input.jobType} and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentTagMemberSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${IDENTITY_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`}
  ), current_counts as (
   select job_id,
     count(*) filter(where status in ('queued','processing'))::int current_pending,
@@ -152,7 +158,7 @@ async function readTagTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueFilter)
     coalesce(c.current_pending,0) current_pending,coalesce(c.current_attention,0) current_attention,
     coalesce(c.covered_products,0) covered_products,coalesce(c.review_products,0) review_products,coalesce(c.failed_products,0) failed_products
   from ai_jobs j left join shops s on s.id=j.scope_shop_id
-    left join current_counts c on c.job_id=j.id where j.job_type='tag_extraction'
+    left join current_counts c on c.job_id=j.id where j.job_type=${input.jobType}
    ${status==='unfinished'?sql`and ${unfinished}`:sql``}
    ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or j.id in(select m.job_id from ai_job_input_members m join products p on p.id=m.product_id where p.shop_id=${input.scopeShopId}))`}
  ), filtered as (select * from jobs where ${status==='unfinished'?sql`configuration_current and status in ('queued','running','paused','ready')`:status==='attention'?needsAttention:sql`true`}),

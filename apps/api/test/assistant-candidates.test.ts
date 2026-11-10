@@ -219,32 +219,37 @@ test('explicit products also match canonical identities and standard aliases beh
   assert.deepEqual(selectCandidates(candidates, { ...needs, purpose: null, product: 'ChatGPT Plus' }, now), []);
 });
 
-test('AI packages without purchase conditions prioritize newcomer offers before diverse alternatives', () => {
-  for (const [name, platform] of [['ChatGPT Plus', 'openai'], ['Claude Pro', 'anthropic'],
-    ['Gemini Pro', 'google'], ['Cursor Pro', 'cursor'], ['Grok Super', 'xai']]) {
+test('AI membership scope stays hard with budgets and preferences and never fills with short term', () => {
+  for (const [name, platform, product, tier] of [['ChatGPT Plus', 'openai', 'chatgpt', 'plus'], ['Claude Pro', 'anthropic', 'claude', 'pro'],
+    ['Gemini Pro', 'google', 'gemini', 'pro'], ['Cursor Pro', 'cursor', 'cursor', 'pro'], ['Grok Super', 'xai', 'grok', 'super']]) {
     const candidates = Array.from({ length: 5 }, (_, index) => ({
-      ...fixture(String(index + 1), { price: String(index + 1), tags: [
+      ...fixture(String(index + 1), { price: String(index + 1), membershipKind: index < 2 ? 'short_term' : 'account', tags: [
         { name: 'duration', value: '1 month' },
         { name: 'delivery', value: index === 0 ? 'redemption' : index === 4 ? 'account' : 'top_up' },
         { name: 'warranty_days', value: index === 1 ? '29' : '30' },
-      ] }), standardProduct: { id: '1', name, platform, kind: '账号与订阅' },
+      ] }), standardProduct: { id: '1', name, platform, kind: '账号与订阅',
+        identity: { family: platform!, product: product!, tier: tier! } },
     }));
     const before = structuredClone(needs);
     assert.deepEqual(selectCandidates(candidates, needs, now).map(c => c.offer.productId), ['3', '4', '5'], name);
     assert.deepEqual(selectCandidates([...candidates].reverse(), needs, now).map(c => c.offer.productId), ['3', '4', '5']);
     assert.deepEqual(needs, before, 'defaults are not saved as user requirements');
-    assert.equal(selectCandidates(candidates, { ...needs, preferences: ['lower_price'] }, now)[0]?.offer.productId, '1');
-    assert.equal(selectCandidates(candidates, { ...needs, requiredTags: [{ name: 'delivery', value: 'top_up' }] }, now)[0]?.offer.productId, '2');
-    assert.equal(selectCandidates(candidates, { ...needs, warrantyDaysMin: 10 }, now)[0]?.offer.productId, '1');
-    assert.equal(selectCandidates(candidates, { ...needs, budget: { amount: '2', currency: 'CNY', basis: 'purchase' } }, now)[0]?.offer.productId, '1');
-    assert.equal(selectCandidates(candidates.slice(0, 2), needs, now).length, 2, 'fallback offers remain eligible');
+    assert.equal(selectCandidates(candidates, { ...needs, preferences: ['lower_price'] }, now)[0]?.offer.productId, '3');
+    assert.equal(selectCandidates(candidates, { ...needs, requiredTags: [{ name: 'delivery', value: 'top_up' }] }, now)[0]?.offer.productId, '3');
+    assert.equal(selectCandidates(candidates, { ...needs, warrantyDaysMin: 10 }, now)[0]?.offer.productId, '3');
+    assert.deepEqual(selectCandidates(candidates, { ...needs, budget: { amount: '2', currency: 'CNY', basis: 'purchase' } }, now), []);
+    assert.equal(selectCandidates(candidates.slice(0, 2), needs, now).length, 0);
+    assert.equal(selectCandidates(candidates, { ...needs, newcomer: false }, now)[0]?.offer.productId, '1');
+    assert.equal(selectCandidates(candidates, { ...needs, membershipKinds: ['short_term'] }, now)[0]?.offer.productId, '1');
   }
 });
 
-test('newcomer priority requires both delivery and unambiguous warranty on the same AI offer', () => {
+test('newcomer scope trusts classified membership, never guesses from warranty or delivery tags', () => {
   const base = fixture();
-  base.standardProduct = { id: '1', name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅' };
-  const good = { ...base, offer: { ...base.offer, productId: '9', price: '99', tags: [
+  base.standardProduct = { id: '1', name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅',
+    identity: { family: 'openai', product: 'chatgpt', tier: 'plus' } };
+  const good = { ...base,
+    offer: { ...base.offer, membershipKind: 'account' as const, productId: '9', price: '99', tags: [
     ...base.offer.tags, { name: 'delivery', value: 'account' }, { name: 'warranty_days', value: '30' },
   ] } };
   for (const tags of [
@@ -256,8 +261,42 @@ test('newcomer priority requires both delivery and unambiguous warranty on the s
   ]) {
     const other = { ...base, offer: { ...base.offer, tags } };
     assert.equal(selectCandidates([other, good], needs, now, 1)[0]?.offer.productId, '9');
-    assert.equal(selectCandidates([other], needs, now, 1).length, 1);
+    assert.equal(selectCandidates([other], needs, now, 1).length, 0);
   }
+  assert.equal(selectCandidates([{ ...good, offer: { ...good.offer, tags: [] } }], needs, now).length, 1);
+});
+
+test('rental candidates require explicit scope and expose the rental label as evidence', () => {
+  const candidate = fixture();
+  candidate.standardProduct = { ...candidate.standardProduct, isAiMembership: true };
+  candidate.offer = { ...candidate.offer, membershipKind: 'rental' };
+  assert.deepEqual(selectCandidates([candidate], needs, now), []);
+  assert.equal(selectCandidates([candidate], { ...needs, membershipKinds: ['rental'] }, now).length, 1);
+  assert.equal(selectCandidates([candidate], { ...needs, newcomer: false }, now).length, 1);
+  assert.match(JSON.stringify(candidateEvidence(candidate)), /租号/u);
+  assert.equal(selectCandidates([fixture()], needs, now).length, 1);
+});
+
+test('standard identity gates AI membership and only offer features establish its class', () => {
+  const candidate = fixture();
+  assert.equal(selectCandidates([candidate], needs, now).length, 1);
+  for (const metadata of [
+    { isAiMembership: true },
+    { identity: { family: 'openai', product: 'chatgpt', tier: 'plus' } },
+  ]) {
+    const known = { ...candidate, standardProduct: { ...candidate.standardProduct, ...metadata } };
+    assert.equal(selectCandidates([known], needs, now).length, 0);
+    assert.equal(selectCandidates([known], { ...needs, newcomer: false }, now).length, 1);
+  }
+  for (const membershipKind of ['account', 'top_up'] as const) {
+    const classified = { ...candidate, standardProduct: { ...candidate.standardProduct, isAiMembership: true },
+      offer: { ...candidate.offer, membershipKind } };
+    assert.equal(selectCandidates([classified], needs, now).length, 1);
+  }
+  const nonAi = { ...candidate, offer: { ...candidate.offer, membershipKind: 'account' as const } };
+  assert.equal(selectCandidates([nonAi], { ...needs, membershipKinds: ['account'] }, now).length, 0);
+  assert.ok(!candidateEvidence(nonAi).some(fact => fact.text.startsWith('会员商品特性')));
+  assert.equal(selectCandidates([candidate], { ...needs, membershipKinds: ['account'] }, now).length, 0);
 });
 
 test('IP, email and non-AI products never get the AI newcomer priority from their platform or marketing', () => {

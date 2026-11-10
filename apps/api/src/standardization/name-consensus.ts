@@ -63,7 +63,7 @@ export function chooseNameConsensus(members: readonly ConsensusMember[], keyFor:
   return result;
 }
 
-export function compatibleNameConsensus(input: ProductEvidenceInput, winners: ReadonlyMap<string, NameConsensus>): NameConsensus | undefined {
+export function compatibleNameConsensus(input: ProductEvidenceInput & { identity?: Identity }, winners: ReadonlyMap<string, NameConsensus>): NameConsensus | undefined {
   const key = nameConsensusKey(input);
   const winner = key ? winners.get(key) : undefined;
   const evidence = {

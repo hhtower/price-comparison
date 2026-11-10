@@ -10,7 +10,7 @@ import {
   createPostgresPool,
   DATABASE,
 } from '../src/database/database.providers.js';
-import { jsonb, type DatabaseSchema } from '../src/database/types.js';
+import { type DatabaseSchema } from '../src/database/types.js';
 import { DomainConflictError } from '../src/common/errors.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 import { migrateToLatest } from '../scripts/migrate.js';
@@ -609,9 +609,10 @@ describe('shop, product, and offer repositories', () => {
         url: 'https://seed.invalid/product',
       },
     ]);
+    const productId = ids.get(productMapKey(shop.id, 'seed'))!;
     return {
       shopId: shop.id,
-      productId: ids.get(productMapKey(shop.id, 'seed'))!,
+      productId,
     };
   }
 });

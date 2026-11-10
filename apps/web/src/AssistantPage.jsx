@@ -128,7 +128,7 @@ function QuoteCard({ card, catalog }) {
   const conflictingWarranty = warrantyTags.some(tag => tag.name.startsWith('warranty')
     && warrantyTags.some(other => other.name === tag.name && other.value !== tag.value));
   const warranty = conflictingWarranty ? '资料冲突，需核实'
-    : purchaseWarrantyLabel(warrantyTags).replace(/^质保/u, '');
+    : purchaseWarrantyLabel(warrantyTags);
   const channel = facts.filter(fact => fact.name === 'payment_platform').map(fact => fact.value).join(' / ');
   const conditions = facts.filter(fact => fact.displayGroup === 'requirements' && !['subscription_override', 'payment_platform'].includes(fact.name));
   const warnings = facts.filter(fact => ['warranty_exclusion', 'subscription_override'].includes(fact.name))
@@ -149,6 +149,8 @@ function QuoteCard({ card, catalog }) {
     representedNotes.add(`商家质保说明：${purchaseWarrantyLabel(offer.tags)}；具体限制以该报价的售后条款为准。`);
   }
   representedNotes.add('报价、库存与完整售后条款请在商品详情核对。');
+  for (const note of ['售后保障：有质保', '售后保障：无质保', '售后保障：质保未说明', '保障范围：范围未说明',
+    '商家未明确质保时长与保障范围，请在商品详情核实不保事项和售后条款。']) representedNotes.add(note);
   const detailNotes = [...new Set([...card.reasons, ...card.caveats])].filter(note => !representedNotes.has(note));
   const officialPrice = reference && <p className="assistant-official-price">
     <span>官方内购参考 · {reference.countryName} · {formatPeriod(reference.period)}</span>

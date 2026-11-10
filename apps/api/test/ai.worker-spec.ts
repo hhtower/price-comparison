@@ -165,7 +165,7 @@ test('frozen job model selects provider options and preflight measures the exact
     } else {
       assert.equal(sent.max_tokens, 32768);
       assert.deepEqual(sent.thinking, { type: 'disabled' });
-      assert.equal('reasoning_effort' in sent, false);
+      assert.equal(sent.reasoning_effort, 'high');
     }
   }
 });

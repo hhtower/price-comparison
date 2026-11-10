@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import type { McpServer as McpServerInstance, CallToolResult } from '@modelcontextprotocol/server';
 import { z } from 'zod';
+import { MEMBERSHIP_KINDS } from '@price-comparison/catalog/membership-policy';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { McpAccess } from './mcp-access.js';
 
@@ -21,6 +22,10 @@ const filters = {
   priceMax: money.optional(),
   tags: z.array(z.strictObject({ name: z.string().trim().min(1).max(80), value: z.string().trim().min(1).max(250) })).max(50).optional(),
   warrantyDaysMin: z.number().int().min(1).max(36500).optional(),
+  membershipKinds: z.array(z.enum(MEMBERSHIP_KINDS)).min(1).max(MEMBERSHIP_KINDS.length).optional()
+    .describe('AI membership classification, independent of delivery tags; explicit kinds override newcomer scope.'),
+  newcomer: z.boolean().optional()
+    .describe('When true, AI memberships must be account or top_up; other products are unaffected. No rental or short-term fallback.'),
 };
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -55,8 +60,8 @@ function createServer(catalog: CatalogService): McpServerInstance {
   }, input => toolResult(async () => {
     const page = await catalog.getCatalog(input);
     return {
-      items: page.items.map(({ id, name, platform, standardProductId, shopCount, productCount, latestCapturedAt }) =>
-        ({ id, name, platform, standardProductId, shopCount, productCount, latestCapturedAt })),
+      items: page.items.map(({ id, name, platform, membershipGroups, standardProductId, shopCount, productCount, latestCapturedAt }) =>
+        ({ id, name, platform, membershipGroups, standardProductId, shopCount, productCount, latestCapturedAt })),
       total: page.total, nextCursor: page.nextCursor ?? null,
       nextExpiryAt: page.nextExpiryAt, appliedQuery: page.appliedQuery,
     };
@@ -74,6 +79,7 @@ function createServer(catalog: CatalogService): McpServerInstance {
   }, ({ standardProductId, detailPage, pageSize, ...filters }) => toolResult(async () => {
     const product = await catalog.getProduct(standardProductId);
     if (!product || product.mergedIntoId) throw new Error('Unavailable product');
+    const publicProduct = ({ id, name, platform, kind }: typeof product) => ({ id, name, platform, kind });
     const page = await catalog.getCatalog({
       standardProductId, detailKind: 'offers', detailPage, detailPageSize: pageSize, limit: 1, ...filters,
     });
@@ -81,7 +87,7 @@ function createServer(catalog: CatalogService): McpServerInstance {
     const detail = item?.detail;
     if (item && detail?.kind !== 'offers') throw new Error('Missing offer detail');
     return {
-      product: { id: product.id, name: product.name, platform: product.platform, kind: product.kind },
+      product: publicProduct(product),
       offers: detail?.kind === 'offers' ? detail.entries : [],
       page: detailPage, pageSize, total: detail?.total ?? 0,
       nextPage: detail && (detailPage + 1) * pageSize < detail.total ? detailPage + 1 : null,
@@ -89,11 +95,12 @@ function createServer(catalog: CatalogService): McpServerInstance {
     };
   }));
   server.registerTool('get_price_history', {
-    description: `Get 30 days of verified daily price snapshots for a public product, optionally restricted to a source productId. Currency defaults to CNY. Daily minima may represent different offers. ${snapshotWarning}`,
+    description: `Get 30 days of verified daily price snapshots for a public product, optionally restricted to a source productId or membershipKinds. History is grouped using each SKU's current feature; unclassified AI memberships count as short_term. Currency defaults to CNY. Daily minima may represent different offers within the selected scope. ${snapshotWarning}`,
     annotations,
-    inputSchema: z.strictObject({ standardProductId: id, productId: id.optional(), currency: currency.default('CNY') }),
-  }, ({ standardProductId, productId, currency }) => toolResult(async () => {
-    const history = await catalog.getPriceHistory(standardProductId, productId, currency);
+    inputSchema: z.strictObject({ standardProductId: id, productId: id.optional(), currency: currency.default('CNY'),
+      membershipKinds: filters.membershipKinds, newcomer: filters.newcomer }),
+  }, ({ standardProductId, productId, currency, ...scope }) => toolResult(async () => {
+    const history = await catalog.getPriceHistory(standardProductId, productId, currency, scope);
     if (!history) throw new Error('Unavailable product');
     return { ...history };
   }));

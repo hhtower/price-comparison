@@ -169,6 +169,58 @@ test('comparison client retains server collection metadata when quotes refresh',
   expect(JSON.parse(document.querySelector('#page-structured-data').textContent)).toEqual(expected);
 });
 
+test('feature detail retains its server title, canonical and rental scope after client rendering', async () => {
+  const path = '/products/42/features/rental';
+  const product = { id: '42', name: 'ChatGPT Go', platform: 'openai', kind: '账号与订阅', isAiMembership: true };
+  const offer = { shopId: '7', productId: '9', shop: '租号商铺', name: 'Go 共享报价', membershipKind: 'rental',
+    price: '12.50', settlementQuantity: 1, currency: 'CNY', priceStatus: 'verified',
+    priceExpiresAt: '2099-01-01T00:00:00Z', inventoryExpiresAt: '2099-01-01T00:00:00Z',
+    productUrl: 'https://shop.example/product/9', capturedAt: '2026-11-10T00:00:00Z', inStock: true, tags: [] };
+  const catalog = { items: [{ ...product, standardProductId: '42', offers: [offer],
+    detail: { kind: 'offers', entries: [offer], total: 1, page: 0, pageSize: 12 } }], total: 1, platformFacets: [] };
+  const adapter = new FastifyAdapter();
+  const getCatalog = vi.fn(async () => catalog);
+  registerPublicPages(adapter, { template: '<html><head><title>Site</title></head><body><div id="root"></div></body></html>',
+    getCatalog, getProducts: async () => ({ items: [product] }), getProduct: async () => product });
+  let response;
+  try { response = await adapter.getInstance().inject(path); }
+  finally { await adapter.getInstance().close(); }
+  expect(response.statusCode).toBe(200);
+  expect(getCatalog).toHaveBeenCalledWith(expect.objectContaining({ standardProductId: '42', membershipKinds: ['rental'] }));
+  const parsed = new DOMParser().parseFromString(response.body, 'text/html');
+  expect(parsed.querySelector('h1').textContent).toBe('ChatGPT Go · 租号');
+  document.head.innerHTML = parsed.head.innerHTML;
+  const schema = JSON.parse(document.querySelector('#page-structured-data').textContent);
+  const container = document.createElement('div');
+  container.innerHTML = parsed.getElementById('root').innerHTML;
+  document.body.appendChild(container);
+  window.history.replaceState({}, '', path + '?membershipKind=account&newcomer=true');
+  const requests = [];
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    requests.push(url);
+    if (url.pathname === '/api/assistant/status') return Response.json({ enabled: false });
+    if (url.pathname === '/api/catalog/products/42') return Response.json(product);
+    if (url.pathname === '/api/catalog') return Response.json(catalog);
+    if (url.pathname.endsWith('/price-history')) return Response.json({ points: [] });
+    return new Response(null, { status: 204 });
+  }));
+  render(<VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 300 }}><App /></VirtuosoMockContext.Provider>, { container });
+  await screen.findByRole('heading', { level: 1, name: 'ChatGPT Go · 租号' });
+  await screen.findByText(/Go 共享报价/);
+  expect(document.title).toBe(parsed.title);
+  expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub' + path);
+  expect(JSON.parse(document.querySelector('#page-structured-data').textContent)).toEqual(schema);
+  for (const pathname of ['/api/catalog', '/api/catalog/products/42/price-history']) {
+    const scoped = requests.filter(url => url.pathname === pathname);
+    expect(scoped.length).toBeGreaterThan(0);
+    for (const url of scoped) {
+      expect(url.searchParams.getAll('membershipKind')).toEqual(['rental']);
+      expect(url.searchParams.get('newcomer')).toBe('false');
+    }
+  }
+});
+
 test('home client keeps cursor pagination and resets it when searching', async () => {
   const cursor = 'eyJ2IjoyLCJzIjoiMCIsInNwIjoiNDIifQ';
   const nextCursor = 'eyJ2IjoyLCJzIjoiMCIsInNwIjoiNDMifQ';

@@ -75,11 +75,28 @@ describe('AI identity standardization publication', () => {
     };
   }
 
-  async function createPreparedJob(productIds: bigint[]) {
+  async function createPreparedJob(productIds: bigint[], withFeatures = false) {
     const repository = new AiRepository(database);
     const job = await repository.createJob({ model: `integration-${++sequence}`, productIds, batchSize: 32 });
     assert.equal(job.batches.length, 1);
     const batchId = job.batches[0]!.id;
+    if (withFeatures) {
+      const feature = await database.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', job.id)
+        .where('job_type', '=', 'membership_features').executeTakeFirst();
+      if (feature) {
+        const batches = await database.selectFrom('ai_job_batches').select('id').where('job_id', '=', feature.id).execute();
+        for (const batch of batches) {
+          await claim(batch.id, 'request', 1n, 'feature-claim');
+          await repository.prepareBatch(batch.id);
+          await repository.reserveBatchRequest(batch.id);
+          const input = await repository.getTagExtractionBatchInputs(batch.id);
+          await repository.persistTagExtractionBatchDecision(feature.id, batch.id,
+            input.inputs.map(row => ({ productId: row.productId, tags: [], rejectedTags: [], reviewed: true,
+              membershipKind: 'account' as const, classificationReviewed: true })), {},
+            { workerId: 'integration', attempt: 1n, token: 'feature-claim' });
+        }
+      }
+    }
     await claim(batchId, 'request', 1n, 'request-claim');
     await repository.prepareBatch(batchId);
     await repository.reserveBatchRequest(batchId, { workerId: 'integration', attempt: 1n, token: 'request-claim' });
@@ -579,7 +596,7 @@ describe('AI identity standardization publication', () => {
     for (const prior of await database.selectFrom('ai_jobs').select('id').where('status', 'in', ['queued', 'running']).execute()) await repository.cancelJob(prior.id);
     const shop = await addShop();
     const productIds: bigint[] = [];
-    for (let index = 0; index < 6; index++) productIds.push((await addProduct(shop.id, `window listing ${index}`)).id);
+    for (let index = 0; index < 6; index++) productIds.push((await addProduct(shop.id, `ChatGPT Free window listing ${index}`)).id);
     try {
       for (const mode of ['bulk', 'single'] as const) {
         process.env.AI_CONCURRENCY = '4';
@@ -1021,7 +1038,7 @@ describe('AI identity standardization publication', () => {
       ['Team 5X Gmail邮箱', '本商品为Team 5X成品账号，Gmail注册，账密2FA，能反代也能网页。', 'team_5x'],
     ] as const) {
       const source = await addProduct(shop.id, name, '', { evidence: body });
-      const prepared = await createPreparedJob([source.id]);
+      const prepared = await createPreparedJob([source.id], true);
       const evidence = [{ path: 'name', quote: name }];
       const response = JSON.stringify({ items: [{ id: String(source.id), action: 'create_identity',
         identity: { family: 'openai', product: 'chatgpt', tier, reason: '实际账号', evidence }, evidence, ruleIds: [], reason: '已开通账号' }] });
@@ -1039,6 +1056,18 @@ describe('AI identity standardization publication', () => {
       assert.equal(member.publication_state, 'published');
       const standard = await database.selectFrom('standard_products').select(['canonical_tier', 'service_evidence']).where('id', '=', member.standard_product_id).executeTakeFirstOrThrow();
       assert.equal(standard.canonical_tier, tier); assert.deepEqual(standard.service_evidence, {});
+      const tagJob = await database.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', prepared.job.id)
+        .where('job_type', '=', 'tag_extraction').executeTakeFirstOrThrow();
+      const tagBatch = await database.selectFrom('ai_job_batches').select('id').where('job_id', '=', tagJob.id).executeTakeFirstOrThrow();
+      await claim(tagBatch.id, 'request', 1n, 'membership-tags');
+      await prepared.repository.prepareBatch(tagBatch.id);
+      assert.equal(await prepared.repository.reserveBatchRequest(tagBatch.id), 'reserved');
+      await prepared.repository.persistTagExtractionBatchDecision(tagJob.id, tagBatch.id,
+        [{ productId: source.id, tags: [], rejectedTags: [] }], {},
+        { workerId: 'integration', attempt: 1n, token: 'membership-tags' });
+      const published = await database.selectFrom('standard_product_members as m').innerJoin('standard_products as s', 's.id', 'm.standard_product_id')
+        .select(['m.publication_state', 's.id']).where('m.product_id', '=', source.id).executeTakeFirstOrThrow();
+      assert.deepEqual(published, { publication_state: 'published', id: member.standard_product_id });
     }
   });
 
@@ -1046,7 +1075,7 @@ describe('AI identity standardization publication', () => {
     for (const drift of ['evidence', 'fingerprint', 'manual', 'unchanged', 'failed'] as const) {
       const shop = await addShop(); const source = await addProduct(shop.id, `ChatGPT Plus 成品账号 ${drift}`);
       await database.insertInto('product_tags').values({ product_id: source.id, name: 'usage_restriction', value: '人工保留限制' }).execute();
-      const prepared = await createPreparedJob([source.id]); const proposed = identity('tag-parent');
+      const prepared = await createPreparedJob([source.id], true); const proposed = identity('tag-parent');
       await saveAndPublish(prepared, { identities: [proposed], items: [classified(source.id, proposed.ref)], missingIds: [] });
       assert.deepEqual(await database.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', source.id).execute(),
         [{ name: 'usage_restriction', value: '人工保留限制' }]);

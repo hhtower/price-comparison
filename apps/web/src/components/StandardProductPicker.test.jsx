@@ -5,6 +5,18 @@ import StandardProductPicker, { StandardProductFilter } from './StandardProductP
 
 beforeEach(() => vi.unstubAllGlobals());
 
+test('标准选择器只显示标准名称，不附加会员特性或待分类标签', async () => {
+  const item = { id: '1', name: 'ChatGPT Plus', canonicalFamily: 'openai', canonicalProduct: 'chatgpt', canonicalTier: 'plus' };
+  vi.stubGlobal('fetch', vi.fn(async input => Response.json(input.includes('/platforms') ? { items: [] } : { items: [item], total: 1 })));
+  const onSelect = vi.fn();
+  render(<StandardProductPicker onSelect={onSelect} onClose={() => {}} />);
+  const choice = await screen.findByRole('button', { name: /ChatGPT Plus/ });
+  expect(within(choice).getByText('ChatGPT Plus', { exact: true })).toBeVisible();
+  expect(choice).not.toHaveTextContent('待分类');
+  await userEvent.click(choice);
+  expect(onSelect).toHaveBeenCalledWith(item);
+});
+
 test('绑定选择器请求未合并标准，翻页后搜索 Pro 500 重置页码并可选择', async () => {
   const user = userEvent.setup();
   const onSelect = vi.fn();

@@ -262,8 +262,99 @@ test('price history keeps decimal prices, capture times and purchase quantities'
   assert.equal(result.isError, undefined);
   assert.equal(result.structuredContent.currency, 'CNY');
   assert.deepEqual(result.structuredContent.points, [point]);
-  assert.deepEqual(historyQueries, [['1', '11', 'CNY']]);
+  assert.deepEqual(historyQueries, [['1', '11', 'CNY', {}]]);
   assert.equal((await call('get_price_history', { standardProductId: '999' })).json().result.isError, true);
+});
+
+test('MCP history carries feature scope with product and currency through shared validation', async t => {
+  const { call, historyQueries } = await harness(t);
+  const response = await call('get_price_history', { standardProductId: '1', productId: '11', currency: 'USD',
+    membershipKinds: ['top_up', 'account', 'account'], newcomer: true });
+  assert.equal(response.json().result.isError, undefined);
+  assert.deepEqual(historyQueries, [['1', '11', 'USD', { membershipKinds: ['account', 'top_up'], newcomer: true }]]);
+  assert.equal((await call('get_price_history', { standardProductId: '1', newcomer: true })).json().result.isError, undefined);
+  assert.deepEqual(historyQueries.at(-1), ['1', undefined, 'CNY', { newcomer: true }]);
+  for (const scope of [
+    { membershipKinds: [] }, { membershipKinds: ['unknown'] }, { membershipKinds: ['account', 'bad'] },
+    { membershipKinds: 'account' }, { membershipKinds: null },
+    { membershipKinds: ['account', 'top_up', 'rental', 'short_term', 'account'] }, { newcomer: 'true' }, { newcomer: null },
+  ]) {
+    const result = (await call('get_price_history', { standardProductId: '1', ...scope })).json();
+    assert.ok(result.result?.isError || result.error);
+  }
+  assert.equal(historyQueries.length, 2);
+});
+
+test('membership filters stay distinct from delivery and reject invalid kinds over MCP', async t => {
+  const { call, queries } = await harness(t);
+  const filters = { membershipKinds: ['short_term'], newcomer: true, tags: [{ name: 'delivery', value: 'account' }] };
+  for (const [name, args] of [
+    ['search_products', filters], ['get_product_offers', { ...filters, standardProductId: '1' }],
+  ] as const) {
+    assert.equal((await call(name, args)).json().result.isError, undefined);
+    assert.deepEqual(queries.at(-1)?.membershipKinds, ['short_term']);
+    assert.equal(queries.at(-1)?.newcomer, true);
+    assert.deepEqual(queries.at(-1)?.tags, filters.tags);
+  }
+  for (const membershipKinds of [[], ['all'], ['account', 'invalid'], 'account', null]) {
+    const response = await call('search_products', { membershipKinds });
+    assert.ok(response.json().result?.isError || response.json().error);
+  }
+  assert.equal(queries.length, 2);
+});
+
+test('MCP accepts rental and all four kinds for search and offers and rejects a fifth entry', async t => {
+  const { call, queries } = await harness(t);
+  for (const membershipKinds of [['rental'], ['account', 'top_up', 'rental', 'short_term']]) {
+    for (const name of ['search_products', 'get_product_offers']) {
+      const args = { membershipKinds, newcomer: true, ...(name === 'get_product_offers' ? { standardProductId: '1' } : {}) };
+      assert.equal((await call(name, args)).json().result.isError, undefined);
+      assert.deepEqual(queries.at(-1)?.membershipKinds, [...membershipKinds].sort());
+      assert.equal(queries.at(-1)?.newcomer, true);
+    }
+  }
+  const invalid = await call('search_products', { membershipKinds: ['account', 'top_up', 'rental', 'short_term', 'rental'] });
+  assert.ok(invalid.json().result?.isError || invalid.json().error);
+  assert.equal(queries.length, 4);
+});
+
+test('MCP normalizes rental aliases without losing dedicated access or interpreting uncertainty as rental', async t => {
+  const { call, queries } = await harness(t);
+  const result = await call('search_products', { q: 'ChatGPT Plus 租号（共享） 独享', newcomer: true });
+  assert.equal(result.json().result.isError, undefined);
+  assert.deepEqual(queries.at(-1)?.tags, [{ name: 'access', value: 'dedicated' }, { name: 'access', value: 'shared' }]);
+  assert.deepEqual(queries.at(-1)?.membershipSearch?.kinds, ['rental']);
+  assert.equal(queries.at(-1)?.membershipSearch?.access, true);
+  for (const q of ['ChatGPT Plus 没有共享', 'ChatGPT Plus 共享状态未知', 'ChatGPT Plus 租号(共享)状态未知']) {
+    assert.equal((await call('search_products', { q })).json().result.isError, undefined);
+    assert.equal(queries.at(-1)?.membershipSearch, undefined, q);
+    assert.equal(queries.at(-1)?.search, q, q);
+    assert.deepEqual(queries.at(-1)?.tags, [], q);
+  }
+});
+
+test('MCP exposes feature groups on one standard and reads its normal offer details', async t => {
+  const { call, catalog, queries } = await harness(t);
+  const groups = ['account', 'short_term'].map(kind => ({ kind, shopCount: 1, productCount: 1, offers: [{ ...offer, membershipKind: kind }] }));
+  const getCatalog = catalog.getCatalog.bind(catalog);
+  t.mock.method(catalog, 'getCatalog', async input => {
+    const page = await getCatalog(input);
+    return { ...page, items: page.items.map(item => ({ ...item, membershipGroups: groups })) };
+  });
+  const search = (await call('search_products')).json().result.structuredContent;
+  assert.equal(search.items.length, 1);
+  assert.equal(search.items[0].id, '1');
+  assert.equal(search.total, 1);
+  assert.deepEqual(search.items[0].membershipGroups, groups);
+  assert.equal('membershipKind' in search.items[0], false);
+  const result = (await call('get_product_offers', { standardProductId: '1' })).json().result;
+  assert.equal(result.isError, undefined);
+  assert.equal('splitInto' in result.structuredContent, false);
+  assert.equal('membershipKind' in result.structuredContent.product, false);
+  assert.equal(result.structuredContent.product.id, '1');
+  assert.equal(result.structuredContent.offers[0].productId, offer.productId);
+  assert.ok(!JSON.stringify(result).includes('private-alias'));
+  assert.equal(queries.length, 2);
 });
 
 test('invalid or excessive arguments never reach catalog queries', async t => {

@@ -1,4 +1,5 @@
 import { isCanonicalProductTag, PRODUCT_TAG_RULES } from './product-tag-policy.js';
+import { MEMBERSHIP_KINDS, type MembershipKind } from './membership-policy.js';
 
 export const ASSISTANT_LIMITS = Object.freeze({
   userTextMaxChars: 2000,
@@ -49,7 +50,7 @@ export const ASSISTANT_INTENTS = ['clarify', 'recommend', 'compare', 'explain'] 
 export const ASSISTANT_REPLY_KINDS = ['question', 'recommendation', 'comparison', 'explanation', 'no_match'] as const;
 export const ASSISTANT_TURN_STATUSES = ['queued', 'running', 'succeeded', 'failed', 'cancelled'] as const;
 export const ASSISTANT_TURN_PHASES = ['queued', 'understanding', 'searching', 'explaining', 'succeeded', 'failed', 'cancelled'] as const;
-export const SHOPPING_NEEDS_FIELDS = ['purpose', 'platform', 'product', 'budget', 'requiredTags', 'warrantyDaysMin', 'preferences'] as const;
+export const SHOPPING_NEEDS_FIELDS = ['purpose', 'platform', 'product', 'budget', 'requiredTags', 'warrantyDaysMin', 'preferences', 'membershipKinds', 'newcomer'] as const;
 
 export type Budget = { amount: string; currency: string; basis: 'purchase' | 'month' };
 export type ShoppingNeeds = {
@@ -60,6 +61,8 @@ export type ShoppingNeeds = {
   requiredTags: Array<{ name: string; value: string }>;
   warrantyDaysMin: number | null;
   preferences: Array<typeof ASSISTANT_PREFERENCES[number]>;
+  membershipKinds?: MembershipKind[] | null;
+  newcomer?: boolean;
 };
 export type NeedsPatch = Partial<ShoppingNeeds>;
 export type Understanding = {
@@ -87,7 +90,7 @@ export type AssistantReply = {
     reasons: string[];
     caveats: string[];
     evidenceIds: string[];
-    offer?: { name: string; shop: string; spec: string; productUrl: string; tags: Array<{ name: string; value: string }> };
+    offer?: { name: string; shop: string; spec: string; productUrl: string; tags: Array<{ name: string; value: string }>; membershipKind?: MembershipKind | null };
   }>;
 };
 export type TurnStatus = typeof ASSISTANT_TURN_STATUSES[number];
@@ -226,6 +229,14 @@ export function validateNeedsPatch(value: unknown): NeedsPatch {
         patch.preferences = unique(list(entry, ASSISTANT_PREFERENCES.length,
           item => choice(item, ASSISTANT_PREFERENCES, field)));
         break;
+      case 'membershipKinds':
+        patch.membershipKinds = entry === null ? null : unique(list(entry, MEMBERSHIP_KINDS.length,
+          item => choice(item, MEMBERSHIP_KINDS, field), 1));
+        break;
+      case 'newcomer':
+        if (typeof entry !== 'boolean') invalid(field);
+        patch.newcomer = entry;
+        break;
       case 'requiredTags': {
         const seen = new Map<string, Set<string>>();
         patch.requiredTags = list(entry, ASSISTANT_LIMITS.tagsMax, item => {
@@ -247,7 +258,7 @@ export function validateNeedsPatch(value: unknown): NeedsPatch {
 
 export function validateShoppingNeeds(value: unknown): ShoppingNeeds {
   const source = record(value, SHOPPING_NEEDS_FIELDS, true);
-  if (SHOPPING_NEEDS_FIELDS.some(field => field !== 'product' && !Object.hasOwn(source, field))) invalid('fields');
+  if (SHOPPING_NEEDS_FIELDS.some(field => !['product', 'membershipKinds', 'newcomer'].includes(field) && !Object.hasOwn(source, field))) invalid('fields');
   return validateNeedsPatch(value) as ShoppingNeeds;
 }
 
@@ -261,7 +272,9 @@ export function validateAssistantReply(value: unknown): AssistantReply {
     if (keys.some(key => !Object.hasOwn(source, key))) invalid('fields');
     let offer: AssistantReply['cards'][number]['offer'];
     if (Object.hasOwn(source, 'offer')) {
-      const entry = record(source.offer, ['name', 'shop', 'spec', 'productUrl', 'tags']);
+      const offerKeys = ['name', 'shop', 'spec', 'productUrl', 'tags'];
+      const entry = record(source.offer, [...offerKeys, 'membershipKind'], true);
+      if (offerKeys.some(key => !Object.hasOwn(entry, key))) invalid('fields');
       const productUrl = entry.productUrl === '' ? '' : text(entry.productUrl, 'product URL', 2048);
       if (productUrl) {
         const url = new URL(productUrl);
@@ -274,6 +287,8 @@ export function validateAssistantReply(value: unknown): AssistantReply {
           const tag = record(value, ['name', 'value']);
           return { name: text(tag.name, 'tag name', 64), value: text(tag.value, 'tag value', 2000, true) };
         }),
+        ...(Object.hasOwn(entry, 'membershipKind') ? { membershipKind: entry.membershipKind === null ? null
+          : choice(entry.membershipKind, MEMBERSHIP_KINDS, 'membershipKind') } : {}),
       };
       if (new TextEncoder().encode(JSON.stringify(offer)).length > 12 * 1024) invalid('offer size');
     }

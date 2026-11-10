@@ -6,6 +6,58 @@ import type { CatalogFacets, CatalogPage, CatalogQuery, CatalogRepository } from
 
 const emptyPage = { items: [], platformFacets: [], total: 0 };
 
+test('rental and all four membership kinds pass catalog validation without changing newcomer scope', () => {
+  assert.deepEqual(normalizeCatalogQuery({ membershipKind: 'rental', newcomer: true }),
+    { membershipKinds: ['rental'], newcomer: true, tags: [], limit: 20 });
+  const kinds = ['account', 'top_up', 'rental', 'short_term'];
+  assert.deepEqual(normalizeCatalogQuery({ membershipKinds: kinds }).membershipKinds, [...kinds].sort());
+  for (const membershipKinds of [[], ['unknown'], [...kinds, 'rental']]) {
+    assert.throws(() => normalizeCatalogQuery({ membershipKinds }), { code: 'INVALID_MEMBERSHIP_KIND' });
+  }
+});
+
+test('rental search terms infer AI membership while keeping literal and negated terms literal', () => {
+  for (const term of ['租号', '共享', '合租']) {
+    const query = normalizeCatalogQuery({ q: `ChatGPT ${term}`, newcomer: true });
+    assert.deepEqual(query.membershipSearch?.kinds, ['rental']);
+    assert.deepEqual(query.membershipSearch?.terms, [term]);
+    assert.equal(query.membershipSearch?.access, term !== '租号' ? true : undefined);
+    const explicit = normalizeCatalogQuery({ q: `ChatGPT ${term}`, tags: [{ name: 'access', value: 'dedicated' }] });
+    assert.equal(explicit.membershipSearch?.access, undefined);
+    assert.deepEqual(explicit.tags, [{ name: 'access', value: 'dedicated' }]);
+    const literal = normalizeCatalogQuery({ q: `ChatGPT ${term}`, searchMode: 'literal' });
+    assert.equal(literal.membershipSearch, undefined);
+    assert.equal(literal.search, `ChatGPT ${term}`);
+    assert.deepEqual(literal.tags, []);
+    for (const phrase of [
+      ...['不要', '不需要', '不是', '非', '不接受', '不想要', '不支持', '无需', '是否', '不确定', '没有', '未明确', '未说明'].map(prefix => `${prefix}${term}`),
+      ...['未说明', '未知', '不支持', '不保证', '不确定', '状态未知', '状态未说明', '状态不确定'].map(suffix => `${term}${suffix}`),
+    ]) {
+      const negated = normalizeCatalogQuery({ q: `ChatGPT ${phrase}` });
+      assert.equal(negated.membershipSearch, undefined);
+      assert.ok(negated.search?.includes(phrase));
+      assert.deepEqual(negated.tags, []);
+    }
+  }
+});
+
+test('uncertain compound rental labels and mixed negated category searches remain literal', () => {
+  for (const q of ['租号（共享）未说明', '不接受租号(共享)', '租号 ( 合租 )未知', '共享但不要代充', '不要成品号，租号',
+    '没有租号（共享）', '租号(共享)状态未知', '租号 ( 合租 ) 状态 未说明']) {
+    const query = normalizeCatalogQuery({ q });
+    assert.equal(query.membershipSearch, undefined, q);
+    assert.equal(query.search, q.normalize('NFKC'), q);
+    assert.deepEqual(query.tags, [], q);
+  }
+});
+
+test('compound rental normalization retains dedicated access alongside the shared alias', () => {
+  const query = normalizeCatalogQuery({ q: 'ChatGPT Plus 租号（共享） 独享', newcomer: true });
+  assert.deepEqual(query.tags, [{ name: 'access', value: 'dedicated' }, { name: 'access', value: 'shared' }]);
+  assert.equal(query.membershipSearch?.access, true);
+  assert.deepEqual(query.membershipSearch?.kinds, ['rental']);
+});
+
 for (const kind of ['page', 'facets'] as const) test(`${kind} caches for at most five seconds and propagates failures after expiry`, async context => {
   context.mock.timers.enable({ apis: ['Date'], now: 1000 });
   let reads = 0;

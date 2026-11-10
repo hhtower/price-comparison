@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import PriceHistory from './PriceHistory.jsx';
 
@@ -62,7 +62,7 @@ test('fetches individual history only when expanded and does not join changed co
   expect(fetcher).not.toHaveBeenCalled();
   fireEvent.click(screen.getByText('价格历史'));
   await screen.findByRole('img');
-  expect(fetcher.mock.calls[0][0]).toBe('/api/catalog/products/42/price-history?currency=CNY&productId=9');
+  expect(fetcher.mock.calls[0][0]).toBe('/api/catalog/products/42/price-history?currency=CNY&productId=9&newcomer=false');
   expect(container.querySelectorAll('svg line.price-history-segment')).toHaveLength(1);
 });
 
@@ -88,4 +88,34 @@ test('shows loading and allows retry after a failed request', async () => {
   fetcher.mockImplementation(async () => response([point]));
   fireEvent.click(screen.getByRole('button', { name: '重试' }));
   expect(await screen.findByRole('img')).toBeInTheDocument();
+});
+
+test('scope changes isolate queries and hide the previous curve while loading', async () => {
+  const pending = new Map();
+  const fetcher = vi.fn(input => new Promise(resolve => pending.set(input, resolve)));
+  vi.stubGlobal('fetch', fetcher);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, placeholderData: previous => previous } } });
+  const view = props => <QueryClientProvider client={client}><PriceHistory standardProductId="42" {...props} /></QueryClientProvider>;
+  const { rerender } = render(view({ membershipKinds: ['account', 'top_up'] }));
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+  const first = fetcher.mock.calls[0][0];
+  expect(new URL(first, 'http://localhost').searchParams.getAll('membershipKind')).toEqual(['account', 'top_up']);
+  pending.get(first)(response([point]));
+  await screen.findByRole('img');
+  rerender(view({ membershipKinds: ['short_term'], newcomer: true }));
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+  const second = fetcher.mock.calls[1][0];
+  expect(new URL(second, 'http://localhost').searchParams.getAll('membershipKind')).toEqual(['short_term']);
+  expect(new URL(second, 'http://localhost').searchParams.get('newcomer')).toBe('false');
+  pending.get(second)(response([{ ...point, price: '1.20' }]));
+  expect(await screen.findByRole('img')).toHaveTextContent('¥1.2');
+  rerender(view({ newcomer: true }));
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+  const third = new URL(fetcher.mock.calls[2][0], 'http://localhost');
+  expect(third.searchParams.get('newcomer')).toBe('true');
+  expect(third.searchParams.getAll('membershipKind')).toEqual([]);
+  rerender(view({ membershipKinds: ['account', 'top_up'] }));
+  expect(screen.getByRole('img')).toHaveTextContent('¥10.3');
 });

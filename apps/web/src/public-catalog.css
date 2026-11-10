@@ -950,7 +950,8 @@
 .detail-toolbar .search-field { flex: 1 1 220px; min-width: 140px; height: 36px; }
 .detail-toolbar .search-field input { min-width: 0; }
 .detail-toolbar > select, .detail-toolbar > button { flex-shrink: 0; }
-.detail-toolbar select, .detail-price-range input { border: 1px solid var(--catalog-line); border-radius: 6px; padding: 7px 8px; background: white; font-size: 12px; color: var(--catalog-ink); }
+.detail-toolbar select, .detail-price-range input, .catalog-standard-select { border: 1px solid var(--catalog-line); border-radius: 6px; padding: 7px 8px; background: white; font-size: 12px; color: var(--catalog-ink); }
+.catalog-standard-select { width: 100%; max-width: 100%; min-width: 0; }
 .detail-toolbar button { padding: 7px 10px; font-size: 12px; white-space: nowrap; }
 .detail-price-range { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .detail-price-range label { position: relative; flex: 1; min-width: 0; }
@@ -1162,6 +1163,7 @@
   content: ""; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px;
   border-radius: 50%; background: #fff; box-shadow: 0 1px 2px #14232c1a; transition: transform .18s;
 }
+.product-page-details .detail-toolbar .catalog-newcomer-toggle input { min-height: 20px; border-radius: 20px; }
 .catalog-newcomer-toggle input:checked { border-color: #83b9a7; background: #b7dece; }
 .catalog-newcomer-toggle input:checked::before { transform: translateX(12px); }
 .catalog-newcomer-toggle input:focus-visible { outline: 2px solid #5f9987; outline-offset: 3px; }

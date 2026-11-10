@@ -3,6 +3,13 @@ import { sql, type Kysely } from 'kysely';
 import { DATABASE } from '../database/database.providers.js';
 import type { DatabaseSchema } from '../database/types.js';
 import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './quote-policy.js';
+import type { MembershipKind } from '@price-comparison/catalog/membership-policy';
+import { catalogMembershipKind } from '../standardization/membership-classification.js';
+
+export interface PriceHistoryScope {
+  readonly membershipKinds?: readonly MembershipKind[];
+  readonly newcomer?: boolean;
+}
 
 export interface PriceHistoryPoint {
   readonly date: string;
@@ -23,11 +30,16 @@ export class PriceHistoryRepository {
   constructor(@Inject(DATABASE) private readonly database: Kysely<DatabaseSchema>,
     @Optional() @Inject(CATALOG_QUOTE_POLICY) private readonly policy: QuotePolicy = defaultQuotePolicy()) {}
 
-  async get(standardProductId: string, productId?: string, currency = 'CNY'): Promise<PriceHistory> {
+  async get(standardProductId: string, productId?: string, currency = 'CNY', scope: PriceHistoryScope = {}): Promise<PriceHistory> {
     const now = new Date(this.policy.now()).toISOString();
     const end = Date.parse(now) + 8 * 3600000;
     const endDate = new Date(end).toISOString().slice(0, 10);
     const startDate = new Date(end - 29 * 86400000).toISOString().slice(0, 10);
+    const ai = sql<boolean>`is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier)`;
+    const kind = catalogMembershipKind(ai);
+    const membershipScope = scope.membershipKinds?.length
+      ? sql`and ${kind} = any(${scope.membershipKinds}::text[])`
+      : scope.newcomer ? sql`and (not ${ai} or ${kind} in ('account', 'top_up'))` : sql``;
     const result = await sql<Omit<PriceHistoryPoint, 'verifiedAt'> & { verifiedAt: Date }>`
       select distinct on ((h.verified_at at time zone 'Asia/Shanghai')::date)
         to_char(h.verified_at at time zone 'Asia/Shanghai', 'YYYY-MM-DD') as date,
@@ -42,6 +54,7 @@ export class PriceHistoryRepository {
       join standard_products sp on sp.id = m.standard_product_id and not sp.hidden
         and sp.verification_state = 'verified' and sp.merged_into_id is null
       where h.standard_product_id = ${standardProductId}::bigint and h.currency = ${currency}
+        ${membershipScope}
         ${productId ? sql`and h.product_id = ${productId}::bigint` : sql``}
         and h.verified_at >= (${startDate}::date::timestamp at time zone 'Asia/Shanghai')
         and h.verified_at <= ${now}::timestamptz

@@ -12,9 +12,10 @@ function workerEntrypoints(value: string, pattern: RegExp): Set<string> {
 
 test('deployment excludes local artifacts', () => {
   const ignored = readFileSync('.dockerignore', 'utf8').split(/\r?\n/);
-  for (const path of ['docs/', 'output/', '.playwright-cli/', '.playwright-mcp/', '.omc/', '.env', '.env.*', '.claude/', '.local/']) {
+  for (const path of ['docs/*', 'output/', '.playwright-cli/', '.playwright-mcp/', '.omc/', '.env', '.env.*', '.claude/', '.local/']) {
     assert.ok(ignored.includes(path), path + ' must not enter the Docker build context');
   }
+  assert.deepEqual(ignored.filter(path => path.startsWith('!docs/')).sort(), ['!docs/mcp.md', '!docs/skill.md']);
 });
 
 test('dependency lockfile is portable and matches workspace manifests without a root self-dependency', () => {
@@ -52,7 +53,7 @@ test('deployed worker commands resolve to the current worker set', () => {
     compose,
     /dist\/server\/workers\/([a-z0-9.-]+)\.js/g,
   );
-  const expectedEntrypoints = ['ai.worker', 'crawler.worker', 'official-reference.worker', 'standardization-entrypoint'];
+  const expectedEntrypoints = ['ai.worker', 'assistant.worker', 'catalog.worker', 'crawler.worker', 'official-reference.worker', 'standardization-entrypoint'];
 
   assert.deepEqual(sorted(composeEntrypoints), expectedEntrypoints);
   for (const entrypoint of composeEntrypoints) {

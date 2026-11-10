@@ -253,7 +253,7 @@ test('changing filters cancels a pending batch and discards its old results', as
   expect(calls.at(-1).url.searchParams.get('detailPage')).toBe('0');
 });
 
-test('visibility refresh rechecks all loaded batches and removes expired prices', async () => {
+test.each([false, true])('visibility refresh rechecks every batch; only a withdrawn price disappears (withdrawn=%s)', async withdrawn => {
   mockApi();
   const base = globalThis.fetch;
   let expired = false;
@@ -264,7 +264,10 @@ test('visibility refresh rechecks all loaded batches and removes expired prices'
     if (url.pathname !== '/api/catalog') return response;
     pages.push(Number(url.searchParams.get('detailPage')));
     const data = await response.json();
-    if (expired) for (const offer of data.items[0].detail.entries) offer.priceExpiresAt = '2000-01-01T00:00:00Z';
+    if (expired) for (const offer of data.items[0].detail.entries) {
+      offer.priceExpiresAt = '2000-01-01T00:00:00Z';
+      if (withdrawn) { offer.price = null; offer.priceStatus = 'unverified'; }
+    }
     return Response.json(data);
   });
   render(<App />);
@@ -274,7 +277,12 @@ test('visibility refresh rechecks all loaded batches and removes expired prices'
   expect(screen.getByText('¥22')).toBeInTheDocument();
   expired = true;
   await act(async () => document.dispatchEvent(new Event('visibilitychange')));
-  await waitFor(() => expect(screen.queryByText('¥22')).not.toBeInTheDocument());
-  expect(pages).toEqual([0, 1, 0, 1]);
-  expect(document.querySelector('.tile-price.best')).toBeNull();
+  await waitFor(() => expect(pages).toEqual([0, 1, 0, 1]));
+  if (withdrawn) {
+    await waitFor(() => expect(screen.queryByText('¥22')).not.toBeInTheDocument());
+    expect(document.querySelector('.tile-price.best')).toBeNull();
+  } else {
+    expect(screen.getByText('¥22')).toBeInTheDocument();
+    expect(document.querySelector('.tile-price.best')).not.toBeNull();
+  }
 });

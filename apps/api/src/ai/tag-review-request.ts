@@ -4,7 +4,7 @@ import { CONSISTENCY_KEYS, DISCLOSURE_KEYS, TEXT_REVIEW_INSTRUCTIONS, type TextR
 export const TAG_REVIEW_PROMPT_VERSION = 'tag-review-20261101-v4';
 
 export interface TagReviewResponse {
-  items: Array<{ id: string; decisions: boolean[]; textReview: TextReview | null }>;
+  items: Array<{ id: string; decisions: boolean[]; classificationDecision?: boolean; textReview: TextReview | null }>;
 }
 
 const SYSTEM_PROMPT = `# Identity
@@ -98,9 +98,10 @@ export function parseTagReviewResponse(content: string): TagReviewResponse {
   }
   const ids = new Set<string>();
   for (const item of parsed.items) {
-    if (!closed(item, ['id', 'decisions', 'textReview']) || typeof item.id !== 'string' || !/^[1-9]\d*$/u.test(item.id)
+    if (!(closed(item, ['id', 'decisions', 'textReview']) || closed(item, ['id', 'decisions', 'classificationDecision', 'textReview'])) || typeof item.id !== 'string' || !/^[1-9]\d*$/u.test(item.id)
       || ids.has(item.id) || !Array.isArray(item.decisions) || item.decisions.length > 100
-      || item.decisions.some(decision => typeof decision !== 'boolean')) {
+      || item.decisions.some(decision => typeof decision !== 'boolean')
+      || ('classificationDecision' in item && typeof item.classificationDecision !== 'boolean')) {
       throw new Error('Tag review response has invalid or duplicate items or decisions');
     }
     // Schema only here; citations are checked against the frozen full text by the worker.

@@ -4,6 +4,7 @@ import { EmptyState, Pagination } from './components/AdminControls.jsx';
 import ModalDialog from './components/ModalDialog.jsx';
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import { displayPurchaseTagValue } from './purchase-tag-values.js';
+import { membershipKindLabel } from '@price-comparison/catalog/membership-policy';
 
 const OUTCOMES = { updated: '实际更新', unchanged: '无变化', empty: '无可确认标签', review: '待复核', skipped: '跳过', failed: '失败', cancelled: '取消', unrecorded: '未记录（未经验证）' };
 const STATES = { queued: '排队中', running: '运行中', processing: '处理中', paused: '已暂停', ready: '待继续', interrupted: '已中断', succeeded: '处理结束', ready_with_errors: '部分完成', failed: '失败', cancelled: '已取消' };
@@ -28,13 +29,29 @@ const REASONS = {
   human_assignment: '已保留人工归类', product_locked: '商品已锁定，未应用标签', revision_changed: '商品修订已变化，请按最新资料重试',
   manual_decision: '已保留人工决定', missing_id: '模型未返回该商品',
   job_cancelled: '任务已取消', cancelled: '任务已取消', unrecorded: '历史未记录审计结果',
+  warranty_covers_subscription: '质保覆盖订阅周期', full_subscription_promise: '明确保障完整订阅期',
+  duration_invalid_or_conflicting: '订阅周期不明确或存在冲突', warranty_none_or_conflicting: '未提供有效保障',
+  warranty_limited_scope: '仅保障首登、激活等操作', warranty_invalid_or_conflicting: '保障证据不明确或存在冲突',
+  warranty_terms_unresolved_or_limited: '保障条款存在限制或待确认', warranty_window_scope_unknown: '保障期限适用范围不明',
+  warranty_shorter_than_subscription: '保障期限不足', warranty_coverage_unproven: '缺少覆盖订阅期的保障证据',
+  delivery_unknown_or_conflicting: '交付对象不明确或存在冲突', conflicting_evidence: '当前销售事实存在冲突',
+  rental_or_shared_account: '租用或共享账号', ownership_invalid_or_conflicting: '账号归属不明确或存在冲突',
 };
-const reasonTitle = code => code ? REASONS[code] || `未识别原因（${code}），请查看商品依据` : '无诊断原因';
+const taskText = (text, noun) => noun === '特性' && typeof text === 'string' ? text.replaceAll('标签', '特性') : text;
+const reasonTitle = (code, noun = '标签') => taskText(code ? REASONS[code] || `未识别原因（${code}），请查看商品依据` : '无诊断原因', noun);
 const fieldTitle = name => PURCHASE_GUIDE_FIELDS[name]?.label || name;
-function resultTitle(outcome, accepted = 0, rejected = 0) {
+function resultTitle(outcome, accepted = 0, rejected = 0, noun = '标签') {
   if (outcome === 'updated' && rejected > 0) return accepted > 0 ? '部分采纳，已更新' : '已更新，仍需复核';
   if (outcome === 'review' && accepted > 0) return '部分采纳，待复核';
-  return OUTCOMES[outcome] || STATES[outcome] || OUTCOMES.unrecorded;
+  return taskText(OUTCOMES[outcome] || STATES[outcome] || OUTCOMES.unrecorded, noun);
+}
+function MembershipClassification({ value }) {
+  const decision = value?.decision ?? value;
+  if (!decision?.kind) return null;
+  return <div className="tag-classification">
+    <p>会员分类：{membershipKindLabel(decision.kind)} · 原因：{reasonTitle(decision.reason, '特性')}</p>
+    {decision.kind !== 'rental' && decision.durationSource ? <p>分类周期：{decision.durationSource === 'default' ? '默认一个月（非商家承诺）' : '商家明确说明'}</p> : null}
+  </div>;
 }
 function jobTitle(job, attention) {
   if (job?.phase === 'preparing' && ['queued', 'running'].includes(job.status)) return '准备中';
@@ -45,25 +62,25 @@ const versions = value => value ? Object.entries(value).map(([key, version]) => 
 const indexed = index => Number.isInteger(index) && index >= 0;
 const voteTitle = vote => vote === true ? 'YES (true)' : vote === false ? 'NO (false)' : 'LLM 原始投票未记录';
 const metadata = (value, keys) => versions(Object.fromEntries(keys.filter(key => value?.[key] != null && ['string', 'number', 'boolean'].includes(typeof value[key])).map(key => [key, value[key]]))) || '未记录';
-function programDisposition(output, index) {
+function programDisposition(output, index, noun) {
   if (!output) return '发布尚未完成';
   if (!indexed(index)) return '程序处置索引未记录';
   const rejected = output.rejectedTags?.find(tag => tag.proposalIndex === index);
-  if (rejected) return rejected.reasonCode === 'review_rejected' ? reasonTitle(rejected.reasonCode) : `程序拒绝：${reasonTitle(rejected.reasonCode)}`;
+  if (rejected) return rejected.reasonCode === 'review_rejected' ? reasonTitle(rejected.reasonCode, noun) : `程序拒绝：${reasonTitle(rejected.reasonCode, noun)}`;
   return output.acceptedTags?.some(tag => tag.proposalIndex === index) ? '程序采纳' : '程序处置索引未记录';
 }
-function CandidateTable({ proposals, decisions, output, publicationRecorded, label }) {
+function CandidateTable({ proposals, decisions, output, publicationRecorded, label, noun }) {
   return Array.isArray(proposals) ? proposals.length ? <div className="data-table-wrap"><table aria-label={label}>
     <thead><tr><th>原候选索引（从 0 开始）</th><th>提取候选与原始证据</th><th>LLM 原始判定</th><th>最终程序处置</th></tr></thead>
     <tbody>{proposals.map((tag, index) => <tr key={index}>
       <td>{indexed(tag.proposalIndex) ? `#${tag.proposalIndex}` : '未记录'}</td>
       <td><strong>{fieldTitle(tag.name)}：{displayPurchaseTagValue(tag)}</strong><p>{tag.name} = {tag.value}</p>{tag.evidence?.length ? <ul>{tag.evidence.map((evidence, i) => <li key={i}>{evidence.path}：<q>{evidence.quote}</q></li>)}</ul> : <p>原始证据未记录</p>}</td>
       <td>{voteTitle(indexed(tag.proposalIndex) ? decisions?.[tag.proposalIndex] : undefined)}</td>
-      <td>{publicationRecorded && !output ? '最终处置来源关联未记录' : programDisposition(output, tag.proposalIndex)}</td>
+      <td>{publicationRecorded && !output ? '最终处置来源关联未记录' : programDisposition(output, tag.proposalIndex, noun)}</td>
     </tr>)}</tbody>
   </table></div> : <p>原始候选为空（0 条）</p> : <p>来源候选未记录</p>;
 }
-function BatchAudit({ batch, data, outputSource }) {
+function BatchAudit({ batch, data, outputSource, noun }) {
   const review = batch.stage === 'review';
   const source = review ? data.batches?.find(item => item.stage === 'extract' && batch.extraction_batch_id != null && String(item.id) === String(batch.extraction_batch_id)) : batch;
   const output = data.member?.output;
@@ -88,7 +105,7 @@ function BatchAudit({ batch, data, outputSource }) {
       <p>来源提取批次：{batch.extraction_batch_id == null ? '未记录' : `#${batch.extraction_batch_id}`}</p>
       <p>持久化原始投票：{Array.isArray(batch.review_decisions) ? JSON.stringify(batch.review_decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p>
     </> : null}
-    <CandidateTable proposals={source?.proposals} decisions={review ? batch.review_decisions ?? (linkedOutput?.review?.mode === 'per_tag_binary' ? linkedOutput.review.decisions : undefined) : undefined} output={linkedOutput} publicationRecorded={Boolean(output)} label={`${review ? '复核' : '提取'}批次 #${batch.id ?? '未记录'} 候选判定`} />
+    <CandidateTable proposals={source?.proposals} decisions={review ? batch.review_decisions ?? (linkedOutput?.review?.mode === 'per_tag_binary' ? linkedOutput.review.decisions : undefined) : undefined} output={linkedOutput} publicationRecorded={Boolean(output)} label={`${review ? '复核' : '提取'}批次 #${batch.id ?? '未记录'} 候选判定`} noun={noun} />
   </details>;
 }
 function Metrics({ values, className = 'ai-standardization-summary' }) { return <dl className={className}>{Object.entries(values).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? '未记录'}</dd></div>)}</dl>; }
@@ -98,7 +115,7 @@ function taskTone(job, attention) {
   if (attention || ['ready_with_errors', 'interrupted', 'paused', 'ready'].includes(job?.status)) return 'attention';
   return job?.status === 'succeeded' ? 'success' : 'progress';
 }
-function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行概览' }) {
+function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行概览', noun = '标签' }) {
   const job = snapshot?.job || item;
   const progress = snapshot?.progress || {};
   const results = progress.tagResults || {};
@@ -116,71 +133,76 @@ function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行
   const phase = Number(stages.reviewQueued || 0) + Number(stages.reviewRunning || 0) > 0 ? 1
     : Number(stages.publicationQueued || 0) + Number(progress.publication?.totalUnits || 0) > 0 ? 2 : 0;
   const extra = Object.fromEntries([
-    ['无变化', results.unchanged], ['无可确认标签', results.empty], ['跳过', results.skipped],
+    ['无变化', results.unchanged], [`无可确认${noun}`, results.empty], ['跳过', results.skipped],
     ['已取消', results.cancelled], ['未记录', results.unrecorded ?? '历史审计不可用'],
     ['部分采纳商品', acceptance.partialProducts],
   ].filter(([, value]) => typeof value === 'string' || Number(value) > 0));
-  return <section className="ai-task-card ai-overview" aria-label="标签任务运行概览">
+  return <section className="ai-task-card ai-overview" aria-label={`${noun}任务运行概览`}>
     <header className="ai-card-header">
       <div><h3>{title}</h3>{job ? <p>任务 #{job.id} · {shopId ? shop || `店铺 #${shopId}` : '所选商品范围'} · {parentId ? `来源身份任务 #${parentId}` : '手动创建'} · {job.model || '模型未记录'}</p> : null}</div>
       <div className="ai-header-actions">{job ? <span className={`ai-status-badge is-${outdated ? 'attention' : taskTone(job, attention)}`}>{outdated ? '版本已过期' : jobTitle(job, attention)}</span> : null}{actions}</div>
     </header>
     {!snapshot ? <p role="status">正在读取任务详情…</p> : <>
       <div className="ai-progress-heading"><div><span className="ai-progress-label">已处理商品</span><strong>{processed}<small> / {total}</small></strong></div><span className="ai-progress-percent">{total ? (processed / total * 100).toFixed(1) : '0.0'}%</span></div>
-      <progress aria-label="标签商品处理进度" max={Math.max(1, total)} value={processed} />
+      <progress aria-label={`${noun}商品处理进度`} max={Math.max(1, total)} value={processed} />
       <Metrics values={{ 实际更新: results.updated, 待复核: results.review, 失败商品: results.failed,
-        '通过标签（条）': acceptance.acceptedTags, '拒绝标签（条）': acceptance.rejectedTags, 失败批次: progress.requests?.failedBatches }} />
+        [`通过${noun}（条）`]: acceptance.acceptedTags, [`拒绝${noun}（条）`]: acceptance.rejectedTags, 失败批次: progress.requests?.failedBatches }} />
       {Object.keys(extra).length ? <Metrics className="tag-result-notes" values={extra} /> : null}
-      <ol className="ai-pipeline-stages" aria-label="标签抽取阶段">
+      <ol className="ai-pipeline-stages" aria-label={noun === '特性' ? '特性识别阶段' : '标签抽取阶段'}>
         {[
-          ['提取标签', `${Number(stages.extractionCompleted || 0)} 批已提取`],
+          [`提取${noun}`, `${Number(stages.extractionCompleted || 0)} 批已提取`],
           ['LLM 二元复核', [
             `${Number(stages.reviewCompleted || 0)} 批已完成`,
             stages.reviewQueued > 0 ? `${stages.reviewQueued} 批排队` : null,
             stages.reviewRunning > 0 ? `${stages.reviewRunning} 批进行中` : null,
           ].filter(Boolean).join(' · ')],
-          ['本地发布', `${Number(stages.publicationQueued || 0)} 批待发布`],
+          [noun === '特性' ? '保存特性' : '本地发布', `${Number(stages.publicationQueued || 0)} 批待${noun === '特性' ? '保存' : '发布'}`],
         ].map(([label, detail], index) => <li key={label}
           className={completed || !stopped && index < phase ? 'is-past' : !stopped && index === phase ? 'is-current' : ''}
           aria-current={!completed && !stopped && index === phase ? 'step' : undefined}>
           <span aria-hidden="true">{index + 1}</span><div><strong>{label}</strong><small>{detail}</small></div>
         </li>)}
       </ol>
-      {job?.error && !snapshot.errors?.length ? <p className="ai-error" role="alert">{job.error}</p> : null}
-      {snapshot.errors?.length ? <section className="ai-diagnostics" aria-label="标签任务处理记录">
+      {job?.error && !snapshot.errors?.length ? <p className="ai-error" role="alert">{taskText(job.error, noun)}</p> : null}
+      {snapshot.errors?.length ? <section className="ai-diagnostics" aria-label={`${noun}任务处理记录`}>
         <div className="ai-diagnostic-group"><h4>失败批次</h4><ul className="ai-failure-list">{snapshot.errors.map((error, index) => <li key={index}>
           <div className="ai-failure-heading"><strong>第 {Number(error.batchIndex || 0) + 1} 批</strong><span>{error.step === 'request' ? '模型请求' : error.step || '未知阶段'}</span></div>
-          <p className="ai-failure-message">{error.error}</p>
+          <p className="ai-failure-message">{taskText(error.error, noun)}</p>
         </li>)}</ul></div>
       </section> : null}
     </>}
   </section>;
 }
-function Audit({ data }) {
+function Audit({ data, noun = '标签' }) {
   const output = data.member?.output;
   const hasReviewVotes = data.batches?.some(batch => batch.stage === 'review' && Array.isArray(batch.review_decisions));
   const reviewSources = [...new Set(data.batches?.filter(batch => batch.stage === 'review').map(batch => batch.extraction_batch_id == null ? null : String(batch.extraction_batch_id)))];
   const outputSource = reviewSources.length === 1 ? reviewSources[0] : undefined;
   return <div className="tag-audit">
-    <p>结果：{resultTitle(output?.outcome, output?.acceptedTags?.length, output?.rejectedTags?.length)} · 原因：{reasonTitle(data.member?.reason_code || output?.reasonCode)}</p>
-    <p>{output?.review?.mode === 'per_tag_binary' ? `逐标签二元复核 · 通过 ${output.acceptedTags?.length ?? 0} · 拒绝 ${output.rejectedTags?.length ?? 0}` : output?.review ? `历史 LLM 复核：${output.review.status === 'approved' ? '已通过' : '待复核'} · 原因：${output.review.reason || '未记录'}` : hasReviewVotes ? '逐标签二元复核：已保存原始判定，发布尚未完成' : 'LLM 复核未记录（不能确认历史执行状态）'}</p>
+    <p>结果：{resultTitle(output?.outcome, output?.acceptedTags?.length, output?.rejectedTags?.length, noun)} · 原因：{reasonTitle(data.member?.reason_code || output?.reasonCode, noun)}</p>
+    {noun === '特性' ? <MembershipClassification value={output?.classification} /> : null}
+    <p>{output?.review?.mode === 'per_tag_binary' ? `逐${noun}二元复核 · 通过 ${output.acceptedTags?.length ?? 0} · 拒绝 ${output.rejectedTags?.length ?? 0}` : output?.review ? `历史 LLM 复核：${output.review.status === 'approved' ? '已通过' : '待复核'} · 原因：${output.review.reason || '未记录'}` : hasReviewVotes ? `逐${noun}二元复核：已保存原始判定，发布尚未完成` : 'LLM 复核未记录（不能确认历史执行状态）'}</p>
     {output?.review?.mode === 'per_tag_binary' ? <p>商品原始投票：{Array.isArray(output.review.decisions) ? JSON.stringify(output.review.decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
-    {!output && (hasReviewVotes || ['queued', 'processing'].includes(data.member?.status)) ? <p>发布尚未完成，不能视为已写入。</p> : ['skipped', 'failed', 'cancelled'].includes(output?.outcome) ? <p>发布结果：{OUTCOMES[output.outcome]}，本次未写入商品标签；程序采纳候选不代表发布成功。</p> : null}
+    {!output && (hasReviewVotes || ['queued', 'processing'].includes(data.member?.status)) ? <p>发布尚未完成，不能视为已写入。</p> : ['skipped', 'failed', 'cancelled'].includes(output?.outcome) ? <p>发布结果：{OUTCOMES[output.outcome]}，本次未写入商品{noun}；程序采纳候选不代表发布成功。</p> : null}
     <p>内容版本：{data.member?.content_version ?? '未记录'} · 修订：{data.member?.standardization_revision ?? '未记录'}</p>
     <p>输入指纹：{data.member?.fingerprint ?? output?.versions?.fingerprint ?? '未记录'}</p>
     <p>任务模型：{data.job?.model ?? '未记录'} · 抽取版本：{versions(output?.versions?.pipeline ?? data.job?.pipeline_versions)}</p>
     <details><summary>冻结输入 JSON</summary>{data.member?.payload != null ? <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}><code>{JSON.stringify(data.member.payload, null, 2)}</code></pre> : <p>冻结输入未记录，不能用实时商品资料还原。</p>}</details>
     {!output ? <p>{hasReviewVotes || ['queued', 'processing'].includes(data.member?.status) ? '商品最终发布审计尚未生成。' : '历史未记录审计结果，不能视为已验证完成。'}</p> : <>
-      {['acceptedTags', 'rejectedTags'].map(key => <section key={key}><h5>{key === 'acceptedTags' ? '通过标签与证据' : '拒绝标签与诊断'}</h5>{output[key]?.length ? <ul>{output[key].map((tag, index) => <li key={index}><strong>{fieldTitle(tag.name)}：{displayPurchaseTagValue(tag)}</strong><p>原候选索引：{indexed(tag.proposalIndex) ? `#${tag.proposalIndex}` : '未记录'} · {voteTitle(output.review?.mode === 'per_tag_binary' && indexed(tag.proposalIndex) ? output.review.decisions?.[tag.proposalIndex] : undefined)} · {key === 'acceptedTags' ? '程序采纳' : '程序拒绝'}</p>{tag.reason || tag.reasonCode ? <p title={tag.reasonCode}>{reasonTitle(tag.reasonCode)}{tag.reason && tag.reasonCode !== 'review_rejected' ? `：${tag.reason}` : ''}</p> : null}<ul>{tag.evidence?.map((evidence, i) => <li key={i}>{evidence.path}：<q>{evidence.quote}</q></li>)}</ul></li>)}</ul> : <p>无</p>}</section>)}
+      {['acceptedTags', 'rejectedTags'].map(key => <section key={key}><h5>{key === 'acceptedTags' ? `通过${noun}与证据` : `拒绝${noun}与诊断`}</h5>{output[key]?.length ? <ul>{output[key].map((tag, index) => <li key={index}><strong>{fieldTitle(tag.name)}：{displayPurchaseTagValue(tag)}</strong><p>原候选索引：{indexed(tag.proposalIndex) ? `#${tag.proposalIndex}` : '未记录'} · {voteTitle(output.review?.mode === 'per_tag_binary' && indexed(tag.proposalIndex) ? output.review.decisions?.[tag.proposalIndex] : undefined)} · {key === 'acceptedTags' ? '程序采纳' : '程序拒绝'}</p>{tag.reason || tag.reasonCode ? <p title={tag.reasonCode}>{reasonTitle(tag.reasonCode, noun)}{tag.reason && tag.reasonCode !== 'review_rejected' ? `：${taskText(tag.reason, noun)}` : ''}</p> : null}<ul>{tag.evidence?.map((evidence, i) => <li key={i}>{evidence.path}：<q>{evidence.quote}</q></li>)}</ul></li>)}</ul> : <p>无</p>}</section>)}
       <h5>写入差异</h5>{output.diff?.length ? <ul>{output.diff.map((change, i) => <li key={i}>{fieldTitle(change.name)}：{change.before.map(value => displayPurchaseTagValue({ name: change.name, value })).join('、') || '无'} → {change.after.map(value => displayPurchaseTagValue({ name: change.name, value })).join('、') || '无'}</li>)}</ul> : <p>无字段变化</p>}
       {output.retainedUnconfirmed?.length ? <p>保留但本次未确认：{output.retainedUnconfirmed.map(tag => `${fieldTitle(tag.name)}：${displayPurchaseTagValue(tag)}`).join('；')}</p> : null}
     </>}
     <h5>关联请求用量（可能与其他商品共享，不累计为商品用量）</h5>
-    {data.batches?.length ? <ul>{data.batches.map((batch, i) => <li key={batch.id ?? i}><BatchAudit batch={batch} data={data} outputSource={outputSource} /></li>)}</ul> : <p>耗时与 token 用量不可用</p>}
+    {data.batches?.length ? <ul>{data.batches.map((batch, i) => <li key={batch.id ?? i}><BatchAudit batch={batch} data={data} outputSource={outputSource} noun={noun} /></li>)}</ul> : <p>耗时与 token 用量不可用</p>}
   </div>;
 }
 
-export default function TagExtractionPanel({ shops, onProductsChanged, onRefreshRuntime, view = 'tasks', enabled = true }) {
+export default function TagExtractionPanel({ shops, onProductsChanged, onRefreshRuntime, view = 'tasks', enabled = true, taskKind = 'tag_extraction' }) {
+  const feature = taskKind === 'membership_features';
+  const noun = feature ? '特性' : '标签';
+  const sectionTitle = feature ? '特性识别' : '标签抽取';
+  const apiKind = feature ? 'feature' : 'tag';
   const isHistory = view === 'history';
   const [historyFilter, setHistoryFilter] = useState('all');
   const filter = isHistory ? historyFilter : 'unfinished';
@@ -224,7 +246,7 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
     const sequence = ++queueSequence.current;
     queuePending.current = sequence;
     const cursor = isHistory ? queueCursors.current[requestedPage - 1] : null;
-    const query = new URLSearchParams({ jobType: 'tag_extraction', status: filter, limit: isHistory ? String(PAGE_SIZE) : '1' });
+    const query = new URLSearchParams({ jobType: taskKind, status: filter, limit: isHistory ? String(PAGE_SIZE) : '1' });
     if (isHistory && shop) query.set('scopeShopId', shop);
     if (cursor) query.set('cursor', cursor);
     try {
@@ -240,7 +262,7 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
       setQueue({ ...data, items, total, page: queuePage.current });
     } catch (reason) { if (sequence === queueSequence.current) throw reason; }
     finally { if (queuePending.current === sequence) queuePending.current = null; }
-  }, [filter, shop, isHistory]);
+  }, [filter, shop, isHistory, taskKind]);
   useEffect(() => { queuePage.current = 1; queueCursors.current = [null]; setQueue(null); setError(''); loadQueue(1).catch(reason => setError(reason.message)); return () => { ++queueSequence.current; }; }, [loadQueue]);
   useEffect(() => {
     const latest = queue?.items?.[0]?.id;
@@ -249,7 +271,7 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
   }, [queue, isHistory, detailOpen]);
   useEffect(() => {
     setDetailOpen(false); selection.current = null; setJobId(null); ++detailSequence.current;
-  }, [view]);
+  }, [view, taskKind]);
   useEffect(() => {
     if (busy) return;
     const timer = setInterval(() => { if (!document.hidden && queuePending.current === null) loadQueue().catch(reason => { if (alive.current) setError(reason.message); }); }, 10000);
@@ -271,16 +293,16 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
         const progressBefore = latestProgress.current;
         try {
           const [next, first] = await Promise.all([requestJson(`/api/admin/ai/jobs/${jobId}`),
-            detailOpen ? requestJson(`/api/admin/ai/jobs/${jobId}/tag-results`) : Promise.resolve(null)]);
+            detailOpen ? requestJson(`/api/admin/ai/jobs/${jobId}/${apiKind}-results`) : Promise.resolve(null)]);
           if (!active()) return;
           const openId = detailOpen ? expandedRef.current : null;
           const auditRequest = openId ? ++auditSequence.current : null;
-          const audit = openId ? await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results/${openId}`) : null;
+          const audit = openId ? await requestJson(`/api/admin/ai/jobs/${jobId}/${apiKind}-results/${openId}`) : null;
           if (!active()) return;
           let results = first; let pages = 1;
           const items = [...(first?.items || [])];
           while (first && pages < memberPages.current && results.nextCursor) {
-            results = await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results?cursor=${encodeURIComponent(results.nextCursor)}`);
+            results = await requestJson(`/api/admin/ai/jobs/${jobId}/${apiKind}-results?cursor=${encodeURIComponent(results.nextCursor)}`);
             if (!active()) return;
             items.push(...results.items); pages++;
           }
@@ -308,7 +330,7 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
     })().finally(() => { if (detailPending.current === pending) detailPending.current = null; });
     detailPending.current = pending;
     return pending.promise;
-  }, [jobId, detailOpen]);
+  }, [jobId, detailOpen, apiKind]);
   useEffect(() => {
     if (!jobId) return;
     setConnection('');
@@ -381,14 +403,14 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
     if (!requestScope && ((!scopeShop && !productIds.length) || (scopeShop && productIds.length) || productIds.some(id => !/^[1-9]\d*$/.test(id)))) throw new Error('请选择一家店铺，或输入商品 ID（不能同时使用）。');
     const scope = requestScope || (scopeShop ? { scopeShopId: scopeShop } : { productIds });
     const sequence = ++draftSequence.current;
-    const data = await requestJson('/api/ai/tag-jobs/preview', { method: 'POST', body: JSON.stringify(scope) });
+    const data = await requestJson(`/api/ai/${apiKind}-jobs/preview`, { method: 'POST', body: JSON.stringify(scope) });
     if (sequence !== draftSequence.current || !alive.current) return;
     setPreview({ ...data, requestScope: scope }); setAck(false); submission.current = null;
   }
   async function create() {
     if ((!dialog?.allPending && !preview) || !ack) return;
     submission.current ||= { ...(dialog?.allPending ? {allPending:true} : {...preview.requestScope,previewDigest:preview.previewDigest}), requestId: crypto.randomUUID(), acknowledgePossibleCharge: true };
-    const created = await requestJson('/api/ai/tag-jobs', { method: 'POST', body: JSON.stringify(submission.current) });
+    const created = await requestJson(`/api/ai/${apiKind}-jobs`, { method: 'POST', body: JSON.stringify(submission.current) });
     if (!alive.current) return;
     setDialog(null); invalidateDraft(); selectJob(created.id); await loadQueue();
   }
@@ -399,54 +421,54 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
     const forJob = jobId; const sequence = detailSequence.current;
     const version = resultVersion.current;
     const request = ++auditSequence.current;
-    const data = await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results/${id}`);
+    const data = await requestJson(`/api/admin/ai/jobs/${jobId}/${apiKind}-results/${id}`);
     if (selection.current === forJob && sequence === detailSequence.current && version === resultVersion.current && request === auditSequence.current && alive.current) setAudits(current => ({ ...current, [id]: { version, data } }));
   }
   async function moreMembers() {
     const forJob = jobId; const sequence = detailSequence.current;
     const version = resultVersion.current;
-    const next = await requestJson(`/api/admin/ai/jobs/${jobId}/tag-results?cursor=${encodeURIComponent(members.nextCursor)}`);
+    const next = await requestJson(`/api/admin/ai/jobs/${jobId}/${apiKind}-results?cursor=${encodeURIComponent(members.nextCursor)}`);
     if (alive.current && selection.current === forJob && sequence === detailSequence.current && version === resultVersion.current) { memberPages.current++; setMembers(current => ({ ...next, items: [...current.items, ...next.items] })); }
   }
   const job = snapshot?.job;
   const latest = queue?.items?.[0];
   const current = queue?.items?.find(item => String(item.id) === jobId);
   const refresh = () => run(() => Promise.all([loadQueue(), loadDetail(), onRefreshRuntime?.()]));
-  return <section className={`tag-extraction-panel${isHistory ? ' ai-history-panel' : ''}`} aria-label={isHistory ? '标签抽取记录' : '标签抽取管理'}>
+  return <section className={`tag-extraction-panel${isHistory ? ' ai-history-panel' : ''}`} aria-label={`${sectionTitle}${isHistory ? "记录" : "管理"}`}>
     {!isHistory ? <div className="ai-task-panel is-standardization">
-      <section className="ai-task-card" aria-label="标签抽取监控">
+      <section className="ai-task-card" aria-label={`${sectionTitle}监控`}>
         <header className="ai-card-header">
-          <div className="ai-standardization-heading"><h3>标签抽取监控</h3><span className={`ai-status-badge is-${enabled ? 'success' : 'attention'}`}>{enabled ? '已启用' : '已关闭'}</span></div>
+          <div className="ai-standardization-heading"><h3>{sectionTitle}监控</h3><span className={`ai-status-badge is-${enabled ? 'success' : 'attention'}`}>{enabled ? '已启用' : '已关闭'}</span></div>
           <div className="ai-header-actions">
-            <button type="button" disabled={busy} aria-label="刷新标签状态" onClick={refresh}>刷新状态</button>
-            <button type="button" disabled={busy || !enabled} aria-label="批量新建标签任务" onClick={() => run(openAllPending)}>批量新建</button>
-            <button type="button" className="primary" disabled={busy || !enabled} aria-label="新建标签任务" onClick={() => openCreate()}>新建任务</button>
+            <button type="button" disabled={busy} aria-label={`刷新${noun}状态`} onClick={refresh}>刷新状态</button>
+            <button type="button" disabled={busy || !enabled} aria-label={`批量新建${noun}任务`} onClick={() => run(openAllPending)}>批量新建</button>
+            <button type="button" className="primary" disabled={busy || !enabled} aria-label={`新建${noun}任务`} onClick={() => openCreate()}>新建任务</button>
           </div>
         </header>
-        {!enabled ? <p className="ai-config-notice" role="status">标签抽取功能未启用，现有记录仍可查看。</p> : null}
-        {!queue ? <p role="status">{error ? '标签状态暂不可用，请刷新重试。' : '正在读取标签任务…'}</p> : <Metrics values={{
+        {!enabled ? <p className="ai-config-notice" role="status">{sectionTitle}功能未启用，现有记录仍可查看。</p> : null}
+        {!queue ? <p role="status">{error ? `${noun}状态暂不可用，请刷新重试。` : `正在读取${noun}任务…`}</p> : <Metrics values={{
           当前任务: queue.summary?.total, 排队任务: queue.summary?.queued, 运行任务: queue.summary?.running,
           暂停任务: queue.summary?.paused, 待处理商品: queue.summary?.pendingProducts,
         }} />}
       </section>
-      {!detailOpen && latest ? <TagTaskOverview snapshot={snapshot} item={latest} shops={shops} actions={
-        <button type="button" disabled={busy} aria-label={`查看标签任务 #${latest.id}`} onClick={() => selectJob(latest.id)}>查看详情</button>
-      } /> : !detailOpen && queue ? <section className="ai-task-card"><EmptyState>暂无执行中的标签抽取任务</EmptyState></section> : null}
+      {!detailOpen && latest ? <TagTaskOverview noun={noun} snapshot={snapshot} item={latest} shops={shops} actions={
+        <button type="button" disabled={busy} aria-label={`查看${noun}任务 #${latest.id}`} onClick={() => selectJob(latest.id)}>查看详情</button>
+      } /> : !detailOpen && queue ? <section className="ai-task-card"><EmptyState>暂无执行中的{sectionTitle}任务</EmptyState></section> : null}
     </div> : <>
       <header className="ai-card-header">
         <div className="tag-panel-filters">
           <label>任务筛选<select value={historyFilter} disabled={busy} onChange={event => setHistoryFilter(event.target.value)}><option value="all">全部任务</option><option value="attention">仅异常任务</option><option value="unfinished">仅未完成任务</option></select></label>
           <label>店铺筛选<select value={shop} disabled={busy} onChange={event => setShop(event.target.value)}><option value="">全部店铺</option>{shops?.items?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         </div>
-        <button type="button" disabled={busy} aria-label="刷新标签状态" onClick={refresh}>刷新记录</button>
+        <button type="button" disabled={busy} aria-label={`刷新${noun}状态`} onClick={refresh}>刷新记录</button>
       </header>
-      {!queue ? <p role="status">正在读取标签任务…</p> : !queue.items.length ? <EmptyState>暂无匹配的标签任务</EmptyState> : <div className="data-table-wrap"><table className="tag-task-table">
+      {!queue ? <p role="status">正在读取{noun}任务…</p> : !queue.items.length ? <EmptyState>暂无匹配的{noun}任务</EmptyState> : <div className="data-table-wrap"><table className="tag-task-table">
         <thead><tr><th>任务</th><th>来源</th><th>店铺</th><th>状态</th><th>已处理 / 商品数</th><th>待处理</th><th>创建时间</th></tr></thead>
         <tbody>{queue.items.map(item => {
           const outdated = item.configurationCurrent === false && !TERMINAL.has(item.status);
           const attention = item.unclassified > 0;
           return <tr key={item.id}>
-            <td><button type="button" disabled={busy} aria-label={`查看标签任务 #${item.id}`} onClick={() => selectJob(item.id)}>查看任务 #{item.id}</button></td>
+            <td><button type="button" disabled={busy} aria-label={`查看${noun}任务 #${item.id}`} onClick={() => selectJob(item.id)}>查看任务 #{item.id}</button></td>
             <td>{item.parentIdentityJobId ? `身份任务 #${item.parentIdentityJobId}` : '手动创建'}{item.retryOfJobId ? <small>重试 #{item.retryOfJobId}</small> : null}
               {outdated ? <details><summary>版本信息</summary><small>{versions(item.pipelineVersions)}</small></details> : null}</td>
             <td>{item.scopeShopId ? shops?.items?.find(entry => String(entry.id) === String(item.scopeShopId))?.name || `店铺 #${item.scopeShopId}` : '所选商品范围'}</td>
@@ -456,43 +478,43 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
         })}</tbody>
       </table></div>}
       <Pagination total={queue?.total || 0} page={queue?.page || 1} pageSize={PAGE_SIZE} disabled={busy}
-        onChange={page => run(() => loadQueue(page))} label="标签抽取记录" />
+        onChange={page => run(() => loadQueue(page))} label={`${sectionTitle}记录`} />
     </>}
-    {error && !dialog && !detailOpen ? <p className="ai-error" role="alert">{error}</p> : null}
+    {error && !dialog && !detailOpen ? <p className="ai-error" role="alert">{taskText(error, noun)}</p> : null}
     {connection && !detailOpen ? <p role="status">{connection}</p> : null}
-    {detailOpen && jobId ? <ModalDialog open onClose={closeDetail} aria-label="标签任务详情" className="management-dialog tag-task-dialog">
+    {detailOpen && jobId ? <ModalDialog open onClose={closeDetail} aria-label={`${noun}任务详情`} className="management-dialog tag-task-dialog">
       <div className="dialog-body">
-        <section className="ai-task-panel is-standardization" aria-label="标签任务详情">
-          <TagTaskOverview snapshot={snapshot} item={current} shops={shops} title={`标签任务 #${jobId}`} actions={<>
+        <section className="ai-task-panel is-standardization" aria-label={`${noun}任务详情`}>
+          <TagTaskOverview noun={noun} snapshot={snapshot} item={current} shops={shops} title={`${noun}任务 #${jobId}`} actions={<>
             <button type="button" disabled={busy} onClick={() => run(loadDetail)}>刷新详情</button>
-            <button type="button" aria-label="关闭标签任务详情" onClick={closeDetail}>关闭</button>
+            <button type="button" aria-label={`关闭${noun}任务详情`} onClick={closeDetail}>关闭</button>
           </>} />
-          {error && !dialog ? <p className="ai-error" role="alert">{error}</p> : null}
+          {error && !dialog ? <p className="ai-error" role="alert">{taskText(error, noun)}</p> : null}
           {connection ? <p role="status">{connection}</p> : null}
           {snapshot ? <div className="tag-panel-actions">
-            {['queued', 'running'].includes(job?.status) ? <button type="button" disabled={busy} onClick={() => run(async () => { await requestJson(`/api/ai/jobs/${jobId}/pause`, { method: 'POST' }); await Promise.all([loadDetail(), loadQueue()]); })}>暂停标签任务</button> : null}
-            {job?.status === 'paused' ? <button type="button" disabled={busy || !enabled} onClick={() => run(async () => { await requestJson(`/api/ai/jobs/${jobId}/resume`, { method: 'POST' }); await Promise.all([loadDetail(), loadQueue()]); })}>继续标签任务</button> : null}
-            {!TERMINAL.has(job?.status) ? <button type="button" disabled={busy} onClick={() => run(async () => { await requestJson(`/api/ai/jobs/${jobId}/cancel`, { method: 'POST' }); await Promise.all([loadDetail(), loadQueue()]); })}>取消标签任务</button> : null}
+            {['queued', 'running'].includes(job?.status) ? <button type="button" disabled={busy} onClick={() => run(async () => { await requestJson(`/api/ai/jobs/${jobId}/pause`, { method: 'POST' }); await Promise.all([loadDetail(), loadQueue()]); })}>暂停{noun}任务</button> : null}
+            {job?.status === 'paused' ? <button type="button" disabled={busy || !enabled} onClick={() => run(async () => { await requestJson(`/api/ai/jobs/${jobId}/resume`, { method: 'POST' }); await Promise.all([loadDetail(), loadQueue()]); })}>继续{noun}任务</button> : null}
+            {!TERMINAL.has(job?.status) ? <button type="button" disabled={busy} onClick={() => run(async () => { await requestJson(`/api/ai/jobs/${jobId}/cancel`, { method: 'POST' }); await Promise.all([loadDetail(), loadQueue()]); })}>取消{noun}任务</button> : null}
           </div> : null}
           {snapshot ? <details className="tag-execution-record"><summary>任务信息</summary>
             <p>创建：{formatTime(job?.created_at)} · 完成：{formatTime(job?.finished_at)} · 版本：{versions(job?.pipeline_versions)}</p>
             {snapshot.currentBatches?.length ? <ul>{snapshot.currentBatches.filter(batch => Number(batch.batch_index ?? batch.batchIndex) >= 0).map((batch, index) => <li key={index}>在途批次 {Number(batch.batch_index ?? batch.batchIndex) + 1} · {batch.round} · {batch.step} · {batch.product_count ?? batch.productCount} 份输入</li>)}</ul> : null}
           </details> : null}
       <header className="ai-card-header tag-member-heading"><h4>商品结果</h4></header>
-      {!members ? <p role="status">正在读取商品结果…</p> : members.items.length ? <ul className="tag-member-list">{members.items.map(member => { const id = String(member.id); return <li key={id}><strong>{member.name}</strong><p>{member.shop_name} · {member.spec} · {resultTitle(member.outcome || (['queued', 'processing'].includes(member.status) ? member.status : 'unrecorded'), member.acceptedCount, member.rejectedCount)} · {reasonTitle(member.reason_code)}</p><p>通过 {member.acceptedCount ?? '未记录'} · 拒绝 {member.rejectedCount ?? '未记录'} · 变化字段 {member.changedFields ?? '未记录'}</p><button type="button" aria-expanded={expanded === id} onClick={() => run(() => expand(id))}>查看商品 #{id} 依据</button>{expanded === id ? audits[id]?.version === resultVersion.current ? <Audit data={audits[id].data} /> : <p role="status">正在读取商品依据…</p> : null}</li>; })}</ul> : <EmptyState>暂无商品结果</EmptyState>}
+      {!members ? <p role="status">正在读取商品结果…</p> : members.items.length ? <ul className="tag-member-list">{members.items.map(member => { const id = String(member.id); return <li key={id}><strong>{member.name}</strong><p>{member.shop_name} · {member.spec} · {resultTitle(member.outcome || (['queued', 'processing'].includes(member.status) ? member.status : 'unrecorded'), member.acceptedCount, member.rejectedCount, noun)} · {reasonTitle(member.reason_code, noun)}</p>{feature ? <MembershipClassification value={member.classification} /> : null}<p>通过 {member.acceptedCount ?? '未记录'} · 拒绝 {member.rejectedCount ?? '未记录'} · 变化字段 {member.changedFields ?? '未记录'}</p><button type="button" aria-expanded={expanded === id} onClick={() => run(() => expand(id))}>查看商品 #{id} 依据</button>{expanded === id ? audits[id]?.version === resultVersion.current ? <Audit noun={noun} data={audits[id].data} /> : <p role="status">正在读取商品依据…</p> : null}</li>; })}</ul> : <EmptyState>暂无商品结果</EmptyState>}
       {members?.nextCursor ? <button type="button" disabled={busy} onClick={() => run(moreMembers)}>加载更多商品结果</button> : null}
 
         </section>
       </div>
     </ModalDialog> : null}
-    {dialog ? <ModalDialog open onClose={() => { if (!busy) { setDialog(null); invalidateDraft(); } }} aria-label="创建标签任务" className="management-dialog tag-create-dialog"><div className="dialog-body">
-      <h3>{dialog.allPending ? '批量新建标签任务' : '创建标签任务'}</h3>
-      {dialog.allPending ? <p>为全站符合条件、需要抽取标签的商品创建新任务。看板中的“待处理商品”仅统计当前已有任务。</p> : null}
+    {dialog ? <ModalDialog open onClose={() => { if (!busy) { setDialog(null); invalidateDraft(); } }} aria-label={`创建${noun}任务`} className="management-dialog tag-create-dialog"><div className="dialog-body">
+      <h3>{dialog.allPending ? `批量新建${noun}任务` : `创建${noun}任务`}</h3>
+      {dialog.allPending ? <p>为全站符合条件、需要{feature ? '识别特性' : '抽取标签'}的商品创建新任务。看板中的“待处理商品”仅统计当前已有任务。</p> : null}
       {!dialog.allPending ? <>
         <label>范围店铺<select disabled={busy} value={scopeShop} onChange={event => { setScopeShop(event.target.value); invalidateDraft(); }}><option value="">使用商品 ID</option>{shops?.items?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label>商品 ID（空格或逗号分隔）<textarea disabled={busy} value={ids} onChange={event => { setIds(event.target.value); invalidateDraft(); }} /></label>
       </> : null}
-      {!dialog.allPending ? <button type="button" disabled={busy || !enabled} onClick={() => run(() => makePreview())}>预览标签范围</button> : null}
+      {!dialog.allPending ? <button type="button" disabled={busy || !enabled} onClick={() => run(() => makePreview())}>预览{noun}范围</button> : null}
       {preview ? <>
         <p>模型：{preview.model}</p>
         <Metrics values={{ 选定商品: preview.counts.selected, 缺失商品: preview.counts.missing, 受保护商品: preview.counts.protected, 可处理商品: preview.counts.eligible, 超限商品: preview.counts.oversized, 唯一输入: preview.counts.uniqueInputs, 初始提取批次: preview.counts.requestBatches, '预计模型调用（正常两阶段）': preview.counts.requestBatches == null ? null : preview.counts.requestBatches * 2 }} />
@@ -500,13 +522,13 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
       {dialog.allPending || preview ? <>
         <p className="ai-field-help">提取与复核两阶段均可能消耗模型额度或产生费用。</p>
         <details><summary>调用与重试说明</summary>
-        <p>提取 LLM → 复核 LLM → 原子发布。每批可包含多个商品及其多个候选标签，复核逐标签只判 YES/NO，不纠正或补充标签。每个初始批次通常调用模型 2 次（一次提取、一次批量复核），提取和复核两个阶段均可能产生费用；拆批及重试可能增加调用次数。</p>
+        <p>提取 LLM → 复核 LLM → {feature ? '保存特性' : '原子发布'}。每批可包含多个商品及其多个候选{noun}，复核逐{noun}只判 YES/NO，不纠正或补充{noun}。每个初始批次通常调用模型 2 次（一次提取、一次批量复核），提取和复核两个阶段均可能产生费用；拆批及重试可能增加调用次数。</p>
         {dialog.allPending ? <p>资料和流水线版本未变化时，已完成的部分采纳及待复核结果不会自动重新入队。</p> : null}
         </details>
         <label className="tag-charge-confirmation"><input type="checkbox" checked={ack} disabled={busy} onChange={event => setAck(event.target.checked)} />我确认可能消耗模型额度或产生费用</label>
-        <button type="button" className="primary" disabled={busy || !enabled || !ack || (!dialog.allPending && !preview.counts.eligible)} onClick={() => run(create)}>确认创建标签任务</button>
+        <button type="button" className="primary" disabled={busy || !enabled || !ack || (!dialog.allPending && !preview.counts.eligible)} onClick={() => run(create)}>确认创建{noun}任务</button>
       </> : null}
-      {error ? <p role="alert">{error}</p> : null}
+      {error ? <p role="alert">{taskText(error, noun)}</p> : null}
       <button type="button" disabled={busy} onClick={() => { setDialog(null); invalidateDraft(); }}>关闭</button>
     </div></ModalDialog> : null}
   </section>;

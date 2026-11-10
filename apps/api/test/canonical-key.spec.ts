@@ -2,6 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.ts';
 
+test('product features never split a canonical standard identity', () => {
+  const identity = { family: 'openai', product: 'chatgpt', tier: 'plus' };
+  for (const membershipKind of ['account', 'top_up', 'rental', 'short_term', 'invalid', null]) {
+    const product = { ...identity, membershipKind };
+    assert.equal(buildCanonicalStandardKey(product), buildCanonicalStandardKey(identity));
+  }
+  assert.match(buildCanonicalStandardKey(identity), /^v3:/u);
+});
+
 test('canonical key is stable across case, Unicode normalization, whitespace and tag order', () => {
   const a = buildCanonicalStandardKey({ platform: ' 淘宝 ', family: 'ＧＰＵ', product: 'RTX  4090', tier: '高端', tags: [{ name: '显存', value: '24 GB' }, { name: '颜色', value: '黑' }] });
   const b = buildCanonicalStandardKey({ platform: '淘宝', family: 'gpu', product: 'rtx 4090', tier: '高端', tags: [{ name: '颜色', value: '黑' }, { name: '显存', value: '24 GB' }] });

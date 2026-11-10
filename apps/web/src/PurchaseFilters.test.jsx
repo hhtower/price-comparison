@@ -38,12 +38,13 @@ async function openFilters(tagFacets, product = {}) {
 
 test('shows minimum days only for period coverage and custom input only when requested', async () => {
   await openFilters([
-    { name: 'warranty', value: 'covered' }, { name: 'warranty', value: 'none' },
+    { name: 'warranty', value: 'covered' }, { name: 'warranty', value: 'none' }, { name: 'warranty', value: 'unknown' },
     { name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_days', value: '30' },
   ]);
   const group = within(screen.getByRole('group', { name: '质保要求', exact: true }));
   expect(group.getByRole('radio', { name: '质保要求不限' })).toBeChecked();
   expect(group.queryByRole('checkbox')).not.toBeInTheDocument();
+  expect(group.queryByRole('radio', { name: /有质保|无质保|未知|未说明/ })).not.toBeInTheDocument();
   expect(screen.queryByRole('group', { name: '售后保障', exact: true })).not.toBeInTheDocument();
   expect(group.queryByRole('group', { name: '最低质保天数' })).not.toBeInTheDocument();
   fireEvent.click(group.getByRole('radio', { name: '按质保时长' }));
@@ -62,7 +63,7 @@ test('shows minimum days only for period coverage and custom input only when req
   expect(group.getByRole('radio', { name: '至少30天' })).not.toBeChecked();
   fireEvent.click(group.getByRole('radio', { name: '至少7天' }));
   expect(group.queryByRole('textbox')).not.toBeInTheDocument();
-  fireEvent.click(group.getByRole('radio', { name: '仅保首次登录' }));
+  fireEvent.click(group.getByRole('radio', { name: '仅保首登' }));
   expect(group.queryByRole('group', { name: '最低质保天数' })).not.toBeInTheDocument();
 });
 
@@ -227,7 +228,7 @@ test('validates custom warranty days, discards unapplied edits and preserves the
 });
 
 test.each([
-  ['first_login', '仅保首次登录'], ['activation', '仅保激活'], ['first_code', '仅保首次接码'], ['subscription', '仅保掉订阅'],
+  ['first_login', '仅保首登'], ['activation', '仅保激活'], ['first_code', '仅保首次接码'], ['subscription', '保订阅'],
 ])('switching between minimum days and %s warranty replaces the previous query condition', async (scope, label) => {
   const requests = await openFilters([{ name: 'warranty_days', value: '30' }, { name: 'warranty_scope', value: scope }, { name: 'warranty', value: 'none' }]);
   const option = screen.getByRole('radio', { name: label });
@@ -241,10 +242,10 @@ test.each([
   await waitFor(() => expect(requests.at(-1).searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'warranty_scope', value: scope }]));
   expect(requests.at(-1).searchParams.has('warrantyDaysMin')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: /^筛选（1）/ }));
-  fireEvent.click(await screen.findByRole('radio', { name: '无质保' }));
-  fireEvent.click(screen.getByRole('button', { name: '应用筛选（1）' }));
-  await waitFor(() => expect(requests.at(-1).searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'warranty', value: 'none' }]));
-  expect(requests.at(-1).searchParams.has('warrantyDaysMin')).toBe(false);
+  fireEvent.click(await screen.findByRole('radio', { name: '质保要求不限' }));
+  fireEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+  await waitFor(() => expect(new URLSearchParams(window.location.search).getAll('tag')).toEqual([]));
+  expect(new URLSearchParams(window.location.search).has('warrantyDaysMin')).toBe(false);
 });
 
 test('does not treat incomplete number entry as clearing an applied warranty minimum', async () => {
@@ -272,7 +273,7 @@ test('does not treat incomplete number entry as clearing an applied warranty min
   expect(screen.getByRole('button', { name: /按质保时长/ })).toBeInTheDocument();
 });
 
-test('keeps any coverage distinct from period coverage and clears only warranty conditions', async () => {
+test('uses minimum days instead of generic coverage and clears only warranty conditions', async () => {
   const requests = await openFilters([
     { name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'period' },
     { name: 'delivery', value: 'top_up' },
@@ -280,13 +281,12 @@ test('keeps any coverage distinct from period coverage and clears only warranty 
   fireEvent.click(screen.getByRole('checkbox', { name: '交付方式：代充' }));
   fireEvent.click(screen.getByRole('radio', { name: '按质保时长' }));
   fireEvent.click(screen.getByRole('radio', { name: '至少30天' }));
-  fireEvent.click(screen.getByRole('radio', { name: '有质保（不限类型）' }));
-  expect(screen.queryByRole('group', { name: '最低质保天数' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('radio', { name: /有质保/ })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（2）' }));
   await waitFor(() => expect(requests.at(-1).searchParams.getAll('tag').map(JSON.parse)).toEqual([
-    { name: 'delivery', value: 'top_up' }, { name: 'warranty', value: 'covered' },
+    { name: 'delivery', value: 'top_up' },
   ]));
-  expect(requests.at(-1).searchParams.has('warrantyDaysMin')).toBe(false);
+  expect(requests.at(-1).searchParams.get('warrantyDaysMin')).toBe('30');
   fireEvent.click(screen.getByRole('button', { name: /^筛选（2）/ }));
   fireEvent.click(await screen.findByRole('radio', { name: '质保要求不限' }));
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（1）' }));
@@ -313,9 +313,10 @@ test('replaces warranty conditions in the quote detail panel and displays filter
   expect(dialog.queryByText('首登报价')).not.toBeInTheDocument();
   expect(dialog.queryByText('无保报价')).not.toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: '筛选（1）' }));
-  fireEvent.click(await dialog.findByRole('radio', { name: '无质保' }));
+  fireEvent.click(await dialog.findByRole('radio', { name: '仅保首登' }));
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
-  expect(await dialog.findByText('无保报价')).toBeInTheDocument();
+  expect(await dialog.findByText('首登报价')).toBeInTheDocument();
+  expect(dialog.queryByText('无保报价')).not.toBeInTheDocument();
   expect(dialog.queryByText('长周期报价')).not.toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: '筛选（1）' }));
   fireEvent.click(await dialog.findByRole('radio', { name: '质保要求不限' }));
@@ -334,13 +335,27 @@ test.each(['', '30'])('restores legacy multi-warranty URLs as one visible requir
   facets.forEach(tag => params.append('tag', JSON.stringify(tag)));
   window.history.replaceState(null, '', '/?' + params);
   const requests = await openFilters(facets);
-  expect(screen.getByRole('radio', { name: minimum ? '按质保时长' : '仅保首次登录' })).toBeChecked();
+  expect(screen.getByRole('radio', { name: minimum ? '按质保时长' : '仅保首登' })).toBeChecked();
   expect(screen.getByRole('radio', { name: '仅保激活' })).not.toBeChecked();
-  expect(screen.getByRole('radio', { name: '无质保' })).not.toBeChecked();
+  expect(screen.queryByRole('radio', { name: '无质保' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（2）' }));
   const catalog = requests.filter(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20').at(-1);
   expect(catalog.searchParams.getAll('tag').map(JSON.parse)).toEqual(minimum
     ? [{ name: 'delivery', value: 'top_up' }]
     : [{ name: 'delivery', value: 'top_up' }, { name: 'warranty_scope', value: 'first_login' }]);
   expect(catalog.searchParams.get('warrantyDaysMin')).toBe(minimum || null);
+});
+
+test.each(['covered', 'none', 'unknown'])('preserves a legacy %s query until a numeric requirement replaces it', async value => {
+  const legacy = { name: 'warranty', value };
+  window.history.replaceState(null, '', '/?' + new URLSearchParams({ tag: JSON.stringify(legacy) }));
+  const requests = await openFilters([legacy]);
+  const catalog = requests.find(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20');
+  expect(catalog.searchParams.getAll('tag').map(JSON.parse)).toEqual([legacy]);
+  expect(screen.queryByRole('radio', { name: /有质保|无质保|未知|未说明/ })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('radio', { name: '按质保时长' }));
+  fireEvent.click(screen.getByRole('radio', { name: '至少30天' }));
+  fireEvent.click(screen.getByRole('button', { name: '应用筛选（1）' }));
+  await waitFor(() => expect(requests.at(-1).searchParams.get('warrantyDaysMin')).toBe('30'));
+  expect(requests.at(-1).searchParams.getAll('tag')).toEqual([]);
 });

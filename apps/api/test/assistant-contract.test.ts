@@ -8,6 +8,39 @@ import {
 } from '@price-comparison/catalog/assistant-contract';
 import { applyNeedsPatch, parseUnderstanding, separateProductAttributes } from '../src/assistant/assistant.schemas.js';
 
+test('rental needs, understanding and quote snapshots accept the fourth kind', () => {
+  const membershipKinds = ['account', 'top_up', 'rental', 'short_term'];
+  assert.deepEqual(validateNeedsPatch({ membershipKinds }), { membershipKinds });
+  const understanding = parseUnderstanding({ intent: 'recommend', patch: { membershipKinds: ['rental'] },
+    evidence: [{ field: 'membershipKinds', quote: '租号' }], question: null, options: [] }, '只看租号');
+  assert.deepEqual(understanding.patch.membershipKinds, ['rental']);
+  const offer = { name: 'Rental', shop: 'Shop', spec: '', productUrl: '', tags: [], membershipKind: 'rental' };
+  assert.equal(validateAssistantReply({ ...reply(), cards: [{ ...card, offer }] }).cards[0]?.offer?.membershipKind, 'rental');
+  for (const kinds of [['rental', 'rental'], [...membershipKinds, 'rental'], ['unknown']]) {
+    assert.throws(() => validateNeedsPatch({ membershipKinds: kinds }));
+  }
+});
+
+test('optional membership preferences validate without rewriting old stored needs', () => {
+  const old = emptyShoppingNeeds();
+  assert.deepEqual(validateShoppingNeeds(old), old);
+  assert.deepEqual(validateNeedsPatch({ membershipKinds: ['short_term'], newcomer: false }),
+    { membershipKinds: ['short_term'], newcomer: false });
+  assert.deepEqual(applyNeedsPatch(old, { membershipKinds: null, newcomer: true }),
+    { ...old, membershipKinds: null, newcomer: true });
+  for (const patch of [{ membershipKinds: [] }, { membershipKinds: ['all'] }, { membershipKinds: ['account', 'account'] },
+    { membershipKinds: 'account' }, { membershipKinds: undefined }, { newcomer: null }, { newcomer: 'false' }]) {
+    assert.throws(() => validateNeedsPatch(patch));
+  }
+});
+
+test('assistant quote snapshots preserve validated membership kinds while accepting old snapshots', () => {
+  const offer = { name: 'Quote', shop: 'Shop', spec: '', productUrl: '', tags: [], membershipKind: 'top_up' };
+  const result = validateAssistantReply({ ...reply(), cards: [{ ...card, offer }] });
+  assert.equal(result.cards[0]?.offer?.membershipKind, 'top_up');
+  assert.throws(() => validateAssistantReply({ ...reply(), cards: [{ ...card, offer: { ...offer, membershipKind: 'all' } }] }));
+});
+
 test('product attribute separation preserves constraints, deduplicates tags and never broadens an attribute-only request', () => {
   const needs = { ...emptyShoppingNeeds(), product: 'ChatGPT Plus 代充 1个月 质保至少30天',
     requiredTags: [{ name: 'delivery', value: 'top_up' }, { name: 'access', value: 'dedicated' }],
@@ -117,7 +150,7 @@ test('strict needs and patches reject unknown fields, undefined, wrong shapes an
     { ...emptyShoppingNeeds(), preferences: ['newcomer'] }]) {
     assert.throws(() => validateShoppingNeeds(value), JSON.stringify(value));
   }
-  for (const patch of [{ newcomer: true }, { purpose: undefined }, { requiredTags: null },
+  for (const patch of [{ newcomer: 'true' }, { purpose: undefined }, { requiredTags: null },
     { budget: { ...budget, raw: 'secret' } }, JSON.parse('{"__proto__":{}}')]) {
     assert.throws(() => validateNeedsPatch(patch));
     assert.throws(() => applyNeedsPatch(emptyShoppingNeeds(), patch as never));
@@ -201,6 +234,9 @@ test('ambiguous price and warranty preferences cannot silently become hard requi
     ['质保尽量长一点', { warrantyDaysMin: 30 }, 'warrantyDaysMin'],
     ['最好独享', { requiredTags: [{ name: 'access', value: 'dedicated' }] }, 'requiredTags'],
     ['我是新手', { warrantyDaysMin: 30 }, 'warrantyDaysMin'],
+    ['我是新手', { membershipKinds: ['account', 'top_up'] }, 'membershipKinds'],
+    ['便宜一点', { newcomer: false }, 'newcomer'],
+    ['不要关闭新手模式', { newcomer: false }, 'newcomer'],
   ] as const;
   for (const [text, patch, field] of cases) {
     assert.throws(() => parseUnderstanding(understanding(patch, [{ field, quote: text }]), text));
@@ -267,7 +303,7 @@ test('reply validates complete cards and rejects extra fields and unsafe or mism
   }
   for (const value of [{ ...reply(), raw: 'secret' }, { ...reply(), text: '' },
     { ...reply(), kind: 'unknown' }, { ...reply(), kind: 'question' },
-    { ...reply(), cards: [card, card] }, { ...reply(), needs: { ...emptyShoppingNeeds(), newcomer: true } }]) {
+    { ...reply(), cards: [card, card] }, { ...reply(), needs: { ...emptyShoppingNeeds(), newcomer: 'true' } }]) {
     assert.throws(() => validateAssistantReply(value));
   }
 });

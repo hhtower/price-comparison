@@ -31,7 +31,7 @@ before(async () => {
 after(async () => { await db?.destroy(); if (schema) await admin.query(`drop schema "${schema}" cascade`); await admin?.end(); delete process.env.PG_SCHEMA; });
 async function fixture(count = 1) {
   const shop = await db.insertInto('shops').values({ platform: 'test', name: 'test', url: `https://test.invalid/${Math.random()}`, enabled: true }).returning('id').executeTakeFirstOrThrow();
-  const payload = { name: 'ChatGPT Plus 成品账号', spec: '1个月', sourceData: {} };
+  const payload = { name: 'ChatGPT Free 成品账号', spec: '1个月', sourceData: {} };
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   const products = [];
   for (let offset=0;offset<count;offset+=500) products.push(...await db.insertInto('products').values(Array.from({length:Math.min(500,count-offset)},(_,i)=>({ shop_id: shop.id, external_id: String(offset+i), name: payload.name, spec: payload.spec, source_category: '', source_data: jsonb({}), normalized_key: `tag-${Math.random()}`, url: 'https://test.invalid/p', content_version: 1n, content_fingerprint: fingerprint }))).returningAll().execute());
@@ -40,7 +40,7 @@ async function fixture(count = 1) {
   await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: inputId, fingerprint, payload: jsonb(payload), content_version: 1n, input_bytes: 100n, estimated_tokens: 100n }).execute();
   for (let offset=0;offset<products.length;offset+=500) await db.insertInto('ai_job_input_members').values(products.slice(offset,offset+500).map(p=>({ job_id: job.id, input_id: inputId, product_id: p.id, fingerprint, payload: jsonb(payload), content_version: 1n, standardization_revision: p.standardization_revision }))).execute();
   const batch = await db.insertInto('ai_job_batches').values({ job_id: job.id, batch_index: 0n, product_ids: jsonb([String(inputId)]), product_count: BigInt(count), status: 'running', claimed_by: 'test', claim_token: 'claim', attempts: 1n, lease_until: new Date(Date.now()+60000), step: 'request', request_budget_limit: 2 }).returningAll().executeTakeFirstOrThrow();
-  const standard = await db.insertInto('standard_products').values({ canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus', name: 'test', verification_state:'verified' }).returning('id').executeTakeFirstOrThrow();
+  const standard = await db.insertInto('standard_products').values({ canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'free', name: 'test', verification_state:'verified' }).returning('id').executeTakeFirstOrThrow();
   for (let offset=0;offset<products.length;offset+=500) await db.insertInto('standard_product_members').values(products.slice(offset,offset+500).map(p=>({ product_id: p.id, standard_product_id: standard.id, assignment_source: 'ai', publication_state: 'published' }))).execute();
   return { repo: new AiRepository(db), job, batch, products, inputId, payload };
 }
@@ -363,6 +363,7 @@ test('tag queue current coverage, filtering, audit and cursor pagination',async(
  assert.deepEqual(audit.member.payload,frozen.payload);
  await db.updateTable('products').set({content_version:2n}).where('id','=',f.inputId).execute();
  const current=await readAiTaskQueue(db,{jobType:'tag_extraction',status:'all',scopeShopId:f.products[0]!.shop_id,limit:100});assert.equal(current.summary.coveredProducts,0);assert.equal(current.summary.pendingProducts,2);
+ assert.equal((await db.selectFrom('standard_product_members').select('publication_state').where('product_id','=',f.inputId).executeTakeFirstOrThrow()).publication_state,'published');
  const other=await fixture();
  await db.updateTable('products').set({shop_id:other.products[0]!.shop_id}).where('id','=',f.products[1]!.id).execute();
  const scoped=await readAiTaskQueue(db,{jobType:'tag_extraction',status:'attention',scopeShopId:f.products[0]!.shop_id,limit:100});

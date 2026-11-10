@@ -1,4 +1,4 @@
-import { Body, Controller, Inject, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Inject, Param, Post, UseGuards, ValidationPipe } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { ArrayMaxSize, ArrayNotEmpty, ArrayUnique, Equals, IsArray, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { DomainValidationError } from '../common/errors.js';
@@ -36,6 +36,13 @@ export class AiController {
   @Post('tag-jobs') async createTags(@Body() body:TagJobCreateDto) {
     if(body.acknowledgePossibleCharge!==true) throw new DomainValidationError('AI_RETRY_ACK_REQUIRED','请确认任务可能计费');
     return jsonSafe(await this.service.createTagJob({...tagScope(body),requestId:body.requestId,previewDigest:body.previewDigest}));
+  }
+  @Post('feature-jobs/preview') async previewFeatures(@Body(new ValidationPipe({ expectedType: TagJobScopeDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) body: TagJobScopeDto) {
+    return jsonSafe(await this.service.previewMembershipFeatureJob(tagScope(body)));
+  }
+  @Post('feature-jobs') async createFeatures(@Body(new ValidationPipe({ expectedType: TagJobCreateDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) body: TagJobCreateDto) {
+    if (body.acknowledgePossibleCharge !== true) throw new DomainValidationError('AI_RETRY_ACK_REQUIRED', '请确认任务可能计费');
+    return jsonSafe(await this.service.createMembershipFeatureJob({ ...tagScope(body), requestId: body.requestId, previewDigest: body.previewDigest }));
   }
   @Post('jobs') async createJob(@Body() body: CreateJobDto) { return jsonSafe(await this.service.createJob({ model: body.model, batchSize: body.batchSize, scopeShopId: body.scopeShopId == null ? null : id(body.scopeShopId) })); }
   @Post('jobs/:id/pause') async pause(@Param('id') value: string) { return jsonSafe(await this.repository.pauseJob(id(value))); }

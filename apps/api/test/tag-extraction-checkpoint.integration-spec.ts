@@ -60,7 +60,7 @@ async function fixture(count = 1, evidence?: string) {
     content_version: 1n, standardization_revision: product.standardization_revision,
   }))).execute();
   const standard = await db.insertInto('standard_products').values({
-    name: 'test', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus', verification_state: 'verified',
+    name: 'test', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'free', verification_state: 'verified',
   }).returning('id').executeTakeFirstOrThrow();
   await db.insertInto('standard_product_members').values(products.map(product => ({
     product_id: product.id, standard_product_id: standard.id, assignment_source: 'ai' as const, publication_state: 'published' as const,

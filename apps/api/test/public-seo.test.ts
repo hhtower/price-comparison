@@ -7,6 +7,9 @@ import { SITE_NAME } from '@price-comparison/catalog/site-brand';
 import { registerPublicPages } from '../src/seo/public-pages.js';
 import type { CatalogPage } from '../src/catalog/catalog.repository.js';
 import { encodeCatalogCursor } from '../src/catalog/catalog.repository.js';
+import { productPagePath, productPageMetadata, productPageSchema } from '../src/seo/page-metadata.js';
+import type { MembershipKind } from '@price-comparison/catalog/membership-policy';
+import type { CatalogQueryInput } from '../src/catalog/catalog.service.js';
 
 const page: CatalogPage = { total: 1, platformFacets: ['openai'], items: [{
   id: '42', standardProductId: '42', name: 'ChatGPT Plus', platform: 'openai',
@@ -33,6 +36,104 @@ function schemaNode(document: Document, type: string): Record<string, any> {
   const data = JSON.parse(document.querySelector('#page-structured-data')!.textContent!);
   return data['@type'] === type ? data : data['@graph'].find((node: Record<string, any>) => node['@type'] === type);
 }
+
+test('shared metadata keeps feature paths and labels in paginated schema without changing standard URLs', () => {
+  const product = { id: '42', name: 'ChatGPT Plus' };
+  assert.equal(productPagePath('42'), '/products/42');
+  assert.equal(productPageMetadata(product, 2).path, '/products/42?page=2');
+  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期']] as const) {
+    const path = `/products/42/features/${kind}`;
+    assert.equal(productPagePath('42', 1, kind), path);
+    const metadata = productPageMetadata(product, 2, kind);
+    assert.equal(metadata.path, path + '?page=2');
+    assert.equal(metadata.title, `ChatGPT Plus · ${label}价格比较（第2页） - ${SITE_NAME}`);
+    assert.ok(metadata.description.includes(label));
+    const graph = productPageSchema(product, 'https://comparison.example', 2, kind)['@graph'] as Record<string, any>[];
+    assert.equal(graph.find(item => item['@type'] === 'CollectionPage')?.url, 'https://comparison.example' + path + '?page=2');
+    assert.equal(graph.find(item => item['@type'] === 'BreadcrumbList')?.itemListElement.at(-1).item, 'https://comparison.example' + path);
+    assert.equal(graph.find(item => item['@type'] === 'BreadcrumbList')?.itemListElement.at(-1).name, `ChatGPT Plus · ${label}`);
+  }
+});
+
+test('feature SSR pins its filter and preserves canonical, title and pagination across all kinds', async t => {
+  const queries: CatalogQueryInput[] = [];
+  const server = setup(t, {
+    getProduct: async (id: string) => ({ id, name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅', isAiMembership: true }),
+    getCatalog: async (input: CatalogQueryInput) => {
+      queries.push(input);
+      const offer = { ...page.items[0]!.offers[0]!, name: '仅选中特性报价' };
+      return { ...page, items: [{ ...page.items[0]!, detail: { kind: 'offers', entries: [offer], total: 30, page: input.detailPage, pageSize: 12 } }] };
+    },
+  });
+  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期']] as const) {
+    const path = `/products/42/features/${kind}`;
+    const response = await server.inject(path + '?page=2&membershipKind=rental&membershipKinds=short_term&newcomer=true&utm_source=test');
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(queries.at(-1), { standardProductId: '42', detailKind: 'offers', detailPage: 1,
+      detailPageSize: 12, currency: 'CNY', offerSort: 'price', membershipKinds: [kind] });
+    const document = new JSDOM(response.body).window.document;
+    assert.equal(document.querySelector('h1')!.textContent, `ChatGPT Plus · ${label}`);
+    assert.ok(document.title.includes(label));
+    assert.equal(document.querySelector('link[rel="canonical"]')!.getAttribute('href'), 'https://price.yufu.pub' + path + '?page=2');
+    assert.equal(document.querySelector('meta[property="og:url"]')!.getAttribute('content'), 'https://price.yufu.pub' + path + '?page=2');
+    assert.equal(schemaNode(document, 'CollectionPage').url, 'https://price.yufu.pub' + path + '?page=2');
+    assert.equal(document.querySelector('a[rel="prev"]')!.getAttribute('href'), path);
+    assert.equal(document.querySelector('a[rel="next"]')!.getAttribute('href'), path + '?page=3');
+    assert.equal(document.querySelector('a[href="/products/42"]'), null);
+    assert.match(document.body.textContent!, /仅选中特性报价/);
+    assert.equal((await server.inject(path + '?page=4')).statusCode, 404);
+  }
+});
+
+test('feature SSR rejects invalid kinds, non-AI products and invalid pages, and preserves merged feature URLs', async t => {
+  const queries: string[] = [];
+  const server = setup(t, {
+    getProduct: async (id: string) => { queries.push(id); return { id, name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅', isAiMembership: true }; },
+  });
+  for (const path of ['/products/42/features/unknown', '/products/42/features/ACCOUNT', '/products/0/features/account',
+    '/products/42/features/account?page=0', '/products/42/features/account?page=2&page=3']) {
+    const response = await server.inject(path);
+    assert.equal(response.statusCode, 404, path);
+    assert.equal(response.headers['x-robots-tag'], 'noindex, nofollow');
+  }
+  assert.deepEqual(queries, []);
+  const nonAi = setup(t, { getProduct: async () => ({ id: '42', name: '邮箱', platform: 'google', kind: '其他', isAiMembership: false }),
+    getCatalog: async () => assert.fail('non-AI features must not query offers') });
+  assert.equal((await nonAi.inject('/products/42/features/account')).statusCode, 404);
+  assert.equal((await setup(t).inject('/products/404/features/account')).statusCode, 404);
+  for (const isAiMembership of [true, false, undefined]) {
+    const merged = setup(t, { getProduct: async () => ({ id: '41', name: 'old', platform: 'openai', kind: '账号与订阅', isAiMembership, mergedIntoId: '42' }),
+      getCatalog: async () => assert.fail('merged products redirect before querying offers') });
+    const response = await merged.inject('/products/41/features/rental?page=2');
+    assert.equal(response.statusCode, 308, `source isAiMembership=${isAiMembership}`);
+    assert.equal(response.headers.location, '/products/42/features/rental?page=2');
+    assert.equal((await nonAi.inject(response.headers.location!)).statusCode, 404);
+  }
+  const unavailable = await setup(t, { getProduct: async () => { throw Error('private'); } }).inject('/products/42/features/account');
+  assert.equal(unavailable.statusCode, 503);
+  assert.equal(unavailable.headers['x-robots-tag'], 'noindex, nofollow');
+});
+
+test('SSR home links nonempty AI feature groups to their own details and keeps non-AI standard links', async t => {
+  const offer = page.items[0]!.offers[0]!;
+  const groups = (['account', 'rental', 'short_term', 'top_up'] as MembershipKind[]).map(kind => ({
+    kind, shopCount: kind === 'top_up' ? 0 : 1, productCount: kind === 'top_up' ? 0 : 1,
+    minPrice: '12.50', maxPrice: '12.50', latestCapturedAt: offer.capturedAt,
+    offers: kind === 'top_up' ? [] : [{ ...offer, name: `${kind}报价` }],
+  }));
+  const response = await setup(t, { getCatalog: async () => ({ ...page, items: [
+    { ...page.items[0]!, isAiMembership: true, membershipGroups: groups },
+    { ...page.items[0]!, id: '43', isAiMembership: false, name: '邮箱' },
+    { ...page.items[0]!, id: '44', isAiMembership: true, membershipGroups: [] },
+  ] }) }).inject('/');
+  const document = new JSDOM(response.body).window.document;
+  assert.deepEqual([...document.querySelectorAll('article h3 a')].map(link => link.getAttribute('href')),
+    ['/products/42/features/account', '/products/42/features/rental', '/products/42/features/short_term', '/products/43']);
+  assert.equal(document.querySelector('a[href="/products/42"]'), null);
+  assert.equal(document.querySelector('a[href="/products/44"]'), null);
+  assert.equal(document.querySelector('a[href="/products/42/features/top_up"]'), null);
+  assert.equal(document.querySelector('a[href="/products/42/features/rental"]')!.textContent, 'ChatGPT Plus · 租号');
+});
 
 test('public schema uses the configured origin and only marks visible FAQ answers', async t => {
   const origin = 'https://comparison.example';

@@ -9,11 +9,21 @@ import VisitorAnalytics from './VisitorAnalytics.jsx';
 import McpAdmin from './McpAdmin.jsx';
 import ModalDialog from './components/ModalDialog.jsx';
 import StandardProductPicker, { StandardProductFilter } from './components/StandardProductPicker.jsx';
+import { membershipKindLabel } from '@price-comparison/catalog/membership-policy';
 import './admin.css';
 import './ai-workbench.css';
 
 const PAGE_SIZE = 10;
 const PROCESSING_DISPOSITIONS = { review_required: '需人工审核', retry_available: '处理失败，可重试', pending: '等待处理', handled: '已处理' };
+const MEMBERSHIP_REASONS = {
+  warranty_covers_subscription: '质保覆盖订阅周期', full_subscription_promise: '明确保障完整订阅期',
+  duration_invalid_or_conflicting: '订阅周期不明确或存在冲突', warranty_invalid_or_conflicting: '保障证据不明确或存在冲突',
+  warranty_none_or_conflicting: '未提供有效保障', warranty_limited_scope: '仅保障首登、激活等操作',
+  warranty_terms_unresolved_or_limited: '保障条款存在限制或待确认', warranty_window_scope_unknown: '保障期限适用范围不明',
+  warranty_shorter_than_subscription: '保障期限不足', warranty_coverage_unproven: '缺少覆盖订阅期的保障证据',
+  delivery_unknown_or_conflicting: '交付对象不明确或存在冲突', conflicting_evidence: '当前销售事实存在冲突',
+  rental_or_shared_account: '租用或共享账号', ownership_invalid_or_conflicting: '账号归属不明确或存在冲突',
+};
 const emptyPage = { items: [], total: 0, page: 1, pageSize: PAGE_SIZE };
 const normalizePage = (data) => { const items = data.items || []; return { items, total: data.total ?? (items.length + (data.nextCursor ? PAGE_SIZE : 0)), page: data.page || 1, pageSize: data.pageSize || PAGE_SIZE }; };
 const CONFLICT_FIELDS = { warranty: '质保时长', sms_verification: '接码状态', credentials: '是否带账密', renewal: '续费规则' };
@@ -597,7 +607,7 @@ function ProductManagement({ setMessage }) {
     const row = event.currentTarget.closest('.standard-product-row');
     try {
       const name = row.querySelector('[data-standard-product-name]')?.value.trim();
-      const platform = row.querySelector('select')?.value || '';
+      const platform = row.querySelector('[data-standard-product-platform]')?.value || '';
       const familyInput = row.querySelector('[data-standard-product-family]');
       const productInput = row.querySelector('[data-standard-product-product]');
       const tierInput = row.querySelector('[data-standard-product-tier]');
@@ -991,6 +1001,13 @@ function ProductManagement({ setMessage }) {
                     <td>{product.shopName ?? product.shop_name ?? `商铺 #${product.shopId ?? product.shop_id ?? ''}`}</td>
                     <td className="standardization-cell">
                       <span className={`standard-product-pill ${product.standardProductName ?? product.standard_product_name ? 'is-assigned' : 'is-unassigned'}`} title={product.standardizationOutcome === 'cannot_process' ? '不能处理：当前商品信息不足或非售卖商品' : product.standardProductName ?? product.standard_product_name ?? '待处理'}>{product.standardizationOutcome === 'cannot_process' ? '不能处理' : product.standardProductName ?? product.standard_product_name ?? '待处理'}</span>
+                      {product.membershipFeatures ? <details>
+                        <summary>会员判定：{membershipKindLabel(product.membershipFeatures.decision.kind)}</summary>
+                        <p>{MEMBERSHIP_REASONS[product.membershipFeatures.decision.reason] ?? '依据当前销售事实判定'}</p>
+                        {product.membershipFeatures.decision.kind !== 'rental' ? <p>分类周期：{product.membershipFeatures.decision.durationSource === 'default' ? '默认一个月（非商家承诺）' : '商家明确说明'}</p> : null}
+                        <div className="tag-chips">{product.membershipFeatures.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{tag.value}</span>)}</div>
+                        {(product.membershipFeatures.evidence ?? []).map((fact, index) => <p key={index}>{conflictSource(fact.path)}：「{fact.quote}」</p>)}
+                      </details> : null}
                     </td>
                     <td className="table-time">{formatTime(product.updatedAt ?? product.updated_at)}</td>
                     <td><div className="row-actions">
@@ -1067,7 +1084,7 @@ function ProductManagement({ setMessage }) {
                         : <input disabled={saving} aria-label={`标准商品名称 ${standardProduct.name}`} data-standard-product-name value={draft.name ?? standardProduct.name} onChange={event => editStandardProduct(id, 'name', event.target.value)} />}
                       <label className="standard-product-aliases"><span>搜索别名</span><input disabled={saving || Boolean(standardProduct.mergedIntoId)} aria-label={'搜索别名 ' + standardProduct.name} data-standard-product-aliases placeholder="多个别名用逗号分隔" value={draft.aliases ?? (standardProduct.aliases ?? []).join(', ')} onChange={event => editStandardProduct(id, 'aliases', event.target.value)} /></label>
                     </div>
-                    <select disabled={saving} aria-label={`标准商品平台 ${standardProduct.name}`} value={draft.platform ?? standardProduct.platform ?? ''} onChange={event => editStandardProduct(id, 'platform', event.target.value)}>
+                    <select disabled={saving} data-standard-product-platform aria-label={`标准商品平台 ${standardProduct.name}`} value={draft.platform ?? standardProduct.platform ?? ''} onChange={event => editStandardProduct(id, 'platform', event.target.value)}>
                       <option value="">未分类</option>
                       {standardProduct.platform && !enabledPlatforms.some((platform) => platform.name === standardProduct.platform) ? <option value={standardProduct.platform}>{standardProduct.platform}</option> : null}
                       {enabledPlatforms.map((platform) => <option key={platform.id} value={platform.name}>{platform.name}</option>)}

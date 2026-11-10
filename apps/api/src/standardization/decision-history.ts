@@ -5,6 +5,7 @@ import { sanitizeEvidenceText } from './service-evidence.js';
 import { establishReviewedServiceEvidence } from './provider-publication.js';
 import { DomainValidationError } from '../common/errors.js';
 import { publicationEvidenceConflict } from './publication-evidence.js';
+import { readCurrentMembershipFeatures } from './membership-classification.js';
 
 export type ManualDecision = Selectable<ProductStandardizationDecisionTable>;
 
@@ -46,11 +47,18 @@ export async function recordManualDecisions(database: Kysely<DatabaseSchema>, pr
   if (decision.action === 'assign' && decision.standardProductId !== null) await establishReviewedServiceEvidence(database, decision.standardProductId, products.map(product => ({ name: product.name, spec: product.spec, sourceCategory: product.source_category, sourceData: product.source_data })), decision.allowEvidenceConflict);
   const target = decision.standardProductId === null ? undefined : await database.selectFrom('standard_products')
     .select(['canonical_family', 'canonical_product', 'canonical_tier', 'standard_key', 'service_evidence']).where('id', '=', decision.standardProductId).executeTakeFirstOrThrow();
-  const targetSnapshot = target ? { family: target.canonical_family, product: target.canonical_product, tier: target.canonical_tier, standardKey: target.standard_key, serviceEvidence: target.service_evidence } : null;
+  const targetSnapshot = target ? { family: target.canonical_family, product: target.canonical_product, tier: target.canonical_tier,
+    standardKey: target.standard_key, serviceEvidence: target.service_evidence } : null;
   const reason = sanitizeEvidenceText(decision.reason).replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim().slice(0, 2000);
   if (!reason) throw new Error('Manual decisions require a reason');
   const evidenceById = new Map(products.map(product => [product.id, normalizeProductEvidence({ name: product.name, spec: product.spec, sourceCategory: product.source_category, sourceData: product.source_data })]));
   await database.updateTable('products').set({ standardization_revision: sql`standardization_revision + 1`, updated_at: new Date() }).where('id', 'in', ids).execute();
+  for (const product of products) {
+    const features = readCurrentMembershipFeatures(product.membership_features, product);
+    if (features) await database.updateTable('products').set({
+      membership_features: jsonb({ ...features, revision: String(product.standardization_revision + 1n) } as unknown as JsonValue),
+    }).where('id', '=', product.id).execute();
+  }
   await database.insertInto('product_standardization_decisions').values(products.map(product => ({
     product_id: product.id, action: decision.action, standard_product_id: decision.standardProductId, previous_standard_product_id: previous.get(product.id) ?? null,
     target_snapshot: targetSnapshot === null ? null : jsonb(targetSnapshot), content_version: product.content_version, content_fingerprint: product.content_fingerprint,

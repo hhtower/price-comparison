@@ -13,7 +13,7 @@ import { hasActiveStandardizationWork } from '../ai/product-standardization-stat
 const hasProtectedStandardization = sql<boolean>`(${hasActiveStandardizationWork} or exists (
   select 1 from (
     select r.decision, batch.reference_snapshot->>'standardizationStage' as stage,
-      source_job.job_type <> 'tag_extraction' and coalesce(source_job.pipeline_versions->>'standardizationReviewPrompt', '') <> '' as review_pipeline
+      source_job.job_type not in ('tag_extraction', 'membership_features') and coalesce(source_job.pipeline_versions->>'standardizationReviewPrompt', '') <> '' as review_pipeline
     from ai_standardization_results r join ai_jobs source_job on source_job.id = r.job_id
     join ai_job_input_members input on input.job_id = r.job_id and input.product_id = r.product_id
     left join ai_job_batches batch on batch.id = r.batch_id
@@ -111,8 +111,9 @@ async function planRepair(tx: Transaction<DatabaseSchema>): Promise<NameConsensu
       plan.protectedProducts++; continue;
     }
     if (publicationEvidenceConflict(evidence) || isExcludedApiRelay(evidence)) { plan.evidenceConflicts++; continue; }
+    const assessed = assessProductEvidence({ name: product.name, spec: product.spec, category: product.source_category, sourceData: product.source_data }).identity;
     const winner = compatibleNameConsensus(evidence, winners);
-    const identity = winner ? undefined : assessProductEvidence({ name: product.name, spec: product.spec, category: product.source_category, sourceData: product.source_data }).identity;
+    const identity = winner ? undefined : assessed;
     const matches = identity ? byIdentity.get(buildCanonicalStandardKey(identity)) : undefined;
     const target = winner?.standardProductId ?? (matches?.length === 1 ? matches[0] : undefined);
     if (!target) { plan.unresolvedProducts++; continue; }

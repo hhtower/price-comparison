@@ -4,13 +4,17 @@ import type { StandardizationTag } from './ai.schemas.js';
 import { validateStandardizationTags, validateTagCitations } from './standardization-evidence.js';
 import { sanitizeEvidenceText } from '../standardization/service-evidence.js';
 import { PRODUCT_TAG_RULES, isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
+import type { MembershipClassification, MembershipKind } from '@price-comparison/catalog/membership-policy';
 
 export type TagExtractionOutcome = 'updated' | 'unchanged' | 'empty' | 'review' | 'skipped' | 'failed' | 'cancelled';
 export interface TagFact { name: string; value: string }
 export interface TagExtractionTag extends StandardizationTag { proposalIndex?: number }
 export interface RejectedTag extends TagExtractionTag { reasonCode: string; reason: string }
-export interface TagExtractionDecision { productId: bigint; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; reviewed?: boolean; reviewDecisions?: boolean[]; textReview?: TextReview | null }
+export interface TagExtractionDecision { productId: bigint; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; membershipKind?: MembershipKind; classificationReviewed?: boolean; reviewed?: boolean; reviewDecisions?: boolean[]; textReview?: TextReview | null }
 export interface TagExtractionResult {
+  classification?: MembershipClassification;
+  proposedMembershipKind?: MembershipKind;
+  classificationReviewed?: boolean;
   outcome: TagExtractionOutcome; reasonCode: string | null;
   acceptedTags: TagExtractionTag[]; rejectedTags: RejectedTag[];
   before: TagFact[]; after: TagFact[];
@@ -104,8 +108,8 @@ export function validateReviewedTagExtractionDecision(productId: bigint, tags: r
     ...(validatedText !== undefined ? { textReview: validatedText } : {}),
     ...(decisions !== undefined ? { reviewDecisions: [...decisions] } : {}) };
 }
-export function buildTagExtractionOutcome(decision: TagExtractionDecision, before: TagFact[], terminal?: { outcome: 'skipped' | 'failed' | 'cancelled'; reasonCode: string }): TagExtractionResult {
-  const names = new Set(decision.tags.map(t => t.name));
+export function buildTagExtractionOutcome(decision: TagExtractionDecision, before: TagFact[], terminal?: { outcome: 'skipped' | 'failed' | 'cancelled'; reasonCode: string }, replaceNames: readonly string[] = []): TagExtractionResult {
+  const names = new Set([...decision.tags.map(t => t.name), ...replaceNames]);
   const retainedUnconfirmed = before.filter(t => !names.has(t.name));
   const after = terminal ? before : [...retainedUnconfirmed, ...decision.tags.map(({ name, value }) => ({ name, value }))];
   const values = (tags: TagFact[], name: string) => tags.filter(t => t.name === name).map(t => t.value).sort();

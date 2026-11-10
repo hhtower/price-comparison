@@ -51,6 +51,8 @@ function harness(outputs: unknown[], text = '我主要用来学习', needs = emp
 test('understanding prompt examples validate evidence and preserve or explicitly clear existing needs', async () => {
   const state = harness([{ intent: 'clarify', patch: {}, evidence: [], question: '你想买什么商品？', options: [] }]);
   await state.run();
+  assert.match(state.prompts[0]!, /租号、共享、合租=membershipKinds:\["rental"\]/u);
+  assert.match(state.prompts[0]!, /四个枚举值/u);
   const examples = [...state.prompts[0]!.matchAll(/<understanding_example>\s*<input>([\s\S]*?)<\/input>\s*<output>([\s\S]*?)<\/output>\s*<\/understanding_example>/gu)];
   assert.equal(examples.length, 2);
   const needs = examples.map(example => {
@@ -60,9 +62,10 @@ test('understanding prompt examples validate evidence and preserve or explicitly
   });
   assert.deepEqual(needs[0], {
     purpose: '写代码', platform: 'openai', product: 'ChatGPT Plus', budget: null,
-    requiredTags: [{ name: 'delivery', value: 'top_up' }], warrantyDaysMin: 30, preferences: ['lower_price'],
+    requiredTags: [], membershipKinds: ['top_up'], warrantyDaysMin: 30, preferences: ['lower_price'],
   });
-  assert.deepEqual(needs[1], { ...needs[0], requiredTags: [], warrantyDaysMin: null, preferences: [] });
+  assert.deepEqual(needs[1], { purpose: '写代码', platform: 'openai', product: 'ChatGPT Plus', budget: null,
+    requiredTags: [], warrantyDaysMin: null, preferences: [] });
 });
 
 test('one complete understanding request can end in one question without querying arbitrary products', async () => {
@@ -77,8 +80,10 @@ test('one complete understanding request can end in one question without queryin
 });
 
 function shoppingFixture() {
-  const product = { id: '42', name: 'Claude Pro', platform: 'anthropic', platformGroup: 'anthropic', kind: '订阅' };
+  const product = { id: '42', name: 'Claude Pro', platform: 'anthropic', platformGroup: 'anthropic', kind: '订阅',
+    identity: { family: 'anthropic', product: 'claude', tier: 'pro' } };
   const offer: CatalogOffer = {
+    membershipKind: 'top_up',
     shopId: '3', productId: '9', name: 'Pro 一个月', shop: '测试商铺', price: '30.00', currency: 'CNY',
     settlementQuantity: 1, priceStatus: 'verified', capturedAt: quoteNow.toISOString(),
     priceExpiresAt: new Date(quoteNow.getTime() + 60_000).toISOString(), inventoryExpiresAt: new Date(quoteNow.getTime() + 60_000).toISOString(),
@@ -87,13 +92,43 @@ function shoppingFixture() {
   };
   const needs: ShoppingNeeds = { ...emptyShoppingNeeds(), purpose: '写代码' };
   const catalog: Partial<CatalogService> = {
-    resolvePublicProductIdentity: async () => product,
+    resolvePublicProductIdentities: async () => [product],
     getProduct: async () => product,
     getProducts: async () => ({ items: [product] }),
     getReferenceOffers: async () => [offer],
   };
   return { offer, needs, catalog };
 }
+
+test('explicit rental understanding reaches catalog filters and the saved quote without a real model', async () => {
+  const fixture = shoppingFixture();
+  const product = { id: '42', name: 'Claude Pro', platform: 'anthropic', kind: '订阅',
+    identity: { family: 'anthropic', product: 'claude', tier: 'pro' } };
+  fixture.offer = { ...fixture.offer, membershipKind: 'rental' };
+  const state = harness([
+    { intent: 'recommend', patch: { membershipKinds: ['rental'] },
+      evidence: [{ field: 'membershipKinds', quote: '合租' }], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string; text: string }> }> }) => {
+      const candidate = input.candidates[0]!;
+      const rental = candidate.evidence.find(item => item.text.includes('租号'))!;
+      assert.ok(rental);
+      return { selections: [{ productId: candidate.productId, evidenceIds: [rental.id] }] };
+    },
+  ], '只看合租', { ...emptyShoppingNeeds(), product: 'Claude Pro' }, {
+    getProducts: async () => ({ items: [product] }),
+    getReferenceOffers: async input => {
+      assert.deepEqual(input.membershipKinds, ['rental']);
+      assert.equal(input.newcomer, true);
+      assert.deepEqual(input.tags, []);
+      return [fixture.offer];
+    },
+  });
+  await state.run();
+  assert.equal(state.calls, 2);
+  assert.deepEqual(state.saved?.needs.membershipKinds, ['rental']);
+  assert.equal(state.saved?.cards[0]?.offer?.membershipKind, 'rental');
+  assert.match(state.saved?.cards[0]?.reasons.join(' ') ?? '', /租号/u);
+});
 
 test('recommendation uses two calls and assembles the standard-product link and actual price on server', async () => {
   const fixture = shoppingFixture();
@@ -197,29 +232,51 @@ test('reranking preserves the preferred quote and fills omissions from determini
   assert.equal(state.saved?.cards.length, 3);
 });
 
-test('AI newcomer priority survives model reranking and falls back silently without rewriting needs', async () => {
+test('AI default remains a hard SQL request with budgets and preferences and never fills short term', async () => {
   for (const qualifyingCount of [0, 1, 3]) {
     const fixture = shoppingFixture();
-    const offers = Array.from({ length: 5 }, (_, index) => ({ ...fixture.offer,
-      productId: String(index + 1), price: String(10 + index), tags: [...fixture.offer.tags,
-        { name: 'delivery', value: 'account' }, { name: 'warranty_days', value: index >= 5 - qualifyingCount ? '30' : '1' },
-      ],
+    const offers = Array.from({ length: qualifyingCount }, (_, index) => ({ ...fixture.offer,
+      productId: String(index + 1), price: String(10 + index), membershipKind: 'account' as const,
     }));
+    const needs = { ...fixture.needs, budget: { amount: '99', currency: 'CNY', basis: 'purchase' as const },
+      preferences: ['lower_price' as const] };
     const state = harness([
       { intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
       (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
-        selections: ['1', '2', '3'].map(productId => {
-          const candidate = input.candidates.find(candidate => candidate.productId === productId)!;
-          return { productId, evidenceIds: [candidate.evidence[0]!.id] };
-        }),
+        selections: input.candidates.map(candidate => ({ productId: candidate.productId, evidenceIds: [candidate.evidence[0]!.id] })),
       }),
-    ], '请推荐', fixture.needs, { ...fixture.catalog, getReferenceOffers: async () => offers });
+    ], '请推荐', needs, { ...fixture.catalog, getReferenceOffers: async input => {
+      assert.equal(input.newcomer, true);
+      assert.equal(input.priceMax, '99');
+      assert.equal(input.membershipKinds, undefined);
+      return offers;
+    } });
     await state.run();
-    const ids = state.saved?.cards.map(card => card.productId);
-    assert.deepEqual(ids, qualifyingCount === 3 ? ['3', '4', '5'] : qualifyingCount === 1 ? ['5', '1', '2'] : ['1', '2', '3']);
-    assert.deepEqual(state.saved?.needs, fixture.needs);
-    assert.equal(state.saved?.text, '找到以下报价。', 'internal ranking needs no extra user-facing explanation');
-    assert.equal(state.calls, 2);
+    assert.equal(state.saved?.cards.length, qualifyingCount);
+    assert.deepEqual(state.saved?.needs, needs);
+    assert.equal(state.saved?.kind, qualifyingCount ? 'recommendation' : 'no_match');
+    assert.equal(state.calls, qualifyingCount ? 2 : 1);
+  }
+});
+
+test('explicit natural-language membership and all-category choices reach the query and persist only as user choices', async () => {
+  for (const [text, patch] of [
+    ['只看短期', { membershipKinds: ['short_term'] }],
+    ['全部类别', { membershipKinds: null, newcomer: false }],
+    ['只看成品号', { membershipKinds: ['account'] }],
+  ] as const) {
+    const fixture = shoppingFixture();
+    if (patch.membershipKinds === null) fixture.needs.membershipKinds = ['top_up'];
+    let query: Parameters<CatalogService['getReferenceOffers']>[0] | undefined;
+    const state = harness([{ intent: 'recommend', patch,
+      evidence: Object.keys(patch).map(field => ({ field, quote: text })), question: null, options: [] }],
+    text, fixture.needs, { ...fixture.catalog, getReferenceOffers: async input => { query = input; return []; } });
+    await state.run();
+    assert.deepEqual(query?.membershipKinds, patch.membershipKinds ?? undefined);
+    assert.equal(query?.newcomer, 'newcomer' in patch ? patch.newcomer : true);
+    assert.deepEqual(state.saved?.needs, { ...fixture.needs, ...patch });
+    assert.equal(state.saved?.kind, 'no_match');
+    assert.equal(state.calls, 1);
   }
 });
 
@@ -365,7 +422,7 @@ test('follow-up product selection preserves budget and purpose while browsing th
       selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
     }),
   ], '我想购买gpt plus，你觉得哪些适合我呢？', needs, {
-    ...fixture.catalog, resolvePublicProductIdentity: async () => null, getProduct: async () => product,
+    ...fixture.catalog, resolvePublicProductIdentities: async () => [], getProduct: async () => product,
     getProducts: async () => ({ items: [product] }),
     getReferenceOffers: async query => {
       assert.equal(query.standardProductId, '42');
@@ -549,7 +606,7 @@ test('quote snapshots bound merchant text, preserve terms or mark omissions, and
   assert.match(state.saved?.cards[0]?.offer?.spec ?? '', /完整/u);
 });
 
-test('model explanation cannot omit the preferred warranty and top-up quote', async () => {
+test('model explanation cannot omit the quote preferred by an explicit longer warranty preference', async () => {
   const fixture = shoppingFixture();
   const preferred = { ...fixture.offer, productId: '10', price: '50.00', tags: [...fixture.offer.tags,
     { name: 'warranty', value: 'covered' }, { name: 'warranty_days', value: '30' }, { name: 'delivery', value: 'top_up' }] };
@@ -558,7 +615,8 @@ test('model explanation cannot omit the preferred warranty and top-up quote', as
       assert.equal(input.candidates[0]!.productId, '10');
       const cheap = input.candidates.find(candidate => candidate.productId === '9')!;
       return { selections: [{ productId: cheap.productId, evidenceIds: [cheap.evidence[0]!.id] }] };
-    }], '请推荐', fixture.needs, { ...fixture.catalog, getReferenceOffers: async () => [fixture.offer, preferred] });
+    }], '请推荐', { ...fixture.needs, preferences: ['longer_warranty'] },
+    { ...fixture.catalog, getReferenceOffers: async () => [fixture.offer, preferred] });
   await state.run();
   assert.deepEqual(state.saved?.cards.map(card => card.productId), ['10', '9']);
   assert.match(state.saved?.cards[0]?.reasons.join(' ') ?? '', /给你已有账号充值/u);
@@ -593,7 +651,7 @@ test('recommendation retains the capability evidence captured by the initial que
       return { selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }] };
     },
   ], '请推荐', fixture.needs, {
-    ...fixture.catalog, resolvePublicProductIdentity: async identity => changed ? null : fixture.catalog.resolvePublicProductIdentity!(identity),
+    ...fixture.catalog, resolvePublicProductIdentities: async identity => changed ? [] : fixture.catalog.resolvePublicProductIdentities!(identity),
   });
   await state.run();
   assert.equal(state.saved?.kind, 'recommendation');
@@ -762,7 +820,7 @@ for (const [platform, name] of [['openai', 'ChatGPT'], ['anthropic', 'Claude'], 
     const previous: AssistantReply = { kind: 'question', text: '你想了解哪个平台或套餐？可以选一个，也可以直接输入名称。',
       options: ['ChatGPT', 'Claude', 'Gemini'], needs, cards: [] };
     const state = harness([{ intent: 'recommend', patch: { platform }, evidence: [{ field: 'platform', quote: name }], question: null, options: [] }],
-      name, needs, { resolvePublicProductIdentity: async () => null, getReferenceOffers: async () => [] }, [{ text: '写代码', reply: previous }]);
+      name, needs, { resolvePublicProductIdentities: async () => [], getReferenceOffers: async () => [] }, [{ text: '写代码', reply: previous }]);
     await state.run();
     assert.equal(state.saved?.kind, 'no_match');
     assert.deepEqual(state.saved?.needs, { ...needs, platform });

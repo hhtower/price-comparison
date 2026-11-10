@@ -180,7 +180,7 @@ test('keeps inline filters below the sticky toolbar without scrolling an already
   }
 });
 
-test('uses main search and purchase filters without fetching or displaying the product directory', async () => {
+test('keeps main search and delivery filters independent of the standard product selector', async () => {
   const calls = mockApi(); render(<App />);
   await screen.findByRole('link', { name: product.name });
   fireEvent.change(screen.getByRole('textbox', { name: '搜索商品' }), { target: { value: 'Plus' } });
@@ -191,7 +191,8 @@ test('uses main search and purchase filters without fetching or displaying the p
   expect(panel.queryByRole('searchbox')).not.toBeInTheDocument();
   expect(panel.queryByRole('group', { name: '商品平台' })).not.toBeInTheDocument();
   expect(panel.queryByRole('radio')).not.toBeInTheDocument();
-  expect(calls.some(url => url.pathname === '/api/catalog/products')).toBe(false);
+  expect(calls.filter(url => url.pathname === '/api/catalog/products')).toHaveLength(1);
+  expect(panel.getByRole('combobox', { name: '标准商品' })).toHaveValue('');
   fireEvent.click(panel.getByRole('button', { name: '应用筛选（1）' }));
   await waitFor(() => expect(calls.some(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20'
     && url.searchParams.get('q') === 'Plus' && url.searchParams.getAll('tag').includes('{"name":"delivery","value":"top_up"}'))).toBe(true));
@@ -200,7 +201,7 @@ test('uses main search and purchase filters without fetching or displaying the p
   expect(screen.queryByLabelText('已选筛选条件')).not.toBeInTheDocument();
 });
 
-test('keeps old product links clearable without the picker and discards unapplied edits', async () => {
+test('keeps old product links in the selector and discards unapplied edits', async () => {
   window.history.replaceState({}, '', '/?platform=openai&standardProductId=42');
   const calls = mockApi(); render(<App />);
   await screen.findByRole('button', { name: /Codex 手机接码/ });
@@ -212,7 +213,8 @@ test('keeps old product links clearable without the picker and discards unapplie
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
   expect(screen.getByRole('checkbox', { name: /代充/ })).not.toBeChecked();
   expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
-  expect(calls.some(url => url.pathname === '/api/catalog/products')).toBe(false);
+  expect(calls.filter(url => url.pathname === '/api/catalog/products')).toHaveLength(1);
+  expect(screen.getByRole('combobox', { name: '标准商品' })).toHaveValue('42');
   fireEvent.click(within(screen.getByRole('region', { name: '筛选报价' })).getByRole('button', { name: '清除全部' }));
   fireEvent.click(screen.getByRole('button', { name: '应用筛选', exact: true }));
   expect(new URLSearchParams(window.location.search).has('standardProductId')).toBe(false);
@@ -342,11 +344,12 @@ test.each([
   ['unknown', [{ name: 'warranty', value: 'unknown' }, { name: 'warranty_scope', value: 'unspecified' }], null],
   ['first login', [{ name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_days', value: '1' }], '仅保首登'],
   ['activation', [{ name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'activation' }], '仅保激活'],
-  ['subscription days', [{ name: 'warranty_scope', value: 'subscription' }, { name: 'warranty_window', value: '30 days' }, { name: 'warranty_exclusion', value: 'ban' }], '质保30天（仅保掉订阅；不保封号）'],
+  ['subscription days', [{ name: 'warranty_scope', value: 'subscription' }, { name: 'warranty_window', value: '30 days' }, { name: 'warranty_exclusion', value: 'ban' }], '保订阅30天'],
   ['period months', [{ name: 'warranty_scope', value: 'period' }, { name: 'warranty_window', value: '1 month' }], '质保1个月'],
-  ['subscription unknown term', [{ name: 'warranty_scope', value: 'subscription' }], '仅保掉订阅（时长未注明）'],
-  ['period unknown term', [{ name: 'warranty_scope', value: 'period' }], '有质保（时长未注明）'],
-  ['none', [{ name: 'warranty', value: 'none' }], '无质保'],
+  ['subscription unknown term', [{ name: 'warranty_scope', value: 'subscription' }], '保订阅'],
+  ['period unknown term', [{ name: 'warranty_scope', value: 'period' }], null],
+  ['covered unknown term', [{ name: 'warranty', value: 'covered' }], null],
+  ['none', [{ name: 'warranty', value: 'none' }], null],
 ])('renders %s warranty without unknown placeholders in cards and comparison', async (_name, tags, warranty) => {
   mockApi({ tags }); render(<App />);
   await screen.findByRole('link', { name: product.name });
@@ -379,7 +382,7 @@ test('offers one canonical rapid purchase condition and hides unknown facets', a
   expect(panel.getAllByRole('checkbox', { name: /速刷/ })).toHaveLength(1);
   fireEvent.click(panel.getByRole('radio', { name: '仅保激活' }));
   expect(panel.getByText('速刷')).toBeInTheDocument();
-  expect(panel.getByRole('radio', { name: '仅保首次登录' })).toBeInTheDocument();
+  expect(panel.getByRole('radio', { name: '仅保首登' })).toBeInTheDocument();
   expect(panel.queryByText(/未说明|商家标注/)).not.toBeInTheDocument();
   fireEvent.click(panel.getByRole('button', { name: '应用筛选（2）' }));
   await waitFor(() => expect(calls.some(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20'
@@ -412,7 +415,7 @@ test('removing the rapid intent clears every daily synonym while keeping product
 });
 
 test.each([
-  ['first_login', '仅保首次登录'], ['activation', '仅保激活'], ['first_code', '仅保首次接码'], ['subscription', '仅保掉订阅'],
+  ['first_login', '仅保首登'], ['activation', '仅保激活'], ['first_code', '仅保首次接码'], ['subscription', '保订阅'],
 ])('keeps %s and full-period minimum days mutually exclusive in detail filters', async (scope, label) => {
   window.history.replaceState({}, '', '/products/42');
   const calls = mockApi({ facets: [{ name: 'warranty_days', value: '30' }, { name: 'warranty_scope', value: scope }] });
@@ -716,8 +719,8 @@ test.each(['/', '/products/42'])('prioritizes warranty, account access and deliv
 });
 
 test.each([
-  [[{ name: 'warranty', value: 'none' }], ['无质保', '独享', '代充']],
-  [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_window', value: '24 hours' }], ['仅保首登（24小时内）', '独享', '代充']],
+  [[{ name: 'warranty', value: 'none' }], ['独享', '代充', '禁止改密']],
+  [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_window', value: '24 hours' }], ['仅保首登', '独享', '代充']],
   [[{ name: 'warranty', value: 'unknown' }], ['独享', '代充', '禁止改密']],
 ])('keeps warranty limits and unknown handling when prioritizing %j', async (warrantyTags, expected) => {
   mockApi({ tags: [

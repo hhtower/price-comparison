@@ -4,6 +4,8 @@ import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-
 const REGION_NAMES = new Intl.DisplayNames(['zh-CN'], { type: 'region', fallback: 'code' });
 const REGION_FIELDS = new Set(['region', 'region_options', 'recommended_ip_region', 'registration_region', 'payment_region']);
 const VALUE_LABELS = {
+  access: { uncertain: '共享情况不确定' },
+  rental: { 不确定: '租用情况不确定' },
   delivery_format: { credentials: '账密', cdk: '卡密', json: 'JSON', refresh_token: '刷新令牌', token: '令牌', cookie: 'Cookie', link: '兑换链接', sms_link: '接码链接', email_api: '邮箱接口', pdf: 'PDF' },
   access_channel: { reverse_proxy: '反向代理', web: '网页', mirror: '镜像站', imap: 'IMAP', pop3: 'POP3', graph: 'Microsoft Graph', api: 'API' },
   login_method: { oauth2: 'OAuth2 授权', sso: '单点登录', password: '密码', email_code: '邮箱验证码' },
@@ -42,13 +44,14 @@ export function displayPurchaseTagValue(tag, fallback = value => value.value) {
 }
 
 const BOOLEAN_TEXT = {
+  rental: ['租号', '非租号'],
   '2fa': ['含2FA', '无2FA'], sms_required: ['需接码', '无需接码'], kyc_required: ['需实名', '无需实名'],
   renewable: ['可续费', '不可续费'], vpn_required: ['需代理', '无需代理'], single_use: ['一次性使用', '可多次使用'],
   subscription_override: ['覆盖现有订阅', '不覆盖订阅'], '3ds': ['支持3DS', '不支持3DS'],
   card_binding_required: ['需绑卡', '无需绑卡'], email_included: ['含邮箱', '不含邮箱'],
   invoice: ['含发票', '无发票'], official_bill: ['含官方账单', '无官方账单'],
 };
-const STANDALONE_FIELDS = new Set(['delivery', 'delivery_format', 'delivery_mode', 'access', 'access_channel',
+const STANDALONE_FIELDS = new Set(['delivery', 'delivery_format', 'delivery_mode', 'access', 'rental', 'access_channel',
   'account_lifecycle', 'sms_verification', 'intended_use', 'kyc', 'warranty', 'warranty_scope',
   'renewal_timing', 'usage_restriction', 'card_type', 'ip_type']);
 const SHORT_LABELS = {

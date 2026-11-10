@@ -9,10 +9,11 @@ import { validateStandardizationEvidence } from './standardization-evidence.js';
 import { classifyProviderRequestFailure } from './standardization-state.js';
 import { buildStandardizationRequest, assertStandardizationRequestFits, readStandardizationRequestLimits } from './standardization-request.js';
 import { buildTagExtractionRequest, parseTagExtractionResponse } from './tag-extraction-request.js';
+import { assertMembershipFeatureProposals, buildMembershipFeatureRequest, MEMBERSHIP_FEATURE_REVIEW_PROMPT, parseMembershipFeatureResponse } from './membership-feature-request.js';
 import { validateReviewedTagExtractionDecision, type TagExtractionDecision } from './tag-extraction-result.js';
 import { buildTagReviewRequest, parseTagReviewResponse, type TagReviewResponse } from './tag-review-request.js';
 import { buildExtractionPayload } from './adaptive-batching.js';
-import type { JsonValue } from '../database/types.js';
+import { isAttributeJobType, type JsonValue } from '../database/types.js';
 import { buildResponseAudit } from './response-audit.js';
 import { buildStandardizationReviewRequest, parseStandardizationReviewResponse } from './standardization-review-request.js';
 export { buildStandardizationRequest, estimateStandardizationRequest, assertStandardizationRequestFits, readStandardizationRequestLimits } from './standardization-request.js';
@@ -48,7 +49,7 @@ export function createAiWorker(service: WorkerRuntimeService, options: FactoryOp
         attempt: job.attempts,
         token: typeof job.row.claim_token === 'string' ? job.row.claim_token : undefined,
       };
-      if (job.row.job_type === 'tag_extraction') await options.repository!.publishTagExtractionBatch(BigInt(job.id), claim);
+      if (isAttributeJobType(job.row.job_type)) await options.repository!.publishTagExtractionBatch(BigInt(job.id), claim);
       else await options.repository!.publishBatch(BigInt(job.id), claim);
       return;
     }
@@ -133,16 +134,21 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
   const limits = readStandardizationRequestLimits(environment);
   const prepare: NonNullable<StandardizationModelCall['prepare']> = async (claimed, signal) => {
     signal.throwIfAborted();
-    // Tag extraction jobs take a different path: no candidate catalog, simpler prompt.
-    if (claimed.row?.job_type === 'tag_extraction') {
+    // Attribute tasks share transport and checkpoints, but feature extraction has its own vocabulary.
+    if (isAttributeJobType(claimed.row?.job_type)) {
+      const membershipFeatures = claimed.row.job_type === 'membership_features';
       const { jobId, model, inputs, stage = 'extract', proposals } = await repository.getTagExtractionBatchInputs(BigInt(claimed.id));
       const payloads = inputs.map(i => ({ ...(i.payload && typeof i.payload === 'object' && !Array.isArray(i.payload) ? i.payload : {}),
         id: i.productId.toString(), name: i.name, spec: i.spec as string | null, sourceData: i.sourceData }));
       if (stage === 'review' && !proposals) throw new Error('tag review proposals are missing');
-      const built = stage === 'review' ? buildTagReviewRequest(payloads, proposals!, model) : buildTagExtractionRequest(payloads, model);
+      if (membershipFeatures && stage === 'review') assertMembershipFeatureProposals(proposals!);
+      const built = stage === 'review' ? buildTagReviewRequest(payloads, proposals!, model)
+        : membershipFeatures ? buildMembershipFeatureRequest(payloads, model) : buildTagExtractionRequest(payloads, model);
+      if (membershipFeatures && stage === 'review') built.messages[0]!.content = MEMBERSHIP_FEATURE_REVIEW_PROMPT;
       assertStandardizationRequestFits(built, limits);
       signal.throwIfAborted();
-      const context = { parentJobId: String(jobId), batchId: String(claimed.id), model, inputCount: inputs.length, tagStage: stage };
+      const context = { parentJobId: String(jobId), batchId: String(claimed.id), jobType: claimed.row.job_type,
+        model, inputCount: inputs.length, tagStage: stage };
       return async () => {
         const response = await streamCall({
           model: built.model, messages: built.messages, responseFormat: built.responseFormat,
@@ -152,7 +158,9 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
         try {
           if (response.finishReason !== 'stop') throw new Error('AI response has invalid completion reason');
           phase = 'schema';
-          const parsed = stage === 'review' ? parseTagReviewResponse(response.content) : parseTagExtractionResponse(response.content);
+          const parsed = stage === 'review' ? parseTagReviewResponse(response.content)
+            : membershipFeatures ? parseMembershipFeatureResponse(response.content) : parseTagExtractionResponse(response.content);
+          if (membershipFeatures && stage === 'extract') assertMembershipFeatureProposals(parsed as ReturnType<typeof parseTagExtractionResponse>);
           if (parsed.items.length !== inputs.length || new Set(parsed.items.map(item => item.id)).size !== parsed.items.length
             || parsed.items.some(item => !inputs.some(input => String(input.productId) === item.id)))
             throw new Error('Tag extraction response IDs do not match inputs');
@@ -162,6 +170,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
               if (!reviewed || reviewed.decisions.length !== proposed.tags.length) {
                 throw new Error('Tag review must return one binary decision per proposed tag');
               }
+              if (membershipFeatures && typeof reviewed.classificationDecision !== 'boolean') throw new Error('Membership classification review is required');
             }
           }
           phase = 'evidence';
@@ -172,14 +181,16 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
               const reviewed = item as TagReviewResponse['items'][number];
               const proposed = proposals!.items.find(candidate => candidate.id === item.id)!;
               const original = proposed.tags.map((tag, proposalIndex) => ({ proposalIndex, name: tag.name, value: tag.value, evidence: [{ path: tag.path, quote: tag.quote }] }));
-              return validateReviewedTagExtractionDecision(input!.productId,
+              const decision = validateReviewedTagExtractionDecision(input!.productId,
                 original.filter((_tag, index) => reviewed.decisions[index]),
                 original.filter((_tag, index) => !reviewed.decisions[index]).map(tag =>
                   ({ ...tag, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' })), payload, reviewed.decisions, reviewed.textReview);
+              return membershipFeatures ? { ...decision, membershipKind: (proposed as typeof proposed & { membershipKind: import('@price-comparison/catalog/membership-policy').MembershipKind }).membershipKind,
+                classificationReviewed: reviewed.classificationDecision } : decision;
             }
             const tags = (item as ReturnType<typeof parseTagExtractionResponse>['items'][number]).tags
               .map(t => ({ name: t.name, value: t.value, evidence: [{ path: t.path, quote: t.quote }] }));
-            return { productId: input!.productId, tags, rejectedTags: [] };
+            return { productId: input!.productId, tags, rejectedTags: [], ...(membershipFeatures ? { membershipKind: (item as ReturnType<typeof parseMembershipFeatureResponse>['items'][number]).membershipKind } : {}) };
           });
           const metadata = { ...buildResponseAudit(response, inputs.length, phase), retryClass: null };
           metadata.responseDiagnostic.returnedItemCount = items.length;

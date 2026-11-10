@@ -12,7 +12,7 @@ import { reconcileNameConsensus } from '../src/standardization/name-consensus-re
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
-let majorityId: bigint, minorityId: bigint;
+let majorityId: bigint, minorityId: bigint, ruleId: bigint;
 before(async () => {
   const url = process.env.TEST_DATABASE_URL;
   assert.ok(url?.trim(), 'TEST_DATABASE_URL required');
@@ -24,12 +24,14 @@ before(async () => {
   }) }) });
   const migrated = await new Migrator({ db, provider: migrationProvider, migrationTableSchema: schema }).migrateToLatest();
   if (migrated.error) throw migrated.error;
-  const standards = await db.insertInto('standard_products').values(['plus', 'free'].map(tier => ({
-    name: `ChatGPT ${tier}`, canonical_family: 'openai', canonical_product: 'chatgpt',
-    canonical_tier: tier, verification_state: 'verified' as const,
-  }))).returning('id').execute();
+  const standards = await db.insertInto('standard_products').values([
+    { name: 'Outlook', canonical_family: 'microsoft', canonical_product: 'outlook', canonical_tier: 'standard', verification_state: 'verified' },
+    { name: 'Gmail', canonical_family: 'google', canonical_product: 'email', canonical_tier: 'standard', verification_state: 'verified' },
+    { name: 'Grok 普号', canonical_family: 'xai', canonical_product: 'grok', canonical_tier: 'free', verification_state: 'verified' },
+  ]).returning('id').execute();
   majorityId = standards[0]!.id;
   minorityId = standards[1]!.id;
+  ruleId = standards[2]!.id;
 });
 after(async () => {
   await db?.destroy();
@@ -41,7 +43,7 @@ async function fixture(assigned: boolean, peers = true) {
   const shop = await db.insertInto('shops').values({
     platform: 'test', name: 'Consensus review test', url: `https://${randomUUID()}.invalid`, enabled: true,
   }).returning('id').executeTakeFirstOrThrow();
-  const name = `ChatGPT Plus consensus regression ${randomUUID()}`;
+  const name = `${peers ? 'Outlook Hotmail 邮箱账号' : 'Gro 普号新店独立名称账号'} consensus regression ${randomUUID()}`;
   const products = await db.insertInto('products').values(Array.from({ length: peers ? 4 : 1 }, (_, index) => ({
     shop_id: shop.id, external_id: String(index), name, spec: '', source_category: '',
     source_data: jsonb({}), normalized_key: randomUUID(), url: '', content_version: 1n,
@@ -139,15 +141,15 @@ async function assertProtected(productId: bigint) {
   assert.deepEqual(await db.selectFrom('ai_standardization_results').selectAll().where('product_id', '=', productId).orderBy('job_id').execute(), resultsBefore);
 }
 
-async function assertRepairable(productId: bigint, method = 'same_name_majority') {
+async function assertRepairable(productId: bigint, method = 'same_name_majority', expectedStandardId = majorityId) {
   const preview = await reconcileNameConsensus(db);
   const change = preview.changes.find(change => change.productId === productId);
-  assert.equal(change?.toStandardProductId, majorityId);
+  assert.equal(change?.toStandardProductId, expectedStandardId);
   assert.equal(change?.method, method);
   await reconcileNameConsensus(db, { apply: true, beforeApply: async () => {} });
   const membership = await db.selectFrom('standard_product_members').select('standard_product_id')
     .where('product_id', '=', productId).executeTakeFirstOrThrow();
-  assert.equal(membership.standard_product_id, majorityId);
+  assert.equal(membership.standard_product_id, expectedStandardId);
 }
 
 for (const assigned of [true, false]) {
@@ -185,13 +187,27 @@ for (const assigned of [true, false]) {
     });
   }
 
-  test(`${label}: tag jobs with a review-pipeline marker do not protect legacy standardization results`, async () => {
-    const productId = await fixture(assigned);
-    const jobId = await result(productId, undefined);
-    await db.updateTable('ai_jobs').set({ job_type: 'tag_extraction', pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) })
-      .where('id', '=', jobId).execute();
-    await assertRepairable(productId);
-  });
+  for (const jobType of ['tag_extraction', 'membership_features'] as const) {
+    test(`${label}: ${jobType} review-pipeline markers do not turn historical results into identity reviews`, async () => {
+      const productId = await fixture(assigned);
+      const jobId = await result(productId, undefined);
+      await db.updateTable('ai_jobs').set({ job_type: jobType, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) })
+        .where('id', '=', jobId).execute();
+      await assertRepairable(productId);
+    });
+
+    test(`${label}: active ${jobType} retains work protection until it finishes`, async () => {
+      for (const status of ['queued', 'running', 'paused'] as const) {
+        const productId = await fixture(assigned);
+        const jobId = await work(productId, { status, memberStatus: status === 'running' ? 'processing' : 'queued' });
+        await db.updateTable('ai_jobs').set({ job_type: jobType, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) })
+          .where('id', '=', jobId).execute();
+        await assertProtected(productId);
+        await db.updateTable('ai_jobs').set({ status: 'succeeded' }).where('id', '=', jobId).execute();
+        await assertRepairable(productId);
+      }
+    });
+  }
 
   for (const [failure, errorSource] of [
     ['timeout', 'request_outcome_unknown'],
@@ -336,11 +352,37 @@ test('unassigned: binary rejection and pending review also prevent identity-rule
   await work(pending, { status: 'running', pendingReview: true });
   await assertProtected(pending);
   const legacy = await fixture(false, false);
-  await assertRepairable(legacy, 'identity_rule');
+  await assertRepairable(legacy, 'identity_rule', ruleId);
 });
 
 test('unassigned: failed review prevents identity-rule autoassignment without a binary vote', async () => {
   const productId = await fixture(false, false);
   await failedReview(productId, 'input_too_large');
   await assertProtected(productId);
+});
+
+test('AI plan consensus and explicit identity rules assign standards without product features', async () => {
+  const standard = await db.insertInto('standard_products').values({
+    name: 'ChatGPT Plus', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus',
+    verification_state: 'verified',
+  }).returning('id').executeTakeFirstOrThrow();
+  const shop = await db.insertInto('shops').values({
+    platform: 'test', name: 'AI membership consensus', url: 'https://' + randomUUID() + '.invalid', enabled: true,
+  }).returning('id').executeTakeFirstOrThrow();
+  const commonName = 'ChatGPT Plus 同名会员成品账号 ' + randomUUID();
+  const products = await db.insertInto('products').values(Array.from({ length: 4 }, (_, index) => {
+    const name = index === 3 ? 'ChatGPT Plus 另一款明确套餐 ' + randomUUID() : commonName;
+    return { shop_id: shop.id, external_id: String(index), name, source_name: name, spec: '',
+      source_data: jsonb({ evidence: name }), normalized_key: randomUUID(), url: '', content_fingerprint: productContentFingerprint({ name }) };
+  })).returningAll().execute();
+  await db.insertInto('standard_product_members').values(products.slice(0, 2).map(product => ({
+    product_id: product.id, standard_product_id: standard.id, assignment_source: 'ai', publication_state: 'published' as const,
+  }))).execute();
+  const applied = await reconcileNameConsensus(db, { apply: true, beforeApply: async () => {} });
+  assert.equal(applied.changes.find(change => change.productId === products[2]!.id)?.method, 'same_name_majority');
+  assert.equal(applied.changes.find(change => change.productId === products[3]!.id)?.method, 'identity_rule');
+  const rows = await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id', 'in', products.map(product => product.id)).execute();
+  assert.equal(rows.length, 4);
+  assert.ok(rows.every(row => row.standard_product_id === standard.id));
+  assert.ok((await db.selectFrom('products').select('membership_features').where('id', 'in', products.map(product => product.id)).execute()).every(row => row.membership_features === null));
 });

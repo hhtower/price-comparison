@@ -15,6 +15,7 @@ test('all English enum values have readable labels or retain recognized brand an
 test.each([
   ['delivery_mode', 'automatic', '自动发货'], ['delivery_mode', 'manual', '手动发货'], ['delivery_mode', 'self_service', '自助提取'],
   ['delivery_format', 'credentials', '账密'], ['login_method', 'email_code', '邮箱验证码'],
+  ['access', 'uncertain', '共享情况不确定'], ['rental', '不确定', '租用情况不确定'],
   ['access_channel', 'reverse_proxy', '反向代理'], ['warranty_trigger', 'delivery', '交付时'],
   ['amount', '12.5 usd', '12.5美元'], ['balance_range', '10-20 cny', '10-20元'],
   ['storage', '10 gb', '10GB'], ['bandwidth', '100 mbps', '100Mbps'], ['bandwidth', '1 gbps', '1Gbps'],
@@ -30,6 +31,8 @@ test.each([
   ['access', 'dedicated', '独享'], ['login_method', 'password', '密码登录'],
   ['login_method', 'email_code', '邮箱验证码登录'], ['login_method', 'sso', '单点登录'],
   ['renewable', '有', '可续费'], ['renewable', '无', '不可续费'],
+  ['rental', '有', '租号'], ['rental', '无', '非租号'],
+  ['access', 'uncertain', '共享情况不确定'], ['rental', '不确定', '租用情况不确定'],
   ['sms_required', '无', '无需接码'], ['sms_verification', 'unverified', '未接码'],
   ['kyc_required', '无', '无需实名'], ['kyc', 'unverified', '未认证'],
   ['single_use', '有', '一次性使用'], ['single_use', '无', '可多次使用'],

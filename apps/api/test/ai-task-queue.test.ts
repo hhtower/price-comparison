@@ -39,7 +39,8 @@ for (const status of ['all', 'unfinished', 'attention']) {
   });
 }
 
-test('active tag task summaries count unfinished task members without reading product coverage or historical outcomes', async () => {
+for (const jobType of ['tag_extraction', 'membership_features']) {
+test(`active ${jobType} summaries count unfinished task members without reading product coverage or historical outcomes`, async () => {
   const queries: CompiledQuery[] = [];
   class Driver extends DummyDriver {
     async acquireConnection(): Promise<any> {
@@ -54,13 +55,16 @@ test('active tag task summaries count unfinished task members without reading pr
     createIntrospector: db => new PostgresIntrospector(db), createQueryCompiler: () => new PostgresQueryCompiler(),
   } });
   try {
-    const result = await readAiTaskQueue(database, { jobType: 'tag_extraction', status: 'unfinished', limit: 1 });
+    const result = await readAiTaskQueue(database, { jobType, status: 'unfinished', limit: 1 });
     assert.deepEqual(result.summary, { total: 0, pendingProducts: 0 });
     assert.equal(queries.length, 1);
     const query = queries[0]!.sql;
     assert.doesNotMatch(query, /eligible_products|content_version|content_fingerprint|product_standardization_decisions|standard_product_members|from products/u);
-    assert.match(query, /where j\.job_type='tag_extraction' and j\.status in \('queued', 'running', 'paused', 'ready'\)/u);
+    assert.match(query, /where j\.job_type=\$\d+ and j\.status in \('queued', 'running', 'paused', 'ready'\)/u);
+    assert.ok(queries[0]!.parameters.includes(jobType));
+    assert.ok(!queries[0]!.parameters.includes(jobType === 'tag_extraction' ? 'membership_features' : 'tag_extraction'));
     assert.match(query, /'pendingProducts',coalesce\(sum\(current_pending\),0\)/u);
     assert.match(query, /configuration_current and status in \('queued','running','paused','ready'\)/u);
   } finally { await database.destroy(); }
 });
+}

@@ -60,6 +60,24 @@ export function productMapKey(shopId: bigint, externalId: string): string {
   return `${shopId.toString()}:${externalId}`;
 }
 
+const knownAiMembership = sql<boolean>`exists (
+  select 1 from standard_product_members membership
+  join standard_products membership_standard on membership_standard.id = membership.standard_product_id
+  where membership.product_id = products.id
+    and is_ai_membership(membership_standard.canonical_family, membership_standard.canonical_product, membership_standard.canonical_tier)
+) or (not exists (select 1 from standard_product_members current_membership where current_membership.product_id = products.id)
+  and products.membership_features is not null)`;
+
+function membershipEvidenceChanged(previous: { ai_membership: boolean; name: string; spec: string; source_category: string; source_data: JsonValue },
+  next: { name: string; spec?: string; sourceCategory?: string; sourceData?: unknown }): boolean {
+  if (!previous.ai_membership) return false;
+  // Independent sale fields (e.g. warranty_info) are absent from the raw title/body fingerprint.
+  const evidence = (name: string, spec: string, category: string, sourceData: JsonValue) =>
+    JSON.stringify(buildExtractionPayload({ id: '0', name, spec, category, sourceData }));
+  return evidence(previous.name, previous.spec, previous.source_category, previous.source_data)
+    !== evidence(next.name, normalizeSpec(next.spec), next.sourceCategory ?? '', (next.sourceData ?? {}) as JsonValue);
+}
+
 @Injectable()
 export class ProductsRepository {
   constructor(@Inject(DATABASE) private readonly database: Kysely<DatabaseSchema>) {}
@@ -118,7 +136,7 @@ export class ProductsRepository {
       if (createdIds.has(id)) {
         changedProducts.push(id);
       } else {
-        const changed = previous.content_fingerprint !== fingerprint;
+        const changed = previous.content_fingerprint !== fingerprint || membershipEvidenceChanged(previous, normalized);
         const current = latestOffers.get(id);
         const quoteChanged = (row.price !== undefined || row.stockAvailable !== undefined)
           && (!current || (row.price !== undefined && String(current.price) !== String(row.price))
@@ -180,9 +198,15 @@ export class ProductsRepository {
       await lockProductRowNames(transaction, committed.map(row => row.id));
       const existing = await loadExistingProducts(transaction, input);
       const updating = orderedInput.filter(item => !createdIds.has(existing.get(productMapKey(item.shopId, item.externalId))!.id));
+      const changedMembershipIds = updating.flatMap(item => {
+        const previous = existing.get(productMapKey(item.shopId, item.externalId))!;
+        const next = { ...item, sourceData: item.description === undefined ? item.sourceData
+          : { ...(item.sourceData ?? {}) as Record<string, JsonValue>, evidence: item.description } };
+        return membershipEvidenceChanged(previous, next) ? [previous.id] : [];
+      });
       const rows = [
         ...created,
-        ...(await upsertRows(transaction, updating, false)),
+        ...(await upsertRows(transaction, updating, false, changedMembershipIds)),
       ];
       if (rows.length !== input.length) throw new Error('database returned incomplete product batch');
       const changedIds: bigint[] = [];
@@ -190,7 +214,7 @@ export class ProductsRepository {
         const key = productMapKey(row.shop_id, row.external_id);
         const previous = existing.get(key), item = inputByKey.get(key)!;
         const inserted = createdIds.has(row.id);
-        const changed = inserted || previous!.content_fingerprint !== row.content_fingerprint;
+        const changed = inserted || previous!.content_version !== row.content_version;
         if (!changed) return [];
         if (!inserted && changed) changedIds.push(row.id);
         return [{
@@ -229,6 +253,7 @@ export class ProductsRepository {
       const previous = await transaction
         .selectFrom('products')
         .selectAll()
+        .select(knownAiMembership.as('ai_membership'))
         .where('id', '=', id)
         .where('deleted_at', 'is', null)
         .forNoKeyUpdate()
@@ -248,13 +273,16 @@ export class ProductsRepository {
       if (input.url !== undefined) changes.url = input.url;
       if (input.imageUrl !== undefined) changes.image_url = input.imageUrl;
       changes.updated_at = new Date();
-      const fingerprint = productContentFingerprint({
+      const fingerprint = input.name !== undefined || input.description !== undefined || input.spec !== undefined ? productContentFingerprint({
         name: input.name ?? previous.source_name,
         description: input.description ?? previous.source_description,
         spec: input.spec ?? previous.spec,
+      }) : previous.content_fingerprint;
+      const changed = fingerprint !== previous.content_fingerprint || membershipEvidenceChanged(previous, {
+        name: input.name ?? previous.name, spec: input.spec ?? previous.spec,
+        sourceCategory: input.sourceCategory ?? previous.source_category,
+        sourceData: changes.source_data === undefined ? previous.source_data : JSON.parse(changes.source_data as string),
       });
-      const changed = (input.name !== undefined || input.description !== undefined || input.spec !== undefined)
-        && fingerprint !== previous.content_fingerprint;
       if (changed) {
         changes.content_fingerprint = fingerprint;
         changes.content_version = previous.content_version + 1n;
@@ -360,11 +388,11 @@ export class ProductsRepository {
 
   async assignStandardProduct(productId: bigint, standardProductId: bigint | null, reason = '管理员审核当前商品归属', confirmEvidenceConflict = false): Promise<void> {
     await this.database.transaction().execute(async (transaction) => {
-      const product = await transaction.selectFrom('products').select(['id', 'name', 'spec', 'source_category', 'source_data']).where('id', '=', productId).where('deleted_at', 'is', null).forNoKeyUpdate().executeTakeFirst();
+      const product = await transaction.selectFrom('products').select(['id', 'name', 'spec', 'source_category', 'source_data', 'content_version', 'content_fingerprint', 'standardization_revision']).where('id', '=', productId).where('deleted_at', 'is', null).forNoKeyUpdate().executeTakeFirst();
       if (!product) throw new DomainNotFoundError('PRODUCT_NOT_FOUND', '商品不存在');
       if (standardProductId !== null) {
-        const standard = await transaction.selectFrom('standard_products').select(['id', 'canonical_family', 'canonical_product', 'canonical_tier', 'standard_key', 'verification_state']).where('id', '=', standardProductId).forShare().executeTakeFirst();
-        if (!standard) throw new DomainNotFoundError('STANDARD_PRODUCT_NOT_FOUND', '标准商品不存在');
+        const standard = await transaction.selectFrom('standard_products').select(['id', 'canonical_family', 'canonical_product', 'canonical_tier', 'merged_into_id', 'standard_key', 'verification_state']).where('id', '=', standardProductId).forShare().executeTakeFirst();
+        if (!standard || standard.merged_into_id) throw new DomainNotFoundError('STANDARD_PRODUCT_NOT_FOUND', '标准商品不存在或已合并');
         const identity = { family: standard.canonical_family ?? '', product: standard.canonical_product ?? '', tier: standard.canonical_tier ?? '' };
         if (!confirmEvidenceConflict && (standard.verification_state !== 'verified' || !isValidCatalogIdentity(identity) || standard.standard_key !== buildCanonicalStandardKey(identity))) {
           throw new DomainConflictError('STANDARD_PRODUCT_UNVERIFIED', '目标标准商品尚未通过当前身份规则验证');
@@ -401,6 +429,7 @@ async function loadExistingProducts(
 ) {
   const rows = await database.selectFrom('products')
     .select(['id', 'shop_id', 'external_id', 'name', 'spec', 'source_category', 'source_data', 'content_fingerprint', 'content_version'])
+    .select(knownAiMembership.as('ai_membership'))
     .where('shop_id', 'in', input.map((item) => item.shopId))
     .where('external_id', 'in', input.map((item) => item.externalId))
     .orderBy('id').forNoKeyUpdate()
@@ -412,8 +441,11 @@ async function upsertRows(
   database: Kysely<DatabaseSchema>,
   input: readonly ProductUpsert[],
   insertOnly: boolean,
+  changedMembershipIds: readonly bigint[] = [],
 ): Promise<readonly Pick<Product, 'id' | 'shop_id' | 'external_id' | 'deleted_at' | 'content_fingerprint' | 'content_version'>[]> {
   if (input.length === 0) return [];
+  const evidenceChanged = sql<boolean>`(products.content_fingerprint is distinct from excluded.content_fingerprint
+    ${changedMembershipIds.length ? sql`or products.id in (${sql.join(changedMembershipIds)})` : sql``})`;
   return database
     .insertInto('products')
     .values(
@@ -451,9 +483,9 @@ async function upsertRows(
         image_url: ref('excluded.image_url'),
         updated_at: ref('excluded.updated_at'),
         content_fingerprint: ref('excluded.content_fingerprint'),
-        content_version: sql<bigint>`case when products.content_fingerprint is distinct from excluded.content_fingerprint then products.content_version + 1 else products.content_version end`,
-        content_changed_at: sql<Date>`case when products.content_fingerprint is distinct from excluded.content_fingerprint then excluded.content_changed_at else products.content_changed_at end`,
-        standardization_revision: sql<bigint>`case when products.content_fingerprint is distinct from excluded.content_fingerprint then products.standardization_revision + 1 else products.standardization_revision end`,
+        content_version: sql<bigint>`case when ${evidenceChanged} then products.content_version + 1 else products.content_version end`,
+        content_changed_at: sql<Date>`case when ${evidenceChanged} then excluded.content_changed_at else products.content_changed_at end`,
+        standardization_revision: sql<bigint>`case when ${evidenceChanged} then products.standardization_revision + 1 else products.standardization_revision end`,
       })),
     )
     .returning(['id', 'shop_id', 'external_id', 'deleted_at', 'content_fingerprint', 'content_version'])

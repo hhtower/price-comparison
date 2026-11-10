@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { canonicalProductDisplayName, CATALOG_DISPLAY_SEARCH_LABELS } from '@price-comparison/catalog/catalog-display';
+import { advanceAdminDisplayRevision } from './membership-tag-edit.js';
 import { recordManualDecisions } from '../standardization/decision-history.js';
 import { publicationEvidenceConflict } from '../standardization/publication-evidence.js';
 import { productProcessingSummary, productStandardizationOutcome, type ProductProcessingState, type ProductProcessingSummary } from '../ai/product-standardization-state.js';
@@ -84,6 +85,10 @@ export interface AdminProductRow {
   readonly spec: string;
   readonly source_category: string;
   readonly source_data: JsonValue;
+  readonly content_version: bigint;
+  readonly content_fingerprint: string;
+  readonly standardization_revision: bigint;
+  readonly membership_features: JsonValue | null;
   readonly normalized_key: string;
   readonly url: string;
   readonly image_url: string | null;
@@ -256,6 +261,7 @@ export class AdminRepository {
         'products.id', 'products.shop_id', 'products.external_id', 'products.name', 'products.spec',
         'products.source_category', 'products.source_data', 'products.normalized_key', 'products.url',
         'products.image_url', 'products.updated_at', 'products.deleted_at',
+        'products.content_version', 'products.content_fingerprint', 'products.standardization_revision', 'products.membership_features',
         (filter.pending === true ? sql<null>`null` : productStandardizationOutcome('products')).as('standardization_outcome'),
         sql<string | null>`(select s.name from shops s where s.id = products.shop_id)`.as('shop_name'),
         sql<string | null>`(select sp.name from standard_product_members m join standard_products sp on sp.id = m.standard_product_id where m.product_id = products.id limit 1)`.as('standard_product_name'),
@@ -525,7 +531,7 @@ export class AdminRepository {
       const standardKey = buildCanonicalStandardKey(identity);
       const existing = await tx.selectFrom('standard_products').select('id').where('standard_key', '=', standardKey).where('merged_into_id', 'is', null).executeTakeFirst();
       if (existing) throw new DomainValidationError('STANDARD_PRODUCT_KEY_CONFLICT', '相同 family、product、tier 的标准商品已经存在');
-      const products = await tx.selectFrom('products').select(['id', 'deleted_at', 'name', 'spec', 'source_data']).where('id', 'in', uniqueProductIds).orderBy('id').forUpdate().execute();
+      const products = await tx.selectFrom('products').select(['id', 'deleted_at', 'name', 'spec', 'source_data', 'content_version', 'content_fingerprint', 'standardization_revision', 'membership_features']).where('id', 'in', uniqueProductIds).orderBy('id').forUpdate().execute();
       if (products.length !== uniqueProductIds.length || products.some(product => product.deleted_at !== null)) throw new DomainValidationError('PRODUCT_STATE_CHANGED', '所选商品不存在或已删除');
       const conflicts = confirmEvidenceConflict ? [] : evidenceConflicts(products);
       if (conflicts.length) throw new DomainValidationError('CATALOG_PUBLICATION_BLOCKED', `${conflicts.length} 件商品的标题与描述互相矛盾，确认后可继续`, { conflicts });
@@ -545,6 +551,7 @@ export class AdminRepository {
       .innerJoin('product_tags', 'product_tags.product_id', 'products.id')
       .innerJoin('shops', 'shops.id', 'products.shop_id')
       .select(['products.id', 'products.shop_id', 'products.external_id', 'products.name', 'products.spec', 'products.source_category', 'products.source_data', 'products.normalized_key', 'products.url', 'products.image_url', 'products.updated_at', 'products.deleted_at', 'shops.name as shop_name',
+        'products.content_version', 'products.content_fingerprint', 'products.standardization_revision', 'products.membership_features',
         sql<string | null>`(select sp.name from standard_product_members m join standard_products sp on sp.id = m.standard_product_id where m.product_id = products.id limit 1)`.as('standard_product_name'),
         sql<JsonValue>`coalesce((select jsonb_agg(jsonb_build_object('name', t.name, 'value', t.value) order by t.name, t.value) from product_tags t where t.product_id = products.id), '[]'::jsonb)`.as('tags'),
         sql<string | null>`(select o.price from offers o where o.product_id = products.id order by o.captured_at desc, o.id desc limit 1)`.as('latest_price'),
@@ -573,7 +580,7 @@ export class AdminRepository {
           throw new DomainValidationError('STANDARD_PRODUCT_ALIASES_INVALID', '每个搜索别名不超过 80 个字符');
       }
       if (changes.platform !== undefined && changes.platform && changes.platform !== existing.platform) await this.requireEnabledPlatform(tx, changes.platform);
-      const previousIdentity = normalizeIdentity({ family: existing.canonical_family, product: existing.canonical_product, tier: existing.canonical_tier });
+      const previousIdentity = { family: existing.canonical_family ?? '', product: existing.canonical_product ?? '', tier: existing.canonical_tier ?? '' };
       const requestedIdentity = normalizeIdentity({ family: changes.canonicalFamily ?? existing.canonical_family, product: changes.canonicalProduct ?? existing.canonical_product, tier: changes.canonicalTier ?? existing.canonical_tier });
       const hasIdentityChange = requestedIdentity.family !== previousIdentity.family || requestedIdentity.product !== previousIdentity.product || requestedIdentity.tier !== previousIdentity.tier;
       const { canonicalFamily: _canonicalFamily, canonicalProduct: _canonicalProduct, canonicalTier: _canonicalTier, ...baseChanges } = changes;
@@ -582,7 +589,7 @@ export class AdminRepository {
         const members = await tx.selectFrom('standard_product_members').select('product_id').where('standard_product_id', '=', id).orderBy('product_id').forUpdate().execute();
         const updated = await tx.updateTable('standard_products').set(baseChanges).where('id', '=', id).where('merged_into_id', 'is', null).returning(['id', 'name', 'platform', 'sort_order', 'standard_key', 'canonical_family', 'canonical_product', 'canonical_tier', 'aliases', 'hidden', 'merged_into_id']).executeTakeFirst();
         if (updated) {
-          for (const member of members) await tx.updateTable('products').set({ standardization_revision: sql`standardization_revision + 1` }).where('id', '=', member.product_id).execute();
+          await advanceAdminDisplayRevision(tx, members.map(member => member.product_id));
           await bumpCatalogVersion(tx);
           await recordCandidateCatalogChanges(tx, aliasOwnersBefore, IDENTITY_POLICY_VERSION);
         }
@@ -612,7 +619,7 @@ export class AdminRepository {
         return updated;
       }
 
-      const identity = normalizeIdentity({ family, product, tier });
+      const identity = requestedIdentity;
       if (!hasValidIdentityFields(identity)) throw new DomainValidationError('STANDARD_PRODUCT_IDENTITY_INVALID', 'family、product、tier 不是有效的标准商品身份');
       const standardKey = buildCanonicalStandardKey(identity);
       const duplicate = await tx.selectFrom('standard_products').select('id')
@@ -672,16 +679,16 @@ export class AdminRepository {
     await this.database.transaction().execute(async tx => {
       const uniqueSourceIds = [...new Set(sourceIds.map(String))].map(BigInt);
       const idsToLock = [...new Set([...uniqueSourceIds, targetId].map(String))].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-      const standards = await tx.selectFrom('standard_products').select(['id', 'merged_into_id', 'aliases']).where('id', 'in', idsToLock).orderBy('id').forUpdate().execute();
+      const standards = await tx.selectFrom('standard_products').select(['id', 'merged_into_id', 'aliases', 'canonical_family', 'canonical_product', 'canonical_tier']).where('id', 'in', idsToLock).orderBy('id').forUpdate().execute();
       const standardsById = new Map(standards.map(standard => [standard.id.toString(), standard]));
       const mergeableSources = uniqueSourceIds.filter(sourceId => sourceId !== targetId && !standardsById.get(sourceId.toString())?.merged_into_id && standardsById.has(sourceId.toString()) && !standardsById.get(targetId.toString())?.merged_into_id && standardsById.has(targetId.toString()));
       const products = mergeableSources.length
         ? await tx.selectFrom('standard_product_members').select(['standard_product_id', 'product_id']).where('standard_product_id', 'in', mergeableSources).orderBy('product_id').forUpdate().execute()
         : [];
       const productIds = [...new Set(products.map(product => product.product_id.toString()))].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-      const memberEvidence = new Map<string, { id: bigint; name: string; spec: string; source_data: JsonValue }>();
+      const memberEvidence = new Map<string, { id: bigint; name: string; spec: string; source_data: JsonValue; content_version: bigint; content_fingerprint: string; standardization_revision: bigint; membership_features: JsonValue | null }>();
       for (const productId of productIds) {
-        const row = await tx.selectFrom('products').select(['id', 'name', 'spec', 'source_data']).where('id', '=', productId).forUpdate().executeTakeFirst();
+        const row = await tx.selectFrom('products').select(['id', 'name', 'spec', 'source_data', 'content_version', 'content_fingerprint', 'standardization_revision', 'membership_features']).where('id', '=', productId).forUpdate().executeTakeFirst();
         if (row) memberEvidence.set(row.id.toString(), row);
       }
       for (const sourceId of uniqueSourceIds) {
@@ -718,11 +725,9 @@ export class AdminRepository {
         if (!p || p.deleted_at) { conflicts.push({ id: id.toString(), reason: '原始商品不存在或已删除' }); continue; }
         const r = await tx.insertInto('product_tags').values({ product_id: id, name, value }).onConflict(c => c.columns(['product_id', 'name', 'value']).doNothing()).executeTakeFirst();
         if (r.numInsertedOrUpdatedRows === 0n) skipped.push(id.toString());
-        else {
-          await tx.updateTable('products').set({ standardization_revision: sql`standardization_revision + 1` }).where('id', '=', id).execute();
-          success.push(id.toString());
-        }
+        else success.push(id.toString());
       }
+      await advanceAdminDisplayRevision(tx, success.map(BigInt));
     });
     return { success, skipped, conflicts };
   }
@@ -730,8 +735,8 @@ export class AdminRepository {
     return this.database.transaction().execute(async tx => {
       const rows = await tx.selectFrom('product_tags').select('product_id').where('name', '=', name).where('value', '=', value).orderBy('product_id').forUpdate().execute();
       if (!rows.length) return false;
-      for (const row of rows) await tx.updateTable('products').set({ standardization_revision: sql`standardization_revision + 1` }).where('id', '=', row.product_id).execute();
       await tx.deleteFrom('product_tags').where('name', '=', name).where('value', '=', value).execute();
+      await advanceAdminDisplayRevision(tx, rows.map(row => row.product_id));
       return true;
     });
   }
@@ -742,9 +747,9 @@ export class AdminRepository {
       if (!rows.length) return false;
       for (const row of rows) {
         await tx.insertInto('product_tags').values({ product_id: row.product_id, name: nextName, value: nextValue }).onConflict(c => c.columns(['product_id', 'name', 'value']).doNothing()).execute();
-        await tx.updateTable('products').set({ standardization_revision: sql`standardization_revision + 1` }).where('id', '=', row.product_id).execute();
       }
       await tx.deleteFrom('product_tags').where('name', '=', name).where('value', '=', value).execute();
+      await advanceAdminDisplayRevision(tx, rows.map(row => row.product_id));
       return true;
     });
   }
@@ -756,9 +761,9 @@ export class AdminRepository {
       for (const row of rows) {
         const inserted = await tx.insertInto('product_tags').values({ product_id: row.product_id, name: targetName, value: targetValue }).onConflict(c => c.columns(['product_id', 'name', 'value']).doNothing()).executeTakeFirst();
         (inserted.numInsertedOrUpdatedRows === 0n ? skipped : success).push(row.product_id.toString());
-        await tx.updateTable('products').set({ standardization_revision: sql`standardization_revision + 1` }).where('id', '=', row.product_id).execute();
       }
       await tx.deleteFrom('product_tags').where('name', '=', sourceName).where('value', '=', sourceValue).execute();
+      await advanceAdminDisplayRevision(tx, rows.map(row => row.product_id));
     });
     return { success, skipped, conflicts: [] };
   }
@@ -768,11 +773,11 @@ export class AdminRepository {
     let notice: string | undefined;
     await this.database.transaction().execute(async tx => {
       const approvedIds: bigint[] = [];
-      const target = await tx.selectFrom('standard_products').select(['id', 'merged_into_id', 'verification_state']).where('id', '=', standardProductId).forUpdate().executeTakeFirst();
+      const target = await tx.selectFrom('standard_products').select(['id', 'merged_into_id', 'verification_state', 'canonical_family', 'canonical_product', 'canonical_tier']).where('id', '=', standardProductId).forUpdate().executeTakeFirst();
       if (!target || target.merged_into_id) throw new DomainValidationError('STANDARD_PRODUCT_NOT_FOUND', '目标标准商品不存在或已合并');
       if (target.verification_state !== 'verified') notice = '目标标准商品未通过身份验证或已隔离，绑定后不会在前台展示';
       for (const id of [...new Set(productIds.map(String))].map(BigInt).sort((a, b) => a < b ? -1 : 1)) {
-        const product = await tx.selectFrom('products').select(['id', 'deleted_at', 'name', 'spec', 'source_data']).where('id', '=', id).forUpdate().executeTakeFirst();
+        const product = await tx.selectFrom('products').select(['id', 'deleted_at', 'name', 'spec', 'source_data', 'content_version', 'content_fingerprint', 'standardization_revision', 'membership_features']).where('id', '=', id).forUpdate().executeTakeFirst();
         if (!product || product.deleted_at) { conflicts.push({ id: id.toString(), reason: '原始商品不存在或已删除' }); continue; }
         const membership = await tx.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', id).forUpdate().executeTakeFirst();
         if (membership?.standard_product_id === standardProductId) { skipped.push(id.toString()); continue; }

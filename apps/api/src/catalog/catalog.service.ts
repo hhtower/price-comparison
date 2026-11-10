@@ -4,6 +4,10 @@ import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQu
 import { DomainValidationError } from '../common/errors.js';
 import { normalizePurchaseTag, parseCatalogSearch } from '@price-comparison/catalog/purchase-attributes';
 import { normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
+import { MEMBERSHIP_KINDS, type MembershipKind } from '@price-comparison/catalog/membership-policy';
+
+const membershipWords = /成品号|代充|租号(?:\s*\(\s*(?:共享|合租)\s*\))?|共享|合租|短期/gu;
+const membershipNegation = new RegExp(`(?:不(?:要|需要|想要?|接受|支持|提供|适合|能|是)?|没有|未明确|未说明|无需|禁止|非|是否|可能|或许|不确定)\\s*(?:是|为)?\\s*(?:${membershipWords.source})|(?:${membershipWords.source})\\s*(?:状态)?\\s*(?:不(?:要|支持|提供|可用|确定|保证)|未说明|未知)`, 'u');
 
 export interface CatalogQueryInput {
   readonly sort?: string;
@@ -27,9 +31,20 @@ export interface CatalogQueryInput {
   readonly limit?: number;
   readonly warrantyDaysMin?: number;
   readonly newcomer?: unknown;
+  readonly membershipKind?: unknown;
+  readonly membershipKinds?: unknown;
 }
 
 export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
+  const kinds = input.membershipKinds ?? input.membershipKind;
+  const membershipKinds = kinds === undefined ? undefined : Array.isArray(kinds) ? kinds : [kinds];
+  if ((input.membershipKinds !== undefined && input.membershipKind !== undefined)
+    || input.membershipKind === null || input.membershipKinds === null
+    || (input.membershipKinds !== undefined && !Array.isArray(input.membershipKinds))
+    || (membershipKinds && (!membershipKinds.length || membershipKinds.length > MEMBERSHIP_KINDS.length
+      || membershipKinds.some(kind => !MEMBERSHIP_KINDS.includes(kind))))) {
+    throw new DomainValidationError('INVALID_MEMBERSHIP_KIND', '会员商品特性须为account、top_up、rental或short_term');
+  }
   if (input.newcomer !== undefined && ![true, false, 'true', 'false'].includes(input.newcomer as boolean | string)) {
     throw new DomainValidationError('INVALID_NEWCOMER_MODE', '新手模式参数无效');
   }
@@ -84,7 +99,9 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
   if (input.searchMode !== undefined && input.searchMode !== 'literal') {
     throw new DomainValidationError('INVALID_SEARCH_MODE', '搜索模式无效');
   }
-  const parsed = input.searchMode === 'literal' ? { text: search, tags: [], warrantyDaysMin: undefined } : parseCatalogSearch(search);
+  const negatedMembership = membershipNegation.test(search);
+  const parsed = input.searchMode === 'literal' || negatedMembership
+    ? { text: search, tags: [], warrantyDaysMin: undefined } : parseCatalogSearch(search);
   const tagsInput = input.tags ?? input.tag;
   const supplied = Array.isArray(tagsInput) ? tagsInput : tagsInput ? [tagsInput] : [];
   if (supplied.length > 50) throw new DomainValidationError('INVALID_FILTER', '筛选条件不能超过50项');
@@ -101,6 +118,16 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
     return normalizePurchaseTag({ name: tag.name, value: tag.value });
   });
   const explicitNames = new Set(explicit.map(tag => tag.name));
+  const membershipTerms = input.searchMode === 'literal' || negatedMembership
+    ? [] : [...new Set(search.match(/短期|成品号|租号|共享|合租/gu) ?? [])];
+  const membershipDelivery = !explicitNames.has('delivery') && parsed.tags.some(tag =>
+    tag.name === 'delivery' && ['account', 'top_up'].includes(tag.value));
+  const membershipAccess = !explicitNames.has('access') && membershipTerms.some(term => term === '共享' || term === '合租');
+  const inferredKinds = [...new Set([
+    ...membershipTerms.map(term => term === '短期' ? 'short_term' as const : term === '成品号' ? 'account' as const : 'rental' as const),
+    ...membershipDelivery ? parsed.tags.filter(tag => tag.name === 'delivery'
+      && ['account', 'top_up'].includes(tag.value)).map(tag => tag.value as MembershipKind) : [],
+  ])].sort();
   // The parser preserves exact facts for labels; a minimum query must not also
   // require equality to its lower bound. Explicit exact-day API tags stay intact.
   const tags = [...parsed.tags.filter(tag => !explicitNames.has(tag.name)
@@ -128,6 +155,9 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
     tags: uniqueTags,
     ...(warrantyDaysMin !== undefined ? { warrantyDaysMin } : {}),
     ...(input.newcomer === true || input.newcomer === 'true' ? { newcomer: true } : {}),
+    ...(membershipKinds ? { membershipKinds: [...new Set(membershipKinds)].sort() as MembershipKind[] } : {}),
+    ...(inferredKinds.length ? { membershipSearch: { kinds: inferredKinds, delivery: membershipDelivery,
+      ...(membershipAccess ? { access: true } : {}), terms: membershipTerms } } : {}),
     ...(input.cursor?.trim() ? { cursor: input.cursor.trim() } : {}),
     limit: Math.min(Math.max(limit, 1), 100),
   };
@@ -148,6 +178,12 @@ export class CatalogService {
     return this.repository.resolvePublicProductIdentity(identity);
   }
 
+  resolvePublicProductIdentities(identity: PublicProductIdentity): Promise<PublicCatalogProduct[]> {
+    if (!identity || ![identity.platform, identity.product, identity.tier]
+      .every(value => typeof value === 'string' && value.length > 0 && value.length <= 250)) return Promise.resolve([]);
+    return this.repository.resolvePublicProductIdentities(identity);
+  }
+
   getCoverage() {
     return this.readCached('catalog:coverage:v2', () => this.repository.coverage());
   }
@@ -157,30 +193,36 @@ export class CatalogService {
     return this.repository.publicProduct(id);
   }
 
-  async getPriceHistory(id: string, productId?: unknown, currency?: unknown) {
-    const query = normalizeCatalogQuery({ standardProductId: id, currency });
+  async getPriceHistory(id: string, productId?: unknown, currency?: unknown,
+    scope: Pick<CatalogQueryInput, 'membershipKind' | 'membershipKinds' | 'newcomer'> = {}) {
+    const query = normalizeCatalogQuery({ standardProductId: id, currency,
+      membershipKind: scope.membershipKind, membershipKinds: scope.membershipKinds, newcomer: scope.newcomer });
     const source = normalizeCatalogQuery({ standardProductId: productId });
     const product = await this.repository.publicProduct(id);
     if (!product || product.mergedIntoId) return null;
-    return this.repository.priceHistory(id, source.standardProductId, query.currency ?? 'CNY');
+    return this.repository.priceHistory(id, source.standardProductId, query.currency ?? 'CNY', {
+      ...(query.membershipKinds ? { membershipKinds: query.membershipKinds } : {}),
+      ...(query.newcomer ? { newcomer: true } : {}),
+    });
   }
 
   async getFacets(input: Pick<CatalogQueryInput, 'platform' | 'q' | 'search' | 'searchMode' | 'tags' | 'tag' | 'warrantyDaysMin' | 'newcomer'
-    | 'standardProductId' | 'shopQuery' | 'shopId' | 'priceMin' | 'priceMax' | 'currency' | 'offerSort'>): Promise<CatalogFacets> {
+    | 'standardProductId' | 'shopQuery' | 'shopId' | 'priceMin' | 'priceMax' | 'currency' | 'offerSort' | 'membershipKind' | 'membershipKinds'>): Promise<CatalogFacets> {
     const { limit: _limit, offerSort: _offerSort, ...query } = normalizeCatalogQuery({
       platform: input.platform, q: input.q, search: input.search, searchMode: input.searchMode, tags: input.tags, tag: input.tag, warrantyDaysMin: input.warrantyDaysMin, newcomer: input.newcomer,
       standardProductId: input.standardProductId, shopQuery: input.shopQuery, shopId: input.shopId,
       priceMin: input.priceMin, priceMax: input.priceMax, currency: input.currency, offerSort: input.offerSort,
+      membershipKind: input.membershipKind, membershipKinds: input.membershipKinds,
     });
-    return this.readCached(`catalog:facets:v2:${JSON.stringify(query)}`, () => this.repository.facets(query));
+    return this.readCached(`catalog:facets:v3:${JSON.stringify(query)}`, () => this.repository.facets(query));
   }
 
   async getCatalog(input: CatalogQueryInput): Promise<CatalogPage> {
     const query = normalizeCatalogQuery(input);
-    return this.readCached(`catalog:page:v2:${JSON.stringify(query)}`, () => this.repository.search(query));
+    return this.readCached(`catalog:page:v3:${JSON.stringify(query)}`, () => this.repository.search(query));
   }
 
-  getReferenceOffers(input: Pick<CatalogQueryInput, 'standardProductId' | 'currency' | 'priceMax' | 'tags' | 'warrantyDaysMin'>) {
+  getReferenceOffers(input: Pick<CatalogQueryInput, 'standardProductId' | 'currency' | 'priceMax' | 'tags' | 'warrantyDaysMin' | 'newcomer' | 'membershipKinds'>) {
     const query = normalizeCatalogQuery(input);
     if (!query.standardProductId) throw new DomainValidationError('INVALID_STANDARD_PRODUCT', '商品编号无效');
     return this.repository.referenceOffers(query);

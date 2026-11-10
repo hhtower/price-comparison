@@ -1,6 +1,7 @@
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { CATALOG_SEO_CONTENT, PRODUCT_SEO_CONTENT } from '@price-comparison/catalog/seo-content';
 import { SITE_NAME } from '@price-comparison/catalog/site-brand';
+import { membershipKindLabel, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 
 export const DEFAULT_SITE_URL = 'https://price.yufu.pub';
 export { SITE_NAME };
@@ -30,8 +31,8 @@ export function publicPageNumber(value: unknown): number | null {
   return Number(value);
 }
 
-export function productPagePath(id: string, page = 1): string {
-  return '/products/' + id + (page > 1 ? '?page=' + page : '');
+export function productPagePath(id: string, page = 1, membershipKind?: MembershipKind): string {
+  return '/products/' + id + (membershipKind ? '/features/' + membershipKind : '') + (page > 1 ? '?page=' + page : '');
 }
 
 export function catalogPageMetadata(cursor?: string) {
@@ -39,9 +40,9 @@ export function catalogPageMetadata(cursor?: string) {
     title: cursor ? 'AI 商品价格比较（目录续页） - ' + SITE_NAME : PAGE_METADATA.public.title };
 }
 
-export function productPageMetadata(product: { readonly id: string; readonly name: string }, page = 1) {
-  const name = standardProductDisplayName(product.name);
-  return { path: productPagePath(product.id, page), title: name + '价格比较' + (page > 1 ? '（第' + page + '页）' : '') + ' - ' + SITE_NAME,
+export function productPageMetadata(product: { readonly id: string; readonly name: string }, page = 1, membershipKind?: MembershipKind) {
+  const name = standardProductDisplayName(product.name) + (membershipKind ? ' · ' + membershipKindLabel(membershipKind) : '');
+  return { path: productPagePath(product.id, page, membershipKind), title: name + '价格比较' + (page > 1 ? '（第' + page + '页）' : '') + ' - ' + SITE_NAME,
     description: '比较' + name + '的第三方商铺报价、交付方式、使用期限与售后，核对标价、结算价、采集时间和来源链接。成交价以商家结算页为准。' };
 }
 
@@ -78,10 +79,11 @@ function faqSchema(origin: string, path: string, items: readonly { question: str
 }
 
 export function productPageSchema(product: { readonly id: string; readonly name: string }, origin: string,
-  page = 1): Record<string, unknown> {
-  const metadata = productPageMetadata(product, page);
+  page = 1, membershipKind?: MembershipKind): Record<string, unknown> {
+  const metadata = productPageMetadata(product, page, membershipKind);
   const pageUrl = origin + metadata.path;
-  const breadcrumb = breadcrumbSchema(origin, productPagePath(product.id), standardProductDisplayName(product.name))!;
+  const breadcrumb = breadcrumbSchema(origin, productPagePath(product.id, 1, membershipKind),
+    standardProductDisplayName(product.name) + (membershipKind ? ' · ' + membershipKindLabel(membershipKind) : ''))!;
   // These pages mix third-party terms and variants, rather than sell one purchasable product.
   return { '@context': 'https://schema.org', '@graph': [
     organizationSchema(origin),

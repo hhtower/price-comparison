@@ -11,12 +11,12 @@ import {
   purchaseWarrantyLabel,
 } from '@price-comparison/catalog/purchase-attributes';
 
-test('qualified warranty labels expose the starting event and additional reviewed terms', () => {
+test('brief warranty labels leave starting events, windows and terms to details', () => {
   assert.equal(purchaseWarrantyLabel([
     { name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'first_login' },
     { name: 'warranty_window', value: '60 minutes' }, { name: 'warranty_trigger', value: 'purchase' },
     { name: 'warranty_terms', value: '修改2fa导致登录失败不售后' },
-  ]), '仅保首登（60分钟内）（购买起算；附售后条款）');
+  ]), '仅保首登');
 });
 
 test('shared policy normalizes reviewed recall aliases and w counts without accepting qualified values', () => {
@@ -33,12 +33,24 @@ test('shared policy normalizes reviewed recall aliases and w counts without acce
 
 test('warranty labels show explicit time without widening limited coverage or converting months', () => {
   for (const [tags, expected] of [
-    [[{ name: 'warranty_scope', value: 'subscription' }, { name: 'warranty_window', value: '30 days' }], '质保30天（仅保掉订阅）'],
+    [[{ name: 'warranty_scope', value: 'subscription' }, { name: 'warranty_window', value: '30 days' }], '保订阅30天'],
+    [[{ name: 'warranty_scope', value: 'subscription' }], '保订阅'],
+    [[{ name: 'warranty_detail', value: 'subscription coverage' }], '保订阅'],
+    [[{ name: 'warranty_days', value: '30' }], '质保30天'],
+    [[{ name: 'warranty', value: '30 days' }], '质保30天'],
+    [[{ name: 'warranty_days', value: '56' }], '质保56天'],
+    [[{ name: 'warranty_days', value: '60' }, { name: 'duration', value: '2 months' }], '质保60天'],
     [[{ name: 'warranty_scope', value: 'period' }, { name: 'warranty_window', value: '24 hours' }], '质保24小时'],
     [[{ name: 'warranty_scope', value: 'period' }, { name: 'warranty_detail', value: '1 month' }], '质保1个月'],
-    [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_window', value: '1 hour' }], '仅保首登（1小时内）'],
+    [[{ name: 'warranty_scope', value: 'period' }, { name: 'warranty_window', value: '1 year' }], '质保1年'],
+    [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_window', value: '1 hour' }], '仅保首登'],
     [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_days', value: '1' }], '仅保首登'],
-    [[{ name: 'warranty', value: 'none' }, { name: 'warranty_days', value: '30' }], '无质保'],
+    [[{ name: 'warranty', value: '30 days' }, { name: 'warranty_scope', value: 'first_login' }], '仅保首登'],
+    [[{ name: 'warranty', value: 'none' }, { name: 'warranty_days', value: '30' }], ''],
+    [[{ name: 'warranty', value: 'unknown' }], ''],
+    [[{ name: 'warranty', value: 'covered' }], ''],
+    [[{ name: 'warranty_scope', value: 'period' }], ''],
+    [[], ''],
     [[{ name: 'warranty_scope', value: 'unspecified' }], ''],
   ] as const) assert.equal(purchaseWarrantyLabel([...tags]), expected);
 });

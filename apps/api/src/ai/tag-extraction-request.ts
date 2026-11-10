@@ -6,7 +6,7 @@
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import { PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 
-export const TAG_EXTRACTION_PROMPT_VERSION = 'tag-20261025-v7';
+export const TAG_EXTRACTION_PROMPT_VERSION = 'tag-20261110-v8';
 
 /** Compact schema for the extraction response */
 export interface TagExtractionResponse {
@@ -50,6 +50,8 @@ You extract buyer-facing product tags from each item's current evidence.
 ## Tag selection
 - Use only the vocabulary's names and exact values or patterns. Fields without values/pattern accept short factual text within their meaning. One value per name unless multiple=true; never repeat a name/value pair.
 - Prefer the specific field over usage_restriction for the same fact. Use usage_restriction for additional explicit restrictions, preserving the complete short clause. "不可覆盖订阅" belongs in subscription_override=无. "仅支持Sub2API" supports supported_client, not web; "禁止反代" is a restriction, not access_channel=reverse_proxy. JSON/RT credentials for Team accounts do not change their account nature.
+- rental=有 requires explicitly renting account usage rights; rental=无 requires an explicit denial. Shared account use supports access=shared, but Team, seats or shared benefits alone do not. Dedicated rentals can have access=dedicated and rental=有; a short subscription or login restriction alone proves neither rental nor sharing.
+- Explicitly possible/uncertain sharing uses access=uncertain; explicitly possible/uncertain rental rights use rental=不确定. Preserve the qualification in the quote. Omit unstated facts rather than inventing uncertainty.
 - duration is the selected subscription/use term; keep account age, token/code validity and warranty separate. Use explicit units ("1 month", "12 months", "30 days", "permanent"); never convert calendar months to days. Use range/min/max/approx fields for qualified periods. 日抛/速刷 means intended_use=rapid, not duration=1 days.
 - Warranty scope, window, trigger and exclusions qualify one promise. First-login, subscription-only, activation-only or first-code coverage uses warranty_scope plus warranty_window, not full-period warranty_days. Retain 封号不保; subscription duration alone does not prove coverage.
 - Preserve complete material after-sales conditions and refund/replacement limits as warranty_terms; never turn conditional coverage into an unconditional promise.

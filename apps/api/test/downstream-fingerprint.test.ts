@@ -9,7 +9,7 @@ import type { DatabaseSchema } from '../src/database/types.js';
 import { captureRatingText } from '../src/platforms/source-evidence.js';
 
 const product = (id: bigint, spec = 'monthly') => ({
-  id, name: 'ChatGPT Plus', spec, source_category: '', source_data: {},
+  id, name: 'ChatGPT Free', spec, source_category: '', source_data: {},
   content_fingerprint: 'stored-source-hash', content_version: 1n, standardization_revision: 0n,
   standardization_locked: false, deleted_at: null, enabled: true, shop_deleted_at: null,
   standard_product_id: 9n, published: true, human: false, manual: false,
@@ -137,8 +137,8 @@ test('tag preview and persistence count oversized members through their payload 
 
 test('consensus repair protects manual decisions with the stored hash for assigned and unassigned products', async () => {
   const reviewed = { id: 1n, product_id: 1n, content_version: 1n, content_fingerprint: 'stored-source-hash', evidence_known: true };
-  const p = product(1n);
-  const member = { ...p, canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus', assignment_source: 'ai' };
+  const p = { ...product(1n), name: 'ChatGPT free' };
+  const member = { ...p, canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'free', assignment_source: 'ai' };
   const winner = { ...member, id: 2n, standard_product_id: 10n };
   const assigned = fixture([], [reviewed], [member, winner, { ...winner, id: 3n }]);
   const plan = await reconcileNameConsensus(assigned.db);

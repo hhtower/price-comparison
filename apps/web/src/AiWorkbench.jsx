@@ -9,6 +9,7 @@ import CrawlerOverview from './CrawlerOverview.jsx';
 const HISTORY_PAGE_SIZE = 10;
 const WORKBENCH_TABS = [
   ['crawler', '抓取'], ['fetch-runs', '抓取记录'],
+  ['features', '特性识别'], ['feature-history', '特性识别记录'],
   ['task', '标准化'], ['history', '标准化记录'],
   ['tags', '标签抽取'], ['tag-history', '标签抽取记录'],
 ];
@@ -170,6 +171,8 @@ export default function AiWorkbench({ shops, onProductsChanged }) {
   const [tab, setTab] = useState('crawler');
   const tabId = useId();
   const isTagView = tab === 'tags' || tab === 'tag-history';
+  const isFeatureView = tab === 'features' || tab === 'feature-history';
+  const isExtractionView = isTagView || isFeatureView;
   const isFetchView = tab === 'crawler' || tab === 'fetch-runs';
   const isStandardizationView = tab === 'task' || tab === 'history';
   const [status, setStatus] = useState(null);
@@ -488,14 +491,14 @@ export default function AiWorkbench({ shops, onProductsChanged }) {
   </section>;
 
   return (
-    <section className={`ai-workbench ai-workbench-embedded${tab === 'crawler' ? ' is-crawler' : tab === 'fetch-runs' ? ' is-fetch-runs' : tab === 'task' ? ' is-standardization' : tab === 'history' ? ' is-history' : tab === 'tags' ? ' is-tags' : ' is-tag-history'}`} aria-label="后台任务">
+    <section className={`ai-workbench ai-workbench-embedded${tab === 'crawler' ? ' is-crawler' : tab === 'fetch-runs' ? ' is-fetch-runs' : tab === 'task' ? ' is-standardization' : tab === 'history' ? ' is-history' : tab === 'tags' || tab === 'features' ? ' is-tags' : ' is-tag-history'}`} aria-label="后台任务">
       <div className="ai-workbench-tabs" role="tablist" aria-label="工作台视图">
         {WORKBENCH_TABS.map(([id, label], index) => <button key={id} id={`${tabId}-${id}`} type="button" role="tab" aria-selected={tab === id}
           aria-controls={`${tabId}-panel`} tabIndex={tab === id ? 0 : -1} onKeyDown={event => navigateTabs(event, index)} onClick={() => setTab(id)}>{label}</button>)}
       </div>
       <div className="ai-workbench-body" id={`${tabId}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${tab}`} tabIndex={0}>
-        {isTagView ? <TagExtractionPanel shops={shops} onProductsChanged={onProductsChanged} onRefreshRuntime={refreshRuntime} enabled={status?.tagExtractionEnabled !== false} view={tab === 'tag-history' ? 'history' : 'tasks'} /> : null}
-        {error && !taskOpen && !historyOpen && !isTagView && !isFetchView ? <p className="ai-error" role="alert">{error}</p> : null}
+        {isExtractionView ? <TagExtractionPanel key={isFeatureView ? 'features' : 'tags'} taskKind={isFeatureView ? 'membership_features' : 'tag_extraction'} shops={shops} onProductsChanged={onProductsChanged} onRefreshRuntime={refreshRuntime} enabled={isFeatureView ? status?.configured === true : status?.tagExtractionEnabled !== false} view={tab === 'tag-history' || tab === 'feature-history' ? 'history' : 'tasks'} /> : null}
+        {error && !taskOpen && !historyOpen && !isExtractionView && !isFetchView ? <p className="ai-error" role="alert">{error}</p> : null}
         {status && !status.configured && tab === 'task' ? <div className="ai-config-notice" role="status">{status.configError || 'AI 尚未配置'}</div> : null}
         {connectionError && !historyOpen && tab === 'task' ? <p role="status">实时连接中断，正在重连。</p> : null}
         {tab === 'task' ? (

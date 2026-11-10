@@ -44,12 +44,18 @@ export function parseUnderstanding(value: unknown, userText: string): Understand
     if (!Object.hasOwn(patch, field)) continue;
     const quotes = evidence.filter(entry => entry.field === field).map(entry => entry.quote);
     if (!quotes.length) invalid('missing evidence');
-    if (['budget', 'warrantyDaysMin', 'requiredTags', 'platform'].includes(field)) {
+    if (['budget', 'warrantyDaysMin', 'requiredTags', 'platform', 'membershipKinds'].includes(field)) {
       // shortcut: reject explicit soft-only phrases; semantic correctness still needs the service's conflict check.
       const softOnly = quotes.every(quote =>
         /尽量|最好|优先|如果可以|便宜(?:一?点)?|省心|新手|prefer(?:ably)?|if possible|cheaper/iu.test(quote)
         && !/必须|一定要|不能|不要|不接受|最多|至少|不得|must|required|at most|at least/iu.test(quote));
-      if (softOnly) invalid('preference as requirement');
+      if (softOnly && !(field === 'membershipKinds' && quotes.some(quote =>
+        /只看|只要|只选|全部类别|所有类别|类别不限|关闭新手|取消新手|恢复默认/u.test(quote)))) invalid('preference as requirement');
+    }
+    if (field === 'newcomer' && !quotes.some(quote =>
+      !/(?:不要|别|不能|不想).{0,4}(?:关闭|取消|开启|启用|打开|恢复)/u.test(quote)
+      && /(?:关闭|取消|不用|不要|启用|开启|打开|恢复).{0,8}(?:新手|默认)|(?:全部|所有|不限|不限制).{0,6}(?:类别|分类|特性)|(?:类别|分类|特性).{0,6}(?:全部|所有|不限)|(?:disable|enable|turn off|turn on).{0,12}(?:beginner|newcomer)|all (?:kinds|categories)/iu.test(quote))) {
+      invalid('preference as requirement');
     }
   }
   const question = source.question === null ? null : text(source.question, ASSISTANT_LIMITS.replyMaxChars);

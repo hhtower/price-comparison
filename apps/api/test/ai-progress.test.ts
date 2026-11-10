@@ -6,6 +6,31 @@ import { recordAiTiming } from '../src/observability/ai-metrics.js';
 import { MetricsRegistry } from '../src/observability/metrics.js';
 import { extractionProgressDelta, getJobProgress, incrementJobProgress, progressSnapshotFromRow } from '../src/ai/ai-progress.repository.js';
 
+for (const jobType of ['tag_extraction', 'membership_features']) {
+  test(`${jobType} progress uses member outcomes and exposes its actual task type`, () => {
+    const snapshot = progressSnapshotFromRow({
+      job_id: 1n, job_type: jobType, status: 'running', phase: 'standardizing',
+      total: 999n, queued: 999n, processed: 999n,
+      member_total: 5, member_queued: 1, member_running: 1,
+      tag_counts: { updated: 1, failed: 1, cancelled: 1 },
+      tag_accepted: 2, tag_rejected: 1, tag_partial: 1,
+      extraction_completed: 2, review_queued: 1, review_running: 1, review_completed: 1, publication_queued: 1,
+    });
+    assert.equal(snapshot.jobType, jobType);
+    assert.equal(snapshot.total, '5');
+    assert.equal(snapshot.queued, '1');
+    assert.equal(snapshot.running, '1');
+    assert.equal(snapshot.processed, '3');
+    assert.equal(snapshot.succeeded, '1');
+    assert.equal(snapshot.failed, '1');
+    assert.deepEqual(snapshot.tagAcceptance, { acceptedTags: 2, rejectedTags: 1, partialProducts: 1 });
+    assert.deepEqual(snapshot.tagStages, {
+      extractionCompleted: 2, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
+    });
+    assert.equal(snapshot.standardizationStages, undefined);
+  });
+}
+
 function progressDatabase() {
   const queries: CompiledQuery[] = [];
   class Driver extends DummyDriver {

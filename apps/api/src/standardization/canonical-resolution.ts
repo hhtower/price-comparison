@@ -56,7 +56,7 @@ const spelling = (identity: Identity) => {
 export async function resolveCanonicalIdentity(tx: Transaction<DatabaseSchema>, input: Identity & { canonicalKey?: string }): Promise<CanonicalResolution> {
   // Reviewed legacy spellings authorize existing targets only, never new identities.
   if (!isValidCatalogIdentity(input) && !reviewedSpellings[spelling(input)]) return { status: 'conflict', reason: 'invalid_identity' };
-  const identity = normalizeIdentity(input);
+  const identity: Identity = normalizeIdentity(input);
   const canonicalKey = buildCanonicalStandardKey(identity);
   const reviewed = reviewedSpellings[spelling(identity)];
   let lookupIdentity = identity;
@@ -77,7 +77,7 @@ export async function resolveCanonicalIdentity(tx: Transaction<DatabaseSchema>, 
   for (;;) {
     if (!row || row.verification_state !== 'verified' || !row.canonical_family || !row.canonical_product || !row.canonical_tier)
       return { status: 'conflict', reason: 'identity_unavailable' };
-    const target = { family: row.canonical_family, product: row.canonical_product, tier: row.canonical_tier };
+    const target: Identity = { family: row.canonical_family, product: row.canonical_product, tier: row.canonical_tier };
     const targetSpelling = spelling(target);
     if (row.standard_key !== buildCanonicalStandardKey(target) || (!visited.size ? !sameIdentity(lookupIdentity, target)
       : !reviewed || (targetSpelling !== reviewed && reviewedSpellings[targetSpelling] !== reviewed)))

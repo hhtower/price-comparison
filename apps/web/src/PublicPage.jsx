@@ -13,6 +13,7 @@ import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } fr
 import { consumeRapidSearchTerms, normalizePurchaseTag, parseCatalogSearch, purchaseWarrantyLabel, PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
 import { DurationFilterOptions, WarrantyFilter, isValidWarrantyMinimum } from './components/PurchasePeriodFilters.jsx';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
+import { MEMBERSHIP_KINDS, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
 import { updatePageMetadata } from './page-metadata.js';
 import { PRODUCT_PAGE_SIZE, catalogPageMetadata, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
 import { formatMoney } from './money.js';
@@ -30,8 +31,42 @@ async function fetchCatalog(url, signal) {
 const EMPTY_LIST = [];
 const NOOP = () => {};
 const CATALOG_OVERSCAN = { top: 300, bottom: 500 };
-const catalogItemKey = (_index, item) => item.id;
+const catalogItemKey = (_index, item) => item.key || item.id;
 const BROWSING_MODE_KEY = 'catalog-browsing-mode';
+const membershipWords = /成品号|代充|租号(?:\s*[（(]\s*(?:共享|合租)\s*[）)])?|共享|合租|短期/gu;
+const membershipNegation = new RegExp(`(?:不(?:要|需要|想要?|接受|支持|提供|适合|能|是)?|没有|未明确|未说明|无需|禁止|非|是否|可能|或许|不确定)\\s*(?:是|为)?\\s*(?:${membershipWords.source})|(?:${membershipWords.source})\\s*(?:状态)?\\s*(?:不(?:要|支持|提供|可用|确定|保证)|未说明|未知)`, 'u');
+const membershipFilterLabel = kind => kind === 'rental' ? '租号（共享）' : membershipKindLabel(kind);
+
+function membershipSearch(query, enabled) {
+  const kinds = new Set();
+  const text = enabled && !membershipNegation.test(query) ? query.replace(membershipWords, word => {
+    kinds.add(/^(?:租号|共享|合租)/u.test(word) ? 'rental' : MEMBERSHIP_KINDS.find(kind => membershipKindLabel(kind) === word));
+    return ' ';
+  }).replace(/\s+/gu, ' ').trim() : query;
+  return { text, kinds: MEMBERSHIP_KINDS.filter(kind => kinds.has(kind)) };
+}
+
+function matchingProducts(products, query, platform) {
+  const words = parseCatalogSearch(membershipSearch(query, true).text).text.toLowerCase().split(/\s+/u).filter(Boolean);
+  return products.filter(item => (platform === '全部' || normalizeCatalogPlatform(item.platform || '') === platform)
+    && words.every(word => formatStandardName(item.name).toLowerCase().includes(word)));
+}
+
+function MembershipFilter({ value, onChange }) {
+  return <fieldset className="filter-group"><legend>AI会员类型</legend><div className="filter-group-content"><div className="filter-options">
+    {MEMBERSHIP_KINDS.map(kind => <label key={kind} className={value.includes(kind) ? 'is-selected' : ''}>
+      <input type="checkbox" aria-label={membershipFilterLabel(kind)} checked={value.includes(kind)}
+        onChange={() => onChange(MEMBERSHIP_KINDS.filter(candidate => candidate === kind ? !value.includes(candidate) : value.includes(candidate)))} />
+      <span>{membershipFilterLabel(kind)}</span>
+    </label>)}
+  </div></div></fieldset>;
+}
+
+function membershipName(item, kind = '') {
+  const name = formatStandardName(item.name);
+  const label = MEMBERSHIP_KINDS.includes(kind) ? membershipKindLabel(kind) : '';
+  return label ? `${name} · ${label}` : name;
+}
 
 function readBrowsingMode() {
   try {
@@ -49,12 +84,13 @@ function CatalogCoverage({ data }) {
 
 function equalTags(left, right) { return left.size === right.size && [...left].every(tag => right.has(tag)); }
 
-function catalogParams(search, platform, selectedTags, warrantyDaysMin, standardProductId = '', newcomer = false) {
+function catalogParams(search, platform, selectedTags, warrantyDaysMin, standardProductId = '', newcomer = false, membershipKinds = []) {
   const params = new URLSearchParams({ q: search, platform: platform === '全部' ? '' : platform });
   for (const tag of [...selectedTags].sort()) params.append('tag', tag);
   if (warrantyDaysMin) params.set('warrantyDaysMin', warrantyDaysMin);
   if (standardProductId) params.set('standardProductId', standardProductId);
-  if (newcomer) params.set('newcomer', 'true');
+  if (newcomer || membershipKinds.length) params.set('newcomer', String(newcomer && !membershipKinds.length));
+  for (const kind of membershipKinds) params.append('membershipKind', kind);
   return params;
 }
 
@@ -78,19 +114,20 @@ function readCatalogLocation(params = new URLSearchParams(window.location.search
   return { query: (params.get('q') || '').slice(0, 500), platform: normalizeCatalogPlatform(params.get('platform') || '') || '全部',
     sort: ['price', 'updated'].includes(params.get('sort')) ? params.get('sort') : 'default',
     tags: new Set(selectedTags), warranty, product: params.get('standardProductId') || '', cursor: params.get('cursor') || '',
+    membershipKinds: MEMBERSHIP_KINDS.filter(kind => params.getAll('membershipKind').includes(kind)),
     newcomer: explicitMode ? params.get('newcomer') === 'true'
-      : params.has('cursor') || window.location.pathname.startsWith('/products/') ? false
+      : params.has('cursor') ? false
         : typeof window.history.state?.catalogNewcomer === 'boolean' ? window.history.state.catalogNewcomer : mode === 'newcomer' };
 }
 
-function navigateProduct(event, id, newcomer) {
+function navigateProduct(event, href) {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
   trackUsage('product_detail');
   const catalogScroll = window.scrollY;
   const catalogUrl = window.location.pathname + window.location.search;
   window.history.replaceState({ ...window.history.state, catalogScroll }, '', catalogUrl);
-  window.history.pushState({ catalogUrl, catalogScroll }, '', '/products/' + encodeURIComponent(id) + '?newcomer=' + String(newcomer));
+  window.history.pushState({ catalogUrl, catalogScroll }, '', href);
   window.dispatchEvent(new PopStateEvent('popstate'));
   window.scrollTo(0, 0);
 }
@@ -353,11 +390,9 @@ function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, dra
   const groups = groupTags(readableTags);
   if (draftWarrantyDaysMin && !groups.some(group => group.id === 'warranty_conditions')) groups.push({ id: 'warranty_conditions', label: '质保要求', tags: [] });
   const warrantyTags = groups.find(group => group.id === 'warranty_conditions')?.tags || [];
-  const warrantyChoices = uniqueTags([warrantyTags.filter(tag => tag.name !== 'warranty_days'),
-    draftWarrantyDaysMin || warrantyTags.some(tag => tag.name === 'warranty_days') ? [{ name: 'warranty_scope', value: 'period' }] : []])
-    .sort((a, b) => Number(a.name === 'warranty_scope') - Number(b.name === 'warranty_scope') || a.value.localeCompare(b.value))
-    .map(tag => ({ name: tag.name, key: tagKey(tag), label: tag.name === 'warranty' && tag.value === 'covered' ? '有质保（不限类型）'
-      : tag.name === 'warranty_scope' && tag.value === 'first_login' ? '仅保首次登录' : displayPurchaseValue(tag) }));
+  const warrantyChoices = uniqueTags([[{ name: 'warranty_scope', value: 'period' }],
+    warrantyTags.filter(tag => tag.name === 'warranty_scope' && LIMITED_WARRANTY_SCOPES.includes(tag.value))])
+    .map(tag => ({ name: tag.name, key: tagKey(tag), label: tag.value === 'period' ? '按质保时长' : purchaseWarrantyLabel([tag]) }));
   const draftCount = draftTags.size + Number(Boolean(draftWarrantyDaysMin)) + Number(Boolean(draftProduct)) + extraCount;
   return (
     <div className={inline ? 'filter-panel-container' : 'filter-drawer-layer'} hidden={!inline && covered} aria-hidden={covered || undefined} inert={covered || undefined} onMouseDown={(event) => { if (!inline && event.target === event.currentTarget) onClose(); }}>
@@ -473,7 +508,7 @@ function ShopBadge({ offer }) {
   </span>;
 }
 
-function OfferCard({ offer, item, rank, onOfferDetails, comparison, onCompare, best = rank === 1, showHistory = false }) {
+function OfferCard({ offer, item, rank, onOfferDetails, comparison, onCompare, best = rank === 1, showHistory = false, membershipKinds = EMPTY_LIST, newcomer = false }) {
   const checked = comparison?.some(entry => offerIdentity(entry.offer) === offerIdentity(offer));
   const rankClass = `rank-${Math.min(rank, 4)}`;
   return (
@@ -489,7 +524,7 @@ function OfferCard({ offer, item, rank, onOfferDetails, comparison, onCompare, b
           <OfferPrice offer={offer} className={`tile-price ${best && availableOffer(offer) ? 'best' : ''}`} />
           <span className="offer-actions">{onCompare ? <label><input type="checkbox" aria-label={`对比报价 ${offer.name || item.name}`} checked={Boolean(checked)} disabled={!checked && comparison.length >= 3} onChange={() => onCompare(offer, item)} />对比</label> : null}<button type="button" className="offer-details-button" onClick={() => onOfferDetails(offer, item)}>商品说明</button>{offer.productUrl ? <a href={offer.productUrl} target="_blank" rel="noreferrer" onClick={() => trackUsage('outbound')}>去商家</a> : null}</span>
         </span>
-        {showHistory && offer.productId ? <PriceHistory standardProductId={item.id} productId={String(offer.productId)} currency={offer.currency} /> : null}
+        {showHistory && offer.productId ? <PriceHistory standardProductId={item.id} productId={String(offer.productId)} currency={offer.currency} membershipKinds={membershipKinds} newcomer={newcomer} /> : null}
       </div>
     </div>
   );
@@ -513,29 +548,36 @@ function priceRangeError({ priceMin, priceMax }) {
   return priceMin !== '' && priceMax !== '' && Number(priceMin) > Number(priceMax) ? '最低价不能高于最高价' : '';
 }
 
-function readDetailSearch(params) {
-  const { query, tags, warranty, newcomer } = readCatalogLocation(params);
+function readDetailSearch(params, item) {
+  const { query, tags, warranty, newcomer, membershipKinds } = readCatalogLocation(params);
+  const membership = membershipSearch(query, item.isAiMembership && params.get('searchMode') !== 'literal');
   // Preserve inherited purchase intent as visible filters; new detail searches stay literal.
-  const parsed = params.get('searchMode') === 'literal' ? { text: query, tags: [] } : parseCatalogSearch(query);
+  const literal = params.get('searchMode') === 'literal' || item.isAiMembership && membershipNegation.test(query);
+  const parsed = literal ? { text: query, tags: [] } : parseCatalogSearch(membership.text);
   const explicitNames = new Set([...tags].map(key => JSON.parse(key).name));
   const inferred = parsed.tags.filter(tag => !explicitNames.has(tag.name)
     && !(parsed.warrantyDaysMin !== undefined && tag.name === 'warranty_days'));
   return { keyword: [parsed.text, params.get('shopQuery')].filter(Boolean).join(' ').slice(0, 500),
-    tags: [...new Set([...tags, ...inferred.map(tagKey)])], warranty: warranty || String(parsed.warrantyDaysMin || ''), newcomer };
+    tags: [...new Set([...tags, ...inferred.map(tagKey)])], warranty: warranty || String(parsed.warrantyDaysMin || ''),
+    newcomer: item.isAiMembership || params.has('newcomer') ? newcomer : false,
+    membershipKinds: item.isAiMembership ? membershipKinds.length ? membershipKinds : membership.kinds : [] };
 }
 
 function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCompare, onOpenComparison, desktop, standalone = false, referenceRef }) {
+  const fixedMembershipKind = detail.membershipKind;
+  const title = membershipName(detail.item, fixedMembershipKind);
   const initial = { keyword: '', tags: [], warranty: '', shopId: '', shopName: '', priceMin: '', priceMax: '', currency: 'CNY',
     pageSize: PRODUCT_PAGE_SIZE, page: 1, offerSort: 'price', kind: detail.kind, scrollTop: 0 };
-  const [state, setState] = useState(() => {
-    if (!standalone) return { ...initial, ...readDetailSearch(new URLSearchParams(detail.query)) };
+  const [queryState, setState] = useState(() => {
+    if (!standalone) return { ...initial, ...readDetailSearch(new URLSearchParams(detail.query), detail.item) };
     const params = new URLSearchParams(window.location.search);
-    return { ...initial, ...readDetailSearch(params),
+    return { ...initial, ...readDetailSearch(params, detail.item),
       priceMin: params.get('priceMin') || '', priceMax: params.get('priceMax') || '',
       shopId: params.get('shopId') || '',
       page: publicPageNumber(params.getAll('page')) ?? 1,
       kind: params.get('detailKind') === 'shops' ? 'shops' : 'offers', offerSort: ['price', 'priceDesc', 'updated'].includes(params.get('offerSort')) ? params.get('offerSort') : 'price' };
   });
+  const state = fixedMembershipKind ? { ...queryState, membershipKinds: [fixedMembershipKind], newcomer: false } : queryState;
   const [draft, setDraft] = useState(() => ({ ...state, tags: new Set(state.tags) }));
   const [keyword, setKeyword] = useState(state.keyword);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -559,12 +601,16 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
   const isShops = state.kind === 'shops';
   const label = isShops ? '商铺' : '报价';
+  const countUnit = isShops ? '家商铺' : '条报价';
+  const detailProducts = page => (page?.items || []).filter(item => item.id === detail.item.id);
   function queryFor(values) {
     const params = new URLSearchParams(detail.query);
     params.set('standardProductId', detail.item.id);
     params.set('q', values.keyword);
     params.set('searchMode', 'literal');
-    params.set('newcomer', String(values.newcomer));
+    params.set('newcomer', String(values.newcomer && !values.membershipKinds.length));
+    params.delete('membershipKind');
+    for (const kind of values.membershipKinds) params.append('membershipKind', kind);
     params.delete('tag');
     for (const tag of values.tags) params.append('tag', tag);
     params.delete('warrantyDaysMin');
@@ -601,8 +647,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
       return fetchCatalog('/api/catalog?' + next, signal);
     },
     getNextPageParam: (lastPage, _pages, page) => {
-      const result = lastPage.items?.find(item => item.id === detail.item.id)?.detail;
-      return result?.entries?.length && (page + 1) * state.pageSize < result.total ? page + 1 : undefined;
+      return detailProducts(lastPage).some(item => item.detail?.entries?.length && (page + 1) * state.pageSize < item.detail.total) ? page + 1 : undefined;
     },
   });
   const detailData = useMemo(() => {
@@ -610,34 +655,31 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     return { ...pages[0], items: pages.flatMap(page => page.items || []) };
   }, [detailQuery.data]);
   const priceRevision = useCatalogRefresh(detailData, detailQuery.refetch);
-  const firstDetailItem = detailQuery.data?.pages[0]?.items?.find(item => item.id === detail.item.id);
+  const firstDetailItems = detailProducts(detailQuery.data?.pages[0]);
   const missingPage = standalone && state.page > 1 && detailQuery.data !== undefined
-    && (!firstDetailItem?.detail?.entries?.length || (state.page - 1) * state.pageSize >= firstDetailItem.detail.total);
+    && !firstDetailItems.some(item => item.detail?.entries?.length && (state.page - 1) * state.pageSize < item.detail.total);
   useEffect(() => {
     if (!standalone) return;
     if (missingPage) {
-      updatePageMetadata('product-error', { id: detail.item.id, name: '商品分页不存在' });
+      updatePageMetadata('product-error', { id: detail.item.id, name: '商品分页不存在' }, state.page, fixedMembershipKind);
       return;
     }
-    updatePageMetadata('product', detail.item, state.page);
-  }, [standalone, detail.item, state.page, missingPage]);
+    updatePageMetadata('product', detail.item, state.page, fixedMembershipKind);
+  }, [standalone, detail.item, state.page, missingPage, fixedMembershipKind]);
   const facetParams = queryFor(state).toString();
   const facets = useQuery({ queryKey: ['detail-facets', facetParams], enabled: filterOpen,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog/facets?' + facetParams, signal) });
   useCatalogRefresh(facets.data, facets.refetch, filterOpen);
   const loading = detailQuery.isPending;
   const error = detailQuery.isError && !detailQuery.data;
-  const item = detailData.items?.find(item => item.id === detail.item.id);
-  const offers = item?.offers || detail.item.offers || EMPTY_LIST;
   const entries = useMemo(() => {
     if (loading || error) return EMPTY_LIST;
     const all = detailQuery.data?.pages.flatMap(page => {
-      const product = page.items?.find(item => item.id === detail.item.id);
-      return product?.detail?.entries || EMPTY_LIST;
+      return detailProducts(page).flatMap(product => product.detail?.entries || EMPTY_LIST);
     }) || EMPTY_LIST;
     return [...new Map(all.filter(entry => currentInventory(entry.offer || entry)).map(entry => [isShops ? entry.key : offerIdentity(entry), entry])).values()];
   }, [loading, error, detailQuery.data, detail.item.id, isShops, priceRevision]);
-  const total = Number(item?.detail?.total ?? 0);
+  const total = firstDetailItems[0]?.detail?.total ?? 0;
   const visible = entries;
   const columns = !isShops && desktop ? 2 : 1;
   const rows = useMemo(() => Array.from({ length: Math.ceil(visible.length / columns) }, (_, index) => visible.slice(index * columns, (index + 1) * columns)), [visible, columns]);
@@ -667,7 +709,8 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     if (!isValidWarrantyMinimum(draft.warranty)) { setFilterOpen(true); return; }
     if (priceRangeError(draft)) { setRangeError(priceRangeError(draft)); return; }
     setRangeError('');
-    update({ priceMin: draft.priceMin, priceMax: draft.priceMax, tags: [...draft.tags], warranty: draft.warranty });
+    update({ priceMin: draft.priceMin, priceMax: draft.priceMax, tags: [...draft.tags], warranty: draft.warranty,
+      membershipKinds: draft.membershipKinds, newcomer: draft.membershipKinds.length ? false : state.newcomer });
     setFilterOpen(false);
   }
   function navigate(patch) {
@@ -678,7 +721,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     setState(values); setKeyword(values.keyword); setDraft({ ...values, tags: new Set(values.tags) }); setRangeError(''); setFilterOpen(false);
   }
   const field = (name, value) => { setDraft(current => ({ ...current, [name]: value })); setRangeError(''); };
-  const selectedCount = state.tags.length + Number(Boolean(state.warranty)) + Number(Boolean(state.priceMin || state.priceMax));
+  const selectedCount = state.tags.length + Number(Boolean(state.warranty)) + Number(Boolean(state.priceMin || state.priceMax)) + (fixedMembershipKind ? 0 : state.membershipKinds.length);
   function openShop(entry) {
     shopListState.current = { ...state, scrollTop: standalone ? window.scrollY : scrollElement?.scrollTop || 0 };
     navigate({ kind: 'offers', shopId: entry.key, shopName: entry.name });
@@ -687,30 +730,33 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     const rank = index + 1;
     return isShops ? <button type="button" className="catalog-shop-entry" key={entry.key} onClick={() => openShop(entry)}>
       <span className="catalog-shop-identity"><span className="offer-rank">{rank}</span><span className="catalog-shop-copy"><strong><span className="catalog-shop-name">{entry.name}</span><ShopScore offer={entry.offer} /><ShopBadge offer={entry.offer} /></strong><span>{entry.count} 条报价</span></span></span><strong className="catalog-shop-price"><OfferPrice offer={entry.offer} /> →</strong>
-    </button> : <OfferCard key={offerIdentity(entry, index)} offer={entry} item={detail.item} rank={rank} best={state.offerSort === 'price' && rank === 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} showHistory />;
+    </button> : <OfferCard key={offerIdentity(entry, index)} offer={entry} item={detail.item} membershipKinds={state.membershipKinds} newcomer={state.newcomer} rank={rank} best={state.offerSort === 'price' && rank === 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} showHistory />;
   }
-  if (missingPage) return <section className="product-route-state" role="alert"><h1>商品分页不存在</h1><header className="product-page-heading"><a href={productPagePath(detail.item.id)}>返回商品首页</a><a href="/" onClick={returnToCatalog}>返回商品列表</a><span className="official-reference-slot" ref={referenceRef} /></header></section>;
+  if (missingPage) return <section className="product-route-state" role="alert"><h1>商品分页不存在</h1><header className="product-page-heading"><a href={productPagePath(detail.item.id, 1, fixedMembershipKind)}>返回商品首页</a><a href="/" onClick={returnToCatalog}>返回商品列表</a><span className="official-reference-slot" ref={referenceRef} /></header></section>;
   const Container = standalone ? 'section' : ModalDialog;
   const Controls = standalone ? 'div' : React.Fragment;
   return <Container {...(standalone ? {} : { open: true, onClose })} className={standalone ? 'product-page-details' : 'catalog-detail-dialog'} aria-labelledby="catalog-detail-title">
-    {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><h1>{formatStandardName(detail.item.name)}</h1><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span><span className="official-reference-slot" ref={referenceRef} /></header> : null}
+    {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><h1>{title}</h1><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span><span className="official-reference-slot" ref={referenceRef} /></header> : null}
     {standalone ? <CatalogSeoIntro product /> : null}
     <Controls {...(standalone ? { className: 'product-detail-controls', id: 'catalog-quotes' } : {})}>
-    <header className="dialog-header"><div>{state.shopId ? <button type="button" className="text-button" onClick={() => navigate(shopListState.current || { shopId: '', shopName: '', kind: 'shops' })}>← 返回商铺列表</button> : null}<h2 id="catalog-detail-title">{standalone ? label : formatStandardName(detail.item.name) + ' · ' + label}{state.shopName ? ` · ${state.shopName}` : ''}</h2><p>{loading ? '…' : total} {isShops ? '家商铺' : '条报价'}</p></div><div className="detail-header-actions">{comparison.length ? <button type="button" className="text-button" onClick={onOpenComparison}>对比（{comparison.length}）</button> : null}{standalone ? <div className="detail-kind-tabs" role="group" aria-label="报价视图"><button type="button" aria-pressed={!isShops} onClick={() => navigate({ kind: 'offers', shopId: '', shopName: '' })}>全部报价</button><button type="button" aria-pressed={isShops} onClick={() => navigate({ kind: 'shops', shopId: '', shopName: '' })}>按商铺</button></div> : <button type="button" aria-label={`关闭${label}详情`} onClick={onClose}>×</button>}</div></header>
+    <header className="dialog-header"><div>{state.shopId ? <button type="button" className="text-button" onClick={() => navigate(shopListState.current || { shopId: '', shopName: '', kind: 'shops' })}>← 返回商铺列表</button> : null}<h2 id="catalog-detail-title">{standalone ? label : title + ' · ' + label}{state.shopName ? ` · ${state.shopName}` : ''}</h2><p>{loading ? '…' : total} {countUnit}</p></div><div className="detail-header-actions">{comparison.length ? <button type="button" className="text-button" onClick={onOpenComparison}>对比（{comparison.length}）</button> : null}{standalone ? <div className="detail-kind-tabs" role="group" aria-label="报价视图"><button type="button" aria-pressed={!isShops} onClick={() => navigate({ kind: 'offers', shopId: '', shopName: '' })}>全部报价</button><button type="button" aria-pressed={isShops} onClick={() => navigate({ kind: 'shops', shopId: '', shopName: '' })}>按商铺</button></div> : <button type="button" aria-label={`关闭${label}详情`} onClick={onClose}>×</button>}</div></header>
     <div className="detail-query-panel" ref={toolbar} onKeyDown={event => {
       if (event.key === 'Escape' && filterOpen) { event.preventDefault(); event.stopPropagation(); setFilterOpen(false); }
     }}>
       <form id="detail-query-form" className="detail-toolbar" aria-label="详情查询" onSubmit={event => { event.preventDefault(); if (keyword.trim() !== state.keyword) update({ keyword: keyword.trim() }); }} noValidate>
         <label className="search-field"><span aria-hidden="true">⌕</span><input aria-label="搜索商铺或报价" placeholder="搜索商铺、报价或规格" maxLength={500} value={keyword} onChange={event => setKeyword(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault(); }} />{keyword ? <button type="button" className="text-button" aria-label="清除搜索" onClick={() => setKeyword('')}>×</button> : null}</label>
         <select aria-label="报价排序" value={state.offerSort} onChange={event => update({ offerSort: event.target.value })}><option value="price">价格从低到高</option><option value="priceDesc">价格从高到低</option><option value="updated">最近更新</option></select>
+        {detail.item.isAiMembership && !fixedMembershipKind ? <label className="catalog-newcomer-toggle"><input type="checkbox" role="switch" aria-label="新手" checked={state.newcomer && !state.membershipKinds.length}
+          onChange={event => update({ newcomer: event.target.checked, membershipKinds: [] })} /><span>新手</span></label> : null}
         <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-expanded={filterOpen} aria-controls="detail-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraft({ ...state, tags: new Set(state.tags) }); setRangeError(''); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
-        <button type="button" className="text-button" onClick={() => navigate({ keyword: '', tags: [], warranty: '', priceMin: '', priceMax: '', offerSort: 'price' })}>重置</button>
+        <button type="button" className="text-button" onClick={() => navigate({ keyword: '', tags: [], warranty: '', priceMin: '', priceMax: '', offerSort: 'price', membershipKinds: [] })}>重置</button>
       </form>
       <div className="detail-filter-popover">
-      <FilterPanel id="detail-purchase-filters" open={filterOpen} inline extraCount={Number(Boolean(draft.priceMin || draft.priceMax))} tags={facets.data?.tagFacets || uniqueTags(offers.map(offer => offer.tags))} loading={facets.isFetching && !facets.data} error={facets.isError ? '筛选条件加载失败' : ''} onRetry={() => facets.refetch()}
+      <FilterPanel id="detail-purchase-filters" open={filterOpen} inline extraCount={Number(Boolean(draft.priceMin || draft.priceMax)) + (fixedMembershipKind ? 0 : draft.membershipKinds.length)} tags={facets.data?.tagFacets || EMPTY_LIST} loading={facets.isFetching && !facets.data} error={facets.isError ? '筛选条件加载失败' : ''} onRetry={() => facets.refetch()}
         draftTags={draft.tags} draftWarrantyDaysMin={draft.warranty} onWarrantyChange={(warranty, tags) => setDraft(current => ({ ...current, warranty, tags }))}
         onToggle={key => setDraft(current => { const tags = new Set(current.tags); if (tags.has(key)) tags.delete(key); else tags.add(key); return { ...current, tags }; })}
-        onClear={() => { setDraft(current => ({ ...current, tags: new Set(), warranty: '', priceMin: '', priceMax: '' })); setRangeError(''); }} onApply={apply} onClose={() => setFilterOpen(false)}>
+        onClear={() => { setDraft(current => ({ ...current, tags: new Set(), warranty: '', priceMin: '', priceMax: '', membershipKinds: [] })); setRangeError(''); }} onApply={apply} onClose={() => setFilterOpen(false)}>
+        {detail.item.isAiMembership && !fixedMembershipKind ? <MembershipFilter value={draft.membershipKinds} onChange={membershipKinds => field('membershipKinds', membershipKinds)} /> : null}
         <fieldset className="filter-group"><legend>价格区间</legend><div className="filter-group-content"><div className="detail-price-range" role="group" aria-label="人民币金额区间"><label><span aria-hidden="true">¥</span><input type="number" aria-label="最低价格" placeholder="最低价" min="0" max="999999999999.99" step="0.01" value={draft.priceMin} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMin', event.target.value)} /></label><span>—</span><label><span aria-hidden="true">¥</span><input type="number" aria-label="最高价格" placeholder="最高价" min="0" max="999999999999.99" step="0.01" value={draft.priceMax} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMax', event.target.value)} /></label></div>{rangeError ? <span id="detail-price-error" role="alert" className="report-error detail-query-error">{rangeError}</span> : null}</div></fieldset>
       </FilterPanel>
       </div>
@@ -718,15 +764,15 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     </Controls>
     {standalone ? <PurchaseGuide /> : null}
     <div className="detail-scroll" ref={setScrollElement}>
-      <PriceHistory key={`${detail.item.id}:${state.currency}`} standardProductId={detail.item.id} currency={state.currency} />
+      <PriceHistory key={`${detail.item.id}:${state.currency}`} standardProductId={detail.item.id} currency={state.currency} membershipKinds={state.membershipKinds} newcomer={state.newcomer} />
       {loading ? <p role="status" className="detail-loading">正在加载{label}…</p> : error ? <div role="alert" className="catalog-error"><span>报价加载失败，请重试</span><button type="button" onClick={() => detailQuery.refetch()}>重试</button></div> : !visible.length ? <p className="detail-empty">没有匹配的{label}</p> : standalone || scrollElement ? <Virtuoso key={url} useWindowScroll={standalone} customScrollParent={standalone ? undefined : scrollElement} data={rows} computeItemKey={(_index, row) => isShops ? row[0].key : offerIdentity(row[0])} increaseViewportBy={CATALOG_OVERSCAN} totalListHeightChanged={onHeightChanged} endReached={loadNextPage} itemContent={(index, row) => <div className={isShops ? 'product-shop-row' : 'product-offer-row'}>{row.map((entry, column) => renderEntry(entry, index * columns + column))}</div>} /> : null}
-      {detailQuery.isFetchingNextPage ? <p className="catalog-infinite-end" role="status">正在加载更多{label}…</p> : detailQuery.isError && visible.length ? <div className="catalog-error" role="alert"><span>{detailQuery.isFetchNextPageError ? `更多${label}加载失败` : `${label}刷新失败`}</span><button type="button" onClick={() => detailQuery.isFetchNextPageError ? detailQuery.fetchNextPage() : detailQuery.refetch()}>重试加载</button></div> : detailQuery.hasNextPage ? <button type="button" className="text-button product-load-more" disabled={detailQuery.isFetching} onClick={() => detailQuery.fetchNextPage()}>加载更多{label}</button> : visible.length ? <p className="catalog-infinite-end">{state.page > 1 ? '已显示本页起的全部 ' + visible.length : '已显示全部 ' + total} {isShops ? '家商铺' : '条报价'}</p> : null}
+      {detailQuery.isFetchingNextPage ? <p className="catalog-infinite-end" role="status">正在加载更多{label}…</p> : detailQuery.isError && visible.length ? <div className="catalog-error" role="alert"><span>{detailQuery.isFetchNextPageError ? `更多${label}加载失败` : `${label}刷新失败`}</span><button type="button" onClick={() => detailQuery.isFetchNextPageError ? detailQuery.fetchNextPage() : detailQuery.refetch()}>重试加载</button></div> : detailQuery.hasNextPage ? <button type="button" className="text-button product-load-more" disabled={detailQuery.isFetching} onClick={() => detailQuery.fetchNextPage()}>加载更多{label}</button> : visible.length ? <p className="catalog-infinite-end">{state.page > 1 ? '已显示本页起的全部 ' + visible.length : '已显示全部 ' + total} {countUnit}</p> : null}
       {standalone && !isShops && !state.keyword && !state.tags.length && !state.warranty && !state.shopId
-        && !state.priceMin && !state.priceMax && !state.newcomer && state.offerSort === 'price' && total > 0
+        && !state.priceMin && !state.priceMax && !state.newcomer && (fixedMembershipKind || !state.membershipKinds.length) && state.offerSort === 'price' && total > 0
         ? <nav className="catalog-pagination" aria-label="报价分页">
-          {state.page > 1 ? <a rel="prev" href={productPagePath(detail.item.id, state.page - 1)}>上一页报价</a> : null}
+          {state.page > 1 ? <a rel="prev" href={productPagePath(detail.item.id, state.page - 1, fixedMembershipKind)}>上一页报价</a> : null}
           <span>第{state.page}页</span>
-          {state.page * PRODUCT_PAGE_SIZE < total ? <a rel="next" href={productPagePath(detail.item.id, state.page + 1)}>下一页报价</a> : null}
+          {state.page * PRODUCT_PAGE_SIZE < total ? <a rel="next" href={productPagePath(detail.item.id, state.page + 1, fixedMembershipKind)}>下一页报价</a> : null}
         </nav> : null}
       {standalone ? <p className="product-trade-note">报价仅供比较参考，下单前请以商家页面的实际价格和交易条件为准。本站不参与交易，交易与售后请联系商家。</p> : null}
     </div>
@@ -734,21 +780,28 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   </Container>;
 }
 
-const StandardProductCard = memo(function StandardProductCard({ item, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, newcomer }) {
-  const offers = item.offers || EMPTY_LIST;
+const StandardProductCard = memo(function StandardProductCard({ item, group, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, newcomer }) {
+  const kind = group?.kind || '';
+  const currency = group?.offers[0]?.currency || 'CNY';
+  const offers = group?.offers || item.offers || EMPTY_LIST;
   const shopOffers = offers.filter(currentInventory);
   const visible = shopOffers.slice(0, OFFER_PAGE_SIZE);
   const minOffer = shopOffers.find(availableOffer);
-  const shopCount = Number(item.shopCount ?? new Set(offers.map((offer) => offer.shopId || offer.shop)).size);
-  const productCount = Number(item.productCount ?? offers.length);
-  const titleId = `product-${item.id}-title`;
-  const detailHref = '/products/' + encodeURIComponent(item.id) + '?newcomer=' + String(newcomer);
+  const shopCount = Number(group ? group.shopCount : item.shopCount ?? new Set(offers.map((offer) => offer.shopId || offer.shop)).size);
+  const productCount = Number(group ? group.productCount : item.productCount ?? offers.length);
+  const titleId = `product-${item.id}-${kind || 'standard'}-title`;
+  const detailParams = new URLSearchParams({ newcomer: String(newcomer && !kind) });
+  const detailHref = kind ? productPagePath(item.id, 1, kind) : productPagePath(item.id) + '?' + detailParams;
 
   return (
     <article className="standard-product-card" aria-labelledby={titleId}>
       <header className="standard-product-header">
-        <div className="product-heading"><h2 id={titleId}><a href={detailHref} onClick={event => navigateProduct(event, item.id, newcomer)}>{formatStandardName(item.name)}</a> <span className="platform-pill">{displayPlatform(item.platform)}</span></h2><p className="product-counts"><button type="button" className="count-link" onClick={() => onOpenDetail(item, 'shops')}>{shopCount} 家商铺</button><span aria-hidden="true"> · </span><button type="button" className="count-link" onClick={() => onOpenDetail(item, 'offers')}>{productCount} 条报价</button></p>{activeTagLabels.length ? <div className="product-active-tags">{activeTagLabels.map((label) => <span key={label}>{label}</span>)}</div> : null}</div>
-        <div className="standard-product-summary"><OfferPrice offer={minOffer} className="lowest-note" starting /></div>
+        <div className="product-heading"><h2 id={titleId}><a href={detailHref} onClick={event => navigateProduct(event, detailHref)}>{membershipName(item, kind)}</a> <span className="platform-pill">{displayPlatform(item.platform)}</span></h2><p className="product-counts"><button type="button" className="count-link" onClick={() => onOpenDetail(item, 'shops', kind ? [kind] : [])}>{shopCount} 家商铺</button><span aria-hidden="true"> · </span><button type="button" className="count-link" onClick={() => onOpenDetail(item, 'offers', kind ? [kind] : [])}>{productCount} 条报价</button></p>{activeTagLabels.length ? <div className="product-active-tags">{activeTagLabels.map((label) => <span key={label}>{label}</span>)}</div> : null}</div>
+        <div className="standard-product-summary">{group ? <>
+          <span className="offer-price lowest-note">{formatMoney(group.minPrice, currency)}{group.minPrice != null ? <span className="offer-price-suffix"> 起</span> : null}</span>
+          {group.minPrice != null && group.maxPrice != null && Number(group.maxPrice) > Number(group.minPrice) ? <small>{formatMoney(group.minPrice, currency)} – {formatMoney(group.maxPrice, currency)}</small> : null}
+          {group.latestCapturedAt ? <small><time dateTime={group.latestCapturedAt}>{formatRelativeTime(group.latestCapturedAt)}</time></small> : null}
+        </> : <OfferPrice offer={minOffer} className="lowest-note" starting />}</div>
       </header>
       <div className="shop-grid">
         {visible.map((offer, index) => <OfferCard key={offerIdentity(offer, index)} offer={offer} item={item} rank={index + 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} />)}
@@ -758,14 +811,14 @@ const StandardProductCard = memo(function StandardProductCard({ item, activeTagL
 });
 
 const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDetail, onOfferDetails, onEndReached, comparison, onCompare, priceRevision, onHeightChanged, newcomer }) {
-  const renderItem = useCallback((_index, item) => (
-    <div className="catalog-virtual-item"><StandardProductCard item={item} priceRevision={priceRevision} activeTagLabels={activeTagLabels} onOpenDetail={onOpenDetail} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} newcomer={newcomer} /></div>
+  const renderItem = useCallback((_index, entry) => (
+    <div className="catalog-virtual-item"><StandardProductCard item={entry.item} group={entry.group} priceRevision={priceRevision} activeTagLabels={activeTagLabels} onOpenDetail={onOpenDetail} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} newcomer={newcomer} /></div>
   ), [activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, priceRevision, newcomer]);
   if (!items.length) return null;
   return <Virtuoso useWindowScroll data={items} computeItemKey={catalogItemKey} itemContent={renderItem} endReached={onEndReached} totalListHeightChanged={onHeightChanged} increaseViewportBy={CATALOG_OVERSCAN} />;
 });
 
-function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenceRef }) {
+function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatformChange, assistantEnabled, referenceRef }) {
   usePageAnalytics('catalog');
   const requestedProductPage = publicPageNumber(new URLSearchParams(window.location.search).getAll('page'));
   const invalidProductPage = Boolean(productId && requestedProductPage === null);
@@ -784,6 +837,8 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
   const [cursor, setCursor] = useState(initial.cursor);
   const [selectedProduct, setSelectedProduct] = useState(initial.product);
   const [draftProduct, setDraftProduct] = useState(initial.product);
+  const [membershipKinds, setMembershipKinds] = useState(initial.membershipKinds);
+  const [draftMembershipKinds, setDraftMembershipKinds] = useState(initial.membershipKinds);
   const [listMeasured, setListMeasured] = useState(false);
   const onHeightChanged = useCallback(height => { if (height > 0) setListMeasured(true); }, []);
   const [shopDialogOpen, setShopDialogOpen] = useState(false);
@@ -856,34 +911,52 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
     queryKey: ['catalog-coverage'], staleTime: 5_000, enabled: !productId,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog/coverage', signal),
   });
-  const request = useMemo(() => catalogParams(search, platform, selectedTags, warrantyDaysMin, selectedProduct, newcomer).toString(), [search, platform, selectedTags, warrantyDaysMin, selectedProduct, newcomer]);
   const lookupProductId = productId || selectedProduct;
-  const productQuery = useQuery({ queryKey: ['product', lookupProductId], enabled: Boolean(lookupProductId) && !invalidProductPage, queryFn: ({ signal }) => fetchCatalog('/api/catalog/products/' + encodeURIComponent(lookupProductId), signal) });
+  const productQuery = useQuery({ queryKey: ['product', lookupProductId], enabled: Boolean(lookupProductId) && !invalidProductPage && !invalidProductRoute, queryFn: ({ signal }) => fetchCatalog('/api/catalog/products/' + encodeURIComponent(lookupProductId), signal) });
+  const invalidFeature = invalidProductRoute || Boolean(membershipKind && productQuery.data && !productQuery.data.mergedIntoId && !productQuery.data.isAiMembership);
+  const hasMembershipWords = Boolean(search.match(membershipWords));
+  const productsQuery = useQuery({ queryKey: ['public-products'], enabled: !productId && (filterOpen || hasMembershipWords || Boolean(membershipKinds.length)),
+    queryFn: ({ signal }) => fetchCatalog('/api/catalog/products', signal) });
+  const products = productsQuery.data?.items || EMPTY_LIST;
+  const matchedProducts = matchingProducts(products, search, platform);
+  const aiSearch = selectedProduct ? productQuery.data?.isAiMembership === true
+    : matchedProducts.length > 0 && matchedProducts.every(item => item.isAiMembership);
+  const searchMembership = useMemo(() => membershipSearch(search, aiSearch), [search, aiSearch]);
+  const selectedNonAi = selectedProduct ? productQuery.data?.isAiMembership === false
+    : matchedProducts.length > 0 && matchedProducts.every(item => item.isAiMembership === false);
+  const effectiveKinds = selectedNonAi ? EMPTY_LIST : membershipKinds.length ? membershipKinds : searchMembership.kinds;
+  const effectiveNewcomer = newcomer && !effectiveKinds.length;
+  const request = catalogParams(searchMembership.text, platform, selectedTags, warrantyDaysMin, selectedProduct, effectiveNewcomer, effectiveKinds).toString();
+  const membershipReady = (!hasMembershipWords && !membershipKinds.length || !productsQuery.isPending) && (!selectedProduct || !productQuery.isPending);
   useEffect(() => {
     if (!productId) return;
-    if (invalidProductPage) {
-      updatePageMetadata('product-error', { id: productId, name: '商品分页不存在' });
+    if (invalidFeature || invalidProductPage) {
+      updatePageMetadata('product-error', { id: productId, name: invalidFeature ? '商品特性不存在' : '商品分页不存在' }, requestedProductPage || 1, membershipKind);
       return;
     }
     const product = productQuery.data;
     if (product?.mergedIntoId) {
-      window.history.replaceState(window.history.state, '', '/products/' + encodeURIComponent(product.mergedIntoId) + window.location.search);
+      window.history.replaceState(window.history.state, '', productPagePath(product.mergedIntoId, 1, membershipKind) + window.location.search);
       window.dispatchEvent(new PopStateEvent('popstate')); return;
     }
-    if (productQuery.isError) updatePageMetadata('product-error', { id: productId, name: productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载' });
-  }, [productId, productQuery.data, productQuery.isError, productQuery.error, invalidProductPage]);
+    if (productQuery.isError) updatePageMetadata('product-error', { id: productId, name: productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载' }, requestedProductPage || 1, membershipKind);
+  }, [productId, productQuery.data, productQuery.isError, productQuery.error, invalidProductPage, invalidFeature, membershipKind, requestedProductPage]);
   const locationReady = useRef(false);
-  const unfilteredCatalog = !search && platform === '全部' && !selectedTags.size && !warrantyDaysMin && !selectedProduct && !newcomer && sort === 'default';
+  const unfilteredCatalog = !search && platform === '全部' && !selectedTags.size && !warrantyDaysMin && !selectedProduct && !newcomer && !membershipKinds.length && sort === 'default';
   const startCursor = unfilteredCatalog ? cursor : '';
   useEffect(() => {
-    if (productId || window.location.pathname !== '/') return;
+    if (productId || !membershipReady || window.location.pathname !== '/') return;
     const next = new URL(window.location.href);
-    for (const key of ['q', 'platform', 'tag', 'warrantyDaysMin', 'sort', 'standardProductId', 'newcomer', 'cursor']) next.searchParams.delete(key);
+    for (const key of ['q', 'platform', 'tag', 'warrantyDaysMin', 'sort', 'standardProductId', 'newcomer', 'cursor', 'membershipKind']) next.searchParams.delete(key);
     if (startCursor) next.searchParams.set('cursor', startCursor);
     if (!unfilteredCatalog && cursor) setCursor('');
     for (const [key, value] of new URLSearchParams(request)) if (value) next.searchParams.append(key, value);
+    next.searchParams.delete('q');
+    if (search) next.searchParams.set('q', search);
+    next.searchParams.delete('membershipKind');
+    if (!selectedNonAi) for (const kind of membershipKinds) next.searchParams.append('membershipKind', kind);
     if (sort !== 'default') next.searchParams.set('sort', sort);
-    if (newcomer || new URLSearchParams(window.location.search).has('newcomer')) next.searchParams.set('newcomer', String(newcomer));
+    if (newcomer || new URLSearchParams(window.location.search).has('newcomer')) next.searchParams.set('newcomer', String(effectiveNewcomer));
     const historyState = { ...window.history.state, catalogNewcomer: newcomer };
     if (next.href !== window.location.href) {
       window.history[locationReady.current ? 'pushState' : 'replaceState'](historyState, '', next);
@@ -892,7 +965,7 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
     }
     locationReady.current = true;
     updatePageMetadata('public');
-  }, [request, sort, productId, newcomer, startCursor, unfilteredCatalog, cursor]);
+  }, [request, sort, productId, newcomer, effectiveNewcomer, search, membershipKinds, selectedNonAi, membershipReady, startCursor, unfilteredCatalog, cursor]);
   useEffect(() => {
     const restore = () => {
       const value = readCatalogLocation();
@@ -900,6 +973,7 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
       setQuery(value.query); setSearch(value.query); setPlatform(value.platform); setSort(value.sort);
       setSelectedTags(value.tags); setDraftTags(new Set(value.tags)); setWarrantyDaysMin(value.warranty); setDraftWarrantyDaysMin(value.warranty);
       setNewcomer(value.newcomer);
+      setMembershipKinds(value.membershipKinds); setDraftMembershipKinds(value.membershipKinds);
       setCursor(value.cursor);
       setCatalogDetail(null); setFilterOpen(false);
     };
@@ -908,7 +982,7 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
   }, []);
   const catalogQuery = useInfiniteQuery({
     queryKey: ['catalog', request, sort, startCursor],
-    enabled: !productId,
+    enabled: !productId && membershipReady,
     // platformFacets do not depend on the platform param (global navigation),
     // so keep the previous page rendered while a switched request loads.
     placeholderData: keepPreviousData,
@@ -923,7 +997,7 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
   });
   const facetQuery = useQuery({
     queryKey: ['facets', request],
-    enabled: !productId && filterOpen,
+    enabled: !productId && filterOpen && membershipReady,
     queryFn: ({ signal }) => fetchCatalog('/api/catalog/facets?' + request, signal),
   });
   useCatalogRefresh(facetQuery.data, facetQuery.refetch, !productId && filterOpen);
@@ -941,27 +1015,32 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
       return () => cancelAnimationFrame(frame);
     }
   }, [productId, Boolean(catalogQuery.data), listMeasured]);
-  const loading = catalogQuery.isFetching;
+  const loading = catalogQuery.isFetching || !membershipReady;
   const error = catalogQuery.isError ? '商品加载失败' : '';
   const facetTags = facetQuery.data?.tagFacets || EMPTY_LIST;
   const facetLoading = filterOpen && facetQuery.isFetching && !facetQuery.data;
   const facetError = facetQuery.isError ? '筛选条件加载失败' : '';
   const platforms = useMemo(() => ['全部', ...groupCatalogPlatforms([...data.platformFacets.filter(item => item !== '全部'), ...(platform === '全部' ? [] : [platform])])], [data.platformFacets, platform]);
   const allTags = useMemo(() => uniqueTags([[...selectedTags].map(tag => JSON.parse(tag)), facetTags]), [selectedTags, facetTags]);
-  const intentTags = useMemo(() => searchIntentTags(query), [query]);
-  const hasRecognizedIntent = intentTags.length > 0;
+  const intentTags = aiSearch && membershipNegation.test(query) ? EMPTY_LIST : searchIntentTags(membershipSearch(query, aiSearch).text);
+  const hasRecognizedIntent = intentTags.length > 0 || searchMembership.kinds.length > 0;
   const selectedTagList = useMemo(() => allTags.filter(tag => selectedTags.has(tagKey(tag))), [allTags, selectedTags]);
   const activeTagLabels = useMemo(() => [...selectedTagList.map(displayTag), ...(warrantyDaysMin ? ['质保时长：至少' + warrantyDaysMin + '天'] : [])], [selectedTagList, warrantyDaysMin]);
-  const selectedCount = selectedTags.size + Number(Boolean(warrantyDaysMin)) + Number(Boolean(selectedProduct));
-  const draftRequest = catalogParams(search, platform, draftTags, draftWarrantyDaysMin, draftProduct, newcomer).toString();
+  const selectedCount = selectedTags.size + Number(Boolean(warrantyDaysMin)) + Number(Boolean(selectedProduct)) + effectiveKinds.length;
+  const draftProductData = products.find(item => item.id === draftProduct) || (draftProduct === selectedProduct ? productQuery.data : undefined);
+  const showMembershipFilter = draftProduct ? draftProductData?.isAiMembership : matchedProducts.some(item => item.isAiMembership);
+  const draftKinds = draftProductData?.isAiMembership === false ? EMPTY_LIST : draftMembershipKinds;
+  const draftRequest = catalogParams(searchMembership.text, platform, draftTags, draftWarrantyDaysMin, draftProduct, newcomer, draftKinds).toString();
   // Platform switches return the same `platformFacets`, so only the list blanks behind the skeleton.
-  const visibleItems = useMemo(() => catalogQuery.isPlaceholderData ? EMPTY_LIST
-    : data.items.filter(item => {
-      const offers = item.offers || EMPTY_LIST;
-      return !offers.length || offers.some(currentInventory);
+  const visibleItems = useMemo(() => catalogQuery.isPlaceholderData || !membershipReady ? EMPTY_LIST
+    : data.items.flatMap(item => {
+      if (!item.isAiMembership && item.offers?.length && !item.offers.some(currentInventory)) return [];
+      if (!item.isAiMembership) return [{ item, group: null, key: `${item.id}:standard` }];
+      const groups = (item.membershipGroups || EMPTY_LIST).filter(group => (group.offers || EMPTY_LIST).some(currentInventory));
+      return groups.map(group => ({ item, group, key: `${item.id}:${group.kind}` }));
     }),
-  [catalogQuery.isPlaceholderData, data.items, priceRevision]);
-  const clearFilters = () => { if (selectedCount) { setSelectedTags(new Set()); setWarrantyDaysMin(''); setSelectedProduct(''); trackUsage('filter'); } setDraftTags(new Set()); setDraftWarrantyDaysMin(''); setDraftProduct(''); };
+  [catalogQuery.isPlaceholderData, data.items, priceRevision, membershipReady]);
+  const clearFilters = () => { if (selectedCount) { setSelectedTags(new Set()); setWarrantyDaysMin(''); setSelectedProduct(''); setMembershipKinds([]); if (searchMembership.kinds.length) changeSearch(searchMembership.text); trackUsage('filter'); } setDraftTags(new Set()); setDraftWarrantyDaysMin(''); setDraftProduct(''); setDraftMembershipKinds([]); };
   const toggleDraftTag = key => {
     setDraftTags(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
   };
@@ -972,23 +1051,31 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
   const applyFilters = () => {
     if (!isValidWarrantyMinimum(draftWarrantyDaysMin)) return;
     const days = draftWarrantyDaysMin ? String(Number(draftWarrantyDaysMin)) : '';
-    if (!equalTags(selectedTags, draftTags) || warrantyDaysMin !== days || selectedProduct !== draftProduct) { setSelectedTags(new Set(draftTags)); setWarrantyDaysMin(days); setSelectedProduct(draftProduct); trackUsage('filter'); }
+    if (!equalTags(selectedTags, draftTags) || warrantyDaysMin !== days || selectedProduct !== draftProduct || membershipKinds.join() !== draftKinds.join()) {
+      setSelectedTags(new Set(draftTags)); setWarrantyDaysMin(days); setSelectedProduct(draftProduct); setMembershipKinds(draftKinds);
+      if (draftKinds.length) setNewcomer(false);
+      if (searchMembership.kinds.length) { setQuery(searchMembership.text); setSearch(searchMembership.text); }
+      trackUsage('filter');
+    }
     setFilterOpen(false);
   };
   const changeSort = event => { setSort(event.target.value); trackUsage('filter'); };
   const changeNewcomer = enabled => {
     setNewcomer(enabled); setComparison([]);
+    if (enabled) { setMembershipKinds([]); setDraftMembershipKinds([]); setQuery(searchMembership.text); setSearch(searchMembership.text); }
     trackUsage('filter');
   };
   const loadNextPage = useCallback(() => {
     if (!catalogQuery.isFetching && catalogQuery.hasNextPage && !catalogQuery.isError) void catalogQuery.fetchNextPage({ cancelRefetch: false });
   }, [catalogQuery.isFetching, catalogQuery.hasNextPage, catalogQuery.isError, catalogQuery.fetchNextPage]);
-  const openDetail = useCallback((item, kind) => {
-    const key = `${request}:${item.id}:${kind}`;
+  const openDetail = useCallback((item, kind, detailMembershipKinds = []) => {
+    const key = `${request}:${item.id}:${kind}:${detailMembershipKinds.join(',')}`;
     const params = new URLSearchParams(request);
-    params.set('newcomer', String(newcomer));
-    setCatalogDetail({ kind, item, query: params.toString(), key }); trackUsage('product_detail');
-  }, [request, newcomer]);
+    params.set('newcomer', String(effectiveNewcomer && !detailMembershipKinds.length));
+    params.delete('membershipKind');
+    for (const membershipKind of detailMembershipKinds) params.append('membershipKind', membershipKind);
+    setCatalogDetail({ kind, item, membershipKind: detailMembershipKinds[0], query: params.toString(), key }); trackUsage('product_detail');
+  }, [request, effectiveNewcomer]);
   const toggleComparison = useCallback((offer, item) => setComparison(current => current.some(entry => offerIdentity(entry.offer) === offerIdentity(offer))
     ? current.filter(entry => offerIdentity(entry.offer) !== offerIdentity(offer)) : current.length < 3 ? [...current, { offer, item }] : current), []);
   useEffect(() => { if (!comparison.length) setComparisonOpen(false); }, [comparison.length]);
@@ -1033,13 +1120,13 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
     } catch { setReportError('提交失败，请稍后重试'); } finally { setSubmittingReport(false); }
   };
 
-  const productDetail = useMemo(() => productQuery.data ? { item: productQuery.data, kind: 'offers', query: '' } : null, [productQuery.data]);
+  const productDetail = useMemo(() => productQuery.data ? { item: productQuery.data, kind: 'offers', membershipKind, query: '' } : null, [productQuery.data, membershipKind]);
   const selectedProductName = formatStandardName(productQuery.data?.name || data.items.find(item => item.id === selectedProduct)?.name || '已选商品');
   const changeSearch = value => { setQuery(value); setSelectedProduct(''); setDraftProduct(''); };
   const changePlatform = value => {
     setPlatformPickerOpen(false);
     if (value === platform) return;
-    setPlatform(value); setSelectedProduct(''); setDraftProduct(''); trackUsage('filter');
+    setPlatform(value); setSelectedProduct(''); setDraftProduct(''); setMembershipKinds([]); setDraftMembershipKinds([]); trackUsage('filter');
     window.scrollTo(0, 0);
   };
   const platformLabel = platform === '全部' ? '全部平台' : displayPlatform(platform);
@@ -1101,17 +1188,17 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
           {desktopFilters ? <div className="platform-tabs" role="group" aria-label="商品平台">{platforms.map((item) => <button key={item} type="button" aria-pressed={item === platform} className={item === platform ? 'active' : ''} onClick={() => changePlatform(item)}>{displayPlatform(item)}</button>)}</div>
             : <button type="button" className={`platform-picker-trigger${platform !== '全部' ? ' has-selection' : ''}`} aria-label={`选择平台：${platformLabel}`} aria-haspopup="dialog" aria-expanded={platformPickerOpen} aria-controls="catalog-platform-picker" onClick={() => setPlatformPickerOpen(true)}><span>{platformLabel}</span><span className="filter-chevron" aria-hidden="true" /></button>}
           <div className="catalog-actions">
-            <label className="catalog-newcomer-toggle"><input type="checkbox" role="switch" aria-label="新手" checked={newcomer} onChange={event => changeNewcomer(event.target.checked)} /><span>新手</span></label>
+            <label className="catalog-newcomer-toggle"><input type="checkbox" role="switch" aria-label="新手" checked={effectiveNewcomer} onChange={event => changeNewcomer(event.target.checked)} /><span>新手</span></label>
             <label className="sort-control"><select value={sort} onChange={changeSort} aria-label="商品排序"><option value="default">默认顺序</option><option value="price">起价最低</option><option value="updated">最近更新</option></select></label>
-            <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-expanded={filterOpen} aria-controls="catalog-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraftTags(new Set(selectedTags)); setDraftWarrantyDaysMin(warrantyDaysMin); setDraftProduct(selectedProduct); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
+            <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-expanded={filterOpen} aria-controls="catalog-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraftTags(new Set(selectedTags)); setDraftWarrantyDaysMin(warrantyDaysMin); setDraftProduct(selectedProduct); setDraftMembershipKinds(effectiveKinds); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
           </div>
         </div>
       </section>
       </div>
       </> : null}
       {productId ? <div className="product-page-content">
-        {invalidProductPage || productQuery.isPending || productQuery.isError ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><span className="official-reference-slot" ref={referenceRef} /></header> : null}
-        {invalidProductPage ? <section className="product-route-state" role="alert"><h1>商品分页不存在</h1></section> : productQuery.isPending ? <p role="status">正在加载商品…</p> : productQuery.isError ? <section className="product-route-state" role="alert"><h1>{productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载'}</h1>{productQuery.error?.status !== 404 ? <button type="button" className="primary-button" onClick={() => productQuery.refetch()}>重试</button> : null}</section> : productDetail && !productQuery.data.mergedIntoId ? <>
+        {invalidFeature || invalidProductPage || productQuery.isPending || productQuery.isError ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><span className="official-reference-slot" ref={referenceRef} /></header> : null}
+        {invalidFeature || invalidProductPage ? <section className="product-route-state" role="alert"><h1>{invalidFeature ? '商品特性不存在' : '商品分页不存在'}</h1></section> : productQuery.isPending ? <p role="status">正在加载商品…</p> : productQuery.isError ? <section className="product-route-state" role="alert"><h1>{productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载'}</h1>{productQuery.error?.status !== 404 ? <button type="button" className="primary-button" onClick={() => productQuery.refetch()}>重试</button> : null}</section> : productDetail && !productQuery.data.mergedIntoId ? <>
           <CatalogDetailDialog key={productId} standalone desktop={desktopFilters} detail={productDetail} onOfferDetails={openOfferDetails} comparison={comparison} onCompare={toggleComparison} onOpenComparison={() => setComparisonOpen(true)} referenceRef={referenceRef} />
         </> : null}
       </div> : <>
@@ -1119,17 +1206,29 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
         <div className="dialog-header"><h2 id="platform-picker-title">选择平台</h2><button type="button" aria-label="关闭平台选择" onClick={() => setPlatformPickerOpen(false)}>×</button></div>
         <div className="platform-picker-options" role="group" aria-label="商品平台">{platforms.map(item => <button key={item} type="button" aria-pressed={item === platform} onClick={() => changePlatform(item)}><span>{item === '全部' ? '全部平台' : displayPlatform(item)}</span><span aria-hidden="true">{item === platform ? '✓' : ''}</span></button>)}</div>
       </ModalDialog> : null}
-      <FilterPanel open={filterOpen} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen || disclaimerOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => facetQuery.refetch()} draftTags={draftTags} draftWarrantyDaysMin={draftWarrantyDaysMin} draftProduct={draftProduct} onWarrantyChange={changeDraftWarranty} onToggle={toggleDraftTag} onClear={() => { setDraftTags(new Set()); setDraftWarrantyDaysMin(''); setDraftProduct(''); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
-        preview={filterOpen && isValidWarrantyMinimum(draftWarrantyDaysMin) ? <FilterCount params={draftRequest} enabled current={draftRequest === request && catalogQuery.data && !catalogQuery.isPlaceholderData ? data : undefined} /> : null} />
+      <FilterPanel open={filterOpen} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen || disclaimerOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => facetQuery.refetch()} draftTags={draftTags} draftWarrantyDaysMin={draftWarrantyDaysMin} draftProduct={draftProduct} extraCount={draftKinds.length} onWarrantyChange={changeDraftWarranty} onToggle={toggleDraftTag} onClear={() => { setDraftTags(new Set()); setDraftWarrantyDaysMin(''); setDraftProduct(''); setDraftMembershipKinds([]); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
+        preview={filterOpen && membershipReady && isValidWarrantyMinimum(draftWarrantyDaysMin) ? <FilterCount params={draftRequest} enabled current={draftRequest === request && catalogQuery.data && !catalogQuery.isPlaceholderData ? data : undefined} /> : null}>
+        {products.length ? <fieldset className="filter-group"><legend>标准商品</legend><div className="filter-group-content"><select className="catalog-standard-select" aria-label="标准商品" value={draftProduct} onChange={event => {
+          const product = products.find(item => item.id === event.target.value);
+          setDraftProduct(event.target.value);
+          if (product?.isAiMembership === false) setDraftMembershipKinds([]);
+        }}><option value="">全部商品</option>{products.filter(item => platform === '全部' || normalizeCatalogPlatform(item.platform || '') === platform).map(item => <option key={item.id} value={item.id}>{membershipName(item)}</option>)}</select></div></fieldset> : null}
+        {showMembershipFilter ? <MembershipFilter value={draftKinds} onChange={setDraftMembershipKinds} /> : null}
+      </FilterPanel>
       <div className="catalog-scroll">
-        {intentTags.length ? <div className="intent-chips" aria-label="已识别购买条件">{intentTags.map((tag) => <button type="button" key={tagKey(tag)} aria-label={`移除${displayPurchaseValue(tag)}`} onClick={() => { setQuery(removeSearchIntent(query, tag)); }}>{displayPurchaseValue(tag)} <span aria-hidden="true">×</span></button>)}<button type="button" className="intent-clear" onClick={() => { setQuery(parseCatalogSearch(query).text); }}>清除已识别条件</button></div> : null}
-        {selectedCount ? <div className="selected-filters" aria-label="已选筛选条件">{selectedProduct ? <button type="button" onClick={() => { setSelectedProduct(''); setDraftProduct(''); trackUsage('filter'); }}>{selectedProductName} ×</button> : null}{selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}{warrantyDaysMin ? <button type="button" onClick={() => { setWarrantyDaysMin(''); setDraftWarrantyDaysMin(''); trackUsage('filter'); }}>质保至少{warrantyDaysMin}天 ×</button> : null}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
+        {intentTags.length ? <div className="intent-chips" aria-label="已识别购买条件">{intentTags.map((tag) => <button type="button" key={tagKey(tag)} aria-label={`移除${displayPurchaseValue(tag)}`} onClick={() => { setQuery(removeSearchIntent(query, tag)); }}>{displayPurchaseValue(tag)} <span aria-hidden="true">×</span></button>)}<button type="button" className="intent-clear" onClick={() => { setQuery(parseCatalogSearch(searchMembership.text).text); }}>清除已识别条件</button></div> : null}
+        {selectedCount ? <div className="selected-filters" aria-label="已选筛选条件">{selectedProduct ? <button type="button" onClick={() => { setSelectedProduct(''); setDraftProduct(''); trackUsage('filter'); }}>{selectedProductName} ×</button> : null}
+          {effectiveKinds.map(kind => <button type="button" key={kind} onClick={() => {
+            const next = effectiveKinds.filter(value => value !== kind); setMembershipKinds(next); setDraftMembershipKinds(next);
+            if (searchMembership.kinds.length) { setQuery(searchMembership.text); setSearch(searchMembership.text); }
+          }}>AI会员：{membershipKindLabel(kind)} ×</button>)}
+          {selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}{warrantyDaysMin ? <button type="button" onClick={() => { setWarrantyDaysMin(''); setDraftWarrantyDaysMin(''); trackUsage('filter'); }}>质保至少{warrantyDaysMin}天 ×</button> : null}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
         {error ? <div className="catalog-error" role="alert"><span>{error}</span><button type="button" onClick={() => catalogQuery.isFetchNextPageError ? catalogQuery.fetchNextPage() : catalogQuery.refetch()}>重新加载</button></div> : null}
         {loading && !visibleItems.length ? <CatalogSkeleton /> : null}
-        <section id="catalog-quotes" className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={newcomer} /></section>
+        <section id="catalog-quotes" className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={effectiveNewcomer} /></section>
         {unfilteredCatalog && data.nextCursor ? <nav className="catalog-pagination" aria-label="商品分页"><a rel="next" href={catalogPageMetadata(data.nextCursor).path}>下一页商品</a></nav> : null}
         {!catalogQuery.hasNextPage && visibleItems.length ? <p className="catalog-infinite-end">已显示当前条件下的全部商品</p> : null}
-        <section className="empty-state" hidden={Boolean(data.items?.length) || loading || Boolean(error)}><strong>{hasRecognizedIntent || selectedCount ? '没有同时满足这些条件的报价' : '还没有匹配结果'}</strong><span>{hasRecognizedIntent ? '可以移除一个条件，或换个关键词继续找。' : selectedCount ? '清除部分筛选，或换个关键词试试。' : '试试其他关键词或商品平台。'}</span>{hasRecognizedIntent ? <button type="button" className="primary-button" onClick={() => { setQuery(parseCatalogSearch(query).text); }}>清除已识别条件</button> : selectedCount ? <button type="button" className="primary-button" onClick={clearFilters}>清除筛选</button> : null}</section>
+        <section className="empty-state" hidden={Boolean(visibleItems.length) || loading || Boolean(error)}><strong>{hasRecognizedIntent || selectedCount ? '没有同时满足这些条件的报价' : '还没有匹配结果'}</strong><span>{hasRecognizedIntent ? '可以移除一个条件，或换个关键词继续找。' : selectedCount ? '清除部分筛选，或换个关键词试试。' : '试试其他关键词或商品平台。'}</span>{hasRecognizedIntent ? <button type="button" className="primary-button" onClick={() => { setQuery(parseCatalogSearch(searchMembership.text).text); }}>清除已识别条件</button> : selectedCount ? <button type="button" className="primary-button" onClick={clearFilters}>清除筛选</button> : null}</section>
       </div>
       <section className="catalog-seo-panel" aria-label="比价说明与常见问题">
         <CatalogSeoIntro />
@@ -1156,10 +1255,10 @@ function PublicCatalog({ productId, onPlatformChange, assistantEnabled, referenc
 }
 
 
-export default function PublicPage({ productId, onPlatformChange, assistantEnabled = false, referenceRef }) {
+export default function PublicPage({ productId, membershipKind, invalidProductRoute = false, onPlatformChange, assistantEnabled = false, referenceRef }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: {
     staleTime: 5_000, gcTime: 300_000, retry: false, refetchOnWindowFocus: false,
   } } }));
   useEffect(() => () => client.clear(), [client]);
-  return <QueryClientProvider client={client}><PublicCatalog key={productId || 'catalog'} productId={productId} onPlatformChange={onPlatformChange} assistantEnabled={assistantEnabled} referenceRef={referenceRef} /></QueryClientProvider>;
+  return <QueryClientProvider client={client}><PublicCatalog key={productId ? `${productId}:${membershipKind || ''}:${invalidProductRoute}` : 'catalog'} productId={productId} membershipKind={membershipKind} invalidProductRoute={invalidProductRoute} onPlatformChange={onPlatformChange} assistantEnabled={assistantEnabled} referenceRef={referenceRef} /></QueryClientProvider>;
 }
