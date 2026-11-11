@@ -20,7 +20,7 @@ export interface TagExtractionResult {
   before: TagFact[]; after: TagFact[];
   diff: Array<{ name: string; before: string[]; after: string[] }>;
   retainedUnconfirmed: TagFact[];
-  review?: { mode: 'per_tag_binary'; decisions?: boolean[] };
+  review?: { mode: 'per_tag_binary'; decisions?: boolean[] } | { mode: 'membership_binary'; decision: boolean };
   textReview?: TextReview | null;
   versions?: { contentVersion: string; fingerprint: string; revision: string; pipeline: JsonValue };
 }
@@ -120,7 +120,9 @@ export function buildTagExtractionOutcome(decision: TagExtractionDecision, befor
     acceptedTags: decision.tags.slice(0, 128).map(auditTag), rejectedTags: decision.rejectedTags.slice(0, 128).map(auditTag),
     before: auditFacts(before), after: auditFacts(after), diff: diff.slice(0, 128).map(change => ({ name: sanitizeTagAuditText(change.name, 100), before: change.before.slice(0, 256).map(value => sanitizeTagAuditText(value, 500)), after: change.after.slice(0, 256).map(value => sanitizeTagAuditText(value, 500)) })), retainedUnconfirmed: auditFacts(retainedUnconfirmed),
     ...(decision.textReview !== undefined ? { textReview: decision.textReview } : {}),
-    ...(decision.reviewed ? { review: { mode: 'per_tag_binary' as const,
+    ...(decision.reviewed && decision.membershipKind && typeof decision.classificationReviewed === 'boolean'
+      ? { review: { mode: 'membership_binary' as const, decision: decision.classificationReviewed } }
+      : decision.reviewed ? { review: { mode: 'per_tag_binary' as const,
       ...(decision.reviewDecisions !== undefined ? { decisions: [...decision.reviewDecisions] } : {}) } } : {}) };
 }
 

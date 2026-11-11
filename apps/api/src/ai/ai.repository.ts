@@ -7,6 +7,7 @@ import { projectShopText, readTextEvidence, TEXT_REVIEW_VERSION } from '../shops
 import type { StandardizationTag } from './ai.schemas.js';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { canonicalProductDisplayName } from '@price-comparison/catalog/catalog-display';
+import { MEMBERSHIP_KINDS } from '@price-comparison/catalog/membership-policy';
 import { buildMembershipFeatures, readCurrentMembershipFeatures, needsMembershipFeatures } from '../standardization/membership-classification.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -32,7 +33,7 @@ import { IDENTITY_POLICY_VERSION, normalizeIdentity, type Identity } from '../st
 import { assertCurrentPipeline, isCurrentPipeline, pipelineVersionSnapshot, PIPELINE_VERSIONS } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION, readStandardizationRequestLimits, assertStandardizationRequestFits } from './standardization-request.js';
 import { buildTagExtractionRequest } from './tag-extraction-request.js';
-import { buildMembershipFeatureRequest, MEMBERSHIP_FEATURE_TAG_NAMES } from './membership-feature-request.js';
+import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest } from './membership-feature-request.js';
 import { buildTagReviewRequest } from './tag-review-request.js';
 import { planTagReviewRequests } from './tag-review-planner.js';
 import { buildStandardizationReviewRequest, isReviewableStandardizationDecision, parseStandardizationReviewResponse, planStandardizationReviewRequests } from './standardization-review-request.js';
@@ -414,10 +415,12 @@ export class AiRepository {
       }));
       if (stage === 'review' && !proposals) throw new Error('tag review proposals are missing');
       const limits = readStandardizationRequestLimits();
-      const request = stage === 'review' ? buildTagReviewRequest(payloads, proposals!, model)
+      const membershipFeatures = batch.job_type === 'membership_features';
+      const buildReview = membershipFeatures ? buildMembershipFeatureReviewRequest : buildTagReviewRequest;
+      const request = stage === 'review' ? buildReview(payloads, proposals!, model)
         : batch.job_type === 'membership_features' ? buildMembershipFeatureRequest(payloads, model) : buildTagExtractionRequest(payloads, model);
       if (stage === 'review') {
-        const groups = planTagReviewRequests({ model, inputs: payloads, proposals: proposals! }, limits);
+        const groups = planTagReviewRequests({ model, inputs: payloads, proposals: proposals!, membershipFeatures }, limits);
         const activeIds = new Set(payloads.map(input => input.id));
         if (groups[0]?.oversized && (batch.product_ids as string[]).some(id => !activeIds.has(id))) {
           // Unavailable inputs must reach reservation's skip guards before any oversized group fails.
@@ -426,7 +429,7 @@ export class AiRepository {
           else {
             const empty = { model, inputs: [], proposals: { items: [] } };
             groups.unshift({ request: empty,
-              estimate: assertStandardizationRequestFits(buildTagReviewRequest(empty.inputs, empty.proposals, model), limits),
+              estimate: assertStandardizationRequestFits(buildReview(empty.inputs, empty.proposals, model), limits),
               oversized: false });
           }
         }
@@ -472,7 +475,7 @@ export class AiRepository {
           });
           if (outcome === 'changed') return;
           const first = groups[0]!.request;
-          assertStandardizationRequestFits(outcome === 'split' ? buildTagReviewRequest(first.inputs, first.proposals, first.model) : request, limits);
+          assertStandardizationRequestFits(outcome === 'split' ? buildReview(first.inputs, first.proposals, first.model) : request, limits);
           return;
         }
       }
@@ -948,6 +951,15 @@ export class AiRepository {
       const expected = new Set((batch.product_ids as unknown as string[]).map(String));
       if ((stage !== undefined && items.length !== expected.size) || new Set(items.map(item => String(item.productId))).size !== items.length
         || items.some(item => !expected.has(String(item.productId)))) throw new Error('tag extraction decision does not match batch inputs');
+      if (job.job_type === 'membership_features') for (const item of items) {
+        if (!Array.isArray(item.tags) || item.tags.length || !Array.isArray(item.rejectedTags) || item.rejectedTags.length) {
+          throw new Error('Membership feature result must not contain tags');
+        }
+        if (!item.membershipKind || !MEMBERSHIP_KINDS.includes(item.membershipKind)) throw new Error('Reviewed membership kind is required');
+        if (stage !== 'extract' && (item.reviewed !== true || typeof item.classificationReviewed !== 'boolean')) {
+          throw new Error('Membership feature review requires one boolean classification decision');
+        }
+      }
       const document = { items: items.map(item => ({ ...item, productId: String(item.productId) })) };
       const completedAt = Date.now();
       const responseCompletedAt = metadata.responseMs != null && Number.isFinite(metadata.responseMs) ? new Date(completedAt) : null;
@@ -1006,6 +1018,13 @@ export class AiRepository {
       const ids = (batch.product_ids as unknown as string[]).map(BigInt);
       const expected = new Set(ids.map(String));
       if (new Set(items.map(item => String(item.productId))).size !== items.length || items.some(item => !expected.has(String(item.productId)))) throw new Error('tag extraction decision does not match batch inputs');
+      const featureTask = job.job_type === 'membership_features';
+      if (featureTask) for (const item of items) {
+        if (!Array.isArray(item.tags) || item.tags.length || !Array.isArray(item.rejectedTags) || item.rejectedTags.length) {
+          throw new Error('Membership feature result must not contain tags');
+        }
+        if (item.membershipKind !== undefined && !MEMBERSHIP_KINDS.includes(item.membershipKind)) throw new Error('Reviewed membership kind is required');
+      }
       const members = ids.length ? await tx.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', jobId).where('input_id', 'in', ids).orderBy('product_id').execute() : [];
       const productIds = members.map(member => member.product_id);
       // Match crawler lock order: shop source first, then product evidence.
@@ -1023,13 +1042,14 @@ export class AiRepository {
         .select(['m.product_id', 'm.assignment_source', 'm.standard_product_id', 'sp.canonical_family', 'sp.canonical_product', 'sp.canonical_tier'])
         .where('m.product_id', 'in', productIds).where('m.publication_state', '=', 'published').execute() : [];
       const byInput = new Map(items.map(item => [item.productId, item]));
-      const featureTask = job.job_type === 'membership_features';
       // Revalidate the complete response against every frozen member before any writes.
       const decisions = new Map(members.flatMap(member => {
         const item = byInput.get(member.input_id);
         if (!item) return [];
-        if (job.job_type === 'membership_features' && item.tags.some(tag => !MEMBERSHIP_FEATURE_TAG_NAMES.includes(tag.name))) {
-          throw new Error('Membership feature result contains an unrelated attribute');
+        if (featureTask) {
+          const decision: TagExtractionDecision = { productId: item.productId, tags: [], rejectedTags: [],
+            membershipKind: item.membershipKind, reviewed: item.reviewed, classificationReviewed: item.classificationReviewed };
+          return [[member.product_id, decision] as const];
         }
         if (!item.reviewed && (readTextEvidence(member.payload) || item.textReview !== undefined)) {
           throw new Error('text review requires a reviewed decision');
@@ -1039,8 +1059,7 @@ export class AiRepository {
         const validated = item.reviewed
           ? validateReviewedTagExtractionDecision(member.input_id, item.tags, item.rejectedTags, member.payload, item.reviewDecisions, item.textReview)
           : validateTagExtractionDecision(member.input_id, [...item.tags, ...item.rejectedTags.map(({ reasonCode, reason, ...tag }) => tag)], member.payload);
-        return [[member.product_id, featureTask ? { ...validated, membershipKind: item.membershipKind,
-          classificationReviewed: item.classificationReviewed } : validated] as const];
+        return [[member.product_id, validated] as const];
       }));
       let changed = false;
 
@@ -1054,7 +1073,8 @@ export class AiRepository {
         const sourceMatches = source && typeof source === 'object' && !Array.isArray(source)
           && Object.keys(source).length === 3 && source.url === product?.shop_url
           && source.protocol === product?.shop_protocol && source.platform === product?.shop_platform;
-        const before = featureTask ? (product ? readCurrentMembershipFeatures(product.membership_features, product)?.tags ?? [] : [])
+        const previousFeatures = featureTask && product ? readCurrentMembershipFeatures(product.membership_features, product) : null;
+        const before = featureTask ? []
           : await tx.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', member.product_id).orderBy('name').orderBy('value').execute();
         const skip = !product ? 'source_unavailable' : !featureTask && !membership ? 'not_published' : membership?.assignment_source === 'human' ? 'human_assignment'
           : product.standardization_locked ? 'product_locked'
@@ -1068,17 +1088,16 @@ export class AiRepository {
         const classificationRejected = featureTask && decision !== undefined
           && (decision.reviewed !== true || decision.classificationReviewed !== true || !decision.membershipKind);
         const result = buildTagExtractionOutcome(decision ?? { productId: member.input_id, tags: [], rejectedTags: [] }, before,
-          skip ? { outcome: 'skipped', reasonCode: skip } : classificationRejected ? { outcome: 'failed', reasonCode: 'classification_review_rejected' } : missing ? { outcome: 'failed', reasonCode: 'missing_id' } : undefined,
-          featureTask ? before.map(tag => tag.name) : []);
+          skip ? { outcome: 'skipped', reasonCode: skip } : classificationRejected ? { outcome: 'failed', reasonCode: 'classification_review_rejected' } : missing ? { outcome: 'failed', reasonCode: 'missing_id' } : undefined);
         result.versions = tagExtractionVersions(member, job.pipeline_versions);
         if (featureTask && decision) {
           result.proposedMembershipKind = decision.membershipKind;
           result.classificationReviewed = decision.classificationReviewed;
         }
         if (featureTask && !skip && !classificationRejected && decision && product) {
-          const features = buildMembershipFeatures(decision.tags, product,
-            decision.rejectedTags.filter(tag => tag.reasonCode !== 'tag_duplicate').map(tag => tag.name), decision.membershipKind!);
+          const features = buildMembershipFeatures([], product, [], decision.membershipKind!);
           result.classification = features.decision;
+          result.outcome = previousFeatures?.decision.kind === features.decision.kind ? 'unchanged' : 'updated';
           if (!isDeepStrictEqual(product.membership_features, features)) changed = true;
           await tx.updateTable('products').set({ membership_features: jsonb(features as unknown as JsonValue) }).where('id', '=', product.id).execute();
         }
@@ -1701,7 +1720,19 @@ export class AiRepository {
       .select(['m.product_id as id','m.input_id','m.status','m.reason_code','m.output','m.content_version','m.standardization_revision','p.name','p.spec','s.name as shop_name'])
       .where('m.job_id','=',input.jobId).$if(page.afterId!==undefined,q=>q.where('m.product_id','>',page.afterId!)).orderBy('m.product_id').limit(page.limit+1).execute();
     const result=buildCursorPage(rows,page.limit);
-    return {...result,items:result.items.map(({output,...r})=>{const audit=output as Record<string,JsonValue>|null;return stringifyBigints({...r,outcome:audit?.outcome??(['queued','processing'].includes(r.status)?r.status:'unrecorded'),acceptedCount:Array.isArray(audit?.acceptedTags)?audit.acceptedTags.length:0,rejectedCount:Array.isArray(audit?.rejectedTags)?audit.rejectedTags.length:0,changedFields:Array.isArray(audit?.diff)?audit.diff.length:0,...(job.job_type==='membership_features'?{classification:audit?.classification??null,proposedMembershipKind:audit?.proposedMembershipKind??null,classificationReviewed:audit?.classificationReviewed??null}:{})});})};
+    return {...result,items:result.items.map(({output,...r})=>{
+      const audit=output as Record<string,JsonValue>|null;
+      const feature=job.job_type==='membership_features';
+      const classification=audit?.classification as {kind?: unknown;reason?: unknown}|null|undefined;
+      const completed=!['queued','processing'].includes(r.status);
+      const accepted=completed && audit?.classificationReviewed===true && classification?.reason==='llm_reviewed'
+        && MEMBERSHIP_KINDS.some(kind=>kind===classification?.kind) && ['updated','unchanged','empty','review'].includes(String(audit?.outcome));
+      return stringifyBigints({...r,outcome:audit?.outcome??(['queued','processing'].includes(r.status)?r.status:'unrecorded'),
+        acceptedCount:feature?Number(accepted):Array.isArray(audit?.acceptedTags)?audit.acceptedTags.length:0,
+        rejectedCount:feature?Number(completed && audit?.classificationReviewed===false):Array.isArray(audit?.rejectedTags)?audit.rejectedTags.length:0,
+        changedFields:Array.isArray(audit?.diff)?audit.diff.length:0,
+        ...(feature?{classification:audit?.classification??null,proposedMembershipKind:audit?.proposedMembershipKind??null,classificationReviewed:audit?.classificationReviewed??null}:{})});
+    })};
   }
   async tagProductAudit(jobId:bigint,productId:bigint) {
     const job=await this.database.selectFrom('ai_jobs').select(['id','job_type','parent_identity_job_id','retry_of_job_id','model','pipeline_versions','created_at','finished_at']).where('id','=',jobId).where('job_type','in',['tag_extraction','membership_features']).executeTakeFirst();
@@ -1734,13 +1765,17 @@ export class AiRepository {
       const reference = reference_snapshot as { tagStage?: string; extractionBatchId?: string } | null;
       const stage = reference?.tagStage === 'review' ? 'review' : 'extract';
       const document = validated_decision as unknown as {
-        items?: Array<{ productId: string; tags?: StandardizationTag[]; rejectedTags?: StandardizationTag[]; reviewDecisions?: unknown }>;
+        items?: Array<{ productId: string; tags?: StandardizationTag[]; rejectedTags?: StandardizationTag[]; reviewDecisions?: unknown; membershipKind?: JsonValue; classificationReviewed?: unknown }>;
       } | null;
       const item = Array.isArray(document?.items) ? document.items.find(item => item?.productId === String(member.input_id)) : undefined;
       const votes = item?.reviewDecisions;
       return { ...batch, error: batch.error ? sanitizeTagAuditText(batch.error) : null,
         request_estimate: redact(batch.request_estimate), response_diagnostic: redact(batch.response_diagnostic),
         stage, extraction_batch_id: reference?.extractionBatchId ?? null,
+        ...(job.job_type === 'membership_features' ? {
+          proposed_membership_kind: item?.membershipKind === undefined ? null : redact(item.membershipKind),
+          classification_decision: stage === 'review' && typeof item?.classificationReviewed === 'boolean' ? item.classificationReviewed : null,
+        } : {}),
         proposals: stage === 'extract' && Array.isArray(item?.tags) ? [...item.tags, ...(Array.isArray(item.rejectedTags) ? item.rejectedTags : [])].map((tag, proposalIndex) => redact({
           proposalIndex, name: sanitizeTagAuditText(tag.name, 100), value: sanitizeTagAuditText(tag.value, 500),
           evidence: tag.evidence.slice(0, 8).map(citation => ({

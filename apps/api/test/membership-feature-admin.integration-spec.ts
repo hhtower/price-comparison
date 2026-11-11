@@ -9,6 +9,7 @@ import { AiRepository } from '../src/ai/ai.repository.js';
 import { AiService } from '../src/ai/ai.service.js';
 import { AiController } from '../src/ai/ai.controller.js';
 import { AiAdminController } from '../src/ai/ai-admin.controller.js';
+import { getJobProgress } from '../src/ai/ai-progress.repository.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, repository: AiRepository, controller: AiController;
 const schema = `membership_feature_admin_${randomUUID().replaceAll('-', '')}`;
@@ -57,19 +58,50 @@ test('feature admin previews unassigned products, creates a separate job and exp
   const queue = await new AiAdminController(repository).taskQueue('10', undefined, 'all', 'membership_features');
   assert.ok(queue.items.some(row => String(row.id) === String(jobId)));
   const classification = { kind: 'account', reason: 'llm_reviewed', durationSource: 'default', requiredWarrantyDays: null };
-  await db.updateTable('ai_job_input_members').set({ status: 'classified', output: jsonb({
+  const historicalOutput = {
     outcome: 'updated', classification, proposedMembershipKind: 'account', classificationReviewed: true,
-    acceptedTags: [{ name: 'warranty_scope', value: 'subscription', evidence: [{ path: 'name', quote: '保订阅' }] }],
+    acceptedTags: Array.from({ length: 7 }, () => ({ name: 'warranty_scope', value: 'subscription', evidence: [{ path: 'name', quote: '保订阅' }] })),
     rejectedTags: [], diff: [], review: { mode: 'per_tag_binary', decisions: [true] },
-  }) }).where('job_id', '=', jobId).where('product_id', '=', item.id).execute();
+  };
+  await db.updateTable('ai_job_input_members').set({ status: 'classified', output: jsonb(historicalOutput) })
+    .where('job_id', '=', jobId).where('product_id', '=', item.id).execute();
   const adminController = new AiAdminController(repository);
   const results = await adminController.featureResults(String(jobId), '10');
   assert.deepEqual(results.items[0]?.classification, classification);
   assert.equal(results.items[0]?.proposedMembershipKind, 'account');
   assert.equal(results.items[0]?.classificationReviewed, true);
+  assert.equal(results.items[0]?.acceptedCount, 1, 'seven legacy facts represent one accepted product classification');
+  assert.equal(results.items[0]?.rejectedCount, 0);
+  assert.deepEqual((await getJobProgress(db, jobId))?.featureAcceptance, { acceptedProducts: 1, rejectedProducts: 0 });
+  const member = await db.selectFrom('ai_job_input_members').select('input_id').where('job_id', '=', jobId).executeTakeFirstOrThrow();
+  await db.updateTable('ai_job_batches').set({ validated_decision: jsonb({ items: [{
+    productId: String(member.input_id), tags: [], rejectedTags: [], membershipKind: 'account',
+  }] }) }).where('job_id', '=', jobId).execute();
+  await db.insertInto('ai_job_batches').values({
+    job_id: jobId, batch_index: 1, product_ids: jsonb([String(member.input_id)]), product_count: 1,
+    reference_snapshot: jsonb({ tagStage: 'review' }),
+    validated_decision: jsonb({ items: [{
+      productId: String(member.input_id), tags: [], rejectedTags: [], membershipKind: 'account', reviewed: true, classificationReviewed: true,
+    }] }),
+  }).execute();
   const audit = await adminController.featureAudit(String(jobId), String(item.id));
   assert.deepEqual(audit.member.output.classification, classification);
   assert.equal(audit.member.output.acceptedTags[0].evidence[0].quote, '保订阅');
+  assert.equal(audit.batches[0].proposed_membership_kind, 'account');
+  assert.equal(audit.batches[0].classification_decision, null);
+  assert.equal(audit.batches[1].proposed_membership_kind, 'account');
+  assert.equal(audit.batches[1].classification_decision, true);
+  for (const [output, accepted, rejected] of [
+    [{ ...historicalOutput, classification: null }, 0, 0],
+    [{ ...historicalOutput, outcome: 'skipped' }, 0, 0],
+    [{ ...historicalOutput, outcome: 'failed', classification: null, classificationReviewed: false }, 0, 1],
+  ] as const) {
+    await db.updateTable('ai_job_input_members').set({ output: jsonb(output) }).where('job_id', '=', jobId).execute();
+    const updated = await adminController.featureResults(String(jobId), '10');
+    assert.equal(updated.items[0]?.acceptedCount, accepted);
+    assert.equal(updated.items[0]?.rejectedCount, rejected);
+    assert.deepEqual((await getJobProgress(db, jobId))?.featureAcceptance, { acceptedProducts: accepted, rejectedProducts: rejected });
+  }
   await controller.cancel(String(jobId));
 });
 

@@ -1,4 +1,5 @@
 import { buildTagReviewRequest } from './tag-review-request.js';
+import { buildMembershipFeatureReviewRequest } from './membership-feature-request.js';
 import type { TagExtractionInput, TagExtractionResponse } from './tag-extraction-request.js';
 import { estimateStandardizationRequest, type StandardizationRequestLimits } from './standardization-request.js';
 import { CONSISTENCY_KEYS, DISCLOSURE_KEYS, readTextEvidence } from '../shops/shop-text-review.js';
@@ -9,16 +10,18 @@ const TEXT_REVIEW_OUTPUT_TOKENS = (DISCLOSURE_KEYS.length + CONSISTENCY_KEYS.len
 
 /** Keep whole frozen inputs and their proposals together within the actual review request budget. */
 export function planTagReviewRequests(request: {
-  model: string; inputs: readonly TagExtractionInput[]; proposals: TagExtractionResponse;
+  model: string; inputs: readonly TagExtractionInput[]; proposals: TagExtractionResponse; membershipFeatures?: boolean;
 }, limits: StandardizationRequestLimits) {
   const make = (inputs: TagExtractionInput[]) => {
     const ids = new Set(inputs.map(input => input.id));
     const subset = { model: request.model, inputs, proposals: { items: request.proposals.items.filter(item => ids.has(item.id)) } };
-    const estimate = estimateStandardizationRequest(buildTagReviewRequest(inputs, subset.proposals, request.model), limits);
+    const build = request.membershipFeatures ? buildMembershipFeatureReviewRequest : buildTagReviewRequest;
+    const estimate = estimateStandardizationRequest(build(inputs, subset.proposals, request.model), limits);
     const estimatedOutputTokens = inputs.reduce((total, input) => {
       const tags = subset.proposals.items.find(item => item.id === input.id)?.tags.length ?? 0;
       // A singleton is indivisible and retains the entire configured response budget.
-      return total + Math.min(limits.outputReserveTokens, 64 + tags * 2 + (readTextEvidence(input) ? TEXT_REVIEW_OUTPUT_TOKENS : 0));
+      return total + Math.min(limits.outputReserveTokens, request.membershipFeatures ? 64
+        : 64 + tags * 2 + (readTextEvidence(input) ? TEXT_REVIEW_OUTPUT_TOKENS : 0));
     }, 0);
     return { request: subset, estimate, oversized: estimate.requestBytes > limits.maxRequestBytes
       || estimate.estimatedTotalTokens > limits.maxContextTokens || estimatedOutputTokens > limits.outputReserveTokens };

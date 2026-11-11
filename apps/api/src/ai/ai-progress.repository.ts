@@ -1,5 +1,6 @@
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { isAttributeJobType, type DatabaseSchema } from '../database/types.js';
+import { MEMBERSHIP_KINDS } from '@price-comparison/catalog/membership-policy';
 
 export interface ProgressSnapshot {
   jobId: string; jobType: string; version: string; phase: string; status: string;
@@ -11,6 +12,7 @@ export interface ProgressSnapshot {
   missing: { scheduledInputs: number; reprocessedInputs: number };
   tagResults?: Record<string, number>;
   tagAcceptance?: { acceptedTags: number; rejectedTags: number; partialProducts: number };
+  featureAcceptance?: { acceptedProducts: number; rejectedProducts: number };
   tagStages?: { extractionCompleted: number; reviewQueued: number; reviewRunning: number; reviewCompleted: number; publicationQueued: number };
   standardizationStages?: { generationCompleted: number; reviewQueued: number; reviewRunning: number; reviewCompleted: number; publicationQueued: number };
   updatedAt: string;
@@ -60,6 +62,13 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
       select count(*)::int member_total,
         count(*) filter(where status='queued')::int member_queued,
         count(*) filter(where status='processing')::int member_running,
+        count(*) filter(where j.job_type='membership_features' and status not in ('queued','processing')
+          and output->>'outcome' in ('updated','unchanged','empty','review')
+          and output->'classificationReviewed' = 'true'::jsonb
+          and output #>> '{classification,reason}' = 'llm_reviewed'
+          and output #>> '{classification,kind}' = any(${[...MEMBERSHIP_KINDS]}::text[]))::int feature_accepted,
+        count(*) filter(where j.job_type='membership_features' and status not in ('queued','processing')
+          and output->'classificationReviewed' = 'false'::jsonb)::int feature_rejected,
         coalesce(sum(jsonb_array_length(coalesce(output->'acceptedTags','[]'::jsonb)))
           filter(where j.job_type in ('tag_extraction','membership_features') and status not in ('queued','processing')),0)::int tag_accepted,
         coalesce(sum(jsonb_array_length(coalesce(output->'rejectedTags','[]'::jsonb)))
@@ -124,6 +133,9 @@ export function progressSnapshotFromRow(row: Record<string, unknown>): ProgressS
   const terminal = Object.values(tagResults).reduce((a,b)=>a+b,0);
   return {
     ...(tag ? { tagResults, tagAcceptance: { acceptedTags: num(row.tag_accepted), rejectedTags: num(row.tag_rejected), partialProducts: num(row.tag_partial) } } : {}),
+    ...(row.job_type === 'membership_features' ? { featureAcceptance: {
+      acceptedProducts: num(row.feature_accepted), rejectedProducts: num(row.feature_rejected),
+    } } : {}),
     ...(tag ? { tagStages: { extractionCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
     ...(!tag ? { standardizationStages: { generationCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
     jobId: str(row.job_id), jobType: String(row.job_type ?? ''), version: str(row.version), phase: String(row.phase ?? 'standardizing'), status: String(row.status),

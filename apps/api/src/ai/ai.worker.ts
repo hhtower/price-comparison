@@ -9,7 +9,9 @@ import { validateStandardizationEvidence } from './standardization-evidence.js';
 import { classifyProviderRequestFailure } from './standardization-state.js';
 import { buildStandardizationRequest, assertStandardizationRequestFits, readStandardizationRequestLimits } from './standardization-request.js';
 import { buildTagExtractionRequest, parseTagExtractionResponse } from './tag-extraction-request.js';
-import { assertMembershipFeatureProposals, buildMembershipFeatureRequest, MEMBERSHIP_FEATURE_REVIEW_PROMPT, parseMembershipFeatureResponse } from './membership-feature-request.js';
+import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest,
+  parseMembershipFeatureResponse, parseMembershipFeatureReviewResponse, type MembershipFeatureResponse,
+  type MembershipFeatureReviewResponse } from './membership-feature-request.js';
 import { validateReviewedTagExtractionDecision, type TagExtractionDecision } from './tag-extraction-result.js';
 import { buildTagReviewRequest, parseTagReviewResponse, type TagReviewResponse } from './tag-review-request.js';
 import { buildExtractionPayload } from './adaptive-batching.js';
@@ -134,17 +136,15 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
   const limits = readStandardizationRequestLimits(environment);
   const prepare: NonNullable<StandardizationModelCall['prepare']> = async (claimed, signal) => {
     signal.throwIfAborted();
-    // Attribute tasks share transport and checkpoints, but feature extraction has its own vocabulary.
+    // Feature classification shares batched transport and checkpoints with tag extraction.
     if (isAttributeJobType(claimed.row?.job_type)) {
       const membershipFeatures = claimed.row.job_type === 'membership_features';
       const { jobId, model, inputs, stage = 'extract', proposals } = await repository.getTagExtractionBatchInputs(BigInt(claimed.id));
       const payloads = inputs.map(i => ({ ...(i.payload && typeof i.payload === 'object' && !Array.isArray(i.payload) ? i.payload : {}),
         id: i.productId.toString(), name: i.name, spec: i.spec as string | null, sourceData: i.sourceData }));
       if (stage === 'review' && !proposals) throw new Error('tag review proposals are missing');
-      if (membershipFeatures && stage === 'review') assertMembershipFeatureProposals(proposals!);
-      const built = stage === 'review' ? buildTagReviewRequest(payloads, proposals!, model)
+      const built = stage === 'review' ? (membershipFeatures ? buildMembershipFeatureReviewRequest : buildTagReviewRequest)(payloads, proposals!, model)
         : membershipFeatures ? buildMembershipFeatureRequest(payloads, model) : buildTagExtractionRequest(payloads, model);
-      if (membershipFeatures && stage === 'review') built.messages[0]!.content = MEMBERSHIP_FEATURE_REVIEW_PROMPT;
       assertStandardizationRequestFits(built, limits);
       signal.throwIfAborted();
       const context = { parentJobId: String(jobId), batchId: String(claimed.id), jobType: claimed.row.job_type,
@@ -158,24 +158,32 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
         try {
           if (response.finishReason !== 'stop') throw new Error('AI response has invalid completion reason');
           phase = 'schema';
-          const parsed = stage === 'review' ? parseTagReviewResponse(response.content)
+          const parsed = stage === 'review' ? (membershipFeatures ? parseMembershipFeatureReviewResponse : parseTagReviewResponse)(response.content)
             : membershipFeatures ? parseMembershipFeatureResponse(response.content) : parseTagExtractionResponse(response.content);
-          if (membershipFeatures && stage === 'extract') assertMembershipFeatureProposals(parsed as ReturnType<typeof parseTagExtractionResponse>);
           if (parsed.items.length !== inputs.length || new Set(parsed.items.map(item => item.id)).size !== parsed.items.length
             || parsed.items.some(item => !inputs.some(input => String(input.productId) === item.id)))
             throw new Error('Tag extraction response IDs do not match inputs');
-          if (stage === 'review') {
+          if (stage === 'review' && !membershipFeatures) {
             for (const proposed of proposals!.items) {
               const reviewed = (parsed as TagReviewResponse).items.find(item => item.id === proposed.id);
               if (!reviewed || reviewed.decisions.length !== proposed.tags.length) {
                 throw new Error('Tag review must return one binary decision per proposed tag');
               }
-              if (membershipFeatures && typeof reviewed.classificationDecision !== 'boolean') throw new Error('Membership classification review is required');
             }
           }
           phase = 'evidence';
-          const items = parsed.items.map(item => {
+          const items: TagExtractionDecision[] = parsed.items.map(item => {
             const input = inputs.find(i => i.productId.toString() === item.id);
+            if (membershipFeatures) {
+              if (stage === 'review') {
+                const proposed = proposals!.items.find(candidate => candidate.id === item.id)!;
+                return { productId: input!.productId, tags: [], rejectedTags: [], reviewed: true,
+                  membershipKind: (proposed as typeof proposed & MembershipFeatureResponse['items'][number]).membershipKind,
+                  classificationReviewed: (item as MembershipFeatureReviewResponse['items'][number]).classificationDecision };
+              }
+              return { productId: input!.productId, tags: [], rejectedTags: [],
+                membershipKind: (item as MembershipFeatureResponse['items'][number]).membershipKind };
+            }
             const payload = input!.payload ?? buildExtractionPayload({ id: item.id, name: input!.name, spec: input!.spec, sourceData: input!.sourceData as JsonValue });
             if (stage === 'review') {
               const reviewed = item as TagReviewResponse['items'][number];
@@ -185,17 +193,17 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
                 original.filter((_tag, index) => reviewed.decisions[index]),
                 original.filter((_tag, index) => !reviewed.decisions[index]).map(tag =>
                   ({ ...tag, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' })), payload, reviewed.decisions, reviewed.textReview);
-              return membershipFeatures ? { ...decision, membershipKind: (proposed as typeof proposed & { membershipKind: import('@price-comparison/catalog/membership-policy').MembershipKind }).membershipKind,
-                classificationReviewed: reviewed.classificationDecision } : decision;
+              return decision;
             }
             const tags = (item as ReturnType<typeof parseTagExtractionResponse>['items'][number]).tags
               .map(t => ({ name: t.name, value: t.value, evidence: [{ path: t.path, quote: t.quote }] }));
-            return { productId: input!.productId, tags, rejectedTags: [], ...(membershipFeatures ? { membershipKind: (item as ReturnType<typeof parseMembershipFeatureResponse>['items'][number]).membershipKind } : {}) };
+            return { productId: input!.productId, tags, rejectedTags: [] };
           });
           const metadata = { ...buildResponseAudit(response, inputs.length, phase), retryClass: null };
           metadata.responseDiagnostic.returnedItemCount = items.length;
           metadata.responseDiagnostic.missingItemCount = inputs.length - items.length;
-          metadata.responseDiagnostic.rejectedItemCount = items.filter(item => item.rejectedTags.length > 0).length;
+          metadata.responseDiagnostic.rejectedItemCount = items.filter(item => membershipFeatures
+            ? item.classificationReviewed === false : item.rejectedTags.length > 0).length;
           metadata.responseDiagnostic.code = metadata.responseDiagnostic.rejectedItemCount ? 'items_rejected'
             : items.length < inputs.length ? 'items_missing' : 'accepted';
           return { items: [], identities: [], missingIds: [], metadata, tagExtractionItems: items, tagExtractionStage: stage };

@@ -36,21 +36,24 @@ const REASONS = {
   warranty_shorter_than_subscription: '保障期限不足', warranty_coverage_unproven: '缺少覆盖订阅期的保障证据',
   delivery_unknown_or_conflicting: '交付对象不明确或存在冲突', conflicting_evidence: '当前销售事实存在冲突',
   rental_or_shared_account: '租用或共享账号', ownership_invalid_or_conflicting: '账号归属不明确或存在冲突',
+  llm_reviewed: 'LLM 分类复核通过', classification_review_rejected: 'LLM 分类复核拒绝',
 };
 const taskText = (text, noun) => noun === '特性' && typeof text === 'string' ? text.replaceAll('标签', '特性') : text;
 const reasonTitle = (code, noun = '标签') => taskText(code ? REASONS[code] || `未识别原因（${code}），请查看商品依据` : '无诊断原因', noun);
 const fieldTitle = name => PURCHASE_GUIDE_FIELDS[name]?.label || name;
 function resultTitle(outcome, accepted = 0, rejected = 0, noun = '标签') {
+  if (noun === '特性') return outcome === 'empty' ? '无可确认分类' : OUTCOMES[outcome] || STATES[outcome] || OUTCOMES.unrecorded;
   if (outcome === 'updated' && rejected > 0) return accepted > 0 ? '部分采纳，已更新' : '已更新，仍需复核';
   if (outcome === 'review' && accepted > 0) return '部分采纳，待复核';
   return taskText(OUTCOMES[outcome] || STATES[outcome] || OUTCOMES.unrecorded, noun);
 }
-function MembershipClassification({ value }) {
+const classificationVerdict = decision => decision === true ? '通过（true）' : decision === false ? '拒绝（false）' : '未记录';
+function MembershipClassification({ value, proposedKind, reviewed }) {
   const decision = value?.decision ?? value;
-  if (!decision?.kind) return null;
   return <div className="tag-classification">
-    <p>会员分类：{membershipKindLabel(decision.kind)} · 原因：{reasonTitle(decision.reason, '特性')}</p>
-    {decision.kind !== 'rental' && decision.durationSource ? <p>分类周期：{decision.durationSource === 'default' ? '默认一个月（非商家承诺）' : '商家明确说明'}</p> : null}
+    {decision?.kind ? <p>会员分类：{membershipKindLabel(decision.kind)} · 原因：{reasonTitle(decision.reason, '特性')}</p> : <p>提议分类：{membershipKindLabel(proposedKind) || '未记录'}</p>}
+    {decision?.kind !== 'rental' && decision?.durationSource ? <p>分类周期：{decision.durationSource === 'default' ? '默认一个月（非商家承诺）' : '商家明确说明'}</p> : null}
+    <p>分类复核：{classificationVerdict(reviewed)}</p>
   </div>;
 }
 function jobTitle(job, attention) {
@@ -81,6 +84,7 @@ function CandidateTable({ proposals, decisions, output, publicationRecorded, lab
   </table></div> : <p>原始候选为空（0 条）</p> : <p>来源候选未记录</p>;
 }
 function BatchAudit({ batch, data, outputSource, noun }) {
+  const feature = noun === '特性';
   const review = batch.stage === 'review';
   const source = review ? data.batches?.find(item => item.stage === 'extract' && batch.extraction_batch_id != null && String(item.id) === String(batch.extraction_batch_id)) : batch;
   const output = data.member?.output;
@@ -103,9 +107,15 @@ function BatchAudit({ batch, data, outputSource, noun }) {
     </details>
     {review ? <>
       <p>来源提取批次：{batch.extraction_batch_id == null ? '未记录' : `#${batch.extraction_batch_id}`}</p>
-      <p>持久化原始投票：{Array.isArray(batch.review_decisions) ? JSON.stringify(batch.review_decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p>
+      {!feature ? <p>持久化原始投票：{Array.isArray(batch.review_decisions) ? JSON.stringify(batch.review_decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
     </> : null}
-    <CandidateTable proposals={source?.proposals} decisions={review ? batch.review_decisions ?? (linkedOutput?.review?.mode === 'per_tag_binary' ? linkedOutput.review.decisions : undefined) : undefined} output={linkedOutput} publicationRecorded={Boolean(output)} label={`${review ? '复核' : '提取'}批次 #${batch.id ?? '未记录'} 候选判定`} noun={noun} />
+    {feature ? <>
+      <p>提议分类：{membershipKindLabel(batch.proposed_membership_kind ?? source?.proposed_membership_kind) || '未记录'}</p>
+      {review ? <p>分类复核：{classificationVerdict(batch.classification_decision)}</p> : null}
+      {source?.proposals?.length ? <details><summary>历史分类依据</summary>
+        <CandidateTable proposals={source.proposals} decisions={review ? batch.review_decisions ?? (linkedOutput?.review?.mode === 'per_tag_binary' ? linkedOutput.review.decisions : undefined) : undefined} output={linkedOutput} publicationRecorded={Boolean(output)} label={`批次 #${batch.id ?? '未记录'} 历史分类依据`} noun={noun} />
+      </details> : null}
+    </> : <CandidateTable proposals={source?.proposals} decisions={review ? batch.review_decisions ?? (linkedOutput?.review?.mode === 'per_tag_binary' ? linkedOutput.review.decisions : undefined) : undefined} output={linkedOutput} publicationRecorded={Boolean(output)} label={`${review ? '复核' : '提取'}批次 #${batch.id ?? '未记录'} 候选判定`} noun={noun} />}
   </details>;
 }
 function Metrics({ values, className = 'ai-standardization-summary' }) { return <dl className={className}>{Object.entries(values).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? '未记录'}</dd></div>)}</dl>; }
@@ -116,14 +126,15 @@ function taskTone(job, attention) {
   return job?.status === 'succeeded' ? 'success' : 'progress';
 }
 function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行概览', noun = '标签' }) {
+  const feature = noun === '特性';
   const job = snapshot?.job || item;
   const progress = snapshot?.progress || {};
   const results = progress.tagResults || {};
-  const acceptance = progress.tagAcceptance || {};
+  const acceptance = (feature ? progress.featureAcceptance : progress.tagAcceptance) || {};
   const stages = progress.tagStages || {};
   const total = Number(progress.rawProductCount || 0);
   const processed = Math.min(total, Number(progress.processed || 0));
-  const attention = acceptance.rejectedTags > 0 || results.review > 0 || results.failed > 0 || results.unrecorded > 0;
+  const attention = (feature ? acceptance.rejectedProducts : acceptance.rejectedTags) > 0 || results.review > 0 || results.failed > 0 || results.unrecorded > 0;
   const shopId = job?.scope_shop_id ?? job?.scopeShopId;
   const shop = shops?.items?.find(entry => String(entry.id) === String(shopId))?.name;
   const parentId = job?.parent_identity_job_id ?? job?.parentIdentityJobId;
@@ -133,9 +144,9 @@ function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行
   const phase = Number(stages.reviewQueued || 0) + Number(stages.reviewRunning || 0) > 0 ? 1
     : Number(stages.publicationQueued || 0) + Number(progress.publication?.totalUnits || 0) > 0 ? 2 : 0;
   const extra = Object.fromEntries([
-    ['无变化', results.unchanged], [`无可确认${noun}`, results.empty], ['跳过', results.skipped],
+    ['无变化', results.unchanged], [`无可确认${feature ? '分类' : noun}`, results.empty], ['跳过', results.skipped],
     ['已取消', results.cancelled], ['未记录', results.unrecorded ?? '历史审计不可用'],
-    ['部分采纳商品', acceptance.partialProducts],
+    ['部分采纳商品', feature ? undefined : acceptance.partialProducts],
   ].filter(([, value]) => typeof value === 'string' || Number(value) > 0));
   return <section className="ai-task-card ai-overview" aria-label={`${noun}任务运行概览`}>
     <header className="ai-card-header">
@@ -146,17 +157,18 @@ function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行
       <div className="ai-progress-heading"><div><span className="ai-progress-label">已处理商品</span><strong>{processed}<small> / {total}</small></strong></div><span className="ai-progress-percent">{total ? (processed / total * 100).toFixed(1) : '0.0'}%</span></div>
       <progress aria-label={`${noun}商品处理进度`} max={Math.max(1, total)} value={processed} />
       <Metrics values={{ 实际更新: results.updated, 待复核: results.review, 失败商品: results.failed,
-        [`通过${noun}（条）`]: acceptance.acceptedTags, [`拒绝${noun}（条）`]: acceptance.rejectedTags, 失败批次: progress.requests?.failedBatches }} />
+        ...(feature ? { '分类通过（件）': acceptance.acceptedProducts, '分类拒绝（件）': acceptance.rejectedProducts }
+          : { '通过标签（条）': acceptance.acceptedTags, '拒绝标签（条）': acceptance.rejectedTags }), 失败批次: progress.requests?.failedBatches }} />
       {Object.keys(extra).length ? <Metrics className="tag-result-notes" values={extra} /> : null}
       <ol className="ai-pipeline-stages" aria-label={noun === '特性' ? '特性识别阶段' : '标签抽取阶段'}>
         {[
-          [`提取${noun}`, `${Number(stages.extractionCompleted || 0)} 批已提取`],
+          [feature ? '识别分类' : `提取${noun}`, `${Number(stages.extractionCompleted || 0)} 批已提取`],
           ['LLM 二元复核', [
             `${Number(stages.reviewCompleted || 0)} 批已完成`,
             stages.reviewQueued > 0 ? `${stages.reviewQueued} 批排队` : null,
             stages.reviewRunning > 0 ? `${stages.reviewRunning} 批进行中` : null,
           ].filter(Boolean).join(' · ')],
-          [noun === '特性' ? '保存特性' : '本地发布', `${Number(stages.publicationQueued || 0)} 批待${noun === '特性' ? '保存' : '发布'}`],
+          [feature ? '保存分类' : '本地发布', `${Number(stages.publicationQueued || 0)} 批待${feature ? '保存' : '发布'}`],
         ].map(([label, detail], index) => <li key={label}
           className={completed || !stopped && index < phase ? 'is-past' : !stopped && index === phase ? 'is-current' : ''}
           aria-current={!completed && !stopped && index === phase ? 'step' : undefined}>
@@ -174,25 +186,30 @@ function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行
   </section>;
 }
 function Audit({ data, noun = '标签' }) {
+  const feature = noun === '特性';
   const output = data.member?.output;
-  const hasReviewVotes = data.batches?.some(batch => batch.stage === 'review' && Array.isArray(batch.review_decisions));
+  const hasReviewVotes = data.batches?.some(batch => batch.stage === 'review' && (feature ? typeof batch.classification_decision === 'boolean' : Array.isArray(batch.review_decisions)));
   const reviewSources = [...new Set(data.batches?.filter(batch => batch.stage === 'review').map(batch => batch.extraction_batch_id == null ? null : String(batch.extraction_batch_id)))];
   const outputSource = reviewSources.length === 1 ? reviewSources[0] : undefined;
+  const evidence = output ? ['acceptedTags', 'rejectedTags'].map(key => <section key={key}><h5>{feature ? key === 'acceptedTags' ? '采纳的历史依据' : '拒绝的历史依据' : key === 'acceptedTags' ? `通过${noun}与证据` : `拒绝${noun}与诊断`}</h5>{output[key]?.length ? <ul>{output[key].map((tag, index) => <li key={index}><strong>{fieldTitle(tag.name)}：{displayPurchaseTagValue(tag)}</strong><p>原候选索引：{indexed(tag.proposalIndex) ? `#${tag.proposalIndex}` : '未记录'} · {voteTitle(output.review?.mode === 'per_tag_binary' && indexed(tag.proposalIndex) ? output.review.decisions?.[tag.proposalIndex] : undefined)} · {key === 'acceptedTags' ? '程序采纳' : '程序拒绝'}</p>{tag.reason || tag.reasonCode ? <p title={tag.reasonCode}>{reasonTitle(tag.reasonCode, noun)}{tag.reason && tag.reasonCode !== 'review_rejected' ? `：${taskText(tag.reason, noun)}` : ''}</p> : null}<ul>{tag.evidence?.map((evidence, i) => <li key={i}>{evidence.path}：<q>{evidence.quote}</q></li>)}</ul></li>)}</ul> : <p>无</p>}</section>) : null;
   return <div className="tag-audit">
     <p>结果：{resultTitle(output?.outcome, output?.acceptedTags?.length, output?.rejectedTags?.length, noun)} · 原因：{reasonTitle(data.member?.reason_code || output?.reasonCode, noun)}</p>
-    {noun === '特性' ? <MembershipClassification value={output?.classification} /> : null}
-    <p>{output?.review?.mode === 'per_tag_binary' ? `逐${noun}二元复核 · 通过 ${output.acceptedTags?.length ?? 0} · 拒绝 ${output.rejectedTags?.length ?? 0}` : output?.review ? `历史 LLM 复核：${output.review.status === 'approved' ? '已通过' : '待复核'} · 原因：${output.review.reason || '未记录'}` : hasReviewVotes ? `逐${noun}二元复核：已保存原始判定，发布尚未完成` : 'LLM 复核未记录（不能确认历史执行状态）'}</p>
-    {output?.review?.mode === 'per_tag_binary' ? <p>商品原始投票：{Array.isArray(output.review.decisions) ? JSON.stringify(output.review.decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
+    {feature ? <MembershipClassification value={output?.classification} proposedKind={output?.proposedMembershipKind} reviewed={output?.review?.mode === 'membership_binary' ? output.review.decision ?? output.classificationReviewed : output?.classificationReviewed} />
+      : <p>{output?.review?.mode === 'per_tag_binary' ? `逐${noun}二元复核 · 通过 ${output.acceptedTags?.length ?? 0} · 拒绝 ${output.rejectedTags?.length ?? 0}` : output?.review ? `历史 LLM 复核：${output.review.status === 'approved' ? '已通过' : '待复核'} · 原因：${output.review.reason || '未记录'}` : hasReviewVotes ? `逐${noun}二元复核：已保存原始判定，发布尚未完成` : 'LLM 复核未记录（不能确认历史执行状态）'}</p>}
+    {!feature && output?.review?.mode === 'per_tag_binary' ? <p>商品原始投票：{Array.isArray(output.review.decisions) ? JSON.stringify(output.review.decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
     {!output && (hasReviewVotes || ['queued', 'processing'].includes(data.member?.status)) ? <p>发布尚未完成，不能视为已写入。</p> : ['skipped', 'failed', 'cancelled'].includes(output?.outcome) ? <p>发布结果：{OUTCOMES[output.outcome]}，本次未写入商品{noun}；程序采纳候选不代表发布成功。</p> : null}
     <p>内容版本：{data.member?.content_version ?? '未记录'} · 修订：{data.member?.standardization_revision ?? '未记录'}</p>
     <p>输入指纹：{data.member?.fingerprint ?? output?.versions?.fingerprint ?? '未记录'}</p>
     <p>任务模型：{data.job?.model ?? '未记录'} · 抽取版本：{versions(output?.versions?.pipeline ?? data.job?.pipeline_versions)}</p>
     <details><summary>冻结输入 JSON</summary>{data.member?.payload != null ? <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}><code>{JSON.stringify(data.member.payload, null, 2)}</code></pre> : <p>冻结输入未记录，不能用实时商品资料还原。</p>}</details>
-    {!output ? <p>{hasReviewVotes || ['queued', 'processing'].includes(data.member?.status) ? '商品最终发布审计尚未生成。' : '历史未记录审计结果，不能视为已验证完成。'}</p> : <>
-      {['acceptedTags', 'rejectedTags'].map(key => <section key={key}><h5>{key === 'acceptedTags' ? `通过${noun}与证据` : `拒绝${noun}与诊断`}</h5>{output[key]?.length ? <ul>{output[key].map((tag, index) => <li key={index}><strong>{fieldTitle(tag.name)}：{displayPurchaseTagValue(tag)}</strong><p>原候选索引：{indexed(tag.proposalIndex) ? `#${tag.proposalIndex}` : '未记录'} · {voteTitle(output.review?.mode === 'per_tag_binary' && indexed(tag.proposalIndex) ? output.review.decisions?.[tag.proposalIndex] : undefined)} · {key === 'acceptedTags' ? '程序采纳' : '程序拒绝'}</p>{tag.reason || tag.reasonCode ? <p title={tag.reasonCode}>{reasonTitle(tag.reasonCode, noun)}{tag.reason && tag.reasonCode !== 'review_rejected' ? `：${taskText(tag.reason, noun)}` : ''}</p> : null}<ul>{tag.evidence?.map((evidence, i) => <li key={i}>{evidence.path}：<q>{evidence.quote}</q></li>)}</ul></li>)}</ul> : <p>无</p>}</section>)}
+    {!output ? <p>{hasReviewVotes || ['queued', 'processing'].includes(data.member?.status) ? '商品最终发布审计尚未生成。' : '历史未记录审计结果，不能视为已验证完成。'}</p> : !feature ? <>
+      {evidence}
       <h5>写入差异</h5>{output.diff?.length ? <ul>{output.diff.map((change, i) => <li key={i}>{fieldTitle(change.name)}：{change.before.map(value => displayPurchaseTagValue({ name: change.name, value })).join('、') || '无'} → {change.after.map(value => displayPurchaseTagValue({ name: change.name, value })).join('、') || '无'}</li>)}</ul> : <p>无字段变化</p>}
       {output.retainedUnconfirmed?.length ? <p>保留但本次未确认：{output.retainedUnconfirmed.map(tag => `${fieldTitle(tag.name)}：${displayPurchaseTagValue(tag)}`).join('；')}</p> : null}
-    </>}
+    </> : output.acceptedTags?.length || output.rejectedTags?.length || output.review?.mode === 'per_tag_binary' ? <details><summary>历史分类依据</summary>
+      <p>历史原始投票：{output.review?.mode === 'per_tag_binary' && Array.isArray(output.review.decisions) ? JSON.stringify(output.review.decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p>
+      {evidence}
+    </details> : null}
     <h5>关联请求用量（可能与其他商品共享，不累计为商品用量）</h5>
     {data.batches?.length ? <ul>{data.batches.map((batch, i) => <li key={batch.id ?? i}><BatchAudit batch={batch} data={data} outputSource={outputSource} noun={noun} /></li>)}</ul> : <p>耗时与 token 用量不可用</p>}
   </div>;
@@ -501,7 +518,10 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
             {snapshot.currentBatches?.length ? <ul>{snapshot.currentBatches.filter(batch => Number(batch.batch_index ?? batch.batchIndex) >= 0).map((batch, index) => <li key={index}>在途批次 {Number(batch.batch_index ?? batch.batchIndex) + 1} · {batch.round} · {batch.step} · {batch.product_count ?? batch.productCount} 份输入</li>)}</ul> : null}
           </details> : null}
       <header className="ai-card-header tag-member-heading"><h4>商品结果</h4></header>
-      {!members ? <p role="status">正在读取商品结果…</p> : members.items.length ? <ul className="tag-member-list">{members.items.map(member => { const id = String(member.id); return <li key={id}><strong>{member.name}</strong><p>{member.shop_name} · {member.spec} · {resultTitle(member.outcome || (['queued', 'processing'].includes(member.status) ? member.status : 'unrecorded'), member.acceptedCount, member.rejectedCount, noun)} · {reasonTitle(member.reason_code, noun)}</p>{feature ? <MembershipClassification value={member.classification} /> : null}<p>通过 {member.acceptedCount ?? '未记录'} · 拒绝 {member.rejectedCount ?? '未记录'} · 变化字段 {member.changedFields ?? '未记录'}</p><button type="button" aria-expanded={expanded === id} onClick={() => run(() => expand(id))}>查看商品 #{id} 依据</button>{expanded === id ? audits[id]?.version === resultVersion.current ? <Audit noun={noun} data={audits[id].data} /> : <p role="status">正在读取商品依据…</p> : null}</li>; })}</ul> : <EmptyState>暂无商品结果</EmptyState>}
+      {!members ? <p role="status">正在读取商品结果…</p> : members.items.length ? <ul className="tag-member-list">{members.items.map(member => { const id = String(member.id); return <li key={id}><strong>{member.name}</strong><p>{member.shop_name} · {member.spec} · {resultTitle(member.outcome || (['queued', 'processing'].includes(member.status) ? member.status : 'unrecorded'), member.acceptedCount, member.rejectedCount, noun)} · {reasonTitle(member.reason_code, noun)}</p>
+        {feature ? <MembershipClassification value={member.classification} proposedKind={member.proposedMembershipKind} reviewed={member.classificationReviewed} />
+          : <p>通过 {member.acceptedCount ?? '未记录'} · 拒绝 {member.rejectedCount ?? '未记录'} · 变化字段 {member.changedFields ?? '未记录'}</p>}
+        <button type="button" aria-expanded={expanded === id} onClick={() => run(() => expand(id))}>查看商品 #{id} 依据</button>{expanded === id ? audits[id]?.version === resultVersion.current ? <Audit noun={noun} data={audits[id].data} /> : <p role="status">正在读取商品依据…</p> : null}</li>; })}</ul> : <EmptyState>暂无商品结果</EmptyState>}
       {members?.nextCursor ? <button type="button" disabled={busy} onClick={() => run(moreMembers)}>加载更多商品结果</button> : null}
 
         </section>
@@ -522,8 +542,8 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
       {dialog.allPending || preview ? <>
         <p className="ai-field-help">提取与复核两阶段均可能消耗模型额度或产生费用。</p>
         <details><summary>调用与重试说明</summary>
-        <p>提取 LLM → 复核 LLM → {feature ? '保存特性' : '原子发布'}。每批可包含多个商品及其多个候选{noun}，复核逐{noun}只判 YES/NO，不纠正或补充{noun}。每个初始批次通常调用模型 2 次（一次提取、一次批量复核），提取和复核两个阶段均可能产生费用；拆批及重试可能增加调用次数。</p>
-        {dialog.allPending ? <p>资料和流水线版本未变化时，已完成的部分采纳及待复核结果不会自动重新入队。</p> : null}
+        <p>提取 LLM → 复核 LLM → {feature ? '保存分类。每批可包含多个商品，每件商品只提出一个分类（成品号、代充、租号或短期），复核逐商品只判 YES/NO，不纠正或补充分类。' : '原子发布。每批可包含多个商品及其多个候选标签，复核逐标签只判 YES/NO，不纠正或补充标签。'}每个初始批次通常调用模型 2 次（一次提取、一次批量复核），提取和复核两个阶段均可能产生费用；拆批及重试可能增加调用次数。</p>
+        {dialog.allPending ? <p>资料和流水线版本未变化时，已完成的{feature ? '分类' : '部分采纳及待复核'}结果不会自动重新入队。</p> : null}
         </details>
         <label className="tag-charge-confirmation"><input type="checkbox" checked={ack} disabled={busy} onChange={event => setAck(event.target.checked)} />我确认可能消耗模型额度或产生费用</label>
         <button type="button" className="primary" disabled={busy || !enabled || !ack || (!dialog.allPending && !preview.counts.eligible)} onClick={() => run(create)}>确认创建{noun}任务</button>

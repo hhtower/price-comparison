@@ -18,6 +18,7 @@ describe('AdminPage', () => {
 
   test.each([
     ['account', '成品号', 'warranty_covers_subscription', '质保覆盖订阅周期'],
+    ['account', '成品号', 'warranty_covers_subscription', '质保覆盖订阅周期', 'explicit'],
     ['rental', '租号', 'rental_or_shared_account', '租用或共享账号'],
     ['rental', '租号', 'rental_or_shared_account', '租用或共享账号', 'explicit'],
     ['short_term', '短期', 'ownership_invalid_or_conflicting', '账号归属不明确或存在冲突'],
@@ -33,11 +34,27 @@ describe('AdminPage', () => {
     await userEvent.click(await screen.findByRole('button', { name: '商品管理' }));
     expect(await screen.findByText('会员判定：' + label)).toBeInTheDocument();
     if (kind === 'rental') expect(screen.queryByText(/^分类周期：/)).not.toBeInTheDocument();
-    else expect(screen.getByText('分类周期：默认一个月（非商家承诺）')).toBeInTheDocument();
+    else expect(screen.getByText(durationSource === 'default' ? '分类周期：默认一个月（非商家承诺）' : '分类周期：商家明确说明')).toBeInTheDocument();
     expect(screen.getByText(reasonLabel)).toBeInTheDocument();
     expect(screen.getByText('warranty_days：30')).toBeInTheDocument();
     expect(screen.getByText('duration：1 month')).toBeInTheDocument();
     expect(screen.getByText('描述：「售后保障30天」')).toBeInTheDocument();
+  });
+
+  test.each([
+    ['account', '成品号'], ['top_up', '代充'], ['short_term', '短期'],
+  ])('新分类 %s 未提供周期来源时不暗示商家承诺', async (kind, label) => {
+    vi.stubGlobal('fetch', vi.fn(async input => jsonResponse(paged(new URL(input, 'http://localhost').pathname === '/api/admin/products' ? [{
+      id: '1', name: '无周期会员', membershipFeatures: {
+        decision: { kind, reason: 'llm_reviewed' }, tags: [], evidence: [],
+      },
+    }] : []))));
+    render(<AdminPage initialAuthenticated />);
+    await userEvent.click(await screen.findByRole('button', { name: '商品管理' }));
+    const summary = await screen.findByText('会员判定：' + label);
+    await userEvent.click(summary);
+    expect(summary.closest('details')).not.toHaveTextContent('分类周期');
+    expect(summary.closest('details')).not.toHaveTextContent('商家明确说明');
   });
 
   test('标准身份编辑只提交 family/product/tier 和平台', async () => {

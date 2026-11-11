@@ -47,3 +47,13 @@ test('quoted JSON credentials are redacted throughout accepted, rejected and dif
     assert.ok(text.includes('[redacted]'));
   }
 });
+
+test('feature audit records a single classification verdict without per-tag or text review', () => {
+  for (const classificationReviewed of [true, false]) {
+    const audit = buildTagExtractionOutcome({
+      productId: 1n, membershipKind: 'short_term', tags: [], rejectedTags: [], reviewed: true, classificationReviewed,
+    }, []);
+    assert.deepEqual(audit.review, { mode: 'membership_binary', decision: classificationReviewed });
+    assert.equal(audit.textReview, undefined);
+  }
+});

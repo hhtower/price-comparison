@@ -14,6 +14,7 @@ for (const jobType of ['tag_extraction', 'membership_features']) {
       member_total: 5, member_queued: 1, member_running: 1,
       tag_counts: { updated: 1, failed: 1, cancelled: 1 },
       tag_accepted: 2, tag_rejected: 1, tag_partial: 1,
+      feature_accepted: 1, feature_rejected: 1,
       extraction_completed: 2, review_queued: 1, review_running: 1, review_completed: 1, publication_queued: 1,
     });
     assert.equal(snapshot.jobType, jobType);
@@ -24,6 +25,8 @@ for (const jobType of ['tag_extraction', 'membership_features']) {
     assert.equal(snapshot.succeeded, '1');
     assert.equal(snapshot.failed, '1');
     assert.deepEqual(snapshot.tagAcceptance, { acceptedTags: 2, rejectedTags: 1, partialProducts: 1 });
+    assert.deepEqual(snapshot.featureAcceptance, jobType === 'membership_features'
+      ? { acceptedProducts: 1, rejectedProducts: 1 } : undefined);
     assert.deepEqual(snapshot.tagStages, {
       extractionCompleted: 2, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
     });
@@ -92,7 +95,7 @@ test('explicit progress reads retain aggregates and the version filter', async (
     assert.equal(result?.total, '12');
     assert.equal(f.queries.length, 1);
     assert.match(f.queries[0]!.sql, /left join lateral/);
-    assert.deepEqual(f.queries[0]!.parameters, [9n, 3n]);
+    assert.deepEqual(f.queries[0]!.parameters, [['account', 'top_up', 'rental', 'short_term'], 9n, 3n]);
   } finally { await f.database.destroy(); }
 });
 

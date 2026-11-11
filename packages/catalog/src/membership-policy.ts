@@ -14,8 +14,8 @@ type Identity = { family: string; product: string; tier: string };
 export interface MembershipClassification {
   kind: MembershipKind;
   reason: string;
-  durationSource: 'explicit' | 'default';
-  requiredWarrantyDays: number | null;
+  durationSource?: 'explicit' | 'default';
+  requiredWarrantyDays?: number | null;
 }
 
 export function isAiMembership(identity: Identity): boolean {

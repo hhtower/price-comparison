@@ -1004,7 +1004,7 @@ function ProductManagement({ setMessage }) {
                       {product.membershipFeatures ? <details>
                         <summary>会员判定：{membershipKindLabel(product.membershipFeatures.decision.kind)}</summary>
                         <p>{MEMBERSHIP_REASONS[product.membershipFeatures.decision.reason] ?? '依据当前销售事实判定'}</p>
-                        {product.membershipFeatures.decision.kind !== 'rental' ? <p>分类周期：{product.membershipFeatures.decision.durationSource === 'default' ? '默认一个月（非商家承诺）' : '商家明确说明'}</p> : null}
+                        {product.membershipFeatures.decision.kind !== 'rental' && product.membershipFeatures.decision.durationSource ? <p>分类周期：{product.membershipFeatures.decision.durationSource === 'default' ? '默认一个月（非商家承诺）' : '商家明确说明'}</p> : null}
                         <div className="tag-chips">{product.membershipFeatures.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{tag.value}</span>)}</div>
                         {(product.membershipFeatures.evidence ?? []).map((fact, index) => <p key={index}>{conflictSource(fact.path)}：「{fact.quote}」</p>)}
                       </details> : null}

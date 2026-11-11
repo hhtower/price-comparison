@@ -25,8 +25,7 @@ export function buildMembershipFeatures(tags: readonly Fact[], product: Evidence
   if (!MEMBERSHIP_KINDS.includes(membershipKind)) throw new Error('Reviewed membership kind is required');
   const decision: MembershipClassification = {
     kind: membershipKind, reason: 'llm_reviewed',
-    durationSource: tags.some(tag => tag.name === 'duration' || tag.name.startsWith('duration_')) ? 'explicit' : 'default',
-    requiredWarrantyDays: null,
+    ...(tags.some(tag => tag.name === 'duration' || tag.name.startsWith('duration_')) ? { durationSource: 'explicit' as const } : {}),
   };
   return { contentVersion: String(product.content_version), fingerprint: product.content_fingerprint,
     revision: String(product.standardization_revision), policyVersion: MEMBERSHIP_POLICY_VERSION,

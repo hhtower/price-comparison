@@ -40,3 +40,12 @@ test('feature snapshots retain approved evidence and explicit duration', () => {
   assert.deepEqual(snapshot.evidence, [{ name: 'duration_days', value: '7', path: 'name', quote: '7天' }]);
   assert.equal(readCurrentMembershipFeatures({ ...snapshot, decision: { ...snapshot.decision, kind: 'unknown' } }, product), null);
 });
+
+test('classification-only snapshots do not invent duration or warranty metadata and keep legacy snapshots readable', () => {
+  const snapshot = buildMembershipFeatures([], product, [], 'short_term');
+  assert.deepEqual(snapshot.decision, { kind: 'short_term', reason: 'llm_reviewed' });
+  assert.deepEqual(snapshot.tags, []);
+  assert.deepEqual(snapshot.evidence, []);
+  const legacy = { ...snapshot, tags, decision: { ...snapshot.decision, durationSource: 'default', requiredWarrantyDays: null } };
+  assert.deepEqual(readCurrentMembershipFeatures(legacy, product), legacy);
+});
