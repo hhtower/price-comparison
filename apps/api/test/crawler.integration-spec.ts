@@ -140,7 +140,8 @@ describe('complete shop snapshot synchronization', () => {
   for (const source of ['ai', 'human'] as const) {
     test(`rating capture and worker recreation preserve ${source} assignments without new LLM work`, async () => {
       const s = await shop();
-      const input = { ...listing(`rating-upgrade-${source}`), description: 'Includes 100 credits.' };
+      const input = { ...listing(`rating-upgrade-${source}`), description: 'Includes 100 credits.',
+        sourceCategory: 'AI subscriptions', category_id: 1, usage_guide: 'Original login instructions.' };
       await refresh(s.id, [input]);
       const product = await publish(s.id, input.goods_no, source);
       const state = async () => ({
@@ -157,15 +158,19 @@ describe('complete shop snapshot synchronization', () => {
       assert.deepEqual(await state(), before);
       const captured = await database.selectFrom('products').selectAll().where('id', '=', product.id).executeTakeFirstOrThrow();
       assert.ok((captured.source_data as { ratingText?: unknown }).ratingText);
-      assert.equal(captured.content_fingerprint, productContentFingerprint({ name: input.name, description: input.description, spec: input.spec }));
+      assert.equal(captured.content_fingerprint, productContentFingerprint(input));
       assert.equal(captured.source_name, input.name);
       assert.equal(captured.source_description, input.description);
-      const metadataOnly = { ...input, sourceCategory: 'Changed category', price: 99, stock_available_quantity: 0 };
+      const metadataOnly = { ...input, sourceCategory: 'Changed category', category_id: 2,
+        usage_guide: 'Updated login instructions.', price: 99, stock_available_quantity: 0 };
       await refresh(s.id, [metadataOnly]);
       await refresh(s.id, [metadataOnly]);
       assert.deepEqual(await state(), before);
       const repeated = await database.selectFrom('products').selectAll().where('id', '=', product.id).executeTakeFirstOrThrow();
       assert.equal(repeated.content_fingerprint, captured.content_fingerprint);
+      assert.equal(repeated.source_category, metadataOnly.sourceCategory);
+      assert.equal((repeated.source_data as { category_id: number }).category_id, 2);
+      assert.equal((repeated.source_data as { usage_guide: string }).usage_guide, metadataOnly.usage_guide);
       assert.equal((repeated.source_data as { ratingText: { description: string } }).ratingText.description, input.description);
 
       await refresh(s.id, [{ ...input, description: 'Includes 200 credits.' }]);

@@ -1,11 +1,11 @@
 import type { JsonValue } from '../database/types.js';
-import { normalizeProductEvidence } from '../standardization/fingerprint.js';
+import { normalizeProductEvidence, productContentEvidence, productContentKey } from '../standardization/fingerprint.js';
 import { assessProductEvidence } from '../standardization/identity-policy.js';
 import { buildCanonicalStandardKey } from '../standardization/canonical-key.js';
 import type { CandidateSearchQuery } from '../standardization/candidate-index.js';
-import { sanitizeEvidenceText } from '../standardization/service-evidence.js';
-import { visibleEvidenceText } from '../standardization/evidence-text.js';
 import { projectShopText } from '../shops/shop-text-review.js';
+import { visibleEvidenceText } from '../standardization/evidence-text.js';
+import { sanitizeEvidenceText } from '../standardization/service-evidence.js';
 
 export interface AiInputSize {
   productId: bigint;
@@ -41,12 +41,16 @@ export function planAdaptiveBatches(inputs: readonly AiInputSize[], limits: Batc
   return batches;
 }
 
-export interface ExtractionInput { id: string; name: string; spec: string; category?: string; platform?: string; vendor?: string; family?: string; tier?: string; model?: string; sourceData?: JsonValue; evidence?: string; }
+export interface ExtractionInput { id: string; name: string; sourceName?: string; description?: string; spec: string; category?: string; platform?: string; vendor?: string; family?: string; tier?: string; model?: string; sourceData?: JsonValue; evidence?: string; }
 export type ExtractionPayload = Record<string, JsonValue>;
 
 export function extractionPayloadKey(payload: ExtractionPayload): string {
-  const { id, shopText, shopSource, ...evidence } = payload;
-  return JSON.stringify(evidence);
+  return productContentKey(payload);
+}
+
+export function extractionContextKey(payload: ExtractionPayload): string {
+  const { id: _id, shopText: _shopText, shopSource: _shopSource, ...context } = payload;
+  return JSON.stringify(context);
 }
 
 /** Search facts rather than JSON field names and prioritize a supported identity. */
@@ -79,30 +83,40 @@ export function buildCandidateSearchQuery(payload: JsonValue): CandidateSearchQu
 }
 
 export function buildExtractionPayload(input: ExtractionInput): ExtractionPayload {
-  const normalized = normalizeProductEvidence({ name: input.name, spec: input.spec, sourceCategory: input.category, sourceData: input.sourceData });
-  const project = (value: JsonValue): JsonValue => typeof value === 'string' ? visibleEvidenceText(value)
+  const source = input.sourceData && typeof input.sourceData === 'object' && !Array.isArray(input.sourceData)
+    ? input.sourceData : {};
+  const body = input.description ?? input.evidence;
+  const visible = (value: unknown) => typeof value === 'string'
+    ? visibleEvidenceText(sanitizeEvidenceText(value.normalize('NFKC'))).trim() : '';
+  const additionalBody = typeof body === 'string' && visible(source.evidence) && visible(source.evidence) !== visible(body)
+    ? source.evidence : '';
+  const goods = {
+    name: input.sourceName || input.name, description: input.description ?? input.evidence,
+    spec: input.spec, sourceCategory: input.category, sourceData: additionalBody
+      ? { ...source, content: [source.content, additionalBody].filter(value => typeof value === 'string' && value).join('\n') }
+      : source,
+  };
+  const core = productContentEvidence(goods);
+  const normalized = normalizeProductEvidence(goods);
+  const project = (value: JsonValue): JsonValue => typeof value === 'string' ? visibleEvidenceText(value).trim()
     : Array.isArray(value) ? value.map(project)
       : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, project(item)])) : value;
-  const source = project(normalized.sourceData as JsonValue) as Record<string, JsonValue>;
-  const payload: ExtractionPayload = { id: input.id, name: visibleEvidenceText(normalized.name), spec: visibleEvidenceText(sanitizeEvidenceText(normalized.spec)) };
-  // Keep the original normalized source path for citations. An explicit body is
-  // moved there only when no source body exists; distinct evidence is never lost.
-  const explicitEvidence = input.evidence === undefined ? undefined
-    : visibleEvidenceText(sanitizeEvidenceText(input.evidence.normalize('NFKC')));
-  if (explicitEvidence !== undefined) {
-    if (source.evidence === undefined) source.evidence = explicitEvidence;
-    else if (source.evidence !== explicitEvidence) payload.evidence = explicitEvidence;
-  }
-  if (Object.keys(source).length) payload.sourceData = source as JsonValue;
-  const shopText = projectShopText(input.sourceData);
-  if (shopText) payload.shopText = shopText;
-  const rawSource = normalized.sourceData;
-  const fields = { category: input.category == null ? undefined : normalized.sourceCategory, platform: input.platform, vendor: input.vendor ?? rawSource.vendor ?? rawSource.brand, brand: rawSource.brand, family: input.family ?? rawSource.family, tier: input.tier ?? rawSource.tier, model: input.model ?? rawSource.model };
+  const context = project(normalized.sourceData as JsonValue) as Record<string, JsonValue>;
+  // Extra facts inform the model without becoming additional change detectors.
+  for (const key of ['evidence', 'content', 'warranty_info']) delete context[key];
+  const sourceData = { ...context, ...core.sourceData };
+  const payload: ExtractionPayload = { id: input.id, name: core.name, spec: core.spec };
+  if (Object.keys(sourceData).length) payload.sourceData = sourceData;
+  const fields = { category: input.category == null ? undefined : normalized.sourceCategory, platform: input.platform,
+    vendor: input.vendor ?? normalized.sourceData.vendor ?? normalized.sourceData.brand, brand: normalized.sourceData.brand,
+    family: input.family ?? normalized.sourceData.family, tier: input.tier ?? normalized.sourceData.tier, model: input.model ?? normalized.sourceData.model };
   for (const [key, value] of Object.entries(fields)) {
     if (typeof value === 'string' || typeof value === 'number') {
-      payload[key] = visibleEvidenceText(String(value).normalize('NFKC'));
+      payload[key] = visibleEvidenceText(sanitizeEvidenceText(String(value).normalize('NFKC'))).trim();
     }
   }
+  const shopText = projectShopText(input.sourceData);
+  if (shopText) payload.shopText = shopText;
   return payload;
 }
 

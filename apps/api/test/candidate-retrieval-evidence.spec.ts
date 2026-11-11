@@ -117,8 +117,9 @@ test('explicit-only body uses sourceData evidence while distinct source and expl
   assert.equal(only.evidence, undefined);
   assert.equal((only.sourceData as Record<string, unknown>).evidence, '仅含资格');
   const distinct = buildExtractionPayload({ id: '2', name: '商品', spec: '', evidence: '未开通会员', sourceData: { evidence: '自助注册' } });
-  assert.equal(distinct.evidence, '未开通会员');
-  assert.equal((distinct.sourceData as Record<string, unknown>).evidence, '自助注册');
+  assert.equal(distinct.evidence, undefined);
+  assert.equal((distinct.sourceData as Record<string, unknown>).evidence, '未开通会员');
+  assert.equal((distinct.sourceData as Record<string, unknown>).content, '自助注册');
 });
 
 test('explicit extraction evidence cannot bypass source credential sanitization', () => {

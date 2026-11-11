@@ -39,8 +39,8 @@ describe('missing-ID retry batch limits', () => {
     }).returning('id').executeTakeFirstOrThrow();
     const productIds: bigint[] = [];
     for (const name of [`alpha-${sequence}`, `beta-${sequence}`]) {
-      const sourceData = { title: name, description: name.repeat(name.startsWith('alpha') ? 50 : 65) };
-      const fingerprint = productContentFingerprint({ name, spec: 'monthly', sourceCategory: '', sourceData });
+      const sourceData = { evidence: name.repeat(name.startsWith('alpha') ? 50 : 65) };
+      const fingerprint = productContentFingerprint({ name, spec: 'monthly', sourceData });
       const product = await database.insertInto('products').values({
         shop_id: shop.id, external_id: name, name, spec: 'monthly', source_category: '', source_data: jsonb(sourceData),
         normalized_key: name, url: `https://product.invalid/${name}`, deleted_at: null, content_version: 1n,

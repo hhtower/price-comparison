@@ -1,10 +1,8 @@
 import { sql, type RawBuilder } from 'kysely';
-import { createHash } from 'node:crypto';
 import { isAiMembership, MEMBERSHIP_KINDS, MEMBERSHIP_POLICY_VERSION,
   type MembershipClassification, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { type JsonValue } from '../database/types.js';
 import { assessProductEvidence } from './identity-policy.js';
-import { buildExtractionPayload } from '../ai/adaptive-batching.js';
 
 type EvidenceVersion = { content_version: bigint; content_fingerprint: string; standardization_revision: bigint;
   name?: string; spec?: string; source_category?: string; source_data?: JsonValue;
@@ -19,7 +17,6 @@ export interface MembershipFeaturesSnapshot {
   tags: Fact[];
   evidence: Array<{ name: string; value: string; path: string; quote: string }>;
   rejectedNames: string[];
-  evidenceKey?: string;
   source?: { url: string; protocol: string | null; platform: string };
 }
 
@@ -33,7 +30,6 @@ export function buildMembershipFeatures(tags: readonly Fact[], product: Evidence
   };
   return { contentVersion: String(product.content_version), fingerprint: product.content_fingerprint,
     revision: String(product.standardization_revision), policyVersion: MEMBERSHIP_POLICY_VERSION,
-    ...(product.name !== undefined ? { evidenceKey: membershipEvidenceKey(product) } : {}),
     ...(product.shop_url !== undefined ? { source: { url: product.shop_url, protocol: product.shop_protocol ?? null, platform: product.shop_platform ?? '' } } : {}),
     decision, tags: tags.map(({ name, value }) => ({ name, value })), rejectedNames: [...rejectedNames],
     evidence: tags.flatMap(tag => (tag.evidence ?? []).map(citation => ({
@@ -49,7 +45,6 @@ export function readCurrentMembershipFeatures(value: unknown, product: EvidenceV
     || snapshot.decision?.reason !== 'llm_reviewed'
     || !Array.isArray(snapshot.tags) || !snapshot.tags.every(tag => tag && typeof tag.name === 'string' && typeof tag.value === 'string')
     || !Array.isArray(snapshot.rejectedNames) || !MEMBERSHIP_KINDS.includes(snapshot.decision?.kind)
-    || (product.name !== undefined && snapshot.evidenceKey !== membershipEvidenceKey(product))
     || !currentMembershipSource(snapshot, product)) return null;
   return snapshot;
 }
@@ -57,11 +52,6 @@ export function readCurrentMembershipFeatures(value: unknown, product: EvidenceV
 function currentMembershipSource(snapshot: MembershipFeaturesSnapshot, product: EvidenceVersion): boolean {
   return !snapshot.source || product.shop_url === undefined || (snapshot.source.url === product.shop_url
     && snapshot.source.protocol === (product.shop_protocol ?? null) && snapshot.source.platform === (product.shop_platform ?? ''));
-}
-
-export function membershipEvidenceKey(product: Pick<EvidenceVersion, 'name' | 'spec' | 'source_category' | 'source_data'>): string {
-  return createHash('sha256').update(JSON.stringify(buildExtractionPayload({ id: '0', name: product.name ?? '', spec: product.spec ?? '',
-    category: product.source_category ?? '', sourceData: product.source_data ?? {} }))).digest('hex');
 }
 
 export function needsMembershipFeatures(payload: Record<string, unknown>): boolean {

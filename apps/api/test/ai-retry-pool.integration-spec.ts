@@ -11,6 +11,7 @@ import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
 import { validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { readCurrentMembershipFeatures } from '../src/standardization/membership-classification.js';
+import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 
 describe('global AI retry pool', () => {
   let db: Kysely<DatabaseSchema>;
@@ -38,7 +39,10 @@ describe('global AI retry pool', () => {
     const shop = await db.insertInto('shops').values({ name: 'pool shop', platform: 'test', url: `https://${randomUUID()}.invalid` }).returning('id').executeTakeFirstOrThrow();
     const ids: bigint[] = [];
     for (let index = 0; index < count; index++) {
-      const product = await db.insertInto('products').values({ shop_id: shop.id, external_id: randomUUID(), name: `pool product ${index}`, spec: '', source_category: '', source_data: jsonb({}), normalized_key: randomUUID(), url: '', content_version: 1n }).returning('id').executeTakeFirstOrThrow();
+      const name = `pool product ${index}`;
+      const product = await db.insertInto('products').values({ shop_id: shop.id, external_id: randomUUID(), name, spec: '', source_category: '', source_data: jsonb({}), normalized_key: randomUUID(), url: '', content_version: 1n,
+        content_fingerprint: productContentFingerprint({ name, spec: '', sourceData: {} }),
+      }).returning('id').executeTakeFirstOrThrow();
       ids.push(product.id);
     }
     return ids;
@@ -65,7 +69,8 @@ describe('global AI retry pool', () => {
       assert.equal(await repository.reserveBatchRequest(batch.id, claim), 'reserved');
       const { inputs } = await repository.getTagExtractionBatchInputs(batch.id);
       await repository.persistTagExtractionBatchDecision(batch.job_id, batch.id,
-        inputs.map(input => validateReviewedTagExtractionDecision(input.productId, [], [], input.payload, [], null)), {}, claim);
+        inputs.map(input => ({ ...validateReviewedTagExtractionDecision(input.productId, [], [], input.payload, [], null),
+          membershipKind: 'short_term' as const, classificationReviewed: true })), {}, claim);
       const members = await db.selectFrom('ai_job_input_members as m').innerJoin('products as p', 'p.id', 'm.product_id')
         .selectAll('p').where('m.job_id', '=', batch.job_id).where('m.input_id', 'in', inputs.map(input => input.productId)).execute();
       for (const product of members) {
@@ -86,16 +91,21 @@ describe('global AI retry pool', () => {
   test('retry selection requires both result and member fingerprints to match current evidence', async () => {
     const ids = await products(1);
     const job = await failed(ids);
+    const product = await db.selectFrom('products').select('content_fingerprint').where('id', '=', ids[0]!).executeTakeFirstOrThrow();
+    const staleFingerprint = productContentFingerprint({ name: 'previous pool product' });
     assert.equal((await list()).total, 1);
-    await db.updateTable('products').set({ content_fingerprint: 'new-source-fingerprint' }).where('id', '=', ids[0]!).execute();
+    // Keep the revision current so each fingerprint guard is tested independently.
+    await db.updateTable('ai_job_input_members').set({ fingerprint: staleFingerprint }).where('job_id', '=', job.id).execute();
     assert.equal((await list()).total, 0);
-    await db.updateTable('ai_job_input_members').set({ fingerprint: 'new-source-fingerprint' }).where('job_id', '=', job.id).execute();
+    await db.updateTable('ai_standardization_results').set({ fingerprint: staleFingerprint }).where('job_id', '=', job.id).execute();
     assert.equal((await list()).total, 0);
-    await db.updateTable('ai_standardization_results').set({ fingerprint: 'new-source-fingerprint' }).where('job_id', '=', job.id).execute();
+    await db.updateTable('ai_job_input_members').set({ fingerprint: product.content_fingerprint }).where('job_id', '=', job.id).execute();
+    assert.equal((await list()).total, 0);
+    await db.updateTable('ai_standardization_results').set({ fingerprint: product.content_fingerprint }).where('job_id', '=', job.id).execute();
     assert.equal((await list()).total, 1);
     const stale = await failed(ids);
-    await db.updateTable('ai_standardization_results').set({ fingerprint: 'old-fingerprint' }).where('job_id', '=', stale.id).execute();
-    await db.updateTable('ai_job_input_members').set({ fingerprint: 'old-fingerprint' }).where('job_id', '=', stale.id).execute();
+    await db.updateTable('ai_standardization_results').set({ fingerprint: staleFingerprint }).where('job_id', '=', stale.id).execute();
+    await db.updateTable('ai_job_input_members').set({ fingerprint: staleFingerprint }).where('job_id', '=', stale.id).execute();
     assert.equal((await list()).items[0]?.sourceJobId, String(job.id), 'a later stale result cannot hide a current failure');
   });
 
@@ -205,7 +215,11 @@ describe('global AI retry pool', () => {
 
   test('successful retry leaves the pool and preserves a trace to the source result', async () => {
     const [id] = await products(1);
-    await db.updateTable('products').set({ name: 'ChatGPT Plus account', source_data: jsonb({ description: 'delivered ChatGPT Plus account' }) }).where('id', '=', id!).execute();
+    const name = 'ChatGPT Plus account';
+    const sourceData = { evidence: 'delivered ChatGPT Plus account' };
+    await db.updateTable('products').set({ name, source_data: jsonb(sourceData),
+      content_fingerprint: productContentFingerprint({ name, spec: '', sourceData }),
+    }).where('id', '=', id!).execute();
     const source = await failed([id!]);
     const retry = await repository.retryPool({ model: 'mock', requestId: randomUUID() });
     await completeFeaturePrerequisites(retry.id);

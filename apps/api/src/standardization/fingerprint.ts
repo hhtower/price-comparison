@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { extractServiceEvidence, sanitizeEvidenceText } from './service-evidence.js';
 import { normalizeSpec } from '../products/product-spec.js';
+import { visibleEvidenceText } from './evidence-text.js';
 
 export interface ProductEvidenceInput {
   readonly name: string;
@@ -106,5 +107,32 @@ export function normalizeProductEvidence(input: ProductEvidenceInput): Normalize
 }
 
 export function productContentFingerprint(input: ProductEvidenceInput): string {
-  return createHash('sha256').update(JSON.stringify([input.name, input.description ?? '', normalizeSpec(input.spec)])).digest('hex');
+  return createHash('sha256').update(productContentKey(productContentEvidence(input))).digest('hex');
+}
+
+/** Fixed positions also stay stable after PostgreSQL JSONB reorders object keys. */
+export function productContentKey(evidence: { name?: unknown; spec?: unknown; sourceData?: unknown }): string {
+  const source = evidence.sourceData as Record<string, unknown> | undefined;
+  return JSON.stringify([evidence.name ?? '', evidence.spec ?? '',
+    source?.evidence ?? '', source?.content ?? '', source?.warranty_info ?? '']);
+}
+
+/** Only these four fields invalidate product LLM results; model context can be richer. */
+export function productContentEvidence(input: ProductEvidenceInput): {
+  name: string; spec: string; sourceData?: Record<string, string>;
+} {
+  const text = (value: unknown) => typeof value === 'string'
+    ? visibleEvidenceText(normalizeText(value)).trim() : '';
+  const source = input.sourceData && typeof input.sourceData === 'object' && !Array.isArray(input.sourceData)
+    ? input.sourceData as Record<string, unknown> : {};
+  const sourceData: Record<string, string> = {};
+  for (const [key, value] of [
+    ['evidence', input.description ?? source.evidence], ['content', source.content],
+    ['warranty_info', source.warranty_info],
+  ] as const) {
+    const normalized = text(value);
+    if (normalized) sourceData[key] = normalized;
+  }
+  return { name: text(input.name), spec: text(normalizeSpec(input.spec)),
+    ...(Object.keys(sourceData).length ? { sourceData } : {}) };
 }

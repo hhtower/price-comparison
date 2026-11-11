@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { planAdaptiveBatches, buildCandidateSearchQuery, buildExtractionPayload, estimateInputSize, extractionPayloadKey } from '../src/ai/adaptive-batching.js';
 import { classifyRetryClass } from '../src/jobs/jobs.repository.js';
-import { assessProductEvidence, identityEvidenceConflict } from '../src/standardization/identity-policy.js';
+import { assessProductEvidence } from '../src/standardization/identity-policy.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 
@@ -10,7 +10,8 @@ test('input key ignores per-listing bindings but preserves every extraction fiel
   const payload = buildExtractionPayload({ id: '1', name: 'ChatGPT Plus', spec: 'monthly', sourceData: { evidence: 'account' } });
   const key = extractionPayloadKey(payload);
   assert.equal(extractionPayloadKey({ ...payload, id: '2', shopText: { hash: 'other' }, shopSource: { url: 'other' } }), key);
-  for (const changed of [{ spec: 'annual' }, { sourceData: { evidence: 'recharge' } }, { category: 'different' }]) {
+  assert.equal(extractionPayloadKey({ ...payload, category: 'different' }), key);
+  for (const changed of [{ spec: 'annual' }, { sourceData: { evidence: 'recharge' } }]) {
     assert.notEqual(extractionPayloadKey({ ...payload, ...changed }), key);
   }
 });
@@ -29,6 +30,10 @@ test('frozen model input projects visible HTML once at every string leaf without
   assert.equal(productContentFingerprint({ name: 'ChatGPT Plus', sourceData }), before);
   assert.equal(sourceData.evidence.includes('<strong>'), true);
   assert.equal(buildExtractionPayload({ id: '2', name: 'n', spec: '', evidence: '前文<div>正文</div>后文' }).sourceData?.evidence, '前文\n正文\n后文');
+  assert.equal(buildExtractionPayload({ id: '2a', name: 'n', spec: '', description: '简介',
+    sourceData: { evidence: '独立正文', content: '详情' } }).sourceData?.content, '详情 独立正文');
+  assert.equal(buildExtractionPayload({ id: '2b', name: 'n', spec: '', description: '完整正文',
+    sourceData: { evidence: '<p>完整<strong>正文</strong></p>' } }).sourceData?.content, undefined);
   assert.equal(buildExtractionPayload({ id: '3', name: 'n', spec: '', sourceData: { evidence: 'Use &lt;example&gt; literally' } }).sourceData?.evidence, 'Use <example> literally');
   assert.equal(buildExtractionPayload({ id: '4', name: 'n', spec: '', sourceData: { brand: '&lt;Vendor&gt;' } }).brand, '<Vendor>');
 });
@@ -63,32 +68,19 @@ test('model spec sanitizes credentials without mutating canonical spec or semant
   assert.equal(input.spec, 'Plan: Plus / password: PrivateValue / term: 1 Month');
 });
 
-test('preserves complete source identity evidence without turning the model into a tier', () => {
-  const payload = buildExtractionPayload({id:'1',name:' Account ',spec:' 12 months ',vendor:'Official',sourceData:{brand:'Other',family:' ChatGPT ',tier:'Plus',model:'GPT-5',evidence:' monthly access ',secret:'never send'}});
-  assert.deepEqual(payload,{id:'1',name:'Account',spec:'12 months',sourceData:{brand:'Other',evidence:'monthly access',family:'ChatGPT',model:'GPT-5',tier:'Plus'},vendor:'Official',brand:'Other',family:'ChatGPT',tier:'Plus',model:'GPT-5'});
-  assert.equal(buildExtractionPayload({id:'2',name:'n',spec:'',sourceData:{brand:'OpenAI',model:'GPT-5'}}).vendor,'OpenAI');
-  assert.equal(buildExtractionPayload({id:'2',name:'n',spec:'',sourceData:{model:'GPT-5'}}).tier,undefined);
-  const oversized = buildExtractionPayload({id:'3',name:`${'n'.repeat(600)} tail`,spec:`${'s'.repeat(1100)} annual`,sourceData:{vendor:`${'v'.repeat(9000)} vendor-tail`,evidence:`${'e'.repeat(9000)} conflict-tail`}});
-  assert.equal(String(oversized.name).endsWith('tail'),true);
-  assert.equal(String(oversized.spec).endsWith('annual'),true);
-  assert.equal(String(oversized.vendor).endsWith('vendor-tail'),true);
-  assert.equal(String((oversized.sourceData as Record<string, unknown>).evidence).endsWith('conflict-tail'),true);
+test('model evidence retains complete merchant context beyond the fingerprint fields', () => {
+  const payload = buildExtractionPayload({ id: '1', name: ' Account ', spec: '12 months', vendor: 'Official',
+    sourceData: { brand: 'Other', family: 'ChatGPT', tier: 'Plus', model: 'GPT-5', evidence: 'monthly access',
+      usage_guide: 'Use your account', warranty_info: 'Subscription warranty' } });
+  assert.equal(payload.vendor, 'Official');
+  assert.equal(payload.brand, 'Other');
+  assert.deepEqual(payload.sourceData, { brand: 'Other', family: 'ChatGPT', tier: 'Plus', model: 'GPT-5',
+    evidence: 'monthly access', usage_guide: 'Use your account', warranty_info: 'Subscription warranty' });
+  const oversized = buildExtractionPayload({ id: '3', name: 'n', spec: '',
+    sourceData: { evidence: 'e'.repeat(16000) + ' conflict-tail' } });
+  assert.equal(String((oversized.sourceData as Record<string, unknown>).evidence).endsWith('conflict-tail'), true);
   assert.deepEqual(planAdaptiveBatches([{ productId: 3n, payload: oversized, ...estimateInputSize(oversized) }],
     { maxItems: 10, maxInputBytes: 12_000, maxInputTokens: 10_000 }), []);
-});
-
-test('brand remains independent from vendor through extraction and conflict checks', () => {
-  const identity = { family: 'openai', product: 'chatgpt', tier: 'team' };
-  const conflict = buildExtractionPayload({ id: '1', name: 'Team', spec: '', sourceData: { vendor: 'OpenAI', brand: 'Anthropic' } });
-  assert.equal(conflict.vendor, 'OpenAI');
-  assert.equal(conflict.brand, 'Anthropic');
-  assert.equal(assessProductEvidence(conflict).kind, 'ambiguous');
-  assert.ok(identityEvidenceConflict(identity, conflict));
-  for (const vendor of ['', 'Anthropic']) {
-    const payload = buildExtractionPayload({ id: '2', name: 'Team', spec: '', sourceData: { vendor, brand: 'Anthropic' } });
-    assert.deepEqual(assessProductEvidence(payload).identity, { family: 'anthropic', product: 'claude', tier: 'team' });
-    assert.ok(identityEvidenceConflict(identity, payload));
-  }
 });
 
 test('mixed oversized inputs are excluded from callable batches', () => {

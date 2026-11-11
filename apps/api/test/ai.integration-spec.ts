@@ -274,7 +274,7 @@ describe('AI identity standardization publication', () => {
     const relay = await addProduct(shop.id, 'Codex API 中转充值 100刀');
     const account = await addProduct(shop.id, 'ChatGPT Plus 账号');
     const ambiguous = await addProduct(shop.id, '100元余额卡', '', {
-      category: '模型 API 中转', apiEndpoint: 'https://relay.invalid/v1',
+      evidence: '实际交付模型 API 中转充值额度；服务端点：https://relay.invalid/v1',
     });
     const accountWithPolicyWarning = await addProduct(shop.id, '【正规实付】Super gro12个月年卡 全程质保订阅', '', {
       evidence: '<p>Super Grok 12个月年卡全程质保订阅，使用买家自己的X账号开通。</p><p>账号封禁无售后：官方风控导致的账号封禁，99% 是由于违规使用（例如批量注册的号、暴力、</p><p>API中转、频繁切换节点或者发送敏感问题等等以及违法违规情况），因此封号不在质保范围。</p>',

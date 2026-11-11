@@ -18,7 +18,7 @@ import { bumpCatalogVersion, recordCandidateCatalogChanges } from '../catalog/ca
 import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
 import { jsonb, type DatabaseSchema, type JsonValue, type AiJobTable } from '../database/types.js';
 import { type ParsedStandardizationResponse, type StandardizationDecision } from './ai.schemas.js';
-import { buildCandidateSearchQuery, buildExtractionPayload, estimateInputSize, extractionPayloadKey } from './adaptive-batching.js';
+import { buildCandidateSearchQuery, buildExtractionPayload, estimateInputSize, extractionContextKey } from './adaptive-batching.js';
 import { planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { readAiBatchLimits } from '../config/env.js';
 import { extractionProgressDelta, getJobProgress, incrementJobProgress, type ProgressSnapshot } from './ai-progress.repository.js';
@@ -195,7 +195,7 @@ export class AiRepository {
     const create = async (tx: Transaction<DatabaseSchema>): Promise<CreatedJob> => {
       // Acquire foreign key locks before fingerprint grouping changes member insertion order.
       const selectedProducts = await tx.selectFrom('products').innerJoin('shops', 'shops.id', 'products.shop_id').select([
-        'products.id', 'products.name', 'products.spec', 'products.source_category', 'products.source_data', 'products.standardization_revision', 'products.content_version', 'products.content_fingerprint', 'products.standardization_locked', 'products.membership_features',
+        'products.id', 'products.name', 'products.source_name', 'products.source_description', 'products.spec', 'products.source_category', 'products.source_data', 'products.standardization_revision', 'products.content_version', 'products.content_fingerprint', 'products.standardization_locked', 'products.membership_features',
         'shops.url as shop_url', 'shops.protocol as shop_protocol', 'shops.platform as shop_platform',
       ]).where('products.deleted_at', 'is', null)
         .where('shops.deleted_at', 'is', null).where('shops.enabled', '=', true)
@@ -222,9 +222,11 @@ export class AiRepository {
         const decision = manualDecisions.get(product.id);
         return decision?.action !== 'exclude' || !isManualDecisionForCurrentEvidence(decision, { content_version: product.content_version, content_fingerprint: productFingerprint(product) });
       });
-      const relayIds = new Set(products.filter(product => isExcludedApiRelay({
-        name: product.name, spec: product.spec, category: product.source_category, sourceData: product.source_data,
-      })).map(product => product.id));
+      const relayIds = new Set(products.filter(product => isExcludedApiRelay(buildExtractionPayload({
+        id: String(product.id), name: product.name, sourceName: product.source_name,
+        description: product.source_description || undefined, spec: product.spec,
+        category: product.source_category, sourceData: product.source_data,
+      }), 'text')).map(product => product.id));
       const protectedMembers = relayIds.size ? await tx.selectFrom('standard_product_members as m')
         .innerJoin('standard_products as sp', 'sp.id', 'm.standard_product_id')
         .select('m.product_id').where('m.product_id', 'in', [...relayIds])
@@ -238,8 +240,9 @@ export class AiRepository {
       for (const p of products) {
         // Equal current evidence with different review history must not inherit
         // another listing's historical decision through fingerprint deduplication.
-        const payload = buildExtractionPayload({ id: p.id.toString(), name: p.name, spec: p.spec, category: p.source_category, sourceData: p.source_data });
-        const key = JSON.stringify([productFingerprint(p), extractionPayloadKey(payload), String(manualDecisions.get(p.id)?.id ?? 'none')]);
+        const payload = buildExtractionPayload({ id: p.id.toString(), name: p.name, sourceName: p.source_name,
+          description: p.source_description || undefined, spec: p.spec, category: p.source_category, sourceData: p.source_data as JsonValue });
+        const key = JSON.stringify([productFingerprint(p), extractionContextKey(payload), String(manualDecisions.get(p.id)?.id ?? 'none')]);
         const group = groups.get(key) ?? []; group.push(p); groups.set(key, group);
       }
       const unique = [...groups.values()].map(members => ({ product: members[0]!, members, fingerprint: productFingerprint(members[0]!) }));
@@ -259,7 +262,7 @@ export class AiRepository {
       if (excludedCount) await incrementJobProgress(tx, { jobId: job.id, queued: -excludedCount, processed: excludedCount, succeeded: excludedCount });
       if (unique.length) {
         const sized = unique.map(({ product: p, members, fingerprint }) => {
-          const payload = buildExtractionPayload({ id: p.id.toString(), name: p.name, spec: p.spec, category: p.source_category, sourceData: p.source_data as JsonValue });
+          const payload = buildExtractionPayload({ id: p.id.toString(), name: p.name, sourceName: p.source_name, description: p.source_description || undefined, spec: p.spec, category: p.source_category, sourceData: p.source_data as JsonValue });
           const size = estimateInputSize(payload);
           return { product: p, members, fingerprint, payload, ...size };
         });
@@ -277,7 +280,7 @@ export class AiRepository {
           }))).execute();
         }
         const inputMembers = unique.flatMap(({ product: p, members }) => members.map((member) => {
-          const payload = buildExtractionPayload({ id: member.id.toString(), name: member.name, spec: member.spec, category: member.source_category, sourceData: member.source_data as JsonValue });
+          const payload = buildExtractionPayload({ id: member.id.toString(), name: member.name, sourceName: member.source_name, description: member.source_description || undefined, spec: member.spec, category: member.source_category, sourceData: member.source_data as JsonValue });
           return {
             job_id: job.id, input_id: p.id, product_id: member.id, standardization_revision: member.standardization_revision,
             content_version: member.content_version, fingerprint: productFingerprint(member), payload: jsonb(payload),
@@ -1046,22 +1049,16 @@ export class AiRepository {
         const product = current.get(member.product_id);
         const membership = memberships.find(row => row.product_id === member.product_id);
         const decision = decisions.get(member.product_id);
-        const text = readTextEvidence(member.payload);
+        const text = featureTask ? null : readTextEvidence(member.payload);
         const source = member.payload && typeof member.payload === 'object' && !Array.isArray(member.payload) ? member.payload.shopSource : null;
         const sourceMatches = source && typeof source === 'object' && !Array.isArray(source)
           && Object.keys(source).length === 3 && source.url === product?.shop_url
           && source.protocol === product?.shop_protocol && source.platform === product?.shop_platform;
         const before = featureTask ? (product ? readCurrentMembershipFeatures(product.membership_features, product)?.tags ?? [] : [])
           : await tx.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', member.product_id).orderBy('name').orderBy('value').execute();
-        const currentPayload = product ? buildExtractionPayload({ id: String(member.input_id), name: product.name, spec: product.spec,
-          category: product.source_category, sourceData: product.source_data }) : null;
-        const frozenPayload = member.payload && !Array.isArray(member.payload) && typeof member.payload === 'object' ? member.payload : {};
-        const { id: _frozenId, shopText: _frozenText, shopSource: _frozenSource, ...frozenEvidence } = frozenPayload;
-        const { id: _currentId, shopText: _currentText, shopSource: _currentSource, ...currentEvidence } = currentPayload ?? {};
         const skip = !product ? 'source_unavailable' : !featureTask && !membership ? 'not_published' : membership?.assignment_source === 'human' ? 'human_assignment'
           : product.standardization_locked ? 'product_locked'
           : product.content_version !== member.content_version || productFingerprint(product) !== member.fingerprint ? 'source_changed'
-          : featureTask && currentPayload && !isDeepStrictEqual(currentEvidence, frozenEvidence) ? 'source_changed'
           : text && (!sourceMatches || projectShopText(product.source_data)?.hash !== text.hash) ? 'text_review_source_changed'
           : source && !sourceMatches ? 'source_changed'
           : product.standardization_revision !== member.standardization_revision ? 'revision_changed'

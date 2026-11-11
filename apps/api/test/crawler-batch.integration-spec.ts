@@ -91,9 +91,9 @@ describe('crawler product batch persistence', () => {
 
   test('classifies raw content, quote and metadata changes without losing identity', async () => {
     const { id: shopId } = await shop();
-    const initial = ['evidence', 'quote', 'metadata', 'unchanged'].map(key => row(shopId, key));
+    const initial = ['category', 'evidence', 'guide', 'quote', 'metadata', 'unchanged'].map(key => row(shopId, key));
     const created = await upsert(initial);
-    assert.equal(created.changedProducts.length, 4);
+    assert.equal(created.changedProducts.length, 6);
     const ids = created.productIds;
     await db.insertInto('offers').values(initial.map(item => ({
       product_id: ids.get(productMapKey(shopId, item.externalId))!,
@@ -101,32 +101,44 @@ describe('crawler product batch persistence', () => {
       price: item.price!, stock_available: true, is_stale: false,
     }))).execute();
     const metadataId = ids.get(productMapKey(shopId, 'metadata'))!;
+    const categoryId = ids.get(productMapKey(shopId, 'category'))!;
+    const guideId = ids.get(productMapKey(shopId, 'guide'))!;
     const evidenceId = ids.get(productMapKey(shopId, 'evidence'))!;
     const before = await db.selectFrom('products').select(['id', 'content_version', 'standardization_revision'])
       .where('id', 'in', [...ids.values()]).execute();
     const old = new Map(before.map(product => [product.id, product]));
     const result = await upsert([
+      row(shopId, 'category', { sourceCategory: 'Other' }),
       row(shopId, 'evidence', { description: 'Changed original body' }),
+      row(shopId, 'guide', { sourceData: { usage_guide: 'Updated login instructions.' } }),
       row(shopId, 'quote', { price: '11.00' }),
-      row(shopId, 'metadata', { spec: ' monthly ', sourceCategory: 'Other', sourceData: { processed: true } }),
+      row(shopId, 'metadata', { spec: ' monthly ', sourceData: { processed: true } }),
       row(shopId, 'unchanged'),
     ]);
     assert.deepEqual(result.changedProducts, [evidenceId]);
     assert.deepEqual(result.quoteOnlyProducts, [ids.get(productMapKey(shopId, 'quote'))]);
-    assert.deepEqual(result.unchangedProducts, [metadataId, ids.get(productMapKey(shopId, 'unchanged'))]);
+    assert.deepEqual(result.unchangedProducts, [categoryId, guideId, metadataId, ids.get(productMapKey(shopId, 'unchanged'))]);
     assert.deepEqual(result.productIds, ids);
     const after = await db.selectFrom('products').selectAll().where('id', 'in', [...ids.values()]).execute();
     for (const product of after) {
-      assert.equal(product.content_version, old.get(product.id)!.content_version + (product.id === evidenceId ? 1n : 0n));
-      assert.equal(product.standardization_revision, old.get(product.id)!.standardization_revision + (product.id === evidenceId ? 1n : 0n));
+      const revisionDelta = product.id === evidenceId ? 1n : 0n;
+      assert.equal(product.content_version, old.get(product.id)!.content_version + revisionDelta);
+      assert.equal(product.standardization_revision, old.get(product.id)!.standardization_revision + revisionDelta);
     }
+    const categoryChanged = after.find(product => product.id === categoryId)!;
+    assert.equal(categoryChanged.source_category, 'Other');
+    assert.equal(categoryChanged.content_fingerprint, productContentFingerprint(row(shopId, 'category', { sourceCategory: 'Other' })));
+    assert.equal(categoryChanged.content_fingerprint, productContentFingerprint(row(shopId, 'category')));
+    const guideChanged = after.find(product => product.id === guideId)!;
+    assert.equal((guideChanged.source_data as { usage_guide: string }).usage_guide, 'Updated login instructions.');
+    assert.equal(guideChanged.content_fingerprint, productContentFingerprint(row(shopId, 'guide')));
     const migrated = after.find(product => product.id === metadataId)!;
     assert.equal(migrated.content_fingerprint, productContentFingerprint(row(shopId, 'metadata')));
     assert.deepEqual(migrated.source_data, { processed: true, evidence: 'Original body metadata' });
   });
 
   for (const path of ['crawler', 'batch'] as const) {
-    test(`${path} preserves reviewed data when only specification formatting or processed metadata changes`, async () => {
+    test(`${path} preserves reviewed data when only specification formatting, category, usage guide or processed metadata changes`, async () => {
       const { id: shopId } = await shop();
       const repository = new ProductsRepository(db);
       const input = row(shopId, `sales-${path}`, {
@@ -157,7 +169,9 @@ describe('crawler product batch persistence', () => {
       assert.equal(before.events.length, 1);
       assert.equal(before.outbox.length, 1);
       const refreshed = {
-        ...input, spec: ' monthly ', sourceCategory: 'Other', sourceData: { evidence: 'Processed projection changed.', sales_count: 9, sales_count_text: '9 buyers' },
+        ...input, spec: ' monthly ', sourceCategory: 'Other', sourceData: {
+          evidence: 'Processed projection changed.', usage_guide: 'Updated login instructions.', sales_count: 9, sales_count_text: '9 buyers',
+        },
       };
       if (path === 'crawler') {
         const changes = await upsert([refreshed]);
@@ -167,9 +181,12 @@ describe('crawler product batch persistence', () => {
       assert.deepEqual(await state(), before);
       const migrated = await repository.findById(id);
       assert.equal(migrated!.content_fingerprint, productContentFingerprint(refreshed));
-      assert.deepEqual(normalizeSourceEvidence(migrated!.source_data), { evidence: 'Includes 100 credits.' });
+      assert.equal(migrated!.source_category, refreshed.sourceCategory);
+      assert.deepEqual(normalizeSourceEvidence(migrated!.source_data), {
+        evidence: 'Includes 100 credits.', usage_guide: 'Updated login instructions.',
+      });
       const next = {
-        ...refreshed, sourceData: { evidence: 'Includes 100 credits.', sales_count: 10, sales_count_text: '10 buyers' },
+        ...refreshed, sourceData: { ...refreshed.sourceData, evidence: 'Includes 100 credits.', sales_count: 10, sales_count_text: '10 buyers' },
       };
       if (path === 'crawler') {
         const changes = await upsert([next]);

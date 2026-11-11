@@ -144,15 +144,22 @@ test('background bulk preparation plans unique inputs within published identity 
  await db.updateTable('ai_jobs').set({status:'cancelled'}).where('id','=',f.job.id).execute();
  const values=f.products.map((p,index)=>{
   const spec=`套餐 ${index}`;
-  return sql`(${p.id}::bigint,${spec})`;
+  const fingerprint=productContentFingerprint({...f.payload,spec,sourceCategory:p.source_category});
+  return sql`(${p.id}::bigint,${spec},${fingerprint})`;
  });
- await sql`update products p set spec=v.spec from (values ${sql.join(values)}) v(id,spec) where p.id=v.id`.execute(db);
+ await sql`update products p set spec=v.spec,content_fingerprint=v.fingerprint from (values ${sql.join(values)}) v(id,spec,fingerprint) where p.id=v.id`.execute(db);
  const other=await db.insertInto('standard_products').values({canonical_family:'steam',canonical_product:'wallet',canonical_tier:'standard',name:'另一商品',verification_state:'verified'}).returning('id').executeTakeFirstOrThrow();
  const separate=f.products.at(-1)!.id;
  await db.updateTable('standard_product_members').set({standard_product_id:other.id}).where('product_id','=',separate).execute();
  const job=await createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID()});
  await preparePending(job.id);
  assert.equal((await db.selectFrom('ai_job_inputs').select('input_id').where('job_id','=',job.id).execute()).length,1002);
+ const frozen=await db.selectFrom('ai_job_input_members as m').innerJoin('products as p','p.id','m.product_id')
+  .innerJoin('ai_job_inputs as i',join=>join.onRef('i.job_id','=','m.job_id').onRef('i.input_id','=','m.input_id'))
+  .select(['p.content_fingerprint','m.fingerprint as member_fingerprint','i.fingerprint as input_fingerprint']).where('m.job_id','=',job.id).execute();
+ assert.equal(frozen.length,1002);
+ assert.equal(new Set(frozen.map(row=>row.content_fingerprint)).size,1002);
+ assert.ok(frozen.every(row=>row.member_fingerprint===row.content_fingerprint&&row.input_fingerprint===row.content_fingerprint));
  const batches=await db.selectFrom('ai_job_batches').select('product_ids').where('job_id','=',job.id).where('batch_index','>=',0n).execute();
  assert.ok(batches.length<1002);
  assert.equal(batches.flatMap(b=>b.product_ids as string[]).length,1002);
@@ -317,17 +324,42 @@ test('manual scope deduplicates before planning, freezes all members and seriali
  assert.equal(a.id,b.id);assert.equal(a.total,3n);
  const inputs=await db.selectFrom('ai_job_inputs').selectAll().where('job_id','=',a.id).execute(); assert.equal(inputs.length,1);
  const members=await db.selectFrom('ai_job_input_members').selectAll().where('job_id','=',a.id).execute();assert.equal(members.length,3);
+ assert.equal(inputs[0]!.fingerprint,f.products[0]!.content_fingerprint);
+ assert.ok(members.every(member=>member.fingerprint===f.products.find(product=>product.id===member.product_id)!.content_fingerprint));
  const batches=await db.selectFrom('ai_job_batches').selectAll().where('job_id','=',a.id).execute();assert.equal(batches[0]!.product_count,3n);assert.deepEqual(batches[0]!.product_ids,[String(ids[0])]);
  await assert.rejects(createManualTagJob(db,{...input,productIds:[ids[0]!]}),{code:'AI_TAG_REQUEST_CONFLICT'});
  const p=await getJobProgress(db,a.id);assert.equal(p!.rawProductCount,3);assert.equal(p!.uniqueInputCount,1);assert.equal(p!.queued,'3');
 });
+for (const field of ['category', 'usage_guide'] as const) {
+ test(`${field}-only changes update the frozen preview without invalidating completed coverage`,async()=>{
+  const f=await fixture();
+  await completeTagJob(f.job.id);
+  const scope={productIds:[f.inputId],model:'mock'};
+  const before=await previewTagJob(db,scope);
+  const sourceCategory=field==='category'?'Changed merchant category':'';
+  const sourceData=field==='usage_guide'?{usage_guide:'Changed usage instructions'}:{};
+  const fingerprint=productContentFingerprint({...f.payload,sourceCategory,sourceData});
+  assert.equal(fingerprint,f.products[0]!.content_fingerprint);
+  await db.updateTable('products').set({source_category:sourceCategory,source_data:jsonb(sourceData),content_fingerprint:fingerprint})
+   .where('id','=',f.inputId).execute();
+  const after=await previewTagJob(db,scope);
+  assert.notEqual(after.previewDigest,before.previewDigest);
+  assert.deepEqual(after.counts,before.counts);
+  const queue=await readAiTaskQueue(db,{jobType:'tag_extraction',status:'all',scopeShopId:f.products[0]!.shop_id});
+  assert.equal(queue.summary.pendingProducts,0);
+  assert.equal(queue.summary.coveredProducts,1);
+ });
+}
+
 test('preview rejects version, protection and shop expansion drift and reports missing/oversized',async()=>{
  const f=await fixture();const id=f.inputId;
  const before=await previewTagJob(db,{productIds:[id],model:'mock'});
  await db.updateTable('products').set({standardization_locked:true}).where('id','=',id).execute();
  await assert.rejects(createManualTagJob(db,{productIds:[id],model:'mock',requestId:randomUUID(),previewDigest:before.previewDigest}),{code:'AI_TAG_PREVIEW_STALE'});
  const protectedPreview=await previewTagJob(db,{productIds:[id,999999999n],model:'mock'});assert.equal(protectedPreview.counts.protected,1);assert.equal(protectedPreview.counts.missing,1);
- await db.updateTable('products').set({standardization_locked:false,name:'x'.repeat(100000)}).where('id','=',id).execute();
+ const name='x'.repeat(100000);
+ await db.updateTable('products').set({standardization_locked:false,name,
+  content_fingerprint:productContentFingerprint({...f.payload,name,sourceCategory:f.products[0]!.source_category})}).where('id','=',id).execute();
  const oversized=await previewTagJob(db,{productIds:[id],model:'mock'});assert.equal(oversized.counts.oversized,1);
  const job=await createManualTagJob(db,{productIds:[id],model:'mock',requestId:randomUUID(),previewDigest:oversized.previewDigest});
  const progress=await getJobProgress(db,job.id);assert.equal(progress!.tagResults!.failed,1);assert.equal(progress!.processed,'1');

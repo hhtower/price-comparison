@@ -5,12 +5,14 @@ import { Kysely, PostgresDialect } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
-import { createMembershipFeatureJob, createManualMembershipFeatureJob, previewMembershipFeatureJob } from '../src/ai/tag-extraction-jobs.js';
+import { createMembershipFeatureJob, createManualMembershipFeatureJob, createTagJob, previewMembershipFeatureJob } from '../src/ai/tag-extraction-jobs.js';
+import { extractionPayloadKey } from '../src/ai/adaptive-batching.js';
+import { createHash } from 'node:crypto';
 import { validateReviewedTagExtractionDecision, type TagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import type { MembershipKind } from '@price-comparison/catalog/membership-policy';
-import { jsonb, type DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
-import { readCurrentMembershipFeatures } from '../src/standardization/membership-classification.js';
+import { buildMembershipFeatures, readCurrentMembershipFeatures } from '../src/standardization/membership-classification.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
 import { ProductsRepository } from '../src/products/products.repository.js';
@@ -359,7 +361,128 @@ for (const change of ['shop_source', 'product_shop'] as const) {
   });
 }
 
+test('all three tasks share the four-field fingerprint and full merchant context', async () => {
+  const f = await fixture();
+  await new ProductsRepository(db).upsertBatch([{
+    shopId: f.product.shop_id, externalId: f.product.external_id, name: 'ChatGPT Plus · 月卡',
+    sourceName: 'ChatGPT Plus', description: '<p>商家提供成品账号</p><p>完整详情</p>', spec: '月卡',
+    sourceCategory: '会员', sourceData: { content: '<p>完整详情</p>', usage_guide: '仅限\n自用', warranty_info: '保订阅28天',
+      tags: ['共享'], attributes: { delivery: '代充' }, microPrice: 100, arbitrary: '代充' }, normalizedKey: 'shared-evidence', url: '',
+  }]);
+  await db.insertInto('standard_product_members').values({ product_id: f.product.id, standard_product_id: f.baseId,
+    assignment_source: 'ai', publication_state: 'published' }).execute();
+  const standard = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
+  const feature = await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', standard.id)
+    .where('job_type', '=', 'membership_features').executeTakeFirstOrThrow();
+  const tag = await db.transaction().execute(tx => createTagJob(tx, { model: 'mock', productIds: [f.product.id] }));
+  const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
+  const inputs = await db.selectFrom('ai_job_inputs').select(['fingerprint', 'payload'])
+    .where('job_id', 'in', [standard.id, feature.id, tag.id]).execute();
+  assert.equal(inputs.length, 3);
+  for (const input of inputs) {
+    assert.equal(input.fingerprint, product.content_fingerprint);
+    const evidence = extractionPayloadKey(input.payload as Record<string, JsonValue>);
+    assert.equal(createHash('sha256').update(evidence).digest('hex'), product.content_fingerprint);
+    const payload = input.payload as Record<string, JsonValue>;
+    assert.equal(payload.name, 'ChatGPT Plus');
+    const context = payload.sourceData as Record<string, JsonValue>;
+    assert.equal(context.evidence, '商家提供成品账号\n完整详情');
+    assert.equal(context.content, '完整详情');
+    assert.equal(context.usage_guide, '仅限 自用');
+    assert.equal(context.warranty_info, '保订阅28天');
+    assert.deepEqual(context.tags, ['共享']);
+    assert.deepEqual(context.attributes, { delivery: '代充' });
+    assert.equal(context.arbitrary, '代充');
+    assert.equal(payload.category, '会员');
+  }
+  const changed = await new ProductsRepository(db).update(product.id, { sourceData: { evidence: '新的完整商品说明' } });
+  assert.equal(changed?.source_description, '新的完整商品说明');
+  assert.notEqual(changed?.content_fingerprint, product.content_fingerprint);
+});
+
+test('identical crawler evidence with captured shop text preserves published membership', async () => {
+  const f = await fixture();
+  const sourceData = { ratingText: { unitId: '1', name: f.product.name, description: '', hash: 'a'.repeat(64) } };
+  await saveFeature(await featureTask(f.product.id), 'account');
+  await publishIdentity(f);
+  await db.updateTable('products').set({ source_data: jsonb(sourceData) }).where('id', '=', f.product.id).execute();
+  const published = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
+  const features = buildMembershipFeatures([], published, [], 'account');
+  const before = await db.updateTable('products').set({ membership_features: jsonb(features as unknown as JsonValue) })
+    .where('id', '=', f.product.id).returningAll().executeTakeFirstOrThrow();
+  const member = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', before.id).executeTakeFirstOrThrow();
+  await db.insertInto('product_tags').values({ product_id: before.id, name: 'delivery', value: 'account' }).execute();
+  const input = { shopId: before.shop_id, externalId: before.external_id, name: before.name, spec: before.spec,
+    normalizedKey: before.normalized_key, url: before.url, sourceData };
+  const change = await db.transaction().execute(async tx => {
+    const result = await new ProductsRepository(db).upsertFetchedProducts(tx, [input]);
+    // Match the crawler's same-transaction restoration of separately captured rating text.
+    await tx.updateTable('products').set({ source_data: jsonb(sourceData) }).where('id', '=', before.id).execute();
+    return result;
+  });
+  assert.deepEqual(change.changedProducts, []);
+  assert.deepEqual(change.unchangedProducts, [before.id]);
+  const after = await db.selectFrom('products').selectAll().where('id', '=', before.id).executeTakeFirstOrThrow();
+  assert.equal(after.content_version, before.content_version);
+  assert.equal(after.standardization_revision, before.standardization_revision);
+  assert.deepEqual(after.membership_features, before.membership_features);
+  assert.equal(readCurrentMembershipFeatures(after.membership_features, after)?.decision.kind, 'account');
+  assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', before.id).executeTakeFirstOrThrow(), member);
+  assert.equal((await db.selectFrom('product_tags').select('id').where('product_id', '=', before.id).execute()).length, 1);
+});
+
 for (const path of ['fetch', 'batch', 'update'] as const) {
+  for (const state of ['unassigned', 'features_only', 'ai_member', 'other_member'] as const) {
+    test(`${path}: goods changes are independent of recognition state (${state})`, async () => {
+      const f = await fixture();
+      if (state === 'unassigned' || state === 'features_only') {
+        await db.deleteFrom('standard_product_members').where('product_id', '=', f.product.id).execute();
+      } else if (state === 'other_member') {
+        const other = await db.insertInto('standard_products').values({ name: 'ordinary product',
+          standard_key: randomUUID(), canonical_family: 'test', canonical_product: 'ordinary', canonical_tier: 'basic' })
+          .returning('id').executeTakeFirstOrThrow();
+        await db.updateTable('standard_product_members').set({ standard_product_id: other.id })
+          .where('product_id', '=', f.product.id).execute();
+      }
+      await db.updateTable('products').set({ source_data: jsonb({ warranty_info: '质保28天' }), content_fingerprint: productContentFingerprint({ name: f.product.name, spec: f.product.spec, sourceData: { warranty_info: '质保28天' } }) })
+        .where('id', '=', f.product.id).execute();
+      if (state === 'features_only') {
+        const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
+        await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], product, [], 'account') as unknown as JsonValue) })
+          .where('id', '=', product.id).execute();
+      }
+      const products = new ProductsRepository(db);
+      const write = async (sourceData: JsonValue, sourceCategory?: string) => {
+        const p = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
+        const input = { shopId: p.shop_id, externalId: p.external_id, name: p.name, sourceName: p.source_name,
+          description: p.source_description, spec: p.spec, sourceCategory, normalizedKey: p.normalized_key, url: p.url, sourceData };
+        if (path === 'fetch') await db.transaction().execute(tx => products.upsertFetchedProducts(tx, [input]));
+        else if (path === 'batch') await products.upsertBatch([input]);
+        else await products.update(p.id, { sourceData, sourceCategory });
+        return db.selectFrom('products').selectAll().where('id', '=', p.id).executeTakeFirstOrThrow();
+      };
+      await db.updateTable('products').set({ source_category: '旧分类' }).where('id', '=', f.product.id).execute();
+      const before = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
+      const unchanged = await write({ warranty_info: '质保28天', price: 99, stock: 20,
+        usage_guide: '更新后的使用说明', microPrice: 500, tags: ['租号'], attributes: { delivery: '自有号代充' },
+        unknown_merchant_flag: true, ratingText: { unitId: '1', name: before.name, description: '', hash: 'b'.repeat(64) } }, '新分类');
+      assert.equal(unchanged.content_version, before.content_version, 'non-fingerprint context must not invalidate goods');
+      assert.equal(unchanged.content_fingerprint, before.content_fingerprint);
+      assert.equal(unchanged.standardization_revision, before.standardization_revision);
+      assert.equal(unchanged.source_category, '新分类');
+      assert.equal((await db.selectFrom('product_change_events').select('id').where('product_id', '=', before.id).execute()).length, 0);
+      assert.equal((await db.selectFrom('standard_product_members').select('product_id').where('product_id', '=', before.id).execute()).length,
+        state === 'unassigned' || state === 'features_only' ? 0 : 1);
+      const changed = await write({ warranty_info: '无质保' });
+      assert.equal(changed.content_version, before.content_version + 1n, 'warranty changes must be detected in every recognition state');
+      assert.notEqual(changed.content_fingerprint, before.content_fingerprint);
+      assert.equal(changed.membership_features, null);
+      assert.equal((await db.selectFrom('standard_product_members').select('product_id').where('product_id', '=', before.id).execute()).length, 0);
+      const repeated = await write({ warranty_info: '无质保' });
+      assert.equal(repeated.content_version, changed.content_version, 'repeating identical evidence must not trigger another change');
+    });
+  }
+
   test(`${path}: independent sale warranty changes invalidate membership evidence`, async () => {
     const f = await fixture('ChatGPT Plus 成品账号');
     await db.updateTable('products').set({ source_data: jsonb({ warranty_info: '质保28天' }) }).where('id', '=', f.product.id).execute();

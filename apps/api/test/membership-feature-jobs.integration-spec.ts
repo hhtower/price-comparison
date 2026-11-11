@@ -8,6 +8,7 @@ import { migrationProvider } from '../scripts/migrate.js';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { recordManualDecisions } from '../src/standardization/decision-history.js';
 import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
+import { ProductsRepository } from '../src/products/products.repository.js';
 import {
   createManualMembershipFeatureJob, createMembershipFeatureJob, previewMembershipFeatureJob,
   createManualTagJob, createTagJob, previewTagJob, prepareAllPendingTagJob,
@@ -333,14 +334,16 @@ test('successful feature output without a saved current snapshot remains pending
 });
 
 for (const changed of ['name', 'spec', 'source_data'] as const) {
-  test(`feature selection refreshes a saved snapshot after ${changed} changes without a version bump`, async () => {
+  test(`feature selection refreshes a saved snapshot through the shared fingerprint after ${changed} changes`, async () => {
     const f = await fixture();
+    f.products[0]!.name = `ChatGPT Plus fingerprint ${changed}`;
+    await db.updateTable('products').set({ name: f.products[0]!.name }).where('id', '=', f.ids[0]).execute();
     await db.updateTable('products').set({
       membership_features: jsonb(buildMembershipFeatures([], f.products[0], [], 'short_term') as unknown as JsonValue),
     }).where('id', '=', f.ids[0]).execute();
-    await db.updateTable('products').set(changed === 'source_data'
-      ? { source_data: jsonb({ evidence: 'new subscription terms' }) } : { [changed]: 'changed evidence' })
-      .where('id', '=', f.ids[0]).execute();
+    const updated = await new ProductsRepository(db).update(f.ids[0]!, changed === 'source_data'
+      ? { sourceData: { evidence: 'new subscription terms' } } : { [changed]: 'changed evidence' });
+    assert.notEqual(updated?.content_fingerprint, f.products[0]!.content_fingerprint);
     const pending = await createManualMembershipFeatureJob(db, { allPending: true, model: 'mock', requestId: randomUUID() });
     assert.equal((await prepare(pending.id)).total, 1n);
     await db.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', pending.id).execute();

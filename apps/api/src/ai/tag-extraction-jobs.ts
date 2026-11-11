@@ -3,7 +3,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
 import { isAttributeJobType, jsonb, type AttributeJobType as AttributeJobKind, type DatabaseSchema, type JsonValue } from '../database/types.js';
 import { readAiBatchLimits } from '../config/env.js';
-import { buildExtractionPayload, estimateInputSize, extractionPayloadKey } from './adaptive-batching.js';
+import { buildExtractionPayload, estimateInputSize, extractionContextKey } from './adaptive-batching.js';
 import { planBulkStandardizationBatches, planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { currentManualDecision } from './ai-retry-pool.js';
 import { PIPELINE_VERSIONS, pipelineVersionSnapshot } from './pipeline-versions.js';
@@ -42,7 +42,7 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
   let query = db.selectFrom('products as p').innerJoin('shops as s','s.id','p.shop_id')
     .leftJoin('standard_product_members as assignment','assignment.product_id','p.id')
     .leftJoin('standard_products as standard','standard.id','assignment.standard_product_id')
-    .select(['p.id','p.name','p.spec','p.source_category','p.source_data','p.membership_features','p.content_version','p.content_fingerprint','p.standardization_revision','p.standardization_locked','p.deleted_at','s.enabled','s.deleted_at as shop_deleted_at'])
+    .select(['p.id','p.name','p.source_name','p.source_description','p.spec','p.source_category','p.source_data','p.membership_features','p.content_version','p.content_fingerprint','p.standardization_revision','p.standardization_locked','p.deleted_at','s.enabled','s.deleted_at as shop_deleted_at'])
     .select(['assignment.standard_product_id', 's.url as shop_url', 's.protocol as shop_protocol', 's.platform as shop_platform'])
     .select(currentManualDecision.as('manual'))
     .select(sql<boolean>`coalesce(assignment.assignment_source='ai'
@@ -88,13 +88,13 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
   }
   const sized = products.filter(product => !(kind === 'membership_features' && input.allPending
     && readCurrentMembershipFeatures(product.membership_features, product))).map(product => {
-    const payload = buildExtractionPayload({id:String(product.id),name:product.name,spec:product.spec,category:product.source_category,sourceData:product.source_data});
+    const payload = buildExtractionPayload({id:String(product.id),name:product.name,sourceName:product.source_name,description:product.source_description || undefined,spec:product.spec,category:product.source_category,sourceData:product.source_data});
+    if (kind === 'membership_features') delete payload.shopText;
     payload.shopSource = { url: product.shop_url, protocol: product.shop_protocol, platform: product.shop_platform };
     const fingerprint = product.content_fingerprint;
-    const payloadKey = extractionPayloadKey(payload);
-    const text = readTextEvidence(payload);
-    const inputKey = JSON.stringify([fingerprint,payloadKey,text ? [text.name,text.description,text.hash] : null]);
-    return {product,payload,fingerprint,payloadKey,inputKey,...estimateInputSize(payload), protected: !!(product.deleted_at || product.shop_deleted_at || !product.enabled || product.standardization_locked || product.manual || product.human
+    const text = kind === 'tag_extraction' ? readTextEvidence(payload) : null;
+    const inputKey = JSON.stringify([fingerprint,extractionContextKey(payload),text ? [text.name,text.description,text.hash] : null]);
+    return {product,payload,fingerprint,inputKey,...estimateInputSize(payload), protected: !!(product.deleted_at || product.shop_deleted_at || !product.enabled || product.standardization_locked || product.manual || product.human
       || (kind === 'tag_extraction' ? !product.published : product.non_membership || !needsMembershipFeatures(payload)))};
   });
   return {scope,sized:input.allPending?sized.filter(item=>!item.protected):sized};
