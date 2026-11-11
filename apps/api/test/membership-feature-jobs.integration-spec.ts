@@ -38,7 +38,7 @@ after(async () => {
   await admin?.end();
 });
 
-async function fixture(count = 1, distinct = false) {
+async function fixture(count = 1, distinct = false, published = true) {
   const shop = await db.insertInto('shops').values({
     name: 'raw source', platform: 'test', url: `https://test.invalid/${randomUUID()}`,
   }).returningAll().executeTakeFirstOrThrow();
@@ -53,7 +53,9 @@ async function fixture(count = 1, distinct = false) {
       })),
     ).returningAll().execute());
   }
-  return { shop, products, ids: products.map(p => p.id) };
+  const ids = products.map(p => p.id);
+  const standardId = published ? await assign(ids) : null;
+  return { shop, products, ids, standardId };
 }
 async function assign(ids: bigint[], publication: 'published' | 'provisional' = 'published', source = 'ai') {
   const standard = await db.insertInto('standard_products').values({
@@ -77,12 +79,12 @@ async function prepare(jobId: bigint) {
   return db.selectFrom('ai_jobs').selectAll().where('id', '=', jobId).executeTakeFirstOrThrow();
 }
 
-test('raw features preview and creation need no identity, deduplicate inputs, and preserve parent and products', async () => {
+test('published AI features deduplicate quote inputs and preserve their shared standard, parent and products', async () => {
   const f = await fixture(3);
   const preview = await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'frozen-model' });
   assert.equal(preview.counts.eligible, 3);
   assert.equal(preview.counts.uniqueInputs, 1);
-  assert.equal((await previewTagJob(db, { productIds: f.ids, model: 'frozen-model' })).counts.eligible, 0);
+  assert.equal((await previewTagJob(db, { productIds: f.ids, model: 'frozen-model' })).counts.eligible, 3);
   const parent = await db.insertInto('ai_jobs').values({
     model: 'identity-model', total: 3n, job_type: 'manual_full', status: 'queued',
   }).returningAll().executeTakeFirstOrThrow();
@@ -105,44 +107,53 @@ test('raw features preview and creation need no identity, deduplicate inputs, an
   }
   assert.deepEqual(await db.selectFrom('ai_jobs').selectAll().where('id', '=', parent.id).executeTakeFirstOrThrow(), parent);
   assert.deepEqual(await db.selectFrom('products').selectAll().where('id', 'in', f.ids).orderBy('id').execute(), f.products);
-  assert.equal((await db.selectFrom('standard_product_members').select('product_id').where('product_id', 'in', f.ids).execute()).length, 0);
+  assert.deepEqual((await db.selectFrom('standard_product_members').select('standard_product_id')
+    .where('product_id', 'in', f.ids).execute()).map(member => member.standard_product_id),
+  [f.standardId, f.standardId, f.standardId]);
   assert.equal((await db.selectFrom('product_tags').select('id').where('product_id', 'in', f.ids).execute()).length, 0);
 });
 
-test('provisional memberships are eligible only for features; tags remain post-publication', async () => {
-  const f = await fixture();
+test('provisional assignments and unverified standards cannot schedule features or tags', async () => {
+  const f = await fixture(1, false, false);
   const id = await assign(f.ids, 'provisional');
-  assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 1);
+  assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 0);
   assert.equal((await previewTagJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 0);
+  await db.updateTable('standard_product_members').set({ publication_state: 'published' }).where('product_id', 'in', f.ids).execute();
   await db.updateTable('standard_products').set({ verification_state: 'provisional' }).where('id', '=', id).execute();
-  assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 1);
+  assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 0);
 });
 
-test('raw feature scopes skip confidently free plans and keep paid or unknown inputs across every entry point', async () => {
-  const f = await fixture(5);
-  const names = ['ChatGPT Free account', 'Claude Free account', 'Grok Free account',
-    'ChatGPT Plus account', 'unrecognized service package'];
+test('every feature entry point admits only published verified AI identities regardless of raw text', async () => {
+  const f = await fixture(6, false, false);
+  const names = ['ChatGPT Plus account', 'ChatGPT Plus account', 'ChatGPT Plus account',
+    'ChatGPT Free account', 'unrecognized service package', 'Steam game gift code'];
   for (const [index, name] of names.entries()) {
     await db.updateTable('products').set({ name }).where('id', '=', f.ids[index]).execute();
   }
+  await assign([f.ids[1]], 'provisional');
+  const nonAi = await assign([f.ids[2]]);
+  await db.updateTable('standard_products').set({ canonical_family: 'network', canonical_product: 'ip',
+    canonical_tier: 'standard' }).where('id', '=', nonAi).execute();
+  await assign(f.ids.slice(3));
   const input = { productIds: f.ids, model: 'mock' };
   const preview = await previewMembershipFeatureJob(db, input);
-  assert.equal(preview.counts.selected, 5);
+  assert.equal(preview.counts.selected, 6);
   assert.equal(preview.counts.missing, 0);
   assert.equal(preview.counts.protected, 3);
-  assert.equal(preview.counts.eligible, 2);
+  assert.equal(preview.counts.eligible, 3);
+  assert.equal((await previewMembershipFeatureJob(db, { scopeShopId: f.shop.id, model: 'mock' })).counts.eligible, 3);
   const manual = await createManualMembershipFeatureJob(db, {
     ...input, requestId: randomUUID(), previewDigest: preview.previewDigest,
   });
   const automatic = await db.transaction().execute(tx => createMembershipFeatureJob(tx, input));
   for (const job of [manual, automatic]) {
-    assert.equal(job.total, 2n);
+    assert.equal(job.total, 3n);
     assert.deepEqual((await db.selectFrom('ai_job_input_members').select('product_id').where('job_id', '=', job.id)
       .orderBy('product_id').execute()).map(member => member.product_id), f.ids.slice(3));
     await db.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', job.id).execute();
   }
   const pending = await createManualMembershipFeatureJob(db, { allPending: true, model: 'mock', requestId: randomUUID() });
-  assert.equal((await prepare(pending.id)).total, 2n);
+  assert.equal((await prepare(pending.id)).total, 3n);
   assert.deepEqual((await db.selectFrom('ai_job_input_members').select('product_id').where('job_id', '=', pending.id)
     .orderBy('product_id').execute()).map(member => member.product_id), f.ids.slice(3));
 });
@@ -151,8 +162,9 @@ for (const [family, product, tier] of [
   ['openai', 'chatgpt', 'free'], ['google', 'email', 'standard'], ['network', 'ip', 'standard'],
 ]) {
   test(`verified non-membership ${family}/${product}/${tier} is excluded without making preview counts missing`, async () => {
-    const f = await fixture(2);
+    const f = await fixture(2, false, false);
     const standard = await assign([f.ids[0]]);
+    await assign([f.ids[1]]);
     await db.updateTable('standard_products').set({
       canonical_family: family, canonical_product: product, canonical_tier: tier,
     }).where('id', '=', standard).execute();
@@ -173,20 +185,24 @@ for (const [family, product, tier] of [
   });
 }
 
-test('unverified or incomplete standard identities do not exclude unknown raw feature inputs', async () => {
+test('unverified, incomplete and merged identities reject unknown raw feature inputs', async () => {
   const f = await fixture();
   await db.updateTable('products').set({ name: 'unrecognized service package' }).where('id', '=', f.ids[0]).execute();
-  const standard = await assign(f.ids);
+  const standard = f.standardId!;
   await db.updateTable('standard_products').set({
     canonical_family: 'network', canonical_product: 'ip', canonical_tier: 'standard', verification_state: 'provisional',
   }).where('id', '=', standard).execute();
-  assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 1);
+  assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 0);
   await db.updateTable('standard_products').set({ verification_state: 'verified', canonical_product: null }).where('id', '=', standard).execute();
-  assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 1);
+  assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 0);
+  const other = await fixture();
+  await db.updateTable('standard_products').set({ canonical_family: 'openai', canonical_product: 'chatgpt',
+    canonical_tier: 'plus', merged_into_id: other.standardId }).where('id', '=', standard).execute();
+  assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 0);
 });
 
 test('an all-pending scope containing only confidently non-AI facts completes without request batches', async () => {
-  const f = await fixture();
+  const f = await fixture(1, false, false);
   await db.updateTable('products').set({ name: 'ChatGPT Free account' }).where('id', '=', f.ids[0]).execute();
   const pending = await createManualMembershipFeatureJob(db, { allPending: true, model: 'mock', requestId: randomUUID() });
   const done = await prepare(pending.id);
@@ -203,7 +219,8 @@ for (const protection of ['locked', 'deleted', 'disabled', 'deleted shop', 'huma
     if (protection === 'deleted') await db.updateTable('products').set({ deleted_at: new Date() }).where('id', '=', f.ids[0]).execute();
     if (protection === 'disabled') await db.updateTable('shops').set({ enabled: false }).where('id', '=', f.shop.id).execute();
     if (protection === 'deleted shop') await db.updateTable('shops').set({ deleted_at: new Date() }).where('id', '=', f.shop.id).execute();
-    if (protection === 'human') await assign(f.ids, 'published', 'human');
+    if (protection === 'human') await db.updateTable('standard_product_members').set({ assignment_source: 'human' })
+      .where('product_id', 'in', f.ids).execute();
     if (protection === 'manual') await db.transaction().execute(tx =>
       recordManualDecisions(tx, f.ids, { action: 'quarantine', standardProductId: null, reason: 'review protected raw evidence' }));
     const p = await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' });
@@ -216,7 +233,6 @@ for (const protection of ['locked', 'deleted', 'disabled', 'deleted shop', 'huma
 
 test('manual features use digest idempotence and cannot replay tag requests or digests', async () => {
   const f = await fixture();
-  await assign(f.ids);
   const p = await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' });
   const tags = await previewTagJob(db, { productIds: f.ids, model: 'mock' });
   assert.notEqual(p.previewDigest, tags.previewDigest);
@@ -234,7 +250,6 @@ test('manual features use digest idempotence and cannot replay tag requests or d
 
 test('manual feature retries keep provenance and remain independent of the original identity parent', async () => {
   const f = await fixture(2);
-  await assign(f.ids);
   const parent = await db.insertInto('ai_jobs').values({ model: 'mock', total: 2n, job_type: 'manual_full', status: 'queued' })
     .returning('id').executeTakeFirstOrThrow();
   const feature = await db.transaction().execute(tx => createMembershipFeatureJob(tx, { model: 'mock', productIds: f.ids, parentIdentityJobId: parent.id }));
@@ -252,9 +267,61 @@ test('manual feature retries keep provenance and remain independent of the origi
   assert.equal(retry.total, 1n);
 });
 
+for (const identity of ['unassigned', 'provisional assignment', 'unverified standard', 'non-AI', 'unknown', 'merged']) {
+  test(`all feature entry points and retries reject a now ${identity} identity`, async () => {
+    const f = await fixture();
+    const source = await db.transaction().execute(tx => createMembershipFeatureJob(tx, { model: 'mock', productIds: f.ids }));
+    await db.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', source.id).execute();
+    if (identity === 'unassigned') await db.deleteFrom('standard_product_members').where('product_id', 'in', f.ids).execute();
+    if (identity === 'provisional assignment') await db.updateTable('standard_product_members')
+      .set({ publication_state: 'provisional' }).where('product_id', 'in', f.ids).execute();
+    if (identity === 'unverified standard') await db.updateTable('standard_products')
+      .set({ verification_state: 'provisional' }).where('id', '=', f.standardId!).execute();
+    if (identity === 'non-AI') await db.updateTable('standard_products').set({ canonical_tier: 'free' }).where('id', '=', f.standardId!).execute();
+    if (identity === 'unknown') await db.updateTable('standard_products').set({ canonical_product: null }).where('id', '=', f.standardId!).execute();
+    if (identity === 'merged') {
+      const target = await db.insertInto('standard_products').values({ name: 'merged target' }).returning('id').executeTakeFirstOrThrow();
+      await db.updateTable('standard_products').set({ merged_into_id: target.id }).where('id', '=', f.standardId!).execute();
+    }
+    for (const retryOfJobId of [undefined, source.id]) {
+      const scope = { productIds: f.ids, model: 'mock', retryOfJobId };
+      const preview = await previewMembershipFeatureJob(db, scope);
+      assert.equal(preview.counts.eligible, 0);
+      assert.equal(preview.counts.protected, 1);
+      await assert.rejects(createManualMembershipFeatureJob(db, { ...scope,
+        requestId: randomUUID(), previewDigest: preview.previewDigest }), { code: 'AI_TAG_SCOPE_EMPTY' });
+    }
+    await assert.rejects(db.transaction().execute(tx => createMembershipFeatureJob(tx, { model: 'mock', productIds: f.ids })),
+      { code: 'AI_TAG_SCOPE_EMPTY' });
+    const pending = await createManualMembershipFeatureJob(db, { allPending: true, model: 'mock', requestId: randomUUID() });
+    assert.equal((await prepare(pending.id)).total, 0n);
+  });
+}
+
+test('one verified standard keeps all four quote kinds and deduplicates only identical evidence', async () => {
+  const f = await fixture(5);
+  const names = ['ChatGPT Plus account', 'ChatGPT Plus top up', 'ChatGPT Plus rental',
+    'ChatGPT Plus short term', 'ChatGPT Plus account'];
+  for (const [index, name] of names.entries()) await db.updateTable('products').set({ name })
+    .where('id', '=', f.ids[index]).execute();
+  const scope = { productIds: f.ids, model: 'mock' };
+  const preview = await previewMembershipFeatureJob(db, scope);
+  assert.equal(preview.counts.eligible, 5);
+  assert.equal(preview.counts.uniqueInputs, 4);
+  const job = await createManualMembershipFeatureJob(db, { ...scope, requestId: randomUUID(), previewDigest: preview.previewDigest });
+  const members = await db.selectFrom('ai_job_input_members').select(['product_id', 'input_id', 'payload'])
+    .where('job_id', '=', job.id).orderBy('product_id').execute();
+  assert.equal(job.total, 5n);
+  assert.deepEqual(members.map(member => member.product_id), f.ids);
+  assert.equal(new Set(members.map(member => member.input_id)).size, 4);
+  assert.equal(members[0].input_id, members[4].input_id);
+  assert.deepEqual(members.map(member => (member.payload as Record<string, JsonValue>).name), names);
+  assert.deepEqual((await db.selectFrom('standard_product_members').select('standard_product_id')
+    .where('product_id', 'in', f.ids).execute()).map(member => member.standard_product_id), f.ids.map(() => f.standardId));
+});
+
 test('async all-pending preparation routes feature jobs and ignores tag completion', async () => {
   const f = await fixture(2);
-  await assign(f.ids, 'published');
   const tag = await db.transaction().execute(tx => createTagJob(tx, { productIds: f.ids, model: 'mock' }));
   await db.updateTable('ai_job_input_members').set({ status: 'classified', output: jsonb({ outcome: 'empty', acceptedTags: [] }) })
     .where('job_id', '=', tag.id).execute();
@@ -274,7 +341,6 @@ test('async all-pending preparation routes feature jobs and ignores tag completi
 
 test('all-pending coalesces within its kind and rejects request aliases from another kind', async () => {
   const f = await fixture();
-  await assign(f.ids);
   const input = { allPending: true, model: 'mock', requestId: randomUUID() };
   const [feature, duplicate] = await Promise.all([
     createManualMembershipFeatureJob(db, input),
@@ -291,7 +357,6 @@ test('all-pending coalesces within its kind and rejects request aliases from ano
 
 test('active feature work suppresses only current feature members in all-pending selection', async () => {
   const f = await fixture(2);
-  await assign([f.ids[0]]);
   await db.transaction().execute(tx => createTagJob(tx, { model: 'mock', productIds: [f.ids[0]] }));
   await db.transaction().execute(tx => createMembershipFeatureJob(tx, { model: 'mock', productIds: [f.ids[1]] }));
   const pending = await createManualMembershipFeatureJob(db, { allPending: true, model: 'mock', requestId: randomUUID() });
@@ -334,7 +399,7 @@ test('successful feature output without a saved current snapshot remains pending
 });
 
 for (const changed of ['name', 'spec', 'source_data'] as const) {
-  test(`feature selection refreshes a saved snapshot through the shared fingerprint after ${changed} changes`, async () => {
+  test(`feature selection waits for identity republication after ${changed} invalidates the snapshot`, async () => {
     const f = await fixture();
     f.products[0]!.name = `ChatGPT Plus fingerprint ${changed}`;
     await db.updateTable('products').set({ name: f.products[0]!.name }).where('id', '=', f.ids[0]).execute();
@@ -344,6 +409,10 @@ for (const changed of ['name', 'spec', 'source_data'] as const) {
     const updated = await new ProductsRepository(db).update(f.ids[0]!, changed === 'source_data'
       ? { sourceData: { evidence: 'new subscription terms' } } : { [changed]: 'changed evidence' });
     assert.notEqual(updated?.content_fingerprint, f.products[0]!.content_fingerprint);
+    assert.equal((await previewMembershipFeatureJob(db, { productIds: f.ids, model: 'mock' })).counts.eligible, 0);
+    await assert.rejects(db.transaction().execute(tx => createMembershipFeatureJob(tx, { model: 'mock', productIds: f.ids })),
+      { code: 'AI_TAG_SCOPE_EMPTY' });
+    await assign(f.ids);
     const pending = await createManualMembershipFeatureJob(db, { allPending: true, model: 'mock', requestId: randomUUID() });
     assert.equal((await prepare(pending.id)).total, 1n);
     await db.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', pending.id).execute();
@@ -380,7 +449,7 @@ test('oversized standalone features record a terminal local failure without crea
   assert.equal((await db.selectFrom('ai_job_input_members').select('reason_code').where('job_id', '=', job.id).executeTakeFirstOrThrow()).reason_code, 'input_too_large');
 });
 
-test('large unassigned feature scopes use independent batching instead of a missing identity bucket', async () => {
+test('large published feature scopes preserve independent batching and existing batch limits', async () => {
   const f = await fixture(1002, true);
   const job = await db.transaction().execute(tx => createMembershipFeatureJob(tx, { model: 'mock', productIds: f.ids }));
   const inputs = await db.selectFrom('ai_job_inputs').selectAll().where('job_id', '=', job.id).orderBy('input_id').execute();

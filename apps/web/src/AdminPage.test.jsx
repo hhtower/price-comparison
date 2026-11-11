@@ -57,6 +57,40 @@ describe('AdminPage', () => {
     expect(summary.closest('details')).not.toHaveTextContent('商家明确说明');
   });
 
+  test('仅接口明确确认的 AI 会员报价显示未分类，不从商品或标准名称推断', async () => {
+    vi.stubGlobal('fetch', vi.fn(async input => jsonResponse(paged(new URL(input, 'http://localhost').pathname === '/api/admin/products' ? [
+      { id: '1', name: '已验证会员报价', standardProductName: 'ChatGPT Plus', isAiMembership: true, membershipFeatures: null },
+      { id: '2', name: '普通报价', standardProductName: '普通服务', isAiMembership: false, membershipFeatures: null },
+      { id: '3', name: 'ChatGPT Plus 成品号', standardProductName: 'ChatGPT Plus', membershipFeatures: null },
+      { id: '4', name: '名称含 AI 的非会员', standardProductName: 'ChatGPT Plus', isAiMembership: false, membershipFeatures: null },
+    ] : []))));
+    render(<AdminPage initialAuthenticated />);
+    await userEvent.click(await screen.findByRole('button', { name: '商品管理' }));
+    expect((await screen.findByText('已验证会员报价')).closest('tr')).toHaveTextContent('会员判定：未分类');
+    for (const name of ['普通报价', 'ChatGPT Plus 成品号', '名称含 AI 的非会员']) {
+      expect(screen.getByText(name).closest('tr')).not.toHaveTextContent('会员判定');
+    }
+    expect(screen.queryByText(/待识别/)).not.toBeInTheDocument();
+  });
+
+  test('同一标准商品的四种报价分别显示分类，未分类只属于缺少分类的报价', async () => {
+    const kinds = [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期']];
+    vi.stubGlobal('fetch', vi.fn(async input => jsonResponse(paged(new URL(input, 'http://localhost').pathname === '/api/admin/products' ? [
+      ...kinds.map(([kind, label], index) => ({ id: String(index + 1), name: `${label}报价`, standardProductName: 'ChatGPT Plus',
+        isAiMembership: true, membershipFeatures: { decision: { kind, reason: 'llm_reviewed' }, tags: [], evidence: [] } })),
+      { id: '5', name: '未分类报价', standardProductName: 'ChatGPT Plus', isAiMembership: true, membershipFeatures: null },
+    ] : []))));
+    render(<AdminPage initialAuthenticated />);
+    await userEvent.click(await screen.findByRole('button', { name: '商品管理' }));
+    await screen.findByText('成品号报价');
+    for (const [, label] of kinds) {
+      const row = screen.getByText(`${label}报价`).closest('tr');
+      expect(row).toHaveTextContent(`会员判定：${label}`);
+      expect(row).not.toHaveTextContent('未分类');
+    }
+    expect(screen.getByText('未分类报价').closest('tr')).toHaveTextContent('会员判定：未分类');
+  });
+
   test('标准身份编辑只提交 family/product/tier 和平台', async () => {
     const bodies = [];
     vi.stubGlobal('fetch', vi.fn(async (input, init) => {
@@ -590,7 +624,7 @@ describe('AdminPage', () => {
     await user.click(screen.getByRole('button', { name: '任务台' }));
     expect(screen.queryByRole('button', { name: '抓取记录' })).not.toBeInTheDocument();
     const workbench = screen.getByRole('region', { name: '后台任务' });
-    expect(within(workbench).getAllByRole('tab').map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '特性识别', '特性识别记录', '标准化', '标准化记录', '标签抽取', '标签抽取记录']);
+    expect(within(workbench).getAllByRole('tab').map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '标准化', '标准化记录', '特性识别', '特性识别记录', '标签抽取', '标签抽取记录']);
     expect(within(workbench).getByRole('tab', { name: '抓取' })).toHaveAttribute('aria-selected', 'true');
     expect(within(workbench).getByRole('region', { name: '抓取任务' })).toBeInTheDocument();
     expect(runRequests).toEqual([]);

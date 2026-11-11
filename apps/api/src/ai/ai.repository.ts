@@ -1,14 +1,14 @@
 import { isAttributeJobType } from '../database/types.js';
 import { normalizePageRequest, buildCursorPage } from '../common/pagination.js';
 import { previewTagJob, createManualTagJob, prepareAllPendingTagJob, previewMembershipFeatureJob,
-  createManualMembershipFeatureJob, createMembershipFeatureJob, type TagJobScope, type TagJobRequest } from './tag-extraction-jobs.js';
+  createManualMembershipFeatureJob, type TagJobScope, type TagJobRequest } from './tag-extraction-jobs.js';
 import { sanitizeTagAuditText, buildTagExtractionOutcome, tagExtractionVersions, validateTagExtractionDecision, validateReviewedTagExtractionDecision, type TagExtractionDecision } from './tag-extraction-result.js';
 import { projectShopText, readTextEvidence, TEXT_REVIEW_VERSION } from '../shops/shop-text-review.js';
 import type { StandardizationTag } from './ai.schemas.js';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { canonicalProductDisplayName } from '@price-comparison/catalog/catalog-display';
-import { MEMBERSHIP_KINDS } from '@price-comparison/catalog/membership-policy';
-import { buildMembershipFeatures, readCurrentMembershipFeatures, needsMembershipFeatures } from '../standardization/membership-classification.js';
+import { MEMBERSHIP_KINDS, isAiMembership } from '@price-comparison/catalog/membership-policy';
+import { buildMembershipFeatures, readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
@@ -45,7 +45,7 @@ import {
   type CatalogIndexChange,
 } from '../standardization/versioned-candidate-index.js';
 import { planPublicationUnits, type PublicationMember } from './publication-planner.js';
-import { finalizeOrScheduleMissing, settleMembershipFeatureDependency } from './standardization-finalizer.js';
+import { finalizeOrScheduleMissing } from './standardization-finalizer.js';
 import { readAiStandardizationRuntimeStatus } from './ai-standardization-features.js';
 import { unknownRequestReason } from './request-outcome.js';
 import { readAiConcurrency } from './ai-concurrency.js';
@@ -374,17 +374,6 @@ export class AiRepository {
         const batches: Array<{ job_id: bigint; batch_index: bigint; product_ids: ReturnType<typeof jsonb>; product_count: bigint; input_bytes: bigint; estimated_tokens: bigint; status: 'queued'; round: number; step: 'request'; request_budget_limit: number }> = planned.map((batch, index) => ({ job_id: job.id, batch_index: BigInt(index), product_ids: jsonb(batch.productIds.map(String)), product_count: BigInt(batch.productIds.reduce((count, id) => count + (memberCounts.get(id) ?? 0), 0)), input_bytes: BigInt(batch.inputBytes), estimated_tokens: BigInt(batch.estimatedTokens), status: 'queued', round: 0, step: 'request', request_budget_limit: 2 }));
         const inserted: Array<{ id: bigint; product_ids: JsonValue }> = [];
         for (const chunk of chunks(batches)) inserted.push(...await tx.insertInto('ai_job_batches').values(chunk).returning(['id', 'product_ids']).execute());
-        const featureIds = modelInputs.filter(item => plannedIds.has(item.product.id) && needsMembershipFeatures(item.payload))
-          .flatMap(item => item.members.filter(member => !member.standardization_locked
-            && !isManualDecisionForCurrentEvidence(manualDecisions.get(member.id), member)
-            && !readCurrentMembershipFeatures(member.membership_features, member)).map(member => member.id));
-        if (featureIds.length) {
-          try {
-            const features = await createMembershipFeatureJob(tx, { model: input.model, productIds: featureIds, parentIdentityJobId: job.id });
-            await settleMembershipFeatureDependency(tx, features.id);
-          }
-          catch (error) { if (!(error instanceof DomainNotFoundError)) throw error; }
-        }
         let currentJob = await tx.selectFrom('ai_jobs').selectAll().where('id', '=', job.id).executeTakeFirstOrThrow();
         return { ...currentJob, inputs: unique.map((x) => ({ productId: x.product.id, fingerprint: x.fingerprint })), batches: inserted.map((b) => ({ id: b.id, productIds: (b.product_ids as unknown as string[]).map(BigInt) })) };
       }
@@ -600,9 +589,6 @@ export class AiRepository {
       const located = await tx.selectFrom('ai_job_batches').select('job_id').where('id', '=', batchId).executeTakeFirstOrThrow();
       const job = await tx.selectFrom('ai_jobs').select(['status', 'prompt_version', 'rule_version', 'pipeline_versions', 'pause_requested', 'cancel_requested', 'job_type', 'parent_identity_job_id'])
         .where('id', '=', located.job_id).forUpdate().executeTakeFirstOrThrow();
-      const parent = job.job_type === 'membership_features' && job.parent_identity_job_id !== null
-        ? await tx.selectFrom('ai_jobs').select(['status', 'pause_requested', 'cancel_requested'])
-          .where('id', '=', job.parent_identity_job_id).forShare().executeTakeFirst() : null;
       const batch = await tx.selectFrom('ai_job_batches').selectAll().where('id', '=', batchId).forUpdate().executeTakeFirstOrThrow();
       if (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== IDENTITY_POLICY_VERSION || !isCurrentPipeline(job.pipeline_versions)) return 'stale_policy' as const;
       if (job.pause_requested || job.cancel_requested || ['paused', 'cancelled', 'failed', 'succeeded'].includes(job.status)) return 'inactive_job' as const;
@@ -610,12 +596,6 @@ export class AiRepository {
       if (claim?.workerId && (batch.status !== 'running' || batch.claimed_by !== claim.workerId || batch.lease_until === null || batch.lease_until <= new Date())) return 'stale_lease' as const;
       if (claim?.attempt !== undefined && batch.attempts !== claim.attempt) return 'stale_lease' as const;
       if (claim?.token !== undefined && batch.claim_token !== claim.token) return 'stale_lease' as const;
-      if (parent?.cancel_requested || (parent && ['cancelled', 'failed'].includes(parent.status))) return 'inactive_job' as const;
-      if (parent?.pause_requested || parent?.status === 'paused') {
-        await tx.updateTable('ai_job_batches').set({ status: 'queued', claimed_by: null, claim_token: null,
-          lease_until: null, available_at: sql`now()` }).where('id', '=', batchId).execute();
-        return 'skipped' as const;
-      }
 
       const inputIds = (batch.product_ids as unknown as string[]).map(BigInt);
       if (isAttributeJobType(job.job_type) && inputIds.length) {
@@ -624,18 +604,21 @@ export class AiRepository {
         const sources = productIds.length ? await tx.selectFrom('products as p').innerJoin('shops as s', 's.id', 'p.shop_id').selectAll('p').where('p.id', 'in', productIds).where('p.deleted_at', 'is', null).where('s.deleted_at', 'is', null).where('s.enabled', '=', true).orderBy('p.id').forUpdate('p').execute() : [];
         const assignments = productIds.length ? await tx.selectFrom('standard_product_members as m')
           .innerJoin('standard_products as s', 's.id', 'm.standard_product_id')
-          .select(['m.product_id', 'm.assignment_source']).where('m.product_id', 'in', productIds)
-          .where('m.publication_state', '=', 'published').execute() : [];
+          .select(['m.product_id', 'm.assignment_source', 's.canonical_family', 's.canonical_product', 's.canonical_tier'])
+          .where('m.product_id', 'in', productIds).where('m.publication_state', '=', 'published')
+          .$if(job.job_type === 'membership_features', q => q.where('s.verification_state', '=', 'verified').where('s.merged_into_id', 'is', null)).execute() : [];
         const manual = await readLatestManualDecisions(tx, productIds);
         for (const member of snapshots) {
           const product = sources.find(source => source.id === member.product_id);
           const assignment = assignments.find(row => row.product_id === member.product_id);
-          const reasonCode = !product ? 'source_unavailable' : job.job_type !== 'membership_features' && !assignment ? 'not_published' : assignment?.assignment_source === 'human' ? 'human_assignment'
+          const reasonCode = !product ? 'source_unavailable' : !assignment ? 'not_published' : assignment.assignment_source === 'human' ? 'human_assignment'
+            : job.job_type === 'membership_features' && !isAiMembership({ family: assignment.canonical_family ?? '', product: assignment.canonical_product ?? '', tier: assignment.canonical_tier ?? '' }) ? 'not_ai_membership'
             : product.standardization_locked ? 'product_locked' : product.content_version !== member.content_version || productFingerprint(product) !== member.fingerprint ? 'source_changed'
             : product.standardization_revision !== member.standardization_revision ? 'revision_changed'
             : isManualDecisionForCurrentEvidence(manual.get(member.product_id), { content_version: product.content_version, content_fingerprint: productFingerprint(product) }) ? 'manual_decision' : null;
           if (!reasonCode) continue;
-          const before = await tx.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', member.product_id).execute();
+          const before = job.job_type === 'membership_features' ? []
+            : await tx.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', member.product_id).execute();
           const result = buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, before, { outcome: 'skipped', reasonCode });
           result.versions = tagExtractionVersions(member, job.pipeline_versions);
           await tx.updateTable('ai_job_input_members').set({ status: 'classified', reason_code: reasonCode, output: jsonb(result as unknown as JsonValue) }).where('job_id', '=', located.job_id).where('product_id', '=', member.product_id).execute();
@@ -1040,7 +1023,8 @@ export class AiRepository {
       const memberships = productIds.length ? await tx.selectFrom('standard_product_members as m')
         .innerJoin('standard_products as sp', 'sp.id', 'm.standard_product_id')
         .select(['m.product_id', 'm.assignment_source', 'm.standard_product_id', 'sp.canonical_family', 'sp.canonical_product', 'sp.canonical_tier'])
-        .where('m.product_id', 'in', productIds).where('m.publication_state', '=', 'published').execute() : [];
+        .where('m.product_id', 'in', productIds).where('m.publication_state', '=', 'published')
+        .$if(featureTask, q => q.where('sp.verification_state', '=', 'verified').where('sp.merged_into_id', 'is', null)).execute() : [];
       const byInput = new Map(items.map(item => [item.productId, item]));
       // Revalidate the complete response against every frozen member before any writes.
       const decisions = new Map(members.flatMap(member => {
@@ -1076,7 +1060,8 @@ export class AiRepository {
         const previousFeatures = featureTask && product ? readCurrentMembershipFeatures(product.membership_features, product) : null;
         const before = featureTask ? []
           : await tx.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', member.product_id).orderBy('name').orderBy('value').execute();
-        const skip = !product ? 'source_unavailable' : !featureTask && !membership ? 'not_published' : membership?.assignment_source === 'human' ? 'human_assignment'
+        const skip = !product ? 'source_unavailable' : !membership ? 'not_published' : membership.assignment_source === 'human' ? 'human_assignment'
+          : featureTask && !isAiMembership({ family: membership.canonical_family ?? '', product: membership.canonical_product ?? '', tier: membership.canonical_tier ?? '' }) ? 'not_ai_membership'
           : product.standardization_locked ? 'product_locked'
           : product.content_version !== member.content_version || productFingerprint(product) !== member.fingerprint ? 'source_changed'
           : text && (!sourceMatches || projectShopText(product.source_data)?.hash !== text.hash) ? 'text_review_source_changed'
@@ -1539,7 +1524,7 @@ export class AiRepository {
     });
   }
   async cancelJob(jobId: bigint) {
-    const cancelled = await this.database.transaction().execute(async (tx) => {
+    return this.database.transaction().execute(async (tx) => {
       const job = await tx.selectFrom('ai_jobs').selectAll().where('id', '=', jobId).forUpdate().executeTakeFirst();
       if (!job) throw new DomainNotFoundError('AI_JOB_NOT_FOUND', 'AI 任务不存在');
       if (job.status === 'cancelled') return job;
@@ -1555,16 +1540,8 @@ export class AiRepository {
       await tx.updateTable('ai_job_input_members').set({ status: 'cancelled', reason_code: 'job_cancelled' }).where('job_id', '=', jobId).where('status', 'in', ['queued', 'processing']).execute();
       await tx.updateTable('ai_standardization_executions').set({ status: 'cancelled', completed_at: sql`now()` }).where('job_id', '=', jobId).where('status', 'in', ['registered', 'processing']).execute();
       await incrementJobProgress(tx, { jobId });
-      if (job.job_type === 'membership_features') await settleMembershipFeatureDependency(tx, jobId);
       return cancelled;
     });
-    if (!isAttributeJobType(cancelled.job_type)) {
-      const children = await this.database.selectFrom('ai_jobs').select('id')
-        .where('parent_identity_job_id', '=', jobId).where('job_type', '=', 'membership_features')
-        .where('status', 'in', ['queued', 'running', 'paused', 'ready']).execute();
-      for (const child of children) if (child.id !== jobId) await this.cancelJob(child.id);
-    }
-    return cancelled;
   }
 
   previewTagJob(input: TagJobScope & {model:string}) { return previewTagJob(this.database,input); }

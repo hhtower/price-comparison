@@ -21,6 +21,8 @@ test('membership features belong to merchant products, without changing standard
     const columns = await pool.query(`select table_name, column_name from information_schema.columns
       where table_schema=$1 and column_name like 'membership_%' order by table_name,column_name`, [schema]);
     assert.deepEqual(columns.rows, [{ table_name: 'products', column_name: 'membership_features' }]);
+    const parentIndex = await pool.query(`select indisunique from pg_index where indexrelid='ai_membership_feature_parent'::regclass`);
+    assert.equal(parentIndex.rows[0].indisunique, false, 'post-publication retries may schedule disjoint feature batches for the same parent');
     assert.ifError((await migrator.migrateTo('033_mcp_key_storage_20261106')).error);
     assert.ifError((await migrator.migrateToLatest()).error);
   } finally {

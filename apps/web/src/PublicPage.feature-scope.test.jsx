@@ -8,19 +8,19 @@ vi.mock('react-virtuoso', () => ({ Virtuoso: ({ data, itemContent }) =>
   <>{data.map((item, index) => <React.Fragment key={index}>{itemContent(index, item)}</React.Fragment>)}</> }));
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-const kinds = ['account', 'top_up', 'rental', 'short_term'];
-const labels = ['成品号', '代充', '租号', '短期'];
-const regions = ['us', 'ph', 'jp', 'hk'];
-const regionLabels = ['美国', '菲律宾', '日本', '中国香港特别行政区'];
+const kinds = ['account', 'top_up', 'rental', 'short_term', 'unclassified'];
+const labels = ['成品号', '代充', '租号', '短期', '未分类'];
+const regions = ['us', 'ph', 'jp', 'hk', 'us'];
+const regionLabels = ['美国', '菲律宾', '日本', '中国香港特别行政区', '美国'];
 const identity = { id: '42', name: 'ChatGPT GO', platform: 'openai', isAiMembership: true };
 const offers = kinds.flatMap((kind, group) => Array.from({ length: 13 + group }, (_, index) => ({
-  productId: `${kind}-${index}`, membershipKind: kind === 'short_term' && index === 0 ? null : kind,
+  productId: `${kind}-${index}`, membershipKind: kind === 'unclassified' ? null : kind,
   name: index === 1 ? `原商家${group} · ${labels[group]}` : `商家原名${group}-${index}`,
   shopId: `${kind}-${index < 12 ? 'main' : 'other'}`, shop: `${labels[group]}店${index < 12 ? '甲' : '乙'}`,
   price: String((group + 1) * 100 + index), currency: 'CNY', priceStatus: 'verified', inStock: true,
   tags: [{ name: 'region', value: regions[group] }],
 })));
-const featureOffers = kind => offers.filter(offer => (offer.membershipKind || 'short_term') === kind);
+const featureOffers = kind => offers.filter(offer => (offer.membershipKind || 'unclassified') === kind);
 const catalogItem = {
   ...identity, offers: offers.slice(0, 4), productCount: offers.length, shopCount: 8,
   membershipGroups: kinds.map(kind => {
@@ -38,7 +38,7 @@ function mockCatalog() {
     const url = new URL(input, 'http://localhost');
     requests.push(url);
     const selected = url.searchParams.getAll('membershipKind');
-    const scoped = offers.filter(offer => !selected.length || selected.includes(offer.membershipKind || 'short_term'));
+    const scoped = offers.filter(offer => !selected.length || selected.includes(offer.membershipKind || 'unclassified'));
     if (control.pause && (url.pathname.endsWith('/facets') || url.pathname.endsWith('/price-history') || url.searchParams.has('detailKind'))) {
       await control.pause;
     }

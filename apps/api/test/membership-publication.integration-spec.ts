@@ -7,6 +7,7 @@ import { migrateToLatest } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import { getJobProgress } from '../src/ai/ai-progress.repository.js';
+import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest } from '../src/ai/membership-feature-request.js';
 import { estimateStandardizationRequest } from '../src/ai/standardization-request.js';
 import { createMembershipFeatureJob, createManualMembershipFeatureJob, createTagJob, previewMembershipFeatureJob } from '../src/ai/tag-extraction-jobs.js';
@@ -18,7 +19,7 @@ import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/type
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 import { buildMembershipFeatures, readCurrentMembershipFeatures } from '../src/standardization/membership-classification.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
-import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
+import { parseStandardizationReviewResponse } from '../src/ai/standardization-review-request.js';
 import { ProductsRepository } from '../src/products/products.repository.js';
 import { JobsRepository, type ClaimedJob } from '../src/jobs/jobs.repository.js';
 import { ShopsRepository } from '../src/shops/shops.repository.js';
@@ -61,7 +62,7 @@ async function fixture(name = 'ChatGPT Plus 成品账号 质保28天') {
     canonical_tier: identity.tier, standard_key: key, verification_state: 'verified',
   }).returning('id').executeTakeFirstOrThrow();
   await db.insertInto('standard_product_members').values({ product_id: product.id, standard_product_id: standard.id,
-    assignment_source: 'ai', publication_state: 'provisional' }).execute();
+    assignment_source: 'ai', publication_state: 'published' }).execute();
   return { product, baseId: standard.id, repo: new AiRepository(db) };
 }
 
@@ -102,7 +103,7 @@ async function saveFeature(task: Awaited<ReturnType<typeof featureTask>>, kind: 
 }
 
 async function publishIdentity(f: Awaited<ReturnType<typeof fixture>>, existingJob?: Awaited<ReturnType<AiRepository['createJob']>>,
-  expectedStatus: 'classified' | 'unclassified' = 'classified') {
+  options: { approved?: boolean; tier?: string } = {}) {
   const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
   const repo = f.repo;
   const job = existingJob ?? await repo.createJob({ model: 'mock', productIds: [product.id] });
@@ -112,20 +113,32 @@ async function publishIdentity(f: Awaited<ReturnType<typeof fixture>>, existingJ
     claim_token: claim.token, lease_until: new Date(Date.now() + 60_000) }).where('id', '=', batchId).execute();
   await repo.prepareBatch(batchId);
   assert.equal(await repo.reserveBatchRequest(batchId, claim), 'reserved');
+  const children = () => db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', job.id).execute();
+  assert.deepEqual(await children(), [], 'identity extraction must not schedule attribute jobs');
   const evidence = [{ path: 'name', quote: product.name }];
-  const identity = { family: 'openai', product: 'chatgpt', tier: 'plus' };
-  const publishBatch = await saveStandardizationThroughReview(db, repo, {
-    jobId: job.id, batchId, claim,
-    decision: { identities: [{ ...identity, ref: 'plus', canonicalKey: buildCanonicalStandardKey(identity), evidence, reason: 'same identity' }],
+  const identity = { family: 'openai', product: 'chatgpt', tier: options.tier ?? 'plus' };
+  await repo.persistBatchDecision(job.id, batchId,
+    { identities: [{ ...identity, ref: 'plus', canonicalKey: buildCanonicalStandardKey(identity), evidence, reason: 'same identity' }],
       items: [{ id: String(product.id), status: 'classified', identity: { kind: 'new', ref: 'plus', canonicalKey: buildCanonicalStandardKey(identity) },
-        evidence, ruleIds: [], reason: 'same identity', reasonCode: null }], missingIds: [] },
-  });
+        evidence, ruleIds: [], reason: 'same identity', reasonCode: null }], missingIds: [] }, {}, claim, 'generate');
+  assert.deepEqual(await children(), [], 'identity generation checkpoint must not schedule attribute jobs');
+  const review = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', job.id)
+    .where('id', '!=', batchId).executeTakeFirstOrThrow();
+  const publishBatch = review.id;
+  await db.updateTable('ai_job_batches').set({ status: 'running', attempts: 1n, claimed_by: claim.workerId,
+    claim_token: claim.token, lease_until: new Date(Date.now() + 60_000) }).where('id', '=', publishBatch).execute();
+  await repo.prepareBatch(publishBatch);
+  assert.equal(await repo.reserveBatchRequest(publishBatch, claim), 'reserved');
+  const request = await repo.getBatchRequest(publishBatch);
+  const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: [{ id: String(product.id), approved: options.approved ?? true }] }), request.proposals!);
+  await repo.persistBatchDecision(job.id, publishBatch, reviewed, {}, claim, 'review');
+  assert.deepEqual(await children(), [], 'identity review checkpoint must not schedule attribute jobs');
   await db.updateTable('ai_job_batches').set({ status: 'running', attempts: 1n, claimed_by: claim.workerId,
     claim_token: claim.token, lease_until: new Date(Date.now() + 60_000) }).where('id', '=', publishBatch).execute();
   await repo.publishBatch(publishBatch, claim);
   const result = await db.selectFrom('ai_standardization_results').select(['status', 'reason_code', 'reason'])
     .where('job_id', '=', job.id).where('product_id', '=', product.id).executeTakeFirstOrThrow();
-  assert.equal(result.status, expectedStatus, JSON.stringify(result));
+  assert.equal(result.status, options.approved === false ? 'unclassified' : 'classified', JSON.stringify(result));
   return job;
 }
 
@@ -249,21 +262,23 @@ test('compact feature batch streams extraction and mixed review through real che
   assert.equal(progress?.requests.totalBatches, 2);
 });
 
-test('feature review precedes identity and every membership kind keeps the same ChatGPT Plus standard', async () => {
+test('identity publication precedes feature children and every membership kind keeps the same ChatGPT Plus standard', async () => {
   const standardIds = new Set<bigint>();
   for (const kind of ['account', 'top_up', 'rental', 'short_term'] as const) {
     const f = await fixture();
+    await db.deleteFrom('standard_product_members').where('product_id', '=', f.product.id).execute();
     const parent = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
+    assert.deepEqual(await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id).execute(), []);
+    await publishIdentity(f, parent);
     const child = await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
       .where('job_type', '=', 'membership_features').executeTakeFirstOrThrow();
     const task = await featureTask(f.product.id, child.id);
     const parentBatch = await db.selectFrom('ai_job_batches').select('request_budget_used').where('job_id', '=', parent.id).execute();
-    assert.ok(parentBatch.length > 0 && parentBatch.every(batch => batch.request_budget_used === 0));
+    assert.ok(parentBatch.length > 0 && parentBatch.every(batch => batch.request_budget_used === 1));
     await saveFeature(task, kind);
     const before = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
     assert.equal(before.standard_product_id, f.baseId);
-    assert.equal(before.publication_state, 'provisional');
-    await publishIdentity(f, parent);
+    assert.equal(before.publication_state, 'published');
     const member = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
     assert.equal(member.standard_product_id, f.baseId);
     assert.equal(member.publication_state, 'published');
@@ -280,11 +295,51 @@ test('feature review precedes identity and every membership kind keeps the same 
     .where('canonical_product', '=', 'chatgpt').where('canonical_tier', '=', 'plus').execute()).length, 1);
 });
 
+test('tags disabled still schedules features after publication and repeated finalization creates no duplicate', async t => {
+  const previous = process.env.AI_TAG_EXTRACTION_ENABLED;
+  process.env.AI_TAG_EXTRACTION_ENABLED = 'false';
+  t.after(() => { if (previous === undefined) delete process.env.AI_TAG_EXTRACTION_ENABLED; else process.env.AI_TAG_EXTRACTION_ENABLED = previous; });
+  const f = await fixture();
+  await db.deleteFrom('standard_product_members').where('product_id', '=', f.product.id).execute();
+  const parent = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
+  assert.deepEqual(await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id).execute(), []);
+  await publishIdentity(f, parent);
+  const children = () => db.selectFrom('ai_jobs').select(['id', 'job_type']).where('parent_identity_job_id', '=', parent.id).execute();
+  const once = await children();
+  assert.equal(once.length, 1);
+  assert.equal(once[0]!.job_type, 'membership_features');
+  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, parent.id));
+  assert.deepEqual(await children(), once);
+  assert.equal((await db.selectFrom('ai_jobs').select('status').where('id', '=', parent.id).executeTakeFirstOrThrow()).status, 'succeeded');
+});
+
+for (const outcome of ['non_ai', 'failed', 'unclassified'] as const) {
+  test(`${outcome} identity completion never schedules membership features`, async () => {
+    const f = await fixture(outcome === 'non_ai' ? 'ChatGPT Free account' : 'ChatGPT Plus');
+    await db.deleteFrom('standard_product_members').where('product_id', '=', f.product.id).execute();
+    const parent = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
+    assert.deepEqual(await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id).execute(), []);
+    if (outcome === 'failed') {
+      const batch = parent.batches[0]!;
+      await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'failed-identity',
+        attempts: 1n, lease_until: new Date(Date.now() + 60_000) }).where('id', '=', batch.id).execute();
+      await new JobsRepository(db).fail('ai_batch', batch.id, 'failed-identity', 'mock provider refusal',
+        { retry: false, retryClass: 'provider_policy_rejection' });
+    } else await publishIdentity(f, parent, outcome === 'non_ai' ? { tier: 'free' } : { approved: false });
+    assert.deepEqual(await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
+      .where('job_type', '=', 'membership_features').execute(), []);
+    assert.equal((await db.selectFrom('products').select('membership_features')
+      .where('id', '=', f.product.id).executeTakeFirstOrThrow()).membership_features, null);
+  });
+}
+
 test('changing features on a published SKU updates the snapshot and catalog without rerunning identity', async () => {
   const f = await fixture();
   const initial = await featureTask(f.product.id);
   await saveFeature(initial, 'account');
-  await publishIdentity(f);
+  const parent = await publishIdentity(f);
+  assert.deepEqual(await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
+    .where('job_type', '=', 'membership_features').execute(), [], 'a current approved snapshot must not be automatically requeued');
   const published = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
   const version = await db.selectFrom('catalog_cache_versions').select('version').where('id', '=', 1).executeTakeFirstOrThrow();
   const identityResults = await db.selectFrom('ai_standardization_results').selectAll().where('product_id', '=', f.product.id).execute();
@@ -329,7 +384,7 @@ test('rejected feature review never saves features or changes publication state'
   const member = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
   assert.equal(product.membership_features, null);
   assert.equal(member.standard_product_id, f.baseId);
-  assert.equal(member.publication_state, 'provisional');
+  assert.equal(member.publication_state, 'published');
   const output = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
   assert.equal((output.output as Record<string, unknown>).classificationReviewed, false);
   assert.deepEqual((output.output as Record<string, unknown>).review, { mode: 'membership_binary', decision: false });
@@ -399,19 +454,18 @@ for (const step of ['request', 'publish'] as const) {
       assert.equal(result.reason_code, rejected === 'invalid_kind' ? null : 'classification_review_rejected');
       const member = await db.selectFrom('standard_product_members').select(['standard_product_id', 'publication_state'])
         .where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
-      assert.deepEqual(member, { standard_product_id: f.baseId, publication_state: 'provisional' });
+      assert.deepEqual(member, { standard_product_id: f.baseId, publication_state: 'published' });
     });
   }
 }
 
-test('completed feature dependency does not gate identity publication on a surviving snapshot', async () => {
+test('removing a completed feature snapshot does not undo identity publication', async () => {
   const f = await fixture();
-  const parent = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
+  const parent = await publishIdentity(f);
   const child = await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
     .where('job_type', '=', 'membership_features').executeTakeFirstOrThrow();
   await saveFeature(await featureTask(f.product.id, child.id), 'account');
   await db.updateTable('products').set({ membership_features: null }).where('id', '=', f.product.id).execute();
-  await publishIdentity(f, parent);
   const member = await db.selectFrom('standard_product_members').select(['standard_product_id', 'publication_state'])
     .where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
   assert.deepEqual(member, { standard_product_id: f.baseId, publication_state: 'published' });
@@ -419,22 +473,25 @@ test('completed feature dependency does not gate identity publication on a survi
     .where('id', '=', f.product.id).executeTakeFirstOrThrow()).membership_features, null);
 });
 
-test('feature child remains a prerequisite for identity work when it is cancelled', async () => {
+test('cancelling a feature child leaves the successful identity task and published assignment intact', async () => {
   const f = await fixture();
-  const parent = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
+  const parent = await publishIdentity(f);
   const child = await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
     .where('job_type', '=', 'membership_features').executeTakeFirstOrThrow();
   await f.repo.cancelJob(child.id);
   const batches = await db.selectFrom('ai_job_batches').select(['status', 'request_budget_used', 'error_source'])
     .where('job_id', '=', parent.id).execute();
-  assert.ok(batches.every(batch => batch.status === 'failed' && batch.request_budget_used === 0 && batch.error_source === 'membership_features_failed'));
+  assert.ok(batches.every(batch => batch.status === 'succeeded' && batch.request_budget_used === 1 && batch.error_source === null));
+  assert.equal((await db.selectFrom('ai_jobs').select('status').where('id', '=', parent.id).executeTakeFirstOrThrow()).status, 'succeeded');
+  assert.equal((await db.selectFrom('standard_product_members').select('publication_state')
+    .where('product_id', '=', f.product.id).executeTakeFirstOrThrow()).publication_state, 'published');
 });
 
 test('cancelled and stale feature tasks never become implicit short-term classifications', async () => {
   const f = await fixture();
   const cancelled = await featureTask(f.product.id);
   await f.repo.cancelJob(cancelled.job.id);
-  assert.equal((await db.selectFrom('standard_product_members').select('publication_state').where('product_id', '=', f.product.id).executeTakeFirstOrThrow()).publication_state, 'provisional');
+  assert.equal((await db.selectFrom('standard_product_members').select('publication_state').where('product_id', '=', f.product.id).executeTakeFirstOrThrow()).publication_state, 'published');
   const stale = await featureTask(f.product.id);
   await db.updateTable('products').set({ name: 'ChatGPT Plus 代充 质保30天', content_version: f.product.content_version + 1n,
     content_fingerprint: productContentFingerprint({ name: 'ChatGPT Plus 代充 质保30天', spec: '' }) }).where('id', '=', f.product.id).execute();
@@ -442,12 +499,12 @@ test('cancelled and stale feature tasks never become implicit short-term classif
     [reviewedFeature(stale, 'account', [])], {}, stale.claim);
   const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
   assert.equal(product.membership_features, null);
-  assert.equal((await db.selectFrom('standard_product_members').select('publication_state').where('product_id', '=', product.id).executeTakeFirstOrThrow()).publication_state, 'provisional');
+  assert.equal((await db.selectFrom('standard_product_members').select('publication_state').where('product_id', '=', product.id).executeTakeFirstOrThrow()).publication_state, 'published');
 });
 
 test('feature provider refusal stays out of the identity retry pool', async () => {
   const f = await fixture();
-  const parent = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
+  const parent = await publishIdentity(f);
   const child = await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
     .where('job_type', '=', 'membership_features').executeTakeFirstOrThrow();
   const task = await featureTask(f.product.id, child.id);
@@ -455,43 +512,77 @@ test('feature provider refusal stays out of the identity retry pool', async () =
     { retry: false, retryClass: 'provider_policy_rejection' });
   const result = await db.selectFrom('ai_standardization_results').select('reason_code')
     .where('job_id', '=', parent.id).where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
-  assert.equal(result.reason_code, 'provider_policy_rejection');
+  assert.equal(result.reason_code, null);
+  assert.equal((await db.selectFrom('ai_jobs').select('status').where('id', '=', parent.id).executeTakeFirstOrThrow()).status, 'succeeded');
+  assert.equal((await db.selectFrom('standard_product_members').select('publication_state')
+    .where('product_id', '=', f.product.id).executeTakeFirstOrThrow()).publication_state, 'published');
   assert.ok(!(await f.repo.listRetryPool({ limit: 100 })).items.some(row => row.productId === String(f.product.id)));
 });
 
-test('a shop source change invalidates features and blocks identity work with stale evidence', async () => {
+test('a shop source change invalidates features while preserving the published identity', async () => {
   const f = await fixture();
-  const parent = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
+  const parent = await publishIdentity(f);
   const child = await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
     .where('job_type', '=', 'membership_features').executeTakeFirstOrThrow();
   const task = await featureTask(f.product.id, child.id);
   await saveFeature(task, 'account');
   const snapshot = await db.selectFrom('products').select('membership_features').where('id', '=', f.product.id).executeTakeFirstOrThrow();
   assert.ok((snapshot.membership_features as { source?: unknown }).source);
+  const assignment = await db.selectFrom('standard_product_members').selectAll()
+    .where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
   await new ShopsRepository(db).update(f.product.shop_id, { url: `https://changed.invalid/${randomUUID()}` });
-  await publishIdentity(f, parent, 'unclassified');
   const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
   assert.equal(product.membership_features, null);
-  assert.equal((await db.selectFrom('standard_product_members').select('product_id')
-    .where('product_id', '=', product.id).where('publication_state', '=', 'published').execute()).length, 0);
+  assert.deepEqual(await db.selectFrom('standard_product_members').selectAll()
+    .where('product_id', '=', product.id).executeTakeFirstOrThrow(), assignment);
 });
 
-test('a claimed feature batch rechecks its paused parent before reserving a request', async () => {
+test('feature work remains independent of a completed identity parent pause or cancellation request', async () => {
   const f = await fixture();
-  const parent = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
+  const parent = await publishIdentity(f);
   const child = await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
     .where('job_type', '=', 'membership_features').executeTakeFirstOrThrow();
   const task = await featureTask(f.product.id, child.id, false);
-  await f.repo.pauseJob(parent.id);
-  assert.equal(await f.repo.reserveBatchRequest(task.batch.id, task.claim), 'skipped');
-  const batch = await db.selectFrom('ai_job_batches').select(['status', 'request_budget_used', 'claimed_by'])
-    .where('id', '=', task.batch.id).executeTakeFirstOrThrow();
-  assert.deepEqual(batch, { status: 'queued', request_budget_used: 0, claimed_by: null });
-  await new JobsRepository(db).complete('ai_batch', task.batch.id, task.claim.workerId);
-  await f.repo.resumeJob(parent.id);
-  await featureTask(f.product.id, child.id);
+  // A historical or reopened parent may still be paused after this SKU was published.
+  await db.updateTable('ai_jobs').set({ status: 'paused', pause_requested: true }).where('id', '=', parent.id).execute();
+  assert.equal(await f.repo.reserveBatchRequest(task.batch.id, task.claim), 'reserved');
   await f.repo.cancelJob(parent.id);
+  await saveFeature(task, 'account');
+  assert.equal((await db.selectFrom('ai_jobs').select('status').where('id', '=', child.id).executeTakeFirstOrThrow()).status, 'succeeded');
 });
+
+for (const stage of ['reservation', 'publication'] as const) {
+  for (const invalidation of ['unpublished', 'unverified', 'non_ai'] as const) {
+    test(`${stage}: feature work skips a ${invalidation} identity instead of saving classification`, async () => {
+      const f = await fixture();
+      const task = await featureTask(f.product.id, undefined, stage === 'publication');
+      if (invalidation === 'unpublished') {
+        await db.updateTable('standard_product_members').set({ publication_state: 'provisional' })
+          .where('product_id', '=', f.product.id).execute();
+      } else {
+        const standard = await db.insertInto('standard_products').values({
+          name: invalidation === 'non_ai' ? 'Unrelated course' : 'ChatGPT Plus',
+          canonical_family: invalidation === 'non_ai' ? 'course' : 'openai',
+          canonical_product: invalidation === 'non_ai' ? `lesson_${randomUUID()}` : 'chatgpt',
+          canonical_tier: invalidation === 'non_ai' ? 'basic' : 'plus',
+          verification_state: invalidation === 'non_ai' ? 'verified' : 'provisional',
+        }).returning('id').executeTakeFirstOrThrow();
+        await db.updateTable('standard_product_members').set({ standard_product_id: standard.id })
+          .where('product_id', '=', f.product.id).execute();
+      }
+      if (stage === 'reservation') {
+        assert.equal(await f.repo.reserveBatchRequest(task.batch.id, task.claim), 'skipped');
+        assert.equal((await db.selectFrom('ai_job_batches').select('request_budget_used')
+          .where('id', '=', task.batch.id).executeTakeFirstOrThrow()).request_budget_used, 0);
+      } else await saveFeature(task, 'account');
+      assert.equal((await db.selectFrom('products').select('membership_features')
+        .where('id', '=', f.product.id).executeTakeFirstOrThrow()).membership_features, null);
+      const audit = await f.repo.tagProductAudit(task.job.id, f.product.id);
+      assert.equal(audit.member.output.outcome, 'skipped');
+      assert.deepEqual((await getJobProgress(db, task.job.id))?.featureAcceptance, { acceptedProducts: 0, rejectedProducts: 0 });
+    });
+  }
+}
 
 for (const change of ['shop_source', 'product_shop'] as const) {
   test(`${change}: feature invalidation preserves the human identity assignment and review`, async () => {
@@ -531,8 +622,8 @@ test('all three tasks share the four-field fingerprint and full merchant context
   await db.insertInto('standard_product_members').values({ product_id: f.product.id, standard_product_id: f.baseId,
     assignment_source: 'ai', publication_state: 'published' }).execute();
   const standard = await f.repo.createJob({ model: 'mock', productIds: [f.product.id] });
-  const feature = await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', standard.id)
-    .where('job_type', '=', 'membership_features').executeTakeFirstOrThrow();
+  assert.deepEqual(await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', standard.id).execute(), []);
+  const feature = await db.transaction().execute(tx => createMembershipFeatureJob(tx, { model: 'mock', productIds: [f.product.id] }));
   const tag = await db.transaction().execute(tx => createTagJob(tx, { model: 'mock', productIds: [f.product.id] }));
   const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
   const inputs = await db.selectFrom('ai_job_inputs').select(['fingerprint', 'payload'])

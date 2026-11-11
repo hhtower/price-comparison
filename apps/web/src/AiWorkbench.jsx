@@ -9,8 +9,8 @@ import CrawlerOverview from './CrawlerOverview.jsx';
 const HISTORY_PAGE_SIZE = 10;
 const WORKBENCH_TABS = [
   ['crawler', '抓取'], ['fetch-runs', '抓取记录'],
-  ['features', '特性识别'], ['feature-history', '特性识别记录'],
   ['task', '标准化'], ['history', '标准化记录'],
+  ['features', '特性识别'], ['feature-history', '特性识别记录'],
   ['tags', '标签抽取'], ['tag-history', '标签抽取记录'],
 ];
 const STATUS_TEXT = {

@@ -27,7 +27,7 @@ test('feature snapshots preserve every explicit LLM kind without rule inference'
 });
 
 test('feature construction rejects missing or invalid LLM kind instead of inferring from tags', () => {
-  for (const kind of [undefined, null, '', 'unknown']) {
+  for (const kind of [undefined, null, '', 'unknown', 'unclassified']) {
     assert.throws(() => buildMembershipFeatures(tags, product, [], kind as never));
   }
 });

@@ -11,6 +11,19 @@ import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.
 import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
 
 const identity = { family: 'openai', product: 'chatgpt', tier: 'plus' };
+test('admin exposes confirmed AI membership eligibility independently of a feature snapshot', async () => {
+  const repository = {
+    listProducts: async () => ({ items: [{
+      id: 1n, shop_id: 2n, external_id: 'sku', membership_features: null, is_ai_membership: true,
+    }, {
+      id: 3n, shop_id: 2n, external_id: 'ordinary', membership_features: null, is_ai_membership: false,
+    }], nextCursor: null }),
+  };
+  const controller = new AdminController(repository as never);
+  const result = await controller.listProducts({} as never);
+  assert.deepEqual(result.items.map(item => item.isAiMembership), [true, false]);
+  assert.ok(result.items.every(item => item.membershipFeatures === null));
+});
 const standard = (id: bigint) => ({
   id, name: 'ChatGPT Plus', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus',
   merged_into_id: null, aliases: [], platform: '', sort_order: 0n,
@@ -126,7 +139,7 @@ test('cosmetic edits advance only current product features with the revision', a
 test('admin product responses expose only current membershipFeatures and standards expose none', async () => {
   const snapshot = buildMembershipFeatures([], product, [], 'account');
   const rows = [snapshot, { ...snapshot, revision: '1' }].map((membership_features, index) => ({
-    ...product, id: BigInt(index + 1), shop_id: 1n, membership_features,
+    ...product, id: BigInt(index + 1), shop_id: 1n, membership_features, is_ai_membership: true,
   }));
   const controller = new AdminController({ listProducts: async () => ({ items: rows }),
     listStandardProducts: async () => ({ items: [{ ...standard(10n), member_count: 2n, shop_count: 1n }] }),

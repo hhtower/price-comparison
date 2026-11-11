@@ -8,7 +8,7 @@ import { registerPublicPages } from '../src/seo/public-pages.js';
 import type { CatalogPage } from '../src/catalog/catalog.repository.js';
 import { encodeCatalogCursor } from '../src/catalog/catalog.repository.js';
 import { productPagePath, productPageMetadata, productPageSchema } from '../src/seo/page-metadata.js';
-import type { MembershipKind } from '@price-comparison/catalog/membership-policy';
+import type { MembershipGroup } from '@price-comparison/catalog/membership-policy';
 import type { CatalogQueryInput } from '../src/catalog/catalog.service.js';
 
 const page: CatalogPage = { total: 1, platformFacets: ['openai'], items: [{
@@ -41,7 +41,7 @@ test('shared metadata keeps feature paths and labels in paginated schema without
   const product = { id: '42', name: 'ChatGPT Plus' };
   assert.equal(productPagePath('42'), '/products/42');
   assert.equal(productPageMetadata(product, 2).path, '/products/42?page=2');
-  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期']] as const) {
+  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
     const path = `/products/42/features/${kind}`;
     assert.equal(productPagePath('42', 1, kind), path);
     const metadata = productPageMetadata(product, 2, kind);
@@ -65,7 +65,7 @@ test('feature SSR pins its filter and preserves canonical, title and pagination 
       return { ...page, items: [{ ...page.items[0]!, detail: { kind: 'offers', entries: [offer], total: 30, page: input.detailPage, pageSize: 12 } }] };
     },
   });
-  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期']] as const) {
+  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
     const path = `/products/42/features/${kind}`;
     const response = await server.inject(path + '?page=2&membershipKind=rental&membershipKinds=short_term&newcomer=true&utm_source=test');
     assert.equal(response.statusCode, 200);
@@ -116,7 +116,7 @@ test('feature SSR rejects invalid kinds, non-AI products and invalid pages, and 
 
 test('SSR home links nonempty AI feature groups to their own details and keeps non-AI standard links', async t => {
   const offer = page.items[0]!.offers[0]!;
-  const groups = (['account', 'rental', 'short_term', 'top_up'] as MembershipKind[]).map(kind => ({
+  const groups = (['account', 'rental', 'short_term', 'unclassified', 'top_up'] as MembershipGroup[]).map(kind => ({
     kind, shopCount: kind === 'top_up' ? 0 : 1, productCount: kind === 'top_up' ? 0 : 1,
     minPrice: '12.50', maxPrice: '12.50', latestCapturedAt: offer.capturedAt,
     offers: kind === 'top_up' ? [] : [{ ...offer, name: `${kind}报价` }],
@@ -128,7 +128,7 @@ test('SSR home links nonempty AI feature groups to their own details and keeps n
   ] }) }).inject('/');
   const document = new JSDOM(response.body).window.document;
   assert.deepEqual([...document.querySelectorAll('article h3 a')].map(link => link.getAttribute('href')),
-    ['/products/42/features/account', '/products/42/features/rental', '/products/42/features/short_term', '/products/43']);
+    ['/products/42/features/account', '/products/42/features/rental', '/products/42/features/short_term', '/products/42/features/unclassified', '/products/43']);
   assert.equal(document.querySelector('a[href="/products/42"]'), null);
   assert.equal(document.querySelector('a[href="/products/44"]'), null);
   assert.equal(document.querySelector('a[href="/products/42/features/top_up"]'), null);

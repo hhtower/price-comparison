@@ -54,6 +54,7 @@ interface ProductResponse {
   readonly sourceCategory: string;
   readonly sourceData: JsonValue;
   readonly membershipFeatures: ReturnType<typeof readCurrentMembershipFeatures>;
+  readonly isAiMembership: boolean;
   readonly normalizedKey: string;
   readonly url: string;
   readonly imageUrl: string | null;
@@ -373,7 +374,8 @@ function toProductResponse(row: AdminProductRow): ProductResponse {
     spec: row.spec,
     sourceCategory: row.source_category,
     sourceData: row.source_data,
-    membershipFeatures: readCurrentMembershipFeatures(row.membership_features, row),
+    membershipFeatures: row.is_ai_membership === true ? readCurrentMembershipFeatures(row.membership_features, row) : null,
+    isAiMembership: row.is_ai_membership === true,
     normalizedKey: row.normalized_key,
     url: row.url,
     imageUrl: row.image_url,

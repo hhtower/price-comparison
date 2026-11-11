@@ -86,18 +86,21 @@ describe('AiWorkbench', () => {
     view.unmount();
   });
 
-  test('八个入口按任务与记录成对排列，特性识别在标准化之前，支持键盘切换并关联面板', async () => {
+  test('八个入口按任务与记录成对排列，标准化先于特性识别，支持键盘切换并关联面板', async () => {
     installFetch(url => url.pathname.endsWith('/task-queue') ? response({ items: [] }) : response(status));
     const user = userEvent.setup();
     render(<AiWorkbench shops={shops} />);
     const tabs = screen.getAllByRole('tab');
-    expect(tabs.map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '特性识别', '特性识别记录', '标准化', '标准化记录', '标签抽取', '标签抽取记录']);
+    expect(tabs.map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '标准化', '标准化记录', '特性识别', '特性识别记录', '标签抽取', '标签抽取记录']);
     expect(screen.queryByRole('button', { name: '新建任务' })).not.toBeInTheDocument();
     tabs[0].focus();
     await user.keyboard('{ArrowRight}');
     expect(tabs[1]).toHaveFocus();
     expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tabpanel', { name: '抓取记录' })).toHaveAttribute('id', tabs[1].getAttribute('aria-controls'));
+    await user.keyboard('{ArrowRight}');
+    expect(tabs[2]).toHaveFocus();
+    expect(screen.getByRole('tabpanel', { name: '标准化' })).toHaveAttribute('id', tabs[2].getAttribute('aria-controls'));
     await user.keyboard('{End}');
     expect(tabs[7]).toHaveFocus();
     expect(screen.getByRole('tabpanel', { name: '标签抽取记录' })).toBeInTheDocument();
@@ -1066,4 +1069,6 @@ test('标签抽取页签挂载独立管理面板并隐藏身份创建入口', as
   expect(await screen.findByRole('region', { name: '标签抽取管理' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '新建标签任务' })).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '新建任务' })).not.toBeInTheDocument();
+  await userEvent.setup().click(screen.getByRole('button', { name: '新建标签任务' }));
+  expect(screen.getByRole('dialog', { name: '创建标签任务' })).toHaveTextContent('标签抽取在标准化发布后独立执行，不依赖会员分类');
 });

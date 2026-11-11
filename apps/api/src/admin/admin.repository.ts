@@ -21,6 +21,10 @@ import {
 } from '../common/pagination.js';
 
 export type ShopListStatus = 'active' | 'disabled' | 'deleted';
+const publishedAiMembership = sql<boolean>`exists(select 1 from standard_product_members m join standard_products sp on sp.id=m.standard_product_id
+  where m.product_id=products.id and m.publication_state='published'
+    and sp.verification_state='verified' and sp.merged_into_id is null
+    and is_ai_membership(sp.canonical_family,sp.canonical_product,sp.canonical_tier))`;
 
 export interface ShopListFilter extends PageRequest {
   readonly standardProductId?: bigint;
@@ -89,6 +93,7 @@ export interface AdminProductRow {
   readonly content_fingerprint: string;
   readonly standardization_revision: bigint;
   readonly membership_features: JsonValue | null;
+  readonly is_ai_membership?: boolean;
   readonly normalized_key: string;
   readonly url: string;
   readonly image_url: string | null;
@@ -265,6 +270,7 @@ export class AdminRepository {
         (filter.pending === true ? sql<null>`null` : productStandardizationOutcome('products')).as('standardization_outcome'),
         sql<string | null>`(select s.name from shops s where s.id = products.shop_id)`.as('shop_name'),
         sql<string | null>`(select sp.name from standard_product_members m join standard_products sp on sp.id = m.standard_product_id where m.product_id = products.id limit 1)`.as('standard_product_name'),
+        publishedAiMembership.as('is_ai_membership'),
         sql<JsonValue>`coalesce((select jsonb_agg(jsonb_build_object('name', t.name, 'value', t.value) order by t.name, t.value) from product_tags t where t.product_id = products.id), '[]'::jsonb)`.as('tags'),
         sql<string | null>`(select o.price from offers o where o.product_id = products.id order by o.captured_at desc, o.id desc limit 1)`.as('latest_price'),
         sql<string | null>`(select o.currency from offers o where o.product_id = products.id order by o.captured_at desc, o.id desc limit 1)`.as('latest_currency'),
@@ -552,6 +558,7 @@ export class AdminRepository {
       .innerJoin('shops', 'shops.id', 'products.shop_id')
       .select(['products.id', 'products.shop_id', 'products.external_id', 'products.name', 'products.spec', 'products.source_category', 'products.source_data', 'products.normalized_key', 'products.url', 'products.image_url', 'products.updated_at', 'products.deleted_at', 'shops.name as shop_name',
         'products.content_version', 'products.content_fingerprint', 'products.standardization_revision', 'products.membership_features',
+        publishedAiMembership.as('is_ai_membership'),
         sql<string | null>`(select sp.name from standard_product_members m join standard_products sp on sp.id = m.standard_product_id where m.product_id = products.id limit 1)`.as('standard_product_name'),
         sql<JsonValue>`coalesce((select jsonb_agg(jsonb_build_object('name', t.name, 'value', t.value) order by t.name, t.value) from product_tags t where t.product_id = products.id), '[]'::jsonb)`.as('tags'),
         sql<string | null>`(select o.price from offers o where o.product_id = products.id order by o.captured_at desc, o.id desc limit 1)`.as('latest_price'),

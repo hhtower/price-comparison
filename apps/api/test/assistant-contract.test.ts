@@ -21,6 +21,17 @@ test('rental needs, understanding and quote snapshots accept the fourth kind', (
   }
 });
 
+test('unclassified is allowed in assistant queries but never as an approved quote kind', () => {
+  assert.deepEqual(validateNeedsPatch({ membershipKinds: ['unclassified', 'account'] }),
+    { membershipKinds: ['unclassified', 'account'] });
+  const understanding = parseUnderstanding({ intent: 'recommend', patch: { membershipKinds: ['unclassified'] },
+    evidence: [{ field: 'membershipKinds', quote: '未分类' }], question: null, options: [] }, '只看未分类');
+  assert.deepEqual(understanding.patch.membershipKinds, ['unclassified']);
+  const offer = { name: 'Pending', shop: 'Shop', spec: '', productUrl: '', tags: [], membershipKind: null };
+  assert.equal(validateAssistantReply({ ...reply(), cards: [{ ...card, offer }] }).cards[0]?.offer?.membershipKind, null);
+  assert.throws(() => validateAssistantReply({ ...reply(), cards: [{ ...card, offer: { ...offer, membershipKind: 'unclassified' } }] }));
+});
+
 test('optional membership preferences validate without rewriting old stored needs', () => {
   const old = emptyShoppingNeeds();
   assert.deepEqual(validateShoppingNeeds(old), old);

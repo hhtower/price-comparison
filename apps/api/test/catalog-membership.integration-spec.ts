@@ -14,7 +14,7 @@ import { publishNextCatalogChange } from '../src/catalog/catalog-projection.js';
 import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
 import { createCache } from '../src/cache/cache.js';
 import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
-import { MEMBERSHIP_KINDS, type MembershipKind } from '@price-comparison/catalog/membership-policy';
+import { MEMBERSHIP_KINDS, MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { VersioningType } from '@nestjs/common';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
@@ -117,11 +117,11 @@ describe('membership catalog features share standard identities', { skip: !proce
 
   test('explicit kind overrides newcomer and delivery tags remain independent', async () => {
     const short = await service.getCatalog({ newcomer: true, membershipKinds: ['short_term'] });
-    assert.deepEqual(short.items.map(item => item.id), [ids.short_term, ids.pending]);
+    assert.deepEqual(short.items.map(item => item.id), [ids.short_term]);
     const rental = await service.getCatalog({ newcomer: true, membershipKinds: ['rental'] });
     assert.deepEqual(rental.items.map(item => item.id), [ids.rental]);
     assert.equal(rental.items[0]?.offers[0]?.membershipKind, 'rental');
-    assert.equal((await service.getCatalog({ membershipKinds: ['account', 'top_up', 'rental', 'short_term'] })).total, 2);
+    assert.equal((await service.getCatalog({ membershipKinds: ['account', 'top_up', 'rental', 'short_term'] })).total, 1);
     const account = await service.getCatalog({ newcomer: true, membershipKind: 'account', tag: { name: 'delivery', value: 'redemption' } });
     assert.deepEqual(account.items.map(item => item.id), [ids.account]);
     assert.equal((await service.getCatalog({ membershipKind: 'account', warrantyDaysMin: 30 })).total, 0);
@@ -231,7 +231,7 @@ describe('membership catalog features share standard identities', { skip: !proce
     }
   });
 
-  test('unrecognized AI membership offers use short-term statistics without passing newcomer filtering or saving a classification', async () => {
+  test('missing and stale AI features stay null in an unclassified group without changing stored snapshots', async () => {
     const id = BigInt(products.account!);
     const original = (await db.selectFrom('products').select('membership_features').where('id', '=', id).executeTakeFirstOrThrow()).membership_features as Record<string, JsonValue>;
     try {
@@ -245,17 +245,30 @@ describe('membership catalog features share standard identities', { skip: !proce
         assert.equal(page.items[0]?.productCount, 4);
         const detail = page.items[0]?.detail;
         assert.ok(detail?.kind === 'offers');
-        assert.equal(detail.entries.find(offer => offer.productId === products.account)?.membershipKind, 'short_term');
+        assert.equal(detail.entries.find(offer => offer.productId === products.account)?.membershipKind, null);
         assert.ok(!page.items[0]?.membershipGroups?.some(group => group.kind === 'account'));
         const shortTerm = page.items[0]?.membershipGroups?.find(group => group.kind === 'short_term');
-        assert.equal(shortTerm?.productCount, 2);
+        assert.equal(shortTerm?.productCount, 1);
         assert.equal(shortTerm?.shopCount, 1);
         assert.equal(Number(shortTerm?.minPrice), 1);
-        assert.equal(Number(shortTerm?.maxPrice), 28);
+        assert.equal(Number(shortTerm?.maxPrice), 1);
+        const unclassified = page.items[0]?.membershipGroups?.find(group => group.kind === 'unclassified');
+        assert.equal(unclassified?.productCount, 1);
+        assert.deepEqual(unclassified?.offers.map(offer => [offer.productId, offer.membershipKind]), [[products.account, null]]);
+        const pendingScope = normalizeCatalogQuery({ standardProductId: ids.base, membershipKind: 'unclassified', newcomer: true,
+          detailKind: 'offers', detailPageSize: 10 });
+        const pendingPage = await repository.search(pendingScope);
+        assert.equal(pendingPage.offerTotal, 1);
+        assert.equal(pendingPage.items[0]?.detail?.total, 1);
+        assert.deepEqual(pendingPage.items[0]?.offers.map(offer => offer.productId), [products.account]);
+        assert.deepEqual((await repository.referenceOffers(pendingScope)).map(offer => offer.productId), [products.account]);
+        const facets = await repository.facets(pendingScope);
+        assert.equal(facets.tagFacets.find(tag => tag.name === 'delivery' && tag.value === 'redemption')?.priority, 1);
+        assert.ok(!facets.tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'top_up'));
         const filtered = await repository.search({ standardProductId: ids.base, membershipKinds: ['short_term'], tags: [], limit: 1,
           detailKind: 'offers', detailPageSize: 10 });
-        assert.equal(filtered.offerTotal, 2);
-        assert.equal(filtered.items[0]?.detail?.total, 2);
+        assert.equal(filtered.offerTotal, 1);
+        assert.equal(filtered.items[0]?.detail?.total, 1);
         assert.equal(Number(filtered.items[0]?.minPrice), 1);
         const stored = await db.selectFrom('products').select('membership_features').where('id', '=', id).executeTakeFirstOrThrow();
         assert.deepEqual(stored.membership_features, snapshot);
@@ -269,13 +282,16 @@ describe('membership catalog features share standard identities', { skip: !proce
       await db.updateTable('products').set({ membership_features: jsonb(original) }).where('id', '=', id).execute();
     }
     const pending = await repository.search({ standardProductId: ids.pending, tags: [], limit: 10 });
-    assert.deepEqual(pending.items[0]?.membershipGroups?.map(group => group.kind), ['short_term']);
-    assert.equal(pending.items[0]?.offers[0]?.membershipKind, 'short_term');
+    assert.deepEqual(pending.items[0]?.membershipGroups?.map(group => group.kind), ['unclassified']);
+    assert.equal(pending.items[0]?.offers[0]?.membershipKind, null);
     assert.equal(pending.items[0]?.productCount, 1);
     await saveFeature(products.youtube!, 'account');
     const nonAi = await repository.search({ standardProductId: ids.youtube, tags: [], limit: 10 });
     assert.equal(nonAi.items[0]?.membershipGroups, undefined);
     assert.equal(nonAi.items[0]?.offers[0]?.membershipKind, null);
+    assert.equal((await service.getCatalog({ standardProductId: ids.youtube, membershipKind: 'unclassified' })).total, 0);
+    const combined = await service.getCatalog({ membershipKinds: ['account', 'unclassified'] });
+    assert.deepEqual(new Set(combined.items.map(item => item.id)), new Set([ids.base, ids.pending]));
   });
 
   test('rental alias keeps dedicated access hard on AI while non-AI access values retain OR semantics', async () => {
@@ -371,7 +387,7 @@ describe('membership catalog features share standard identities', { skip: !proce
     const standard = await db.insertInto('standard_products').values({ name: 'Scoped Claude Pro', platform: 'anthropic',
       canonical_family: 'anthropic', canonical_product: 'claude', canonical_tier: 'pro', verification_state: 'verified',
     }).returning('id').executeTakeFirstOrThrow();
-    const samples: Array<{ id: string; shopId: string; kind: MembershipKind; price: number; name: string; duration: string }> = [];
+    const samples: Array<{ id: string; shopId: string; kind: MembershipGroup; price: number; name: string; duration: string }> = [];
     for (let merchant = 0; merchant < 5; merchant++) {
       const shop = await db.insertInto('shops').values({ name: `Scoped merchant ${merchant}`, platform: 'test',
         url: `https://scoped${merchant}.invalid` }).returning('id').executeTakeFirstOrThrow();
@@ -392,7 +408,7 @@ describe('membership catalog features share standard identities', { skip: !proce
           price: String(price + merchant), currency: 'CNY', captured_at: new Date(), stock_available: true, is_stale: false,
           settlement_price: String(price + merchant), settlement_verified_at: new Date(), settlement_payment_method: 'card',
         }).execute();
-        samples.push({ id: String(source.id), shopId: String(shop.id), kind: kind ?? 'short_term', price: price + merchant, name, duration });
+        samples.push({ id: String(source.id), shopId: String(shop.id), kind: kind ?? 'unclassified', price: price + merchant, name, duration });
       }
     }
     while (await publishNextCatalogChange(db)) {}
@@ -409,16 +425,20 @@ describe('membership catalog features share standard identities', { skip: !proce
       assert.equal(response.statusCode, status, response.body);
       return response.json();
     };
-    const checkOffer = (offer: { productId: string; membershipKind: string; name: string; tags: Array<{ name: string; value: string }> }, expected: typeof samples) => {
+    const checkOffer = (offer: { productId: string; membershipKind: string | null; name: string; tags: Array<{ name: string; value: string }> }, expected: typeof samples) => {
       const source = expected.find(sample => sample.id === offer.productId);
       assert.ok(source, `out-of-scope quote ${offer.productId}`);
-      assert.equal(offer.membershipKind, source.kind);
+      assert.equal(offer.membershipKind, source.kind === 'unclassified' ? null : source.kind);
       assert.equal(offer.name, source.name, 'catalog must not append a membership label to the merchant name');
       assert.deepEqual(offer.tags.filter(tag => tag.value !== 'unknown').map(tag => ({ name: tag.name, value: tag.value })),
         [{ name: 'duration', value: source.duration }], 'features must not be appended to merchant tags');
     };
     try {
-      for (const kind of [...MEMBERSHIP_KINDS, ...MEMBERSHIP_KINDS.toReversed()]) {
+      const all = await read('', {});
+      assert.equal(all.total, 1);
+      assert.equal(all.offerTotal, 30);
+      assert.deepEqual(all.items[0].membershipGroups.map((group: { kind: string }) => group.kind), MEMBERSHIP_GROUPS);
+      for (const kind of [...MEMBERSHIP_GROUPS, ...MEMBERSHIP_GROUPS.toReversed()]) {
         const expected = samples.filter(sample => sample.kind === kind);
         const scope = { membershipKind: kind, newcomer: 'true' };
         const summary = await read('', scope);

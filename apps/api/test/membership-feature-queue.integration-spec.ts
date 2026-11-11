@@ -74,13 +74,23 @@ async function assign(f: Fixture, index: number, publicationState: 'published' |
     product_id: f.products[index]!.id, standard_product_id: standard.id, publication_state: publicationState,
     assignment_source: human ? 'human' : 'ai',
   }).execute();
+  return standard.id;
 }
 
-test('feature eligibility includes raw and provisional products; tags require publication and both protect manual work', async () => {
-  const f = await fixture(7);
+test('feature queue admits only published verified AI identities and protects manual work', async () => {
+  const f = await fixture(11);
   await assign(f, 1, 'provisional');
   await assign(f, 2, 'published');
   await assign(f, 3, 'published', true);
+  for (const index of [4, 5, 6]) await assign(f, index, 'published');
+  const nonAi = await assign(f, 7, 'published');
+  await db.updateTable('standard_products').set({ canonical_tier: 'free' }).where('id', '=', nonAi).execute();
+  const unverified = await assign(f, 8, 'published');
+  await db.updateTable('standard_products').set({ verification_state: 'provisional' }).where('id', '=', unverified).execute();
+  const unknown = await assign(f, 9, 'published');
+  await db.updateTable('standard_products').set({ canonical_product: null }).where('id', '=', unknown).execute();
+  const merged = await assign(f, 10, 'published');
+  await db.updateTable('standard_products').set({ merged_into_id: nonAi }).where('id', '=', merged).execute();
   await db.updateTable('products').set({ standardization_locked: true }).where('id', '=', f.products[4]!.id).execute();
   await db.updateTable('products').set({ deleted_at: new Date() }).where('id', '=', f.products[5]!.id).execute();
   await db.transaction().execute(tx => recordManualDecisions(tx, [f.products[6]!.id], {
@@ -88,14 +98,17 @@ test('feature eligibility includes raw and provisional products; tags require pu
   }));
   for (const kind of ['membership_features', 'tag_extraction'] as const) {
     const queue = await readAiTaskQueue(db, { jobType: kind, status: 'all', scopeShopId: f.shop.id });
-    assert.equal(queue.summary.pendingProducts, kind === 'membership_features' ? 3 : 1);
+    assert.equal(queue.summary.pendingProducts, kind === 'membership_features' ? 1 : 3);
   }
-  const featureId = await task(f, 'membership_features', 'empty');
+  const featureId = await task(f, 'membership_features', 'empty', 2);
+  for (const index of [0, 1, 3, 4, 5, 6, 7, 8, 9, 10]) await task(f, 'membership_features', 'failed', index);
   const tagId = await task(f, 'tag_extraction', 'empty', 1);
   const features = await readAiTaskQueue(db, { jobType: 'membership_features', status: 'all', scopeShopId: f.shop.id });
   assert.equal(features.summary.coveredProducts, 1);
-  assert.equal(features.summary.pendingProducts, 2);
-  assert.equal(features.items[0]!.id, String(featureId));
+  assert.equal(features.summary.pendingProducts, 0);
+  assert.equal(features.summary.failedProducts, 0);
+  assert.equal(features.summary.attention, 0);
+  assert.ok(features.items.some(item => item.id === String(featureId)));
   assert.equal(features.items[0]!.jobType, 'membership_features');
   const tags = await readAiTaskQueue(db, { jobType: 'tag_extraction', status: 'all', scopeShopId: f.shop.id });
   assert.equal(tags.summary.coveredProducts, 0, 'provisional assignment is not tag coverage');
@@ -111,6 +124,7 @@ test('feature eligibility includes raw and provisional products; tags require pu
 
 test('only a newer current task of the same attribute kind supersedes feature coverage and attention', async () => {
   const f = await fixture();
+  await assign(f, 0, 'published');
   const first = await task(f, 'membership_features', 'empty');
   await task(f, 'tag_extraction', 'failed');
   const scope = { jobType: 'membership_features', scopeShopId: f.shop.id };
@@ -132,6 +146,7 @@ test('only a newer current task of the same attribute kind supersedes feature co
 
 test('feature coverage excludes stale member versions, sources and pipeline configurations', async () => {
   const f = await fixture();
+  await assign(f, 0, 'published');
   const id = await task(f, 'membership_features', 'empty');
   const scope = { jobType: 'membership_features', status: 'all', scopeShopId: f.shop.id };
   for (const patch of [
@@ -168,5 +183,33 @@ test('identity queues exclude both attribute kinds without letting their newer m
   }
   const features = await readAiTaskQueue(db, { jobType: 'membership_features', status: 'unfinished', scopeShopId: f.shop.id });
   assert.deepEqual(features.items.map(item => item.id), [String(feature)]);
-  assert.equal(features.items[0]!.remaining, 1);
+  assert.equal(features.items[0]!.remaining, 0);
+  assert.equal(features.summary.pendingProducts, 0);
+});
+
+test('unfinished feature counts recheck current published AI identity and shop scope', async () => {
+  const f = await fixture(3);
+  const standard = await assign(f, 0, 'published');
+  await assign(f, 1, 'provisional');
+  const nonAi = await assign(f, 2, 'published');
+  await db.updateTable('standard_products').set({ canonical_tier: 'free' }).where('id', '=', nonAi).execute();
+  const ids = [];
+  for (let index = 0; index < 3; index++) ids.push(await task(f, 'membership_features', undefined, index));
+  const scope = { jobType: 'membership_features', status: 'unfinished', scopeShopId: f.shop.id };
+  let queue = await readAiTaskQueue(db, scope);
+  assert.equal(queue.summary.pendingProducts, 1);
+  assert.equal(queue.items.find(item => item.id === String(ids[0]))!.remaining, 1);
+  assert.equal(queue.items.find(item => item.id === String(ids[1]))!.remaining, 0);
+  assert.equal(queue.items.find(item => item.id === String(ids[2]))!.remaining, 0);
+  const other = await fixture();
+  await assign(other, 0, 'published');
+  const otherJob = await task(other, 'membership_features');
+  const otherMember = await db.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', otherJob).executeTakeFirstOrThrow();
+  await db.insertInto('ai_job_input_members').values({ ...otherMember, job_id: ids[0], input_id: f.products[0].id,
+    payload: jsonb(otherMember.payload as JsonValue) }).execute();
+  assert.equal((await readAiTaskQueue(db, scope)).summary.pendingProducts, 1);
+  await db.updateTable('standard_products').set({ canonical_tier: 'free' }).where('id', '=', standard).execute();
+  queue = await readAiTaskQueue(db, scope);
+  assert.equal(queue.summary.pendingProducts, 0);
+  assert.equal(queue.items.find(item => item.id === String(ids[0]))!.remaining, 0);
 });

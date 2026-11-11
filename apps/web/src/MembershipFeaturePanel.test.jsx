@@ -78,6 +78,8 @@ test('特性识别范围预览与费用确认使用专用接口，任务详情�
   expect(await within(dialog).findByText('模型：feature-model')).toBeInTheDocument();
   const create = within(dialog).getByRole('button', { name: '确认创建特性任务' });
   expect(create).toBeDisabled();
+  expect(dialog).toHaveTextContent('仅处理已完成标准化、通过身份验证并已发布的 AI 会员报价');
+  expect(dialog).toHaveTextContent('分类属于单件报价，同一标准商品可包含成品号、代充、租号和短期');
   expect(dialog).not.toHaveTextContent('标签');
   expect(dialog).toHaveTextContent('每件商品只提出一个分类');
   expect(dialog).not.toHaveTextContent('多个候选特性');
@@ -131,6 +133,27 @@ test('特性失败记录保留诊断，缺少分类时不默认成短期', async
   expect(within(dialog).getAllByText('分类复核：未记录')).toHaveLength(2);
 });
 
+test('非 AI 会员跳过原因在商品列表和最终审计中显示明确诊断', async () => {
+  installApi({ handle: call => {
+    if (call.path.endsWith('/feature-results')) return Response.json({
+      items: [{ id: '3', name: '非会员报价', outcome: 'skipped', reason_code: 'not_ai_membership' }],
+    });
+    if (call.path.endsWith('/feature-results/3')) return Response.json({
+      member: { output: { outcome: 'skipped', reasonCode: 'not_ai_membership', acceptedTags: [], rejectedTags: [] } }, batches: [],
+    });
+  } });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel taskKind="membership_features" shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看特性任务 #8' }));
+  const member = (await screen.findByText('非会员报价')).closest('li');
+  expect(member).toHaveTextContent('当前标准商品不属于 AI 会员');
+  await user.click(within(member).getByRole('button', { name: '查看商品 #3 依据' }));
+  const audit = (await screen.findByText('输入指纹：未记录')).closest('.tag-audit');
+  expect(audit).toHaveTextContent('结果：跳过 · 原因：当前标准商品不属于 AI 会员');
+  expect(audit).toHaveTextContent('本次未写入商品特性');
+  expect(audit).not.toHaveTextContent('未识别原因');
+});
+
 test('特性任务复用暂停继续取消和实时事件，历史开关禁用不阻止取消', async () => {
   const streams = [];
   vi.stubGlobal('EventSource', class extends EventTarget { constructor() { super(); streams.push(this); } close() {} });
@@ -168,6 +191,8 @@ test('特性批量创建不需要预览，失败后保留费用确认和请求 I
   render(<TagExtractionPanel taskKind="membership_features" shops={shops} />);
   await user.click(screen.getByRole('button', { name: '批量新建特性任务' }));
   const dialog = screen.getByRole('dialog', { name: '创建特性任务' });
+  expect(dialog).toHaveTextContent('仅处理已完成标准化、通过身份验证并已发布的 AI 会员报价');
+  expect(dialog).not.toHaveTextContent('全站符合条件、需要识别特性');
   await user.click(within(dialog).getByRole('checkbox', { name: '我确认可能消耗模型额度或产生费用' }));
   await user.click(within(dialog).getByRole('button', { name: '确认创建特性任务' }));
   expect(await within(dialog).findByRole('alert')).toHaveTextContent('暂不可用');

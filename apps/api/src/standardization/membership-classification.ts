@@ -1,8 +1,7 @@
 import { sql, type RawBuilder } from 'kysely';
-import { isAiMembership, MEMBERSHIP_KINDS, MEMBERSHIP_POLICY_VERSION,
+import { MEMBERSHIP_KINDS, MEMBERSHIP_POLICY_VERSION,
   type MembershipClassification, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { type JsonValue } from '../database/types.js';
-import { assessProductEvidence } from './identity-policy.js';
 
 type EvidenceVersion = { content_version: bigint; content_fingerprint: string; standardization_revision: bigint;
   name?: string; spec?: string; source_category?: string; source_data?: JsonValue;
@@ -53,11 +52,6 @@ function currentMembershipSource(snapshot: MembershipFeaturesSnapshot, product: 
     && snapshot.source.protocol === (product.shop_protocol ?? null) && snapshot.source.platform === (product.shop_platform ?? ''));
 }
 
-export function needsMembershipFeatures(payload: Record<string, unknown>): boolean {
-  const assessment = assessProductEvidence(payload, 'text');
-  return !assessment.identity || isAiMembership(assessment.identity);
-}
-
 /** Read the approved feature of the current merchant SKU, independently of its standard identity. */
 export function currentMembershipKind(productAlias = 'p', shopAlias = 'sh'): RawBuilder<MembershipKind | null> {
   const p = sql.table(productAlias), sh = sql.table(shopAlias);
@@ -74,6 +68,5 @@ export function currentMembershipKind(productAlias = 'p', shopAlias = 'sh'): Raw
 }
 
 export function catalogMembershipKind(ai: RawBuilder<boolean>, productAlias = 'p', shopAlias = 'sh'): RawBuilder<MembershipKind | null> {
-  // Display fallback does not turn missing evidence into an approved LLM snapshot.
-  return sql<MembershipKind | null>`case when ${ai} then coalesce(${currentMembershipKind(productAlias, shopAlias)}, 'short_term') end`;
+  return sql<MembershipKind | null>`case when ${ai} then ${currentMembershipKind(productAlias, shopAlias)} end`;
 }

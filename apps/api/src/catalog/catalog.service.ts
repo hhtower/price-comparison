@@ -4,7 +4,7 @@ import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQu
 import { DomainValidationError } from '../common/errors.js';
 import { normalizePurchaseTag, parseCatalogSearch } from '@price-comparison/catalog/purchase-attributes';
 import { normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
-import { MEMBERSHIP_KINDS, type MembershipKind } from '@price-comparison/catalog/membership-policy';
+import { MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 
 const membershipWords = /成品号|代充|租号(?:\s*\(\s*(?:共享|合租)\s*\))?|共享|合租|短期/gu;
 const membershipNegation = new RegExp(`(?:不(?:要|需要|想要?|接受|支持|提供|适合|能|是)?|没有|未明确|未说明|无需|禁止|非|是否|可能|或许|不确定)\\s*(?:是|为)?\\s*(?:${membershipWords.source})|(?:${membershipWords.source})\\s*(?:状态)?\\s*(?:不(?:要|支持|提供|可用|确定|保证)|未说明|未知)`, 'u');
@@ -41,9 +41,9 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
   if ((input.membershipKinds !== undefined && input.membershipKind !== undefined)
     || input.membershipKind === null || input.membershipKinds === null
     || (input.membershipKinds !== undefined && !Array.isArray(input.membershipKinds))
-    || (membershipKinds && (!membershipKinds.length || membershipKinds.length > MEMBERSHIP_KINDS.length
-      || membershipKinds.some(kind => !MEMBERSHIP_KINDS.includes(kind))))) {
-    throw new DomainValidationError('INVALID_MEMBERSHIP_KIND', '会员商品特性须为account、top_up、rental或short_term');
+    || (membershipKinds && (!membershipKinds.length || membershipKinds.length > MEMBERSHIP_GROUPS.length
+      || membershipKinds.some(kind => !MEMBERSHIP_GROUPS.includes(kind))))) {
+    throw new DomainValidationError('INVALID_MEMBERSHIP_KIND', '会员商品分组须为account、top_up、rental、short_term或unclassified');
   }
   if (input.newcomer !== undefined && ![true, false, 'true', 'false'].includes(input.newcomer as boolean | string)) {
     throw new DomainValidationError('INVALID_NEWCOMER_MODE', '新手模式参数无效');
@@ -155,7 +155,7 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
     tags: uniqueTags,
     ...(warrantyDaysMin !== undefined ? { warrantyDaysMin } : {}),
     ...(input.newcomer === true || input.newcomer === 'true' ? { newcomer: true } : {}),
-    ...(membershipKinds ? { membershipKinds: [...new Set(membershipKinds)].sort() as MembershipKind[] } : {}),
+    ...(membershipKinds ? { membershipKinds: [...new Set(membershipKinds)].sort() as MembershipGroup[] } : {}),
     ...(inferredKinds.length ? { membershipSearch: { kinds: inferredKinds, delivery: membershipDelivery,
       ...(membershipAccess ? { access: true } : {}), terms: membershipTerms } } : {}),
     ...(input.cursor?.trim() ? { cursor: input.cursor.trim() } : {}),

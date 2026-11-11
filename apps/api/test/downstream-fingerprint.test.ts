@@ -21,7 +21,7 @@ const product = (id: bigint, overrides: Partial<typeof source> = {}) => ({
   id, ...source, ...overrides,
   content_fingerprint: fingerprint({ ...source, ...overrides }), content_version: 1n, standardization_revision: 0n,
   standardization_locked: false, deleted_at: null, enabled: true, shop_deleted_at: null,
-  standard_product_id: 9n, published: true, human: false, manual: false,
+  standard_product_id: 9n, published: true, ai_membership: false, human: false, manual: false,
   shop_url: 'https://shop.invalid', shop_protocol: 'test', shop_platform: 'test',
 });
 
@@ -79,9 +79,9 @@ test('manual review records the stored source hash without rewriting products ha
 });
 
 for (const kind of ['identity', 'membership_features', 'tag_extraction'] as const) {
-  const taskProduct = (id: bigint, overrides: Partial<typeof source> = {}) => product(id, {
+  const taskProduct = (id: bigint, overrides: Partial<typeof source> = {}) => ({ ...product(id, {
     ...(kind === 'membership_features' ? { name: 'ChatGPT Plus', source_name: 'ChatGPT Plus' } : {}), ...overrides,
-  });
+  }), ai_membership: kind === 'membership_features' });
   const create = (db: Kysely<DatabaseSchema>, products: ReturnType<typeof product>[]) => {
     const scope = { model: 'mock', productIds: products.map(p => p.id) };
     return kind === 'identity' ? new AiRepository(db).createJob(scope)

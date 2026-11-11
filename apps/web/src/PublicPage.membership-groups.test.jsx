@@ -32,7 +32,8 @@ test('renders nonempty membership groups as same-standard cards with four offers
       { kind: 'account', shopCount: 5, productCount: 11, minPrice: '0.50', maxPrice: '80', latestCapturedAt: '2026-11-10T10:00:00Z', offers: accountOffers },
       { kind: 'top_up', shopCount: 1, productCount: 2, minPrice: '12', maxPrice: '12.00', offers: [{ ...accountOffers[0], currency: 'USD', productId: 'top-up', membershipKind: 'top_up', name: '代充报价' }] },
       { kind: 'rental', shopCount: 0, productCount: 0, offers: [] },
-      { kind: 'short_term', shopCount: 6, productCount: 17, minPrice: '0.10', maxPrice: '90', offers: [{ ...accountOffers[0], currency: undefined, productId: 'unknown', membershipKind: null }] },
+      { kind: 'short_term', shopCount: 6, productCount: 17, minPrice: '0.10', maxPrice: '90', offers: [{ ...accountOffers[0], currency: undefined, productId: 'short', membershipKind: 'short_term' }] },
+      { kind: 'unclassified', shopCount: 1, productCount: 1, minPrice: '2', maxPrice: '2', offers: [{ ...accountOffers[0], productId: 'unknown', membershipKind: null }] },
     ],
   };
   vi.stubGlobal('fetch', vi.fn(async input => {
@@ -71,6 +72,9 @@ test('renders nonempty membership groups as same-standard cards with four offers
   expect(shortTerm.querySelectorAll('.shop-offer')).toHaveLength(1);
   expect(shortTerm.querySelector('.standard-product-summary')).toHaveTextContent('¥0.1 – ¥90');
   expect(screen.queryByRole('link', { name: 'ChatGPT Plus · 租号' })).not.toBeInTheDocument();
+  const unclassified = screen.getByRole('link', { name: 'ChatGPT Plus · 未分类' });
+  expect(unclassified).toHaveAttribute('href', '/products/standard-1/features/unclassified');
+  expect(unclassified.closest('article').querySelectorAll('.shop-offer')).toHaveLength(1);
   fireEvent.click(within(topUp.closest('article')).getByRole('button', { name: '2 条报价' }));
   await waitFor(() => {
     const request = requests.find(url => url.searchParams.get('detailKind') === 'offers');

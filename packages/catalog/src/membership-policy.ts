@@ -1,6 +1,8 @@
 
 export const MEMBERSHIP_KINDS = ['account', 'top_up', 'rental', 'short_term'] as const;
 export type MembershipKind = typeof MEMBERSHIP_KINDS[number];
+export const MEMBERSHIP_GROUPS = [...MEMBERSHIP_KINDS, 'unclassified'] as const;
+export type MembershipGroup = typeof MEMBERSHIP_GROUPS[number];
 export const AI_MEMBERSHIP_TIERS: Readonly<Record<string, readonly string[]>> = {
   'openai/chatgpt': ['go', 'plus', 'pro_5x', 'pro_20x', 'pro_500', 'team', 'team_5x'],
   'anthropic/claude': ['pro', 'max_5x', 'max_20x', 'team', 'team_5x'],
@@ -22,6 +24,6 @@ export function isAiMembership(identity: Identity): boolean {
   return AI_MEMBERSHIP_TIERS[`${identity.family}/${identity.product}`]?.includes(identity.tier) ?? false;
 }
 
-export function membershipKindLabel(kind: MembershipKind): string {
-  return { account: '成品号', top_up: '代充', rental: '租号', short_term: '短期' }[kind];
+export function membershipKindLabel(kind: MembershipGroup): string {
+  return { account: '成品号', top_up: '代充', rental: '租号', short_term: '短期', unclassified: '未分类' }[kind];
 }

@@ -26,6 +26,7 @@ const REASONS = {
   request_outcome_unknown: '模型请求结果未知，请查看请求诊断', result_not_saved: '模型结果保存失败',
   manual_decision_preserved: '已保留人工决定', source_changed: '商品资料已变化，请按最新资料重试',
   source_unavailable: '商品或店铺已不可用', not_published: '商品尚未发布，请先核对身份归类',
+  not_ai_membership: '当前标准商品不属于 AI 会员',
   human_assignment: '已保留人工归类', product_locked: '商品已锁定，未应用标签', revision_changed: '商品修订已变化，请按最新资料重试',
   manual_decision: '已保留人工决定', missing_id: '模型未返回该商品',
   job_cancelled: '任务已取消', cancelled: '任务已取消', unrecorded: '历史未记录审计结果',
@@ -529,7 +530,8 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
     </ModalDialog> : null}
     {dialog ? <ModalDialog open onClose={() => { if (!busy) { setDialog(null); invalidateDraft(); } }} aria-label={`创建${noun}任务`} className="management-dialog tag-create-dialog"><div className="dialog-body">
       <h3>{dialog.allPending ? `批量新建${noun}任务` : `创建${noun}任务`}</h3>
-      {dialog.allPending ? <p>为全站符合条件、需要{feature ? '识别特性' : '抽取标签'}的商品创建新任务。看板中的“待处理商品”仅统计当前已有任务。</p> : null}
+      {feature ? <p>仅处理已完成标准化、通过身份验证并已发布的 AI 会员报价。分类属于单件报价，同一标准商品可包含成品号、代充、租号和短期。</p> : <p>标签抽取在标准化发布后独立执行，不依赖会员分类。</p>}
+      {dialog.allPending ? <p>{feature ? '为符合上述条件、需要分类的报价创建新任务。' : '为全站符合条件、需要抽取标签的商品创建新任务。'}看板中的“待处理商品”仅统计当前已有任务。</p> : null}
       {!dialog.allPending ? <>
         <label>范围店铺<select disabled={busy} value={scopeShop} onChange={event => { setScopeShop(event.target.value); invalidateDraft(); }}><option value="">使用商品 ID</option>{shops?.items?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label>商品 ID（空格或逗号分隔）<textarea disabled={busy} value={ids} onChange={event => { setIds(event.target.value); invalidateDraft(); }} /></label>

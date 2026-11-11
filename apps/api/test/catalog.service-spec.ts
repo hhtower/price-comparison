@@ -11,9 +11,15 @@ test('rental and all four membership kinds pass catalog validation without chang
     { membershipKinds: ['rental'], newcomer: true, tags: [], limit: 20 });
   const kinds = ['account', 'top_up', 'rental', 'short_term'];
   assert.deepEqual(normalizeCatalogQuery({ membershipKinds: kinds }).membershipKinds, [...kinds].sort());
-  for (const membershipKinds of [[], ['unknown'], [...kinds, 'rental']]) {
+  for (const membershipKinds of [[], ['unknown'], [...kinds, 'unclassified', 'rental']]) {
     assert.throws(() => normalizeCatalogQuery({ membershipKinds }), { code: 'INVALID_MEMBERSHIP_KIND' });
   }
+});
+
+test('unclassified is a query-only AI group that can be combined with reviewed kinds', () => {
+  assert.deepEqual(normalizeCatalogQuery({ membershipKind: 'unclassified' }).membershipKinds, ['unclassified']);
+  assert.deepEqual(normalizeCatalogQuery({ membershipKinds: ['unclassified', 'account'] }).membershipKinds, ['account', 'unclassified']);
+  assert.equal(normalizeCatalogQuery({ membershipKinds: ['account', 'top_up', 'rental', 'short_term', 'unclassified'] }).membershipKinds?.length, 5);
 });
 
 test('rental search terms infer AI membership while keeping literal and negated terms literal', () => {

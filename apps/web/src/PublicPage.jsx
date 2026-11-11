@@ -13,7 +13,7 @@ import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } fr
 import { consumeRapidSearchTerms, normalizePurchaseTag, parseCatalogSearch, purchaseWarrantyLabel, PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
 import { DurationFilterOptions, WarrantyFilter, isValidWarrantyMinimum } from './components/PurchasePeriodFilters.jsx';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
-import { MEMBERSHIP_KINDS, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
+import { MEMBERSHIP_GROUPS, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
 import { updatePageMetadata } from './page-metadata.js';
 import { PRODUCT_PAGE_SIZE, catalogPageMetadata, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
 import { formatMoney } from './money.js';
@@ -40,10 +40,10 @@ const membershipFilterLabel = kind => kind === 'rental' ? '租号（共享）' :
 function membershipSearch(query, enabled) {
   const kinds = new Set();
   const text = enabled && !membershipNegation.test(query) ? query.replace(membershipWords, word => {
-    kinds.add(/^(?:租号|共享|合租)/u.test(word) ? 'rental' : MEMBERSHIP_KINDS.find(kind => membershipKindLabel(kind) === word));
+    kinds.add(/^(?:租号|共享|合租)/u.test(word) ? 'rental' : MEMBERSHIP_GROUPS.find(kind => membershipKindLabel(kind) === word));
     return ' ';
   }).replace(/\s+/gu, ' ').trim() : query;
-  return { text, kinds: MEMBERSHIP_KINDS.filter(kind => kinds.has(kind)) };
+  return { text, kinds: MEMBERSHIP_GROUPS.filter(kind => kinds.has(kind)) };
 }
 
 function matchingProducts(products, query, platform) {
@@ -54,9 +54,9 @@ function matchingProducts(products, query, platform) {
 
 function MembershipFilter({ value, onChange }) {
   return <fieldset className="filter-group"><legend>AI会员类型</legend><div className="filter-group-content"><div className="filter-options">
-    {MEMBERSHIP_KINDS.map(kind => <label key={kind} className={value.includes(kind) ? 'is-selected' : ''}>
+    {MEMBERSHIP_GROUPS.map(kind => <label key={kind} className={value.includes(kind) ? 'is-selected' : ''}>
       <input type="checkbox" aria-label={membershipFilterLabel(kind)} checked={value.includes(kind)}
-        onChange={() => onChange(MEMBERSHIP_KINDS.filter(candidate => candidate === kind ? !value.includes(candidate) : value.includes(candidate)))} />
+        onChange={() => onChange(MEMBERSHIP_GROUPS.filter(candidate => candidate === kind ? !value.includes(candidate) : value.includes(candidate)))} />
       <span>{membershipFilterLabel(kind)}</span>
     </label>)}
   </div></div></fieldset>;
@@ -64,7 +64,7 @@ function MembershipFilter({ value, onChange }) {
 
 function membershipName(item, kind = '') {
   const name = formatStandardName(item.name);
-  const label = MEMBERSHIP_KINDS.includes(kind) ? membershipKindLabel(kind) : '';
+  const label = MEMBERSHIP_GROUPS.includes(kind) ? membershipKindLabel(kind) : '';
   return label ? `${name} · ${label}` : name;
 }
 
@@ -114,7 +114,7 @@ function readCatalogLocation(params = new URLSearchParams(window.location.search
   return { query: (params.get('q') || '').slice(0, 500), platform: normalizeCatalogPlatform(params.get('platform') || '') || '全部',
     sort: ['price', 'updated'].includes(params.get('sort')) ? params.get('sort') : 'default',
     tags: new Set(selectedTags), warranty, product: params.get('standardProductId') || '', cursor: params.get('cursor') || '',
-    membershipKinds: MEMBERSHIP_KINDS.filter(kind => params.getAll('membershipKind').includes(kind)),
+    membershipKinds: MEMBERSHIP_GROUPS.filter(kind => params.getAll('membershipKind').includes(kind)),
     newcomer: explicitMode ? params.get('newcomer') === 'true'
       : params.has('cursor') ? false
         : typeof window.history.state?.catalogNewcomer === 'boolean' ? window.history.state.catalogNewcomer : mode === 'newcomer' };

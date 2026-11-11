@@ -13,7 +13,7 @@ import { readAiConcurrency } from './ai-concurrency.js';
 import { incrementJobProgress } from './ai-progress.repository.js';
 import { buildTagExtractionOutcome, tagExtractionVersions } from './tag-extraction-result.js';
 import { readTextEvidence } from '../shops/shop-text-review.js';
-import { needsMembershipFeatures, readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
+import { readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
 
 type Db = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 export interface TagJobScope { allPending?: boolean; productIds?: readonly bigint[]; scopeShopId?: bigint; retryOfJobId?: bigint }
@@ -34,11 +34,7 @@ function canonicalScope(input: TagJobScope) {
 async function selection(db: Db, input: TagJobScope, lock = false, kind: AttributeJobKind = 'tag_extraction') {
   const scope = canonicalScope(input);
   if(input.retryOfJobId!==undefined && !input.productIds) throw new DomainValidationError('AI_TAG_RETRY_SCOPE_INVALID','重试必须明确选择商品');
-  const nonMembership = sql<boolean>`coalesce(standard.verification_state='verified' and standard.merged_into_id is null
-    and nullif(btrim(standard.canonical_family),'') is not null
-    and nullif(btrim(standard.canonical_product),'') is not null
-    and nullif(btrim(standard.canonical_tier),'') is not null
-    and not is_ai_membership(standard.canonical_family,standard.canonical_product,standard.canonical_tier),false)`;
+  const aiMembership = sql<boolean>`is_ai_membership(standard.canonical_family,standard.canonical_product,standard.canonical_tier)`;
   let query = db.selectFrom('products as p').innerJoin('shops as s','s.id','p.shop_id')
     .leftJoin('standard_product_members as assignment','assignment.product_id','p.id')
     .leftJoin('standard_products as standard','standard.id','assignment.standard_product_id')
@@ -49,19 +45,18 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
       and assignment.publication_state='published'
       and standard.verification_state='verified' and standard.merged_into_id is null,false)`.as('published'))
     .select(sql<boolean>`coalesce(assignment.assignment_source='human',false)`.as('human'))
-    .select(nonMembership.as('non_membership'))
+    .select(aiMembership.as('ai_membership'))
     .orderBy('p.id');
   if (input.productIds) query = query.where('p.id','in',input.productIds);
   else if (input.scopeShopId !== undefined) query = query.where('p.shop_id','=',input.scopeShopId);
   if (input.allPending) {
     query = query.where('p.deleted_at','is',null).where('s.deleted_at','is',null).where('s.enabled','=',true).where('p.standardization_locked','=',false)
       .where(sql<boolean>`not ${currentManualDecision}`)
-      .where(sql<boolean>`assignment.assignment_source is distinct from 'human'`);
-    if (kind === 'tag_extraction') query = query
+      .where(sql<boolean>`assignment.assignment_source is distinct from 'human'`)
       .where('assignment.assignment_source','=','ai')
       .where('assignment.publication_state','=','published')
       .where('standard.verification_state','=','verified').where('standard.merged_into_id','is',null);
-    else query = query.where(sql<boolean>`not ${nonMembership}`);
+    if (kind === 'membership_features') query = query.where(aiMembership);
     query = query
       .where(sql<boolean>`not coalesce((
         select (${kind === 'tag_extraction'} and m.output->>'outcome' in ('updated','unchanged','empty','review'))
@@ -95,7 +90,7 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
     const text = kind === 'tag_extraction' ? readTextEvidence(payload) : null;
     const inputKey = JSON.stringify([fingerprint,extractionContextKey(payload),text ? [text.name,text.description,text.hash] : null]);
     return {product,payload,fingerprint,inputKey,...estimateInputSize(payload), protected: !!(product.deleted_at || product.shop_deleted_at || !product.enabled || product.standardization_locked || product.manual || product.human
-      || (kind === 'tag_extraction' ? !product.published : product.non_membership || !needsMembershipFeatures(payload)))};
+      || !product.published || (kind === 'membership_features' && !product.ai_membership))};
   });
   return {scope,sized:input.allPending?sized.filter(item=>!item.protected):sized};
 }

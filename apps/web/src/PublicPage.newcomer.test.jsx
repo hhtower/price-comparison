@@ -39,7 +39,7 @@ test('first visit defaults to browse, shows all membership kinds and four offers
   localStorage.removeItem(storageKey);
   const requests = mockMembershipCatalog({ offersPerKind: 4 });
   mount(undefined, 2400);
-  for (const kind of ['成品号', '代充', '租号', '短期']) {
+  for (const kind of ['成品号', '代充', '租号', '短期', '未分类']) {
     const link = await screen.findByRole('link', { name: 'ChatGPT Plus · ' + kind });
     expect(link.closest('article').querySelectorAll('.shop-offer')).toHaveLength(4);
   }
@@ -204,13 +204,13 @@ function mockMembershipCatalog({ onlyKind, emptyKind, offersPerKind = 1 } = {}) 
       && (!query || product.name.toLowerCase().includes(query))
       && (!onlyKind || product.isAiMembership))
       .map(product => {
-        const groups = (product.isAiMembership ? [['account', '1'], ['top_up', '2'], ['short_term', '3'], ['rental', '6']] : [[null, product.id]])
+        const groups = (product.isAiMembership ? [['account', '1'], ['top_up', '2'], ['short_term', '3'], ['rental', '6'], ['unclassified', '7']] : [[null, product.id]])
           .filter(([kind]) => (!onlyKind || kind === onlyKind) && (!product.isAiMembership || (kinds.length ? kinds.includes(kind)
             : url.searchParams.get('newcomer') !== 'true' || ['account', 'top_up'].includes(kind))))
           .map(([kind, id]) => {
             const offers = Array.from({ length: kind === emptyKind ? 0 : offersPerKind }, (_, index) => ({
               productId: 'p' + id + '-' + index, shopId: '1', shop: '会员店', name: '报价' + id + (index ? '-' + index : ''),
-              membershipKind: kind, currency: 'CNY', price: '30', inStock: true, tags: [],
+              membershipKind: kind === 'unclassified' ? null : kind, currency: 'CNY', price: '30', inStock: true, tags: [],
             }));
             return { kind, shopCount: offers.length ? 1 : 0, productCount: offers.length, offers };
           });
@@ -239,7 +239,7 @@ test('membership categories without available offers are hidden while non-AI pro
   expect(screen.getByRole('link', { name: 'YouTube Premium' })).toBeInTheDocument();
 });
 
-test.each([['short_term', '短期'], ['rental', '租号']])('default browse shows %s until newcomer is explicitly enabled', async (kind, label) => {
+test.each([['short_term', '短期'], ['rental', '租号'], ['unclassified', '未分类']])('default browse shows %s until newcomer is explicitly enabled', async (kind, label) => {
   localStorage.removeItem(storageKey);
   const requests = mockMembershipCatalog({ onlyKind: kind });
   mount();
@@ -250,7 +250,7 @@ test.each([['short_term', '短期'], ['rental', '租号']])('default browse show
   expect(requests.filter(url => url.pathname === '/api/catalog').at(-1)?.searchParams.get('newcomer')).toBe('true');
 });
 
-test.each([['short_term', '短期', '短期', '10'], ['rental', '租号（共享）', '租号', '10']])('membership %s overrides newcomer, reaches previews and details, survives history and clears with filters', async (kind, choice, label, id) => {
+test.each([['short_term', '短期', '短期', '10'], ['rental', '租号（共享）', '租号', '10'], ['unclassified', '未分类', '未分类', '10']])('membership %s overrides newcomer, reaches previews and details, survives history and clears with filters', async (kind, choice, label, id) => {
   localStorage.removeItem(storageKey);
   const requests = mockMembershipCatalog();
   mount(undefined, 2400);
@@ -499,17 +499,18 @@ test('standard detail pagination loads offers across all features until exhauste
   const requests = mockMembershipCatalog({ offersPerKind: 13 });
   window.history.replaceState({}, '', '/products/10?newcomer=false');
   mount('10');
-  for (let page = 1; page < 5; page++) {
+  for (let page = 1; page < 6; page++) {
     fireEvent.click(await screen.findByRole('button', { name: '加载更多报价' }));
     await waitFor(() => expect(requests.filter(url => url.searchParams.has('detailKind'))).toHaveLength(page + 1));
   }
-  await screen.findByText('已显示全部 52 条报价');
+  await screen.findByText('已显示全部 65 条报价');
   const pages = requests.filter(url => url.searchParams.has('detailKind'));
-  expect(pages.map(url => url.searchParams.get('detailPage'))).toEqual(['0', '1', '2', '3', '4']);
+  expect(pages.map(url => url.searchParams.get('detailPage'))).toEqual(['0', '1', '2', '3', '4', '5']);
   expect(pages.every(url => url.searchParams.get('standardProductId') === '10' && url.searchParams.get('limit') === '1')).toBe(true);
 });
 
-test.each([['', ['报价1', '报价2', '报价3', '报价6']], ['&membershipKind=short_term', ['报价3']]])('shop details aggregate unique merchants and retain feature scope %s', async (query, names) => {
+test.each([['', ['报价1', '报价2', '报价3', '报价6', '报价7']], ['&membershipKind=short_term', ['报价3']],
+  ['&membershipKind=unclassified', ['报价7']]])('shop details aggregate unique merchants and retain feature scope %s', async (query, names) => {
   const requests = mockMembershipCatalog();
   window.history.replaceState({}, '', '/products/10?newcomer=false&detailKind=shops' + query);
   mount('10');
@@ -517,7 +518,8 @@ test.each([['', ['报价1', '报价2', '报价3', '报价6']], ['&membershipKind
   expect(screen.getByText('1 家商铺')).toBeInTheDocument();
   fireEvent.click(row);
   for (const name of names) await screen.findByText(new RegExp('^' + name));
-  expect(requests.filter(url => url.searchParams.has('shopId')).at(-1).searchParams.getAll('membershipKind')).toEqual(query ? ['short_term'] : []);
+  expect(requests.filter(url => url.searchParams.has('shopId')).at(-1).searchParams.getAll('membershipKind'))
+    .toEqual(new URLSearchParams(query).getAll('membershipKind'));
   if (query) expect(screen.queryByText(/^报价1/)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /返回商铺列表/ }));
   await screen.findByRole('button', { name: /会员店/ });

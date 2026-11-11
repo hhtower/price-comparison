@@ -277,6 +277,18 @@ test('rental candidates require explicit scope and expose the rental label as ev
   assert.equal(selectCandidates([fixture()], needs, now).length, 1);
 });
 
+test('explicit unclassified scope selects only pending AI offers and remains outside newcomer defaults', () => {
+  const pending = fixture('1', { membershipKind: null });
+  pending.standardProduct = { ...pending.standardProduct, isAiMembership: true };
+  const classified = { ...pending, offer: { ...pending.offer, productId: '2', membershipKind: 'account' as const } };
+  const nonAi = fixture('3', { membershipKind: null });
+  assert.deepEqual(selectCandidates([pending, classified, nonAi], { ...needs, membershipKinds: ['unclassified'] }, now)
+    .map(candidate => candidate.offer.productId), ['1']);
+  assert.equal(selectCandidates([pending], needs, now).length, 0);
+  assert.equal(selectCandidates([pending], { ...needs, membershipKinds: ['short_term'] }, now).length, 0);
+  assert.equal(selectCandidates([pending, classified], { ...needs, membershipKinds: ['account', 'unclassified'] }, now).length, 2);
+});
+
 test('standard identity gates AI membership and only offer features establish its class', () => {
   const candidate = fixture();
   assert.equal(selectCandidates([candidate], needs, now).length, 1);

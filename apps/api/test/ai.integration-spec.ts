@@ -986,6 +986,74 @@ describe('AI identity standardization publication', () => {
     await assert.rejects(prepared.repository.reapplySavedResults(prepared.job.id), error => error instanceof DomainConflictError && error.code === 'AI_REAPPLY_NOT_FOUND');
   });
 
+  test('partial publication reapply schedules only newly published products in each attribute child kind', async t => {
+    const previousTags = process.env.AI_TAG_EXTRACTION_ENABLED;
+    process.env.AI_TAG_EXTRACTION_ENABLED = 'true';
+    t.after(() => {
+      if (previousTags === undefined) delete process.env.AI_TAG_EXTRACTION_ENABLED;
+      else process.env.AI_TAG_EXTRACTION_ENABLED = previousTags;
+    });
+    const firstShop = await addShop(), secondShop = await addShop();
+    const first = await addProduct(firstShop.id, 'ChatGPT Plus first');
+    const second = await addProduct(secondShop.id, 'ChatGPT Plus recovered');
+    const prepared = await createPreparedJob([first.id, second.id]);
+    await saveDecision(prepared, { identities: [identity('partial-recovery')],
+      items: prepared.job.inputs.map(input => classified(input.productId, 'partial-recovery')), missingIds: [] });
+    // Make only B unavailable after review, then restore its unchanged evidence for real reapplication.
+    await database.updateTable('shops').set({ enabled: false }).where('id', '=', secondShop.id).execute();
+    await claim(prepared.batchId, 'publish', 2n, 'partial-publish');
+    await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'partial-publish' });
+    const results = () => database.selectFrom('ai_standardization_results').select(['product_id', 'status', 'reason_code'])
+      .where('job_id', '=', prepared.job.id).orderBy('product_id').execute();
+    assert.deepEqual(await results(), [
+      { product_id: first.id, status: 'classified', reason_code: null },
+      { product_id: second.id, status: 'unclassified', reason_code: 'source_changed' },
+    ]);
+    const children = () => database.selectFrom('ai_jobs').select(['id', 'job_type', 'status', 'retry_of_job_id'])
+      .where('parent_identity_job_id', '=', prepared.job.id).orderBy('id').execute();
+    const members = (jobId: bigint) => database.selectFrom('ai_job_input_members').select('product_id')
+      .where('job_id', '=', jobId).orderBy('product_id').execute();
+    const initial = await children();
+    assert.deepEqual(initial.map(child => child.job_type).sort(), ['membership_features', 'tag_extraction']);
+    for (const child of initial) {
+      assert.deepEqual(await members(child.id), [{ product_id: first.id }]);
+      await prepared.repository.cancelJob(child.id);
+    }
+    const cancelled = await children();
+    assert.ok(cancelled.every(child => child.status === 'cancelled'));
+    const requestCounts = () => database.selectFrom('ai_job_batches').select(['id', 'request_budget_used', 'confirmed_requests'])
+      .where('job_id', '=', prepared.job.id).orderBy('id').execute();
+    const requestsBefore = await requestCounts();
+    await database.updateTable('shops').set({ enabled: true }).where('id', '=', secondShop.id).execute();
+    await prepared.repository.reapplySavedResults(prepared.job.id);
+    await claim(prepared.batchId, 'publish', 3n, 'partial-recovery');
+    await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 3n, token: 'partial-recovery' });
+    assert.deepEqual(await results(), [
+      { product_id: first.id, status: 'classified', reason_code: null },
+      { product_id: second.id, status: 'classified', reason_code: null },
+    ]);
+    const recovered = await children();
+    assert.equal(recovered.length, 4, 'B needs one new feature child and one new tag child despite existing A children');
+    assert.deepEqual(recovered.filter(child => initial.some(old => old.id === child.id)), cancelled);
+    const additional = recovered.filter(child => !initial.some(old => old.id === child.id));
+    assert.deepEqual(additional.map(child => child.job_type).sort(), ['membership_features', 'tag_extraction']);
+    for (const child of additional) {
+      assert.equal(child.retry_of_job_id, null);
+      assert.deepEqual(await members(child.id), [{ product_id: second.id }], 'the new child must not rerun A');
+    }
+    await Promise.all([
+      database.transaction().execute(tx => finalizeOrScheduleMissing(tx, prepared.job.id)),
+      database.transaction().execute(tx => finalizeOrScheduleMissing(tx, prepared.job.id)),
+    ]);
+    await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 3n, token: 'partial-recovery' });
+    await assert.rejects(prepared.repository.reapplySavedResults(prepared.job.id),
+      error => error instanceof DomainConflictError && error.code === 'AI_REAPPLY_NOT_FOUND');
+    assert.deepEqual(await children(), recovered);
+    assert.deepEqual(await requestCounts(), requestsBefore, 'reapplication must not make another model request');
+    for (const child of initial) assert.deepEqual(await members(child.id), [{ product_id: first.id }]);
+    for (const child of additional) assert.deepEqual(await members(child.id), [{ product_id: second.id }]);
+  });
+
   test('concurrent finalizers create only one bounded missing-id round', async () => {
     const shop = await addShop();
     const source = await addProduct(shop.id, 'ChatGPT Plus missing response');

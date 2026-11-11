@@ -106,20 +106,22 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
  const status=input.status??'unfinished';
  if(!['unfinished','attention','all'].includes(status)) throw new DomainValidationError('INVALID_TASK_FILTER','任务筛选无效');
  const page=normalizePageRequest(input);
- const publication=input.jobType==='tag_extraction'?sql<boolean>`exists(
+ const publication=sql<boolean>`exists(
    select 1 from standard_product_members a join standard_products standard on standard.id=a.standard_product_id
    where a.product_id=p.id and a.assignment_source='ai' and a.publication_state='published'
      and standard.verification_state='verified' and standard.merged_into_id is null
- )`:sql<boolean>`true`;
+     ${input.jobType==='membership_features'?sql`and is_ai_membership(standard.canonical_family,standard.canonical_product,standard.canonical_tier)`:sql``}
+ )`;
+ const eligible=sql<boolean>`p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked
+   ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`}
+   and not ${currentManualDecision}
+   and not exists(select 1 from standard_product_members a where a.product_id=p.id and a.assignment_source='human')
+   and ${publication}`;
  const needsAttention=sql<boolean>`(status='failed' or current_attention>0 or (not configuration_current and status in ('queued','running','paused','ready')))`;
  const result=await sql<{items: Array<Record<string,unknown>>;summary: Record<string,unknown>}>`
  with ${status==='unfinished'?sql``:sql`eligible_products as (
  select p.id from products p join shops s on s.id=p.shop_id
- where p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked
- ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`}
- and not ${currentManualDecision}
- and not exists(select 1 from standard_product_members a where a.product_id=p.id and a.assignment_source='human')
- and ${publication}
+ where ${eligible}
  ),`} current_members as (
   select m.job_id,m.product_id,m.status,j.status job_status,
     m.output->>'outcome' outcome,
@@ -131,16 +133,19 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
   where j.job_type=${input.jobType} and ${unfinished}
     and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION}
     and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
+    ${input.jobType==='membership_features'?sql`and exists(
+      select 1 from products p join shops s on s.id=p.shop_id
+      where p.id=m.product_id and ${eligible}
+        and m.content_version=p.content_version and m.standardization_revision=p.standardization_revision
+        and m.fingerprint=p.content_fingerprint and ${currentTagMemberSource('m')}
+    )`:sql``}
  `:sql`
    join products p on p.id=m.product_id join shops s on s.id=p.shop_id
-  where j.job_type=${input.jobType} ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`} and m.content_version=p.content_version
+  where j.job_type=${input.jobType} and m.content_version=p.content_version
    and m.standardization_revision=p.standardization_revision and m.fingerprint=p.content_fingerprint
    and ${currentTagMemberSource('m')}
    and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
-   and p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked
-   and not ${currentManualDecision}
-   and not exists(select 1 from standard_product_members a where a.product_id=p.id and a.assignment_source='human')
-   and ${publication}
+   and ${eligible}
    and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type=${input.jobType} and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentTagMemberSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${IDENTITY_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`}
  ), current_counts as (
   select job_id,

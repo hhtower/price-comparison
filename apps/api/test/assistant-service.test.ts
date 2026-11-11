@@ -52,7 +52,7 @@ test('understanding prompt examples validate evidence and preserve or explicitly
   const state = harness([{ intent: 'clarify', patch: {}, evidence: [], question: '你想买什么商品？', options: [] }]);
   await state.run();
   assert.match(state.prompts[0]!, /租号、共享、合租=membershipKinds:\["rental"\]/u);
-  assert.match(state.prompts[0]!, /四个枚举值/u);
+  assert.match(state.prompts[0]!, /未分类=membershipKinds:\["unclassified"\]/u);
   const examples = [...state.prompts[0]!.matchAll(/<understanding_example>\s*<input>([\s\S]*?)<\/input>\s*<output>([\s\S]*?)<\/output>\s*<\/understanding_example>/gu)];
   assert.equal(examples.length, 2);
   const needs = examples.map(example => {
@@ -262,6 +262,7 @@ test('AI default remains a hard SQL request with budgets and preferences and nev
 test('explicit natural-language membership and all-category choices reach the query and persist only as user choices', async () => {
   for (const [text, patch] of [
     ['只看短期', { membershipKinds: ['short_term'] }],
+    ['只看未分类', { membershipKinds: ['unclassified'] }],
     ['全部类别', { membershipKinds: null, newcomer: false }],
     ['只看成品号', { membershipKinds: ['account'] }],
   ] as const) {

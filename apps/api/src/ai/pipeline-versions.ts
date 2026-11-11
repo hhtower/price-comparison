@@ -25,6 +25,7 @@ export const PIPELINE_VERSIONS = Object.freeze({
   membershipPolicy: MEMBERSHIP_POLICY_VERSION,
   membershipFeaturePrompt: MEMBERSHIP_FEATURE_PROMPT_VERSION,
   membershipFeatureReviewPrompt: MEMBERSHIP_FEATURE_REVIEW_PROMPT_VERSION,
+  attributeOrder: 'standardization-first-20261112-v1',
 });
 export function pipelineVersionSnapshot(model: string): JsonValue {
   return { ...PIPELINE_VERSIONS, requestedModel: model, applicationBuild: process.env.APP_BUILD_SHA ?? process.env.GIT_COMMIT ?? null };

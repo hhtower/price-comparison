@@ -1,7 +1,7 @@
 import { PURCHASE_GUIDE_CONTENT as guide, PURCHASE_GUIDE_FIELDS, PURCHASE_GUIDE_GROUPS } from '@price-comparison/catalog/purchase-guide-content';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { CATALOG_SEO_CONTENT, PRODUCT_SEO_CONTENT } from '@price-comparison/catalog/seo-content';
-import { MEMBERSHIP_KINDS, membershipKindLabel, type MembershipKind } from '@price-comparison/catalog/membership-policy';
+import { MEMBERSHIP_GROUPS, membershipKindLabel, type MembershipGroup } from '@price-comparison/catalog/membership-policy';
 import type { FastifyAdapter } from '@nestjs/platform-fastify';
 import { decodeCatalogCursor } from '../catalog/catalog.repository.js';
 import type { CatalogOffer, CatalogPage, PublicCatalogProduct, PublicCatalogProducts } from '../catalog/catalog.repository.js';
@@ -65,7 +65,7 @@ function seoFaq(product = false): string {
 }
 
 function catalogContent(page: CatalogPage): string {
-  const cards = page.items.flatMap<CatalogPage['items'][number] & { membershipKind?: MembershipKind }>(item => item.isAiMembership || item.membershipGroups
+  const cards = page.items.flatMap<CatalogPage['items'][number] & { membershipKind?: MembershipGroup }>(item => item.isAiMembership || item.membershipGroups
     ? (item.membershipGroups ?? []).filter(group => group.productCount > 0)
       .map(group => ({ ...item, offers: group.offers, membershipKind: group.kind }))
     : [{ ...item, membershipKind: undefined }]);
@@ -175,8 +175,8 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
       .send(renderPage(options.template, 'public', origin, '<h1>' + message + '</h1>', true));
     if (!pageNumber) return missing('商品分页不存在');
     if (!/^[1-9][0-9]{0,18}$/u.test(id) || BigInt(id) >= 2n ** 63n) return missing();
-    if (kind !== undefined && !MEMBERSHIP_KINDS.includes(kind as MembershipKind)) return missing();
-    const membershipKind = kind as MembershipKind | undefined;
+    if (kind !== undefined && !MEMBERSHIP_GROUPS.includes(kind as MembershipGroup)) return missing();
+    const membershipKind = kind as MembershipGroup | undefined;
     try {
       const product = await options.getProduct(id);
       if (!product) return missing();

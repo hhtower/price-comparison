@@ -3,11 +3,11 @@ import { sql, type Kysely } from 'kysely';
 import { DATABASE } from '../database/database.providers.js';
 import type { DatabaseSchema } from '../database/types.js';
 import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './quote-policy.js';
-import type { MembershipKind } from '@price-comparison/catalog/membership-policy';
+import type { MembershipGroup } from '@price-comparison/catalog/membership-policy';
 import { catalogMembershipKind } from '../standardization/membership-classification.js';
 
 export interface PriceHistoryScope {
-  readonly membershipKinds?: readonly MembershipKind[];
+  readonly membershipKinds?: readonly MembershipGroup[];
   readonly newcomer?: boolean;
 }
 
@@ -38,7 +38,7 @@ export class PriceHistoryRepository {
     const ai = sql<boolean>`is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier)`;
     const kind = catalogMembershipKind(ai);
     const membershipScope = scope.membershipKinds?.length
-      ? sql`and ${kind} = any(${scope.membershipKinds}::text[])`
+      ? sql`and ${ai} and coalesce(${kind}, 'unclassified') = any(${scope.membershipKinds}::text[])`
       : scope.newcomer ? sql`and (not ${ai} or ${kind} in ('account', 'top_up'))` : sql``;
     const result = await sql<Omit<PriceHistoryPoint, 'verifiedAt'> & { verifiedAt: Date }>`
       select distinct on ((h.verified_at at time zone 'Asia/Shanghai')::date)

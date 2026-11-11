@@ -110,15 +110,6 @@ function activeStandardizationBatch(windowSize: number) { return sql`exists (
   select 1 from ai_jobs j
   where j.id = q.job_id
     and (${readAiStandardizationFeatures().tagExtractionEnabled} or j.job_type <> 'tag_extraction')
-    and not exists (
-      select 1 from ai_jobs prerequisite where prerequisite.parent_identity_job_id=j.id
-        and prerequisite.job_type='membership_features'
-        and prerequisite.status not in ('succeeded','ready_with_errors','failed','cancelled')
-    )
-    and (j.job_type <> 'membership_features' or j.parent_identity_job_id is null or exists (
-      select 1 from ai_jobs parent where parent.id=j.parent_identity_job_id
-        and parent.status not in ('paused','cancelled','failed') and not parent.pause_requested and not parent.cancel_requested
-    ))
     and j.prompt_version = ${STANDARDIZATION_PROMPT_VERSION}
     and j.rule_version = ${IDENTITY_POLICY_VERSION}
     and j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
@@ -335,7 +326,7 @@ export class JobsRepository {
   private async completeStandardizationBatch(id: bigint, workerId: string): Promise<void> {
     await this.database.transaction().execute(async tx => {
       const located = await tx.selectFrom('ai_job_batches').select('job_id').where('id', '=', id).executeTakeFirstOrThrow();
-      const job = await tx.selectFrom('ai_jobs').select(['id', 'job_type', 'parent_identity_job_id'])
+      await tx.selectFrom('ai_jobs').select('id')
         .where('id', '=', located.job_id).forUpdate().executeTakeFirstOrThrow();
       const batch = await tx.selectFrom('ai_job_batches').select(['status', 'step', 'claimed_by', 'lease_until'])
         .where('id', '=', id).forUpdate().executeTakeFirstOrThrow();
@@ -346,8 +337,6 @@ export class JobsRepository {
       // Preparation commits its own fenced completion; an older claim may finish after resume.
       if (batch.step === 'prepare') return;
       if (batch.status === 'queued' && (batch.step === 'publish' || batch.step === 'done')) return;
-      if (batch.status === 'queued' && batch.step === 'request' && batch.claimed_by === null
-        && job.job_type === 'membership_features' && job.parent_identity_job_id !== null) return;
       if (batch.status !== 'running' || batch.claimed_by !== workerId || batch.lease_until === null || batch.lease_until <= new Date()) {
         if (['failed', 'cancelled'].includes(batch.status)) return;
         throw new Error('lease owner or lease expired');

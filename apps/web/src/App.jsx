@@ -7,7 +7,7 @@ import AssistantWidget from './AssistantWidget.jsx';
 import AssistantLoading from './AssistantLoading.jsx';
 import McpPage from './McpPage.jsx';
 import { updatePageMetadata } from './page-metadata.js';
-import { MEMBERSHIP_KINDS } from '@price-comparison/catalog/membership-policy';
+import { MEMBERSHIP_GROUPS } from '@price-comparison/catalog/membership-policy';
 import './styles.css';
 import './public-catalog.css';
 import './quality-tools.css';
@@ -58,7 +58,7 @@ export default function App() {
   if (route === 'mcp') return <McpPage />;
   const productRoute = /^\/products\/([^/]+)(?:\/features\/([^/]+))?$/.exec(route);
   const membershipKind = productRoute?.[2];
-  const invalidProductRoute = route.startsWith('/products/') && (!productRoute || membershipKind !== undefined && !MEMBERSHIP_KINDS.includes(membershipKind));
+  const invalidProductRoute = route.startsWith('/products/') && (!productRoute || membershipKind !== undefined && !MEMBERSHIP_GROUPS.includes(membershipKind));
   return <>
     {route === 'guide' ? <PurchaseGuidePage /> : route === 'tools' ? <QualityToolsPage referenceRef={setReferenceTarget} />
       : <PublicPage productId={route.startsWith('/products/') ? productRoute?.[1] || route.slice('/products/'.length) : undefined} membershipKind={membershipKind} invalidProductRoute={invalidProductRoute} onPlatformChange={setCatalogPlatform} assistantEnabled={assistantEnabled} referenceRef={setReferenceTarget} />}

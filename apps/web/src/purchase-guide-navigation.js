@@ -1,4 +1,4 @@
-import { MEMBERSHIP_KINDS } from '@price-comparison/catalog/membership-policy';
+import { MEMBERSHIP_GROUPS } from '@price-comparison/catalog/membership-policy';
 
 export function purchaseGuideHref(field = '') {
   const source = window.location.pathname + window.location.search + window.location.hash;
@@ -16,7 +16,7 @@ export function purchaseGuideReturnHref() {
   try {
     const url = new URL(source, window.location.origin);
     const product = /^\/products\/[^/]+(?:\/features\/([^/]+))?\/?$/u.exec(url.pathname);
-    if (url.origin === window.location.origin && (url.pathname === '/' || product && (!product[1] || MEMBERSHIP_KINDS.includes(product[1])))) {
+    if (url.origin === window.location.origin && (url.pathname === '/' || product && (!product[1] || MEMBERSHIP_GROUPS.includes(product[1])))) {
       return url.pathname + url.search + url.hash;
     }
   } catch { /* Invalid return addresses fall back to the catalog. */ }

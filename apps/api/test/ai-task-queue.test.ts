@@ -40,7 +40,7 @@ for (const status of ['all', 'unfinished', 'attention']) {
 }
 
 for (const jobType of ['tag_extraction', 'membership_features']) {
-test(`active ${jobType} summaries count unfinished task members without reading product coverage or historical outcomes`, async () => {
+test(`active ${jobType} summaries count unfinished members with the applicable eligibility guard`, async () => {
   const queries: CompiledQuery[] = [];
   class Driver extends DummyDriver {
     async acquireConnection(): Promise<any> {
@@ -59,7 +59,12 @@ test(`active ${jobType} summaries count unfinished task members without reading 
     assert.deepEqual(result.summary, { total: 0, pendingProducts: 0 });
     assert.equal(queries.length, 1);
     const query = queries[0]!.sql;
-    assert.doesNotMatch(query, /eligible_products|content_version|content_fingerprint|product_standardization_decisions|standard_product_members|from products/u);
+    assert.doesNotMatch(query, /eligible_products/u);
+    if (jobType === 'membership_features') {
+      assert.match(query, /is_ai_membership/u);
+      assert.match(query, /publication_state='published'/u);
+      assert.match(query, /verification_state='verified'/u);
+    } else assert.doesNotMatch(query, /content_version|content_fingerprint|product_standardization_decisions|standard_product_members|from products/u);
     assert.match(query, /where j\.job_type=\$\d+ and j\.status in \('queued', 'running', 'paused', 'ready'\)/u);
     assert.ok(queries[0]!.parameters.includes(jobType));
     assert.ok(!queries[0]!.parameters.includes(jobType === 'tag_extraction' ? 'membership_features' : 'tag_extraction'));

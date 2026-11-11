@@ -10,6 +10,8 @@ import { AiService } from '../src/ai/ai.service.js';
 import { AiController } from '../src/ai/ai.controller.js';
 import { AiAdminController } from '../src/ai/ai-admin.controller.js';
 import { getJobProgress } from '../src/ai/ai-progress.repository.js';
+import { AdminController } from '../src/admin/admin.controller.js';
+import { AdminRepository } from '../src/admin/admin.repository.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, repository: AiRepository, controller: AiController;
 const schema = `membership_feature_admin_${randomUUID().replaceAll('-', '')}`;
@@ -37,13 +39,19 @@ after(async () => {
 async function product() {
   const shop = await db.insertInto('shops').values({ name: 'feature admin', platform: 'test', enabled: true,
     url: `https://${randomUUID()}.invalid` }).returning('id').executeTakeFirstOrThrow();
-  return db.insertInto('products').values({
+  const item = await db.insertInto('products').values({
     shop_id: shop.id, external_id: '1', name: 'ChatGPT Plus 账号 保订阅', spec: '',
     normalized_key: randomUUID(), content_fingerprint: randomUUID(), url: '',
   }).returning('id').executeTakeFirstOrThrow();
+  const standard = await db.insertInto('standard_products').values({ name: 'ChatGPT Plus',
+    canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus', verification_state: 'verified' })
+    .returning('id').executeTakeFirstOrThrow();
+  await db.insertInto('standard_product_members').values({ product_id: item.id, standard_product_id: standard.id,
+    assignment_source: 'ai', publication_state: 'published' }).execute();
+  return item;
 }
 
-test('feature admin previews unassigned products, creates a separate job and exposes reviewed feature audits with tags disabled', async () => {
+test('feature admin previews published AI products, creates a separate job and exposes reviewed feature audits with tags disabled', async () => {
   const item = await product();
   const scope = { productIds: [String(item.id)] };
   const preview = await controller.previewFeatures(scope);
@@ -54,7 +62,8 @@ test('feature admin previews unassigned products, creates a separate job and exp
   const job = await db.selectFrom('ai_jobs').selectAll().where('id', '=', jobId).executeTakeFirstOrThrow();
   assert.equal(job.job_type, 'membership_features');
   assert.equal(job.model, 'local-feature-test');
-  assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', item.id).execute(), []);
+  assert.equal((await db.selectFrom('standard_product_members').select('publication_state')
+    .where('product_id', '=', item.id).executeTakeFirstOrThrow()).publication_state, 'published');
   const queue = await new AiAdminController(repository).taskQueue('10', undefined, 'all', 'membership_features');
   assert.ok(queue.items.some(row => String(row.id) === String(jobId)));
   const classification = { kind: 'account', reason: 'llm_reviewed', durationSource: 'default', requiredWarrantyDays: null };
@@ -103,6 +112,23 @@ test('feature admin previews unassigned products, creates a separate job and exp
     assert.deepEqual((await getJobProgress(db, jobId))?.featureAcceptance, { acceptedProducts: accepted, rejectedProducts: rejected });
   }
   await controller.cancel(String(jobId));
+});
+
+test('admin identifies unclassified AI quotes only from a published verified standard', async () => {
+  const item = await product();
+  const adminController = new AdminController(new AdminRepository(db));
+  const read = async () => (await adminController.listProducts({})).items.find(row => row.id === String(item.id))!;
+  assert.equal((await read()).isAiMembership, true);
+  assert.equal((await read()).membershipFeatures, null);
+  await db.insertInto('product_tags').values({ product_id: item.id, name: 'delivery', value: 'account' }).execute();
+  const tagged = await adminController.listTagProducts({ name: 'delivery', value: 'account' });
+  assert.equal(tagged.items.find(row => row.id === String(item.id))?.isAiMembership, true);
+  await db.updateTable('standard_product_members').set({ publication_state: 'provisional' }).where('product_id', '=', item.id).execute();
+  assert.equal((await read()).isAiMembership, false);
+  await db.updateTable('standard_product_members').set({ publication_state: 'published' }).where('product_id', '=', item.id).execute();
+  const assignment = await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', item.id).executeTakeFirstOrThrow();
+  await db.updateTable('standard_products').set({ canonical_tier: 'free' }).where('id', '=', assignment.standard_product_id).execute();
+  assert.equal((await read()).isAiMembership, false);
 });
 
 test('feature allPending creation uses the shared preparation and pause/resume/cancel paths without model calls', async () => {

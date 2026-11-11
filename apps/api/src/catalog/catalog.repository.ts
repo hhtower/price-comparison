@@ -9,7 +9,7 @@ import { catalogOrderRank, catalogPlatformGroup, OTHER_CATALOG_RANK } from './ca
 import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './quote-policy.js';
 import { CATALOG_DISPLAY_SEARCH_LABELS, CATALOG_PRODUCT_ALIASES, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { PriceHistoryRepository } from './price-history.repository.js';
-import { isAiMembership, MEMBERSHIP_KINDS, type MembershipKind } from '@price-comparison/catalog/membership-policy';
+import { isAiMembership, MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { catalogMembershipKind } from '../standardization/membership-classification.js';
 
 export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly identityNames?: readonly string[]; readonly kind: string; readonly mergedIntoId?: string;
@@ -39,7 +39,7 @@ type ProductMetadataRow = Parameters<typeof productMetadata>[0];
 
 function membershipScope(input: Pick<CatalogQuery, 'newcomer' | 'membershipKinds' | 'membershipSearch'>,
   ai: RawBuilder<boolean>, kind: RawBuilder<MembershipKind | null>): RawBuilder<boolean> {
-  if (input.membershipKinds?.length) return sql<boolean>`${kind} = any(${input.membershipKinds}::text[])`;
+  if (input.membershipKinds?.length) return sql<boolean>`(${ai} and coalesce(${kind}, 'unclassified') = any(${input.membershipKinds}::text[]))`;
   if (input.membershipSearch) return sql<boolean>`(not (${ai}) or ${kind} = any(${input.membershipSearch.kinds}::text[]))`;
   return input.newcomer ? sql<boolean>`(not (${ai}) or ${kind} in ('account', 'top_up'))` : sql<boolean>`true`;
 }
@@ -64,7 +64,7 @@ export interface CatalogQuery {
   readonly search?: string;
   readonly warrantyDaysMin?: number;
   readonly newcomer?: boolean;
-  readonly membershipKinds?: readonly MembershipKind[];
+  readonly membershipKinds?: readonly MembershipGroup[];
   readonly membershipSearch?: { readonly kinds: readonly MembershipKind[]; readonly delivery: boolean; readonly access?: boolean; readonly terms: readonly string[] };
   readonly tags: readonly CatalogTag[];
   readonly cursor?: string;
@@ -99,7 +99,7 @@ export interface CatalogOffer {
 }
 
 export interface CatalogMembershipGroup {
-  readonly kind: MembershipKind;
+  readonly kind: MembershipGroup;
   readonly shopCount: number;
   readonly productCount: number;
   readonly minPrice: string | null;
@@ -141,7 +141,7 @@ export interface CatalogPage {
   readonly platformFacets: readonly string[];
   readonly total: number;
   readonly offerTotal?: number;
-  readonly appliedQuery?: { readonly text: string; readonly tags: readonly CatalogTag[]; readonly warrantyDaysMin?: number; readonly membershipKinds?: readonly MembershipKind[] };
+  readonly appliedQuery?: { readonly text: string; readonly tags: readonly CatalogTag[]; readonly warrantyDaysMin?: number; readonly membershipKinds?: readonly MembershipGroup[] };
   readonly nextCursor?: string;
 }
 
@@ -597,7 +597,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
         page.product_count, page.shop_count, page.latest_captured_at
     ), membership_skus as materialized (
       select e.* from filtered_skus e join visible_page page using (standard_product_id)
-      where page.is_ai_membership and e.membership_kind is not null
+      where page.is_ai_membership
     ), membership_counts as (
       select standard_product_id, membership_kind, count(distinct shop_id)::int as shop_count, count(*)::int as product_count,
         min(price)::text as min_price, max(price)::text as max_price, max(captured_at) as latest_captured_at
@@ -615,11 +615,11 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       join catalog_shops sh on sh.shop_id = g.shop_id where g.group_rank <= 4
     ), membership_groups as (
       select c.standard_product_id, jsonb_agg(jsonb_build_object(
-        'kind', c.membership_kind, 'shopCount', c.shop_count, 'productCount', c.product_count,
+        'kind', coalesce(c.membership_kind, 'unclassified'), 'shopCount', c.shop_count, 'productCount', c.product_count,
         'minPrice', c.min_price, 'maxPrice', c.max_price, 'latestCapturedAt', c.latest_captured_at,
         'offers', (select jsonb_agg(${offerPayload('g')} order by g.group_rank) from membership_preview g
-          where g.standard_product_id = c.standard_product_id and g.membership_kind = c.membership_kind)
-      ) order by array_position(${[...MEMBERSHIP_KINDS]}::text[], c.membership_kind)) as groups
+          where g.standard_product_id = c.standard_product_id and g.membership_kind is not distinct from c.membership_kind)
+      ) order by array_position(${[...MEMBERSHIP_GROUPS]}::text[], coalesce(c.membership_kind, 'unclassified'))) as groups
       from membership_counts c group by c.standard_product_id
     ), returned_shop_ids as materialized (
       select distinct shop_id from preview_skus

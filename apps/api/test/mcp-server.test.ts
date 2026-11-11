@@ -277,7 +277,7 @@ test('MCP history carries feature scope with product and currency through shared
   for (const scope of [
     { membershipKinds: [] }, { membershipKinds: ['unknown'] }, { membershipKinds: ['account', 'bad'] },
     { membershipKinds: 'account' }, { membershipKinds: null },
-    { membershipKinds: ['account', 'top_up', 'rental', 'short_term', 'account'] }, { newcomer: 'true' }, { newcomer: null },
+    { membershipKinds: ['account', 'top_up', 'rental', 'short_term', 'unclassified', 'account'] }, { newcomer: 'true' }, { newcomer: null },
   ]) {
     const result = (await call('get_price_history', { standardProductId: '1', ...scope })).json();
     assert.ok(result.result?.isError || result.error);
@@ -303,9 +303,21 @@ test('membership filters stay distinct from delivery and reject invalid kinds ov
   assert.equal(queries.length, 2);
 });
 
-test('MCP accepts rental and all four kinds for search and offers and rejects a fifth entry', async t => {
+test('MCP forwards unclassified queries for search, offers and history', async t => {
+  const { call, queries, historyQueries } = await harness(t);
+  for (const membershipKinds of [['unclassified'], ['account', 'unclassified']]) {
+    for (const name of ['search_products', 'get_product_offers', 'get_price_history']) {
+      const args = { membershipKinds, newcomer: true, ...(name === 'search_products' ? {} : { standardProductId: '1' }) };
+      assert.equal((await call(name, args)).json().result.isError, undefined);
+      if (name === 'get_price_history') assert.deepEqual(historyQueries.at(-1), ['1', undefined, 'CNY', { membershipKinds, newcomer: true }]);
+      else assert.deepEqual(queries.at(-1)?.membershipKinds, membershipKinds);
+    }
+  }
+});
+
+test('MCP accepts rental and all query groups for search and offers and rejects a sixth entry', async t => {
   const { call, queries } = await harness(t);
-  for (const membershipKinds of [['rental'], ['account', 'top_up', 'rental', 'short_term']]) {
+  for (const membershipKinds of [['rental'], ['account', 'top_up', 'rental', 'short_term', 'unclassified']]) {
     for (const name of ['search_products', 'get_product_offers']) {
       const args = { membershipKinds, newcomer: true, ...(name === 'get_product_offers' ? { standardProductId: '1' } : {}) };
       assert.equal((await call(name, args)).json().result.isError, undefined);
@@ -313,7 +325,7 @@ test('MCP accepts rental and all four kinds for search and offers and rejects a 
       assert.equal(queries.at(-1)?.newcomer, true);
     }
   }
-  const invalid = await call('search_products', { membershipKinds: ['account', 'top_up', 'rental', 'short_term', 'rental'] });
+  const invalid = await call('search_products', { membershipKinds: ['account', 'top_up', 'rental', 'short_term', 'unclassified', 'rental'] });
   assert.ok(invalid.json().result?.isError || invalid.json().error);
   assert.equal(queries.length, 4);
 });

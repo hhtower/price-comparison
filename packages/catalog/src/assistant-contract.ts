@@ -1,5 +1,5 @@
 import { isCanonicalProductTag, PRODUCT_TAG_RULES } from './product-tag-policy.js';
-import { MEMBERSHIP_KINDS, type MembershipKind } from './membership-policy.js';
+import { MEMBERSHIP_KINDS, MEMBERSHIP_GROUPS, type MembershipKind, type MembershipGroup } from './membership-policy.js';
 
 export const ASSISTANT_LIMITS = Object.freeze({
   userTextMaxChars: 2000,
@@ -61,7 +61,7 @@ export type ShoppingNeeds = {
   requiredTags: Array<{ name: string; value: string }>;
   warrantyDaysMin: number | null;
   preferences: Array<typeof ASSISTANT_PREFERENCES[number]>;
-  membershipKinds?: MembershipKind[] | null;
+  membershipKinds?: MembershipGroup[] | null;
   newcomer?: boolean;
 };
 export type NeedsPatch = Partial<ShoppingNeeds>;
@@ -230,8 +230,8 @@ export function validateNeedsPatch(value: unknown): NeedsPatch {
           item => choice(item, ASSISTANT_PREFERENCES, field)));
         break;
       case 'membershipKinds':
-        patch.membershipKinds = entry === null ? null : unique(list(entry, MEMBERSHIP_KINDS.length,
-          item => choice(item, MEMBERSHIP_KINDS, field), 1));
+        patch.membershipKinds = entry === null ? null : unique(list(entry, MEMBERSHIP_GROUPS.length,
+          item => choice(item, MEMBERSHIP_GROUPS, field), 1));
         break;
       case 'newcomer':
         if (typeof entry !== 'boolean') invalid(field);

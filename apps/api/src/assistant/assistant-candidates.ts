@@ -45,7 +45,7 @@ export function isBeginnerRecommendation(candidate: AssistantCandidate, needs: S
 function matchesMembership(candidate: AssistantCandidate, needs: ShoppingNeeds): boolean {
   const { standardProduct: product, offer } = candidate;
   if (needs.membershipKinds?.length) return isMembershipProduct(product)
-    && offer.membershipKind != null && needs.membershipKinds.includes(offer.membershipKind);
+    && needs.membershipKinds.includes(offer.membershipKind ?? 'unclassified');
   return needs.newcomer === false || !isMembershipProduct(product)
     || offer.membershipKind === 'account' || offer.membershipKind === 'top_up';
 }

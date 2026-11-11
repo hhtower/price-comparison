@@ -144,7 +144,7 @@ test('validates history parameters before querying and returns no private source
   assert.equal('source_data' in point, false);
 });
 
-test('history scopes separate membership daily minima and group unknown AI features only at read time', async () => {
+test('history scopes separate membership daily minima and keep unknown AI features unclassified', async () => {
   await db.updateTable('standard_products').set({ canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus' })
     .where('id', '=', standard).execute();
   const ids: Record<string, bigint> = { unknown: product };
@@ -176,14 +176,18 @@ test('history scopes separate membership daily minima and group unknown AI featu
   assert.deepEqual(await prices({ membershipKind: 'account' }), [['2026-10-13', '40.00'], ['2026-10-14', '39']]);
   assert.deepEqual(await prices({ membershipKind: 'top_up' }), [['2026-10-13', '30.00'], ['2026-10-14', '29']]);
   assert.deepEqual(await prices({ membershipKind: 'rental' }), [['2026-10-13', '10.00'], ['2026-10-14', '9']]);
-  assert.deepEqual(await prices({ membershipKind: 'short_term' }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
+  assert.deepEqual(await prices({ membershipKind: 'short_term' }), [['2026-10-13', '8.00'], ['2026-10-14', '7']]);
   assert.deepEqual(await prices({ membershipKind: ['account', 'top_up'] }), [['2026-10-13', '30.00'], ['2026-10-14', '29']]);
   assert.deepEqual(await prices({ membershipKinds: ['account', 'top_up'] }), await prices({ membershipKind: ['account', 'top_up'] }));
   assert.deepEqual(await prices({ newcomer: 'true' }), [['2026-10-13', '30.00'], ['2026-10-14', '29']]);
-  assert.deepEqual(await prices({ newcomer: 'true', membershipKind: ['rental', 'short_term'] }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
+  assert.deepEqual(await prices({ newcomer: 'true', membershipKind: ['rental', 'short_term'] }), [['2026-10-13', '8.00'], ['2026-10-14', '7']]);
   assert.deepEqual(await prices({ membershipKind: ['account'], productId: String(ids.rental) }), []);
   assert.deepEqual(await prices({ membershipKind: 'account', currency: 'USD', productId: String(dollars) }), [['2026-10-13', '0.50']]);
-  assert.deepEqual(await prices({ membershipKind: 'short_term', productId: String(product) }), [['2026-10-13', '2.00']]);
+  assert.deepEqual(await prices({ membershipKind: 'short_term', productId: String(product) }), []);
+  assert.deepEqual(await prices({ membershipKind: 'short_term', productId: String(staleId) }), []);
+  assert.deepEqual(await prices({ membershipKind: 'unclassified', newcomer: true }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
+  assert.deepEqual(await prices({ membershipKind: ['account', 'unclassified'] }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
+  assert.deepEqual(await prices({}), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
   assert.equal((await db.selectFrom('products').select('membership_features').where('id', '=', product).executeTakeFirstOrThrow()).membership_features, null);
 
   const current = await db.selectFrom('products').selectAll().where('id', '=', ids.account!).executeTakeFirstOrThrow();
@@ -200,6 +204,8 @@ test('newcomer history keeps non-AI products while explicit membership kinds exc
     .where('id', '=', standard).execute();
   await quote();
   assert.equal((await history.get(String(standard), undefined, 'CNY', { newcomer: true })).points.length, 1);
+  const service = new CatalogService(new CatalogRepository(db, { now: () => now, ttlMs: 8100000 }), {} as never);
+  assert.deepEqual((await service.getPriceHistory(String(standard), undefined, 'CNY', { membershipKind: 'unclassified' })).points, []);
   for (const kind of ['account', 'top_up', 'rental', 'short_term'] as MembershipKind[]) {
     assert.deepEqual((await history.get(String(standard), undefined, 'CNY', { membershipKinds: [kind], newcomer: true })).points, []);
   }
@@ -210,7 +216,7 @@ test('history rejects malformed membership and newcomer filters through the publ
   const controller = new CatalogController(service);
   for (const scope of [
     { membershipKind: 'unknown' }, { membershipKind: [] }, { membershipKind: ['account', 'unknown'] },
-    { membershipKind: null }, { membershipKind: {} }, { membershipKind: ['account', 'top_up', 'rental', 'short_term', 'account'] },
+    { membershipKind: null }, { membershipKind: {} }, { membershipKind: ['account', 'top_up', 'rental', 'short_term', 'unclassified', 'account'] },
     { membershipKinds: 'account' }, { membershipKind: 'account', membershipKinds: ['rental'] },
     { newcomer: 'yes' }, { newcomer: ['true', 'false'] }, { newcomer: null },
   ]) {
