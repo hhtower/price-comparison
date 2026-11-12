@@ -10,7 +10,7 @@ import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './qu
 import { CATALOG_DISPLAY_SEARCH_LABELS, CATALOG_PRODUCT_ALIASES, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { PriceHistoryRepository } from './price-history.repository.js';
 import { isAiMembership, MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
-import { catalogMembershipKind } from '../standardization/membership-classification.js';
+import { catalogMembershipKind, failedMembershipFeatures } from '../standardization/membership-classification.js';
 
 export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly identityNames?: readonly string[]; readonly kind: string; readonly mergedIntoId?: string;
   readonly identity?: { family: string; product: string; tier: string }; readonly isAiMembership?: boolean }
@@ -38,8 +38,9 @@ function productMetadata(row: { id: string; name: string; platform: string; plat
 type ProductMetadataRow = Parameters<typeof productMetadata>[0];
 
 function membershipScope(input: Pick<CatalogQuery, 'newcomer' | 'membershipKinds' | 'membershipSearch'>,
-  ai: RawBuilder<boolean>, kind: RawBuilder<MembershipKind | null>): RawBuilder<boolean> {
-  if (input.membershipKinds?.length) return sql<boolean>`(${ai} and coalesce(${kind}, 'unclassified') = any(${input.membershipKinds}::text[]))`;
+  ai: RawBuilder<boolean>, kind: RawBuilder<MembershipKind | null>, failed: RawBuilder<boolean>): RawBuilder<boolean> {
+  if (input.membershipKinds?.length) return sql<boolean>`(${ai} and coalesce(${kind}, 'unclassified') = any(${input.membershipKinds}::text[])
+    ${input.membershipKinds.includes('unclassified') ? sql`and (${kind} is not null or ${failed})` : sql``})`;
   if (input.membershipSearch) return sql<boolean>`(not (${ai}) or ${kind} = any(${input.membershipSearch.kinds}::text[]))`;
   return input.newcomer ? sql<boolean>`(not (${ai}) or ${kind} in ('account', 'top_up'))` : sql<boolean>`true`;
 }
@@ -308,7 +309,7 @@ export class CatalogRepository {
       join shops sh on sh.id = r.shop_id
       join products p on p.id = r.product_id
       where r.standard_product_id = ${input.standardProductId}::bigint
-        and ${membershipScope(input, ai, kind)}
+        and ${membershipScope(input, ai, kind, failedMembershipFeatures())}
         and ${publicStandard('sp')} and sh.enabled = true and sh.deleted_at is null
         and ${price} >= 0 and ${price} < 'Infinity'::numeric
         ${input.currency ? sql`and r.currency = ${input.currency}` : sql``}
@@ -365,6 +366,8 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   const ai = sql<boolean>`coalesce((select is_ai_membership from catalog_standards where id = r.standard_product_id), false)`;
   const kind = sql<MembershipKind | null>`case when ${ai} then (select ${catalogMembershipKind(sql<boolean>`true`, 'p', 'source_shop')}
     from products p join shops source_shop on source_shop.id = p.shop_id where p.id = r.product_id) end`;
+  const failed = sql<boolean>`(select ${failedMembershipFeatures('p', 'source_shop')}
+    from products p join shops source_shop on source_shop.id = p.shop_id where p.id = r.product_id)`;
   const verified = sql`r.settlement_price is not null and r.settlement_price >= 0 and r.settlement_price < 'Infinity'::numeric
     and r.settlement_verified_at is not null and nullif(btrim(r.settlement_payment_method), '') is not null`;
   const price = pricesOnly ? sql`r.price` : sql`case when ${verified} then r.settlement_price else r.listed_price end`;
@@ -375,7 +378,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     case when ${verified} then r.settlement_payment_method else '支付价（预估：售价）' end as payment_method,
     case when ${verified} then coalesce(r.settlement_quantity, 1) else 1 end as settlement_quantity`;
   const limit = catalogPageLimit(input.limit);
-  const conditions = [sql`r.available = true`, membershipScope(input, ai, kind)];
+  const conditions = [sql`r.available = true`, membershipScope(input, ai, kind, failed)];
   if (input.shopId) conditions.push(sql`r.shop_id = ${input.shopId}::bigint`);
   if (input.shopQuery) conditions.push(sql`r.shop_id in (select shop_id from catalog_shops
     where search_text like lower(${`%${input.shopQuery.replace(/[\\%_]/gu, '\\$&')}%`}))`);
@@ -598,6 +601,8 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     ), membership_skus as materialized (
       select e.* from filtered_skus e join visible_page page using (standard_product_id)
       where page.is_ai_membership
+        and (e.membership_kind is not null or (select ${failedMembershipFeatures('p', 'source_shop')}
+          from products p join shops source_shop on source_shop.id = p.shop_id where p.id = e.product_id))
     ), membership_counts as (
       select standard_product_id, membership_kind, count(distinct shop_id)::int as shop_count, count(*)::int as product_count,
         min(price)::text as min_price, max(price)::text as max_price, max(captured_at) as latest_captured_at

@@ -70,3 +70,16 @@ export function currentMembershipKind(productAlias = 'p', shopAlias = 'sh'): Raw
 export function catalogMembershipKind(ai: RawBuilder<boolean>, productAlias = 'p', shopAlias = 'sh'): RawBuilder<MembershipKind | null> {
   return sql<MembershipKind | null>`case when ${ai} then ${currentMembershipKind(productAlias, shopAlias)} end`;
 }
+
+export function failedMembershipFeatures(productAlias = 'p', shopAlias = 'sh'): RawBuilder<boolean> {
+  const p = sql.table(productAlias), sh = sql.table(shopAlias);
+  return sql<boolean>`coalesce((
+    select m.status in ('unclassified', 'failed')
+    from ai_job_input_members m join ai_jobs j on j.id = m.job_id
+    where m.product_id = ${p}.id and j.job_type = 'membership_features'
+      and m.content_version = ${p}.content_version and m.fingerprint = ${p}.content_fingerprint
+      and m.standardization_revision = ${p}.standardization_revision
+      and m.payload->'shopSource' = jsonb_build_object('url', ${sh}.url, 'protocol', ${sh}.protocol, 'platform', ${sh}.platform)
+    order by j.id desc limit 1
+  ), false)`;
+}

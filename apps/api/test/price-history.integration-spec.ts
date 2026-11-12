@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
@@ -144,7 +144,7 @@ test('validates history parameters before querying and returns no private source
   assert.equal('source_data' in point, false);
 });
 
-test('history scopes separate membership daily minima and keep unknown AI features unclassified', async () => {
+test('history scopes separate membership daily minima and include only failed AI features as unclassified', async () => {
   await db.updateTable('standard_products').set({ canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus' })
     .where('id', '=', standard).execute();
   const ids: Record<string, bigint> = { unknown: product };
@@ -164,6 +164,16 @@ test('history scopes separate membership daily minima and keep unknown AI featur
   await db.updateTable('products').set({ membership_features: jsonb({ ...buildMembershipFeatures([], staleProduct, [], 'account'),
     policyVersion: 'stale' } as unknown as JsonValue) }).where('id', '=', staleId).execute();
   await quote(staleId, '3.00', '2026-10-14T10:00:00Z');
+  assert.deepEqual((await history.get(String(standard), undefined, 'CNY', { membershipKinds: ['unclassified'] })).points, []);
+  const featureJob = await db.insertInto('ai_jobs').values({ status: 'failed', total: 2n, model: 'test', job_type: 'membership_features' })
+    .returning('id').executeTakeFirstOrThrow();
+  await sql`insert into ai_job_inputs (job_id, input_id, fingerprint, payload)
+    select ${featureJob.id}, id, content_fingerprint, '{}'::jsonb from products where id in (${product}, ${staleId})`.execute(db);
+  await sql`insert into ai_job_input_members (job_id, input_id, product_id, content_version, fingerprint,
+    standardization_revision, payload, status)
+    select ${featureJob.id}, p.id, p.id, p.content_version, p.content_fingerprint, p.standardization_revision,
+      jsonb_build_object('shopSource', jsonb_build_object('url', sh.url, 'protocol', sh.protocol, 'platform', sh.platform)), 'unclassified'
+    from products p join shops sh on sh.id = p.shop_id where p.id in (${product}, ${staleId})`.execute(db);
   const dollars = await addProduct('dollar-account');
   const dollarProduct = await db.selectFrom('products').selectAll().where('id', '=', dollars).executeTakeFirstOrThrow();
   await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], dollarProduct, [], 'account') as unknown as JsonValue) })
@@ -187,6 +197,13 @@ test('history scopes separate membership daily minima and keep unknown AI featur
   assert.deepEqual(await prices({ membershipKind: 'short_term', productId: String(staleId) }), []);
   assert.deepEqual(await prices({ membershipKind: 'unclassified', newcomer: true }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
   assert.deepEqual(await prices({ membershipKind: ['account', 'unclassified'] }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
+  for (const status of ['queued', 'processing', 'cancelled', 'classified']) {
+    await db.updateTable('ai_job_input_members').set({ status }).where('job_id', '=', featureJob.id).execute();
+    assert.deepEqual(await prices({ membershipKind: 'unclassified' }), [], status);
+    assert.deepEqual(await prices({ membershipKind: ['account', 'unclassified'] }), [['2026-10-13', '40.00'], ['2026-10-14', '39']], status);
+  }
+  await db.updateTable('ai_job_input_members').set({ status: 'failed' }).where('job_id', '=', featureJob.id).execute();
+  assert.deepEqual(await prices({ membershipKind: 'unclassified' }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
   assert.deepEqual(await prices({}), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
   assert.equal((await db.selectFrom('products').select('membership_features').where('id', '=', product).executeTakeFirstOrThrow()).membership_features, null);
 

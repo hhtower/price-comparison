@@ -35,6 +35,19 @@ describe('membership catalog features share standard identities', { skip: !proce
       .where('id', '=', BigInt(id)).execute();
   }
 
+  async function saveFeatureTask(id: string, status: string, jobType = 'membership_features') {
+    const job = await db.insertInto('ai_jobs').values({ status: 'running', total: 1n, model: 'test', job_type: jobType })
+      .returning('id').executeTakeFirstOrThrow();
+    await sql`insert into ai_job_inputs (job_id, input_id, fingerprint, payload)
+      select ${job.id}, id, content_fingerprint, '{}'::jsonb from products where id = ${id}::bigint`.execute(db);
+    await sql`insert into ai_job_input_members (job_id, input_id, product_id, content_version, fingerprint,
+      standardization_revision, payload, status)
+      select ${job.id}, p.id, p.id, p.content_version, p.content_fingerprint, p.standardization_revision,
+        jsonb_build_object('shopSource', jsonb_build_object('url', sh.url, 'protocol', sh.protocol, 'platform', sh.platform)), ${status}
+      from products p join shops sh on sh.id = p.shop_id where p.id = ${id}::bigint`.execute(db);
+    return job.id;
+  }
+
   before(async () => {
     admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`create schema "${schema}"`);
@@ -67,6 +80,7 @@ describe('membership catalog features share standard identities', { skip: !proce
         values (${shop}::bigint, ${key}, ${key}, '', ${key}, ${`https://membership.invalid/${key}`}) returning id::text`.execute(db)).rows[0]!.id;
       products[key] = source;
       if (kind) await saveFeature(source, kind);
+      if (key === 'account' || key === 'pending') await saveFeatureTask(source, 'unclassified');
       await sql`insert into standard_product_members (standard_product_id, product_id, publication_state, assignment_source)
         values (${standard}::bigint, ${source}::bigint, 'published', 'ai')`.execute(db);
       await sql`insert into product_tags (product_id, name, value) values
@@ -231,7 +245,7 @@ describe('membership catalog features share standard identities', { skip: !proce
     }
   });
 
-  test('missing and stale AI features stay null in an unclassified group without changing stored snapshots', async () => {
+  test('failed current AI features stay null in an unclassified group without changing stored snapshots', async () => {
     const id = BigInt(products.account!);
     const original = (await db.selectFrom('products').select('membership_features').where('id', '=', id).executeTakeFirstOrThrow()).membership_features as Record<string, JsonValue>;
     try {
@@ -292,6 +306,52 @@ describe('membership catalog features share standard identities', { skip: !proce
     assert.equal((await service.getCatalog({ standardProductId: ids.youtube, membershipKind: 'unclassified' })).total, 0);
     const combined = await service.getCatalog({ membershipKinds: ['account', 'unclassified'] });
     assert.deepEqual(new Set(combined.items.map(item => item.id)), new Set([ids.base, ids.pending]));
+  });
+
+  test('unclassified excludes pending work and follows the latest current membership task', async () => {
+    const id = BigInt(products.rental!);
+    const original = await db.selectFrom('products').select('membership_features').where('id', '=', id).executeTakeFirstOrThrow();
+    const jobs: bigint[] = [];
+    const scope = normalizeCatalogQuery({ standardProductId: ids.base, membershipKind: 'unclassified',
+      detailKind: 'offers', detailPageSize: 10 });
+    try {
+      await db.updateTable('products').set({ membership_features: null }).where('id', '=', id).execute();
+      assert.equal((await repository.search(scope)).offerTotal, 0, 'unattempted features are not failed');
+      const unattempted = await repository.search({ standardProductId: ids.base, tags: [], limit: 10 });
+      assert.equal(unattempted.items[0]?.membershipGroups?.some(group => group.kind === 'unclassified') ?? false, false);
+      for (const [status, visible] of [['queued', false], ['processing', false], ['unclassified', true],
+        ['failed', true], ['queued', false], ['cancelled', false], ['classified', false]] as const) {
+        jobs.push(await saveFeatureTask(products.rental!, status));
+        const page = await repository.search(scope);
+        assert.equal(page.offerTotal, visible ? 1 : 0, status);
+        assert.equal(page.items[0]?.detail?.total ?? 0, visible ? 1 : 0, status);
+        assert.deepEqual((await repository.referenceOffers(scope)).map(offer => offer.productId),
+          visible ? [products.rental] : [], status);
+        const facets = await repository.facets(scope);
+        assert.equal(facets.tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'account'), visible, status);
+        const all = await repository.search({ standardProductId: ids.base, tags: [], limit: 10 });
+        assert.equal(all.items[0]?.membershipGroups?.some(group => group.kind === 'unclassified') ?? false, visible, status);
+      }
+      const failed = await saveFeatureTask(products.rental!, 'failed');
+      jobs.push(failed);
+      const member = await db.selectFrom('ai_job_input_members')
+        .select(['content_version', 'fingerprint', 'standardization_revision', 'payload']).where('job_id', '=', failed).executeTakeFirstOrThrow();
+      for (const change of [{ content_version: -1n }, { fingerprint: 'outdated' }, { standardization_revision: -1n },
+        { payload: jsonb({ shopSource: { url: 'https://outdated.invalid', protocol: null, platform: 'test' } }) }]) {
+        await db.updateTable('ai_job_input_members').set({ ...member, payload: jsonb(member.payload), ...change }).where('job_id', '=', failed).execute();
+        assert.equal((await repository.search(scope)).offerTotal, 0, Object.keys(change)[0]);
+      }
+      jobs.push(await saveFeatureTask(products.rental!, 'queued'));
+      jobs.push(await saveFeatureTask(products.rental!, 'failed', 'tag_extraction'));
+      assert.equal((await repository.search(scope)).offerTotal, 0, 'tag extraction failures cannot override membership work');
+      await saveFeature(products.rental!, 'rental');
+      assert.equal((await repository.search(scope)).offerTotal, 0, 'valid classifications never enter unclassified');
+      assert.equal((await repository.search({ ...scope, membershipKinds: ['rental'] })).offerTotal, 1);
+    } finally {
+      if (jobs.length) await db.deleteFrom('ai_jobs').where('id', 'in', jobs).execute();
+      await db.updateTable('products').set({ membership_features: jsonb(original.membership_features) }).where('id', '=', id).execute();
+    }
+    assert.equal((await repository.search({ standardProductId: ids.free, membershipKinds: ['unclassified'], tags: [], limit: 10 })).offerTotal, 0);
   });
 
   test('rental alias keeps dedicated access hard on AI while non-AI access values retain OR semantics', async () => {
@@ -404,6 +464,7 @@ describe('membership catalog features share standard identities', { skip: !proce
         await db.insertInto('standard_product_members').values({ standard_product_id: standard.id,
           product_id: source.id, publication_state: 'published' }).execute();
         if (kind) await saveFeature(String(source.id), kind);
+        else await saveFeatureTask(String(source.id), 'unclassified');
         await db.insertInto('offers').values({ product_id: source.id, idempotency_key: `scoped/${merchant}/${key}`,
           price: String(price + merchant), currency: 'CNY', captured_at: new Date(), stock_available: true, is_stale: false,
           settlement_price: String(price + merchant), settlement_verified_at: new Date(), settlement_payment_method: 'card',

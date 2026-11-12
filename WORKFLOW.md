@@ -8,7 +8,7 @@
 
 可选能力按 [.env.example](.env.example)配置，默认不启用模型调用。标准化使用 `AI_STANDARDIZATION_ENABLED`，导购使用 `ASSISTANT_ENABLED` 和 `ASSISTANT_MODEL`，共用现有服务商和代理；导购独立执行，不占用共享 `AI_CONCURRENCY`，不设模型并发上限。`npm run dev`会启动已启用能力所需的 worker；单独调试导购可运行 `npm run worker:assistant`。
 
-先完成商品标准化，再处理特性和标签。特性仅适用于 AI 会员报价；未取得有效分类的报价显示为“未分类”。
+先完成商品标准化，再处理特性和标签。特性仅适用于 AI 会员报价；“未分类”仅展示当前特性任务处理失败且没有有效分类的报价，尚未处理、排队中和处理中的报价不纳入。
 
 MCP 服务的账号申请、邮件配置与客户端接入见 [MCP 报价服务](docs/mcp.md)，无需额外 worker。
 
