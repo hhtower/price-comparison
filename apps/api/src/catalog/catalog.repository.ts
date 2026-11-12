@@ -97,6 +97,7 @@ export interface CatalogOffer {
   readonly capturedAt: string;
   readonly stale: boolean;
   readonly inStock: boolean;
+  readonly stockQuantity?: number | null;
 }
 
 export interface CatalogMembershipGroup {
@@ -182,7 +183,7 @@ function offerPayload(alias: string): RawBuilder<unknown> {
     'priceExpiresAt', ${offer}.price_expires_at, 'inventoryExpiresAt', ${offer}.inventory_expires_at,
     'paymentMethod', ${offer}.payment_method, 'settlementQuantity', ${offer}.settlement_quantity,
     'productUrl', ${offer}.product_url, 'spec', ${offer}.product_spec, 'tags', ${offer}.tags,
-    'capturedAt', ${offer}.captured_at, 'stale', false, 'inStock', true)`;
+    'capturedAt', ${offer}.captured_at, 'stale', false, 'inStock', true, 'stockQuantity', ${offer}.stock_quantity)`;
 }
 
 export function encodeCatalogCursor(cursor: CatalogCursor): string {
@@ -303,6 +304,7 @@ export class CatalogRepository {
       case when ${verified} then r.settlement_payment_method else '支付价（预估：售价）' end as "paymentMethod",
       to_char(r.captured_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "capturedAt",
       null::text as "priceExpiresAt", r.is_stale as stale, r.stock_available as "inStock",
+      r.stock_quantity::float8 as "stockQuantity",
       (sh.protocol is distinct from 'liandong' and sh.protocol is distinct from '16688') as "independentShop"
       from catalog_read_offers r
       join standard_products sp on sp.id = r.standard_product_id
@@ -371,7 +373,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   const verified = sql`r.settlement_price is not null and r.settlement_price >= 0 and r.settlement_price < 'Infinity'::numeric
     and r.settlement_verified_at is not null and nullif(btrim(r.settlement_payment_method), '') is not null`;
   const price = pricesOnly ? sql`r.price` : sql`case when ${verified} then r.settlement_price else r.listed_price end`;
-  const payloadFields = sql`r.product_name, r.product_url, r.product_spec, sh.shop_name, sh.independent_shop, r.tags, r.listed_price, r.currency,
+  const payloadFields = sql`r.product_name, r.product_url, r.product_spec, sh.shop_name, sh.independent_shop, r.tags, r.listed_price, r.currency, r.stock_quantity,
     case when ${verified} then 'verified' else 'estimated' end as price_status,
     case when ${verified} then r.settlement_verified_at end as price_verified_at,
     null::timestamptz as price_expires_at, null::timestamptz as inventory_expires_at,

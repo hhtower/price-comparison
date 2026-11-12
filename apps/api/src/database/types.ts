@@ -195,6 +195,7 @@ export interface OfferTable {
   captured_at: GeneratedTimestamp;
   is_stale: Generated<boolean>;
   stock_available: Generated<boolean>;
+  stock_quantity: ColumnType<bigint | null, number | null | undefined, number | null>;
   settlement_price: string | null;
   settlement_verified_at: NullableTimestamp;
   settlement_payment_method: string | null;

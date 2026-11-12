@@ -83,10 +83,10 @@ function normalizeProduct(item, shop) {
       || (sku.is_sold_out !== undefined && typeof sku.is_sold_out !== 'boolean')
       || (item.is_sold_out !== undefined && typeof item.is_sold_out !== 'boolean')
       || (item.stock_status !== undefined && !STOCK_STATUSES.includes(item.stock_status))) fail('invalid stock status');
+    const quantity = item.fulfillment_type === 'manual' ? sku.manual_stock_total
+      : item.fulfillment_type === 'auto' ? sku.auto_stock_available : undefined;
     let available = sku.stock_status !== 'out_of_stock';
     if (sku.stock_status === undefined) {
-      const quantity = item.fulfillment_type === 'manual' ? sku.manual_stock_total
-        : item.fulfillment_type === 'auto' ? sku.auto_stock_available : undefined;
       if (!Number.isSafeInteger(quantity) || quantity < -1) fail('invalid legacy SKU stock');
       available = quantity !== 0;
     }
@@ -117,6 +117,9 @@ function normalizeProduct(item, shop) {
       url: new URL(`/products/${encodeURIComponent(item.slug)}`, shop.url).href,
       imageUrl: image && ['https:', 'http:'].includes(image.protocol) ? image.href : null,
       inStock: item.is_sold_out !== true && item.stock_status !== 'out_of_stock' && sku.is_sold_out !== true && available,
+      stockQuantity: sku.stock_quantity_hidden !== true && item.stock_quantity_hidden !== true
+        && sku.stock_status !== 'unlimited' && item.stock_status !== 'unlimited'
+        && Number.isSafeInteger(quantity) && quantity >= 0 && (quantity > 0 || !available) ? quantity : null,
     };
     productRules.set(product, item);
     result.push(product);

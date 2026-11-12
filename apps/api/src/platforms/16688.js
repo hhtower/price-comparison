@@ -52,6 +52,7 @@ function normalizeListings(items) {
       price: item.price,
       url: `https://www.16688.com.cn/goods/${encodeURIComponent(externalId)}`,
       imageUrl: item.image || null,
+      stockQuantity: Number.isSafeInteger(stock) && stock >= 0 ? stock : null,
       // -1 is the platform's undisclosed quantity; an explicit sold-out flag wins.
       inStock: item.stock_available_status !== 'out' && Number.isFinite(stock)
         && (stock === -1 || stock >= (minimumPurchaseQuantity(item, 'limit_quantity') ?? 1))

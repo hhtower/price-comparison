@@ -135,6 +135,21 @@ describe('catalog SQL read model', () => {
     assert.deepEqual((await readPublished({ tags: [], limit: 20 })).items.map(item => item.id), [String(standardTwo)]);
   });
 
+  test('stock quantities follow the latest quote in previews, details and references', async () => {
+    await database.updateTable('offers').set({ stock_quantity: 99 }).where('idempotency_key', '=', 'one-old').execute();
+    await database.updateTable('offers').set({ stock_quantity: 16 }).where('idempotency_key', '=', 'one-new').execute();
+    for (const detailKind of [undefined, 'offers', 'shops'] as const) {
+      const item = (await readPublished({ tags: [], limit: 20, standardProductId: String(standardOne), detailKind })).items[0]!;
+      assert.equal(item.offers[0]?.stockQuantity, 16);
+      if (item.detail?.kind === 'offers') assert.equal(item.detail.entries[0]?.stockQuantity, 16);
+      if (item.detail?.kind === 'shops') assert.equal(item.detail.entries[0]?.offer.stockQuantity, 16);
+    }
+    const references = await repository.referenceOffers({ tags: [], limit: 20, standardProductId: String(standardOne) });
+    assert.equal(references.find(offer => offer.productId === String(productOne))?.stockQuantity, 16);
+    await database.updateTable('offers').set({ stock_quantity: null }).where('idempotency_key', '=', 'one-new').execute();
+    assert.equal((await readPublished({ tags: [], limit: 20, standardProductId: String(standardOne) })).items[0]?.offers[0]?.stockQuantity, null);
+  });
+
   test('current and legacy plan searches share the existing products and offers', async () => {
     await database.updateTable('standard_products').set({ name: 'Claude Max 20x', canonical_family: 'anthropic',
       canonical_product: 'claude', canonical_tier: 'max_20x' }).where('id', '=', standardOne).execute();

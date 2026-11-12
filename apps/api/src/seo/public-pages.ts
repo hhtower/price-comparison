@@ -66,7 +66,7 @@ function seoFaq(product = false): string {
 
 function catalogContent(page: CatalogPage): string {
   const cards = page.items.flatMap<CatalogPage['items'][number] & { membershipKind?: MembershipGroup }>(item => item.isAiMembership || item.membershipGroups
-    ? (item.membershipGroups ?? []).filter(group => group.productCount > 0)
+    ? (item.membershipGroups ?? []).filter(group => group.productCount > 0 && group.kind !== 'unclassified')
       .map(group => ({ ...item, offers: group.offers, membershipKind: group.kind }))
     : [{ ...item, membershipKind: undefined }]);
   return '<h2 id="catalog-quotes">本站商品报价与来源</h2>'

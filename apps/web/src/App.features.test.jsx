@@ -47,9 +47,8 @@ function expectScope(requests, kind = 'rental') {
 test('homepage feature link opens a fixed feature page and feature modal cannot reset its scope', async () => {
   const requests = mockApi();
   mount('/');
-  const link = await screen.findByRole('link', { name: 'ChatGPT GO · 租号' });
-  expect(link).toHaveAttribute('href', '/products/42/features/rental');
-  fireEvent.click(within(link.closest('article')).getByRole('button', { name: '25 条报价' }));
+  const title = await screen.findByRole('button', { name: 'ChatGPT GO · 租号' });
+  fireEvent.click(within(title.closest('article')).getByRole('button', { name: '25 条报价' }));
   const dialog = await screen.findByRole('dialog', { name: 'ChatGPT GO · 租号 · 报价' });
   fireEvent.click(within(dialog).getByRole('button', { name: '重置' }));
   expect(within(dialog).queryByRole('switch', { name: '新手' })).not.toBeInTheDocument();
@@ -57,6 +56,9 @@ test('homepage feature link opens a fixed feature page and feature modal cannot 
   await within(dialog).findByText(/^租号报价0/);
   expectScope(requests);
   fireEvent.click(within(dialog).getByRole('button', { name: '关闭报价详情' }));
+  fireEvent.click(title);
+  const link = within(title.closest('article')).getByRole('link', { name: '更多报价：ChatGPT GO · 租号' });
+  expect(link).toHaveAttribute('href', '/products/42/features/rental');
   fireEvent.click(link);
   await screen.findByRole('heading', { name: 'ChatGPT GO · 租号', level: 1 });
   expect(window.location.pathname).toBe('/products/42/features/rental');

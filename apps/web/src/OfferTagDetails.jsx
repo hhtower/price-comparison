@@ -18,20 +18,20 @@ export function offerConditions(offer, formatValue = displayPurchaseTagValue) {
   return [...facts.values()].sort((a, b) => a.summaryPriority - b.summaryPriority);
 }
 
-const OFFER_SUMMARY_PRIORITY = { warranty: -5, access: -4, delivery: -3, account_type: -2, account_lifecycle: -1 };
+const OFFER_SUMMARY_PRIORITY = { usage_restriction: -6, warranty: -5, access: -4, delivery: -3, account_type: -2, account_lifecycle: -1 };
 
-export function OfferFacts({ tags, settlementQuantity, formatValue = displayPurchaseTagValue }) {
+export function OfferFacts({ tags, settlementQuantity, formatValue = displayPurchaseTagValue, limit = 2, onOpenDetails }) {
   const visibleTags = (tags || []).filter(tag => !(tag.name === 'account_type' && ['personal', 'enterprise'].includes(tag.value)));
   const facts = offerConditions({ tags: visibleTags, settlementQuantity }, formatValue).filter(fact => fact.displayGroup !== 'warranty');
   const warranty = purchaseWarrantyLabel(tags || []);
   if (warranty) facts.push({ name: 'warranty', value: warranty, summaryPriority: 30 });
   const values = facts.sort((a, b) => (OFFER_SUMMARY_PRIORITY[a.name] ?? a.summaryPriority)
     - (OFFER_SUMMARY_PRIORITY[b.name] ?? b.summaryPriority)).map(fact => ({
-    key: `${fact.name}:${fact.value}`, text: displayPurchaseTagText(fact, fact.value), group: fact.displayGroup, warranty: fact.name === 'warranty',
+    key: `${fact.name}:${fact.value}`, name: fact.name, text: displayPurchaseTagText(fact, fact.value), group: fact.displayGroup, warranty: fact.name === 'warranty',
   }));
   return values.length ? <div className="offer-facts" role="group" tabIndex={0} aria-label="商品标签">
-    {values.slice(0, 3).map(value => <span key={value.key} className={value.warranty ? 'offer-warranty' : undefined} data-group={value.group} title={value.text}>{value.text}</span>)}
-    {values.length > 3 ? <small>另 {values.length - 3} 个标签</small> : null}
+    {values.slice(0, limit).map(value => <span key={value.key} className={value.warranty ? 'offer-warranty' : undefined} data-field={value.name} data-group={value.group} title={value.text}>{value.text}</span>)}
+    {values.length > limit ? <button type="button" className="offer-facts-more" aria-label={`查看全部商品条件，另有 ${values.length - limit} 项`} onClick={onOpenDetails}>+{values.length - limit}</button> : null}
   </div> : <div className="offer-facts" aria-hidden="true" />;
 }
 

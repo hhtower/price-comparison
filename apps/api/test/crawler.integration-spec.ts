@@ -92,6 +92,23 @@ describe('complete shop snapshot synchronization', () => {
     return (await new CatalogRepository(database).search({ tags: [], limit: 100 })).items.flatMap(item => item.offers.map(offer => offer.productId));
   };
 
+  test('stock counts update without reclassifying products and reset when the source hides quantities', async () => {
+    const s = await shop();
+    await refresh(s.id, [{ ...listing('counted'), stock_available_quantity: 16 }]);
+    const original = await publish(s.id, 'counted');
+    for (const quantity of [16, 3, -1, 0]) {
+      await refresh(s.id, [{ ...listing('counted'), stock_available_quantity: quantity }]);
+      const product = await database.selectFrom('products').selectAll().where('id', '=', original.id).executeTakeFirstOrThrow();
+      assert.equal(product.content_version, original.content_version);
+      const saved = await database.selectFrom('offers').select('stock_quantity').where('product_id', '=', original.id).executeTakeFirstOrThrow();
+      assert.equal(saved.stock_quantity, quantity < 0 ? null : BigInt(quantity));
+      await publishChanges();
+      const page = await new CatalogRepository(database).search({ shopId: String(s.id), tags: [], limit: 10 });
+      if (quantity === 0) assert.equal(page.items.length, 0);
+      else assert.equal(page.items[0]?.offers[0]?.stockQuantity, quantity < 0 ? null : quantity);
+    }
+  });
+
   test('successful crawls atomically persist source-bound ratings and accept lower counts', async () => {
     const s = await shop();
     let volume = 1000;

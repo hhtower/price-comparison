@@ -190,6 +190,7 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
           price: String(item.price).replace(/,/g, ''),
           capturedAt: new Date(),
           stockAvailable: item.inStock,
+          stockQuantity: item.stockQuantity != null && Number.isSafeInteger(item.stockQuantity) && item.stockQuantity >= 0 ? item.stockQuantity : null,
           settlementPrice: item.settlement?.price ?? null,
           settlementVerifiedAt: item.settlement?.verifiedAt ?? null,
           settlementPaymentMethod: item.settlement?.paymentMethod ?? null,
@@ -305,6 +306,7 @@ async function assertCurrentCrawl(transaction: Transaction<DatabaseSchema>, job:
 
 async function insertOffersInTransaction(transaction: Kysely<DatabaseSchema>, shopId: bigint, input: readonly {
   idempotencyKey: string; productId: bigint; price: string; capturedAt: Date; stockAvailable: boolean;
+  stockQuantity: number | null;
   settlementPrice: string | null; settlementVerifiedAt: string | null; settlementPaymentMethod: string | null;
   settlementQuantity: number | null; settlementTotalAmount: string | null;
   settlementRefreshAt: Date | null;
@@ -317,6 +319,7 @@ async function insertOffersInTransaction(transaction: Kysely<DatabaseSchema>, sh
     idempotency_key: keys[index]!, product_id: offer.productId, price: offer.price,
     currency: 'CNY', captured_at: offer.capturedAt, is_stale: false,
     stock_available: offer.stockAvailable === true,
+    stock_quantity: offer.stockQuantity,
     settlement_price: offer.settlementPrice,
     settlement_verified_at: offer.settlementVerifiedAt,
     settlement_payment_method: offer.settlementPaymentMethod,
@@ -326,6 +329,7 @@ async function insertOffersInTransaction(transaction: Kysely<DatabaseSchema>, sh
   }))).onConflict((conflict) => conflict.column('idempotency_key').doUpdateSet(({ ref }) => ({
     price: ref('excluded.price'), captured_at: ref('excluded.captured_at'), is_stale: false,
     stock_available: ref('excluded.stock_available'),
+    stock_quantity: ref('excluded.stock_quantity'),
     settlement_price: sql`case when ${preserve} and excluded.settlement_price is null then offers.settlement_price else excluded.settlement_price end`,
     settlement_verified_at: sql`case when ${preserve} and excluded.settlement_price is null then offers.settlement_verified_at else excluded.settlement_verified_at end`,
     settlement_payment_method: sql`case when ${preserve} and excluded.settlement_price is null then offers.settlement_payment_method else excluded.settlement_payment_method end`,

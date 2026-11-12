@@ -39,10 +39,10 @@ test('first visit defaults to browse with collapsed membership kinds and four of
   localStorage.removeItem(storageKey);
   const requests = mockMembershipCatalog({ offersPerKind: 4 });
   mount(undefined, 2400);
-  for (const kind of ['成品号', '代充', '租号', '短期', '未分类']) {
-    const link = await screen.findByRole('link', { name: 'ChatGPT Plus · ' + kind });
+  for (const kind of ['成品号', '代充', '租号', '短期']) {
+    const link = await screen.findByRole('button', { name: 'ChatGPT Plus · ' + kind });
     expect(link.closest('article').querySelectorAll('.shop-offer')).toHaveLength(0);
-    fireEvent.click(within(link.closest('article')).getByRole('button', { name: /^查看报价：/ }));
+    fireEvent.click(link);
     expect(link.closest('article').querySelectorAll('.shop-offer')).toHaveLength(4);
   }
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -63,8 +63,8 @@ test('the newcomer switch remembers its mode and carries it into facets, preview
   fireEvent.click(screen.getByRole('switch', { name: '新手' }));
   await waitFor(() => expect(localStorage.getItem(storageKey)).toBe('newcomer'));
   expect(screen.getByRole('switch', { name: '新手' })).toBeChecked();
-  const link = await screen.findByRole('link', { name: 'ChatGPT Plus' });
-  expect(link).toHaveAttribute('href', '/products/1?newcomer=true');
+  const link = await screen.findByRole('button', { name: 'ChatGPT Plus' });
+  expect(link).toHaveAttribute('aria-expanded', 'false');
   fireEvent.click(screen.getByRole('button', { name: /^筛选$/ }));
   await waitFor(() => expect(requests.some(url => url.pathname.endsWith('/facets') && url.searchParams.get('newcomer') === 'true')).toBe(true));
   fireEvent.click(screen.getByRole('button', { name: /应用筛选/ }));
@@ -89,7 +89,7 @@ test.each(['true', 'false'])('first home visit applies a shared URL with newcome
   window.history.replaceState({}, '', '/?newcomer=' + mode);
   mockCatalog();
   mount();
-  await screen.findByRole('link', { name: 'ChatGPT Plus' });
+  await screen.findByRole('button', { name: 'ChatGPT Plus' });
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   expect(screen.getByRole('switch', { name: '新手' }).checked).toBe(mode === 'true');
   expect(localStorage.getItem(storageKey)).toBe(mode === 'true' ? 'newcomer' : 'browse');
@@ -99,7 +99,7 @@ test('another tab changing the preference does not change the current list mode 
   localStorage.setItem(storageKey, 'browse');
   const requests = mockCatalog();
   mount();
-  expect(await screen.findByRole('link', { name: 'ChatGPT Plus' })).toHaveAttribute('href', '/products/1?newcomer=false');
+  expect(await screen.findByRole('button', { name: 'ChatGPT Plus' })).toHaveAttribute('aria-expanded', 'false');
   localStorage.setItem(storageKey, 'newcomer');
   fireEvent.click(screen.getByRole('button', { name: '1 条报价' }));
   await waitFor(() => expect(requests.some(url => url.searchParams.get('detailKind') === 'offers'
@@ -113,7 +113,7 @@ test('newcomer switch preserves explicit filters and history restores the previo
   window.history.replaceState({}, '', '/?' + params);
   const requests = mockCatalog();
   mount();
-  await screen.findByRole('link', { name: 'ChatGPT Plus' });
+  await screen.findByRole('button', { name: 'ChatGPT Plus' });
   fireEvent.click(screen.getByRole('switch', { name: '新手' }));
   await waitFor(() => expect(localStorage.getItem(storageKey)).toBe('browse'));
   await waitFor(() => {
@@ -233,38 +233,41 @@ function mockMembershipCatalog({ onlyKind, emptyKind, offersPerKind = 1 } = {}) 
 test('membership categories without available offers are hidden while non-AI products remain', async () => {
   mockMembershipCatalog({ emptyKind: 'rental' });
   mount(undefined, 2400);
-  await screen.findByRole('link', { name: 'YouTube Premium' });
-  expect(screen.getByRole('link', { name: 'ChatGPT Plus · 成品号' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'ChatGPT Plus · 代充' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'ChatGPT Plus · 短期' })).toBeInTheDocument();
-  expect(screen.queryByRole('link', { name: 'ChatGPT Plus · 租号' })).not.toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'YouTube Premium' })).toBeInTheDocument();
+  await screen.findByRole('button', { name: 'YouTube Premium' });
+  expect(screen.getByRole('button', { name: 'ChatGPT Plus · 成品号' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'ChatGPT Plus · 代充' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'ChatGPT Plus · 短期' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'ChatGPT Plus · 租号' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'YouTube Premium' })).toBeInTheDocument();
 });
 
-test.each([['short_term', '短期'], ['rental', '租号'], ['unclassified', '未分类']])('default browse shows %s until newcomer is explicitly enabled', async (kind, label) => {
+test.each([['short_term', '短期'], ['rental', '租号']])('default browse shows %s until newcomer is explicitly enabled', async (kind, label) => {
   localStorage.removeItem(storageKey);
   const requests = mockMembershipCatalog({ onlyKind: kind });
   mount();
-  expect(await screen.findByRole('link', { name: 'ChatGPT Plus · ' + label })).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: 'ChatGPT Plus · ' + label })).toBeInTheDocument();
   expect(requests.filter(url => url.pathname === '/api/catalog').every(url => url.searchParams.get('newcomer') !== 'true')).toBe(true);
   fireEvent.click(screen.getByRole('switch', { name: '新手' }));
-  await waitFor(() => expect(screen.queryByRole('link', { name: 'ChatGPT Plus · ' + label })).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'ChatGPT Plus · ' + label })).not.toBeInTheDocument());
   expect(requests.filter(url => url.pathname === '/api/catalog').at(-1)?.searchParams.get('newcomer')).toBe('true');
 });
 
-test.each([['short_term', '短期', '短期', '10'], ['rental', '租号（共享）', '租号', '10'], ['unclassified', '未分类', '未分类', '10']])('membership %s overrides newcomer, reaches previews and details, survives history and clears with filters', async (kind, choice, label, id) => {
+test.each([['short_term', '短期', '短期', '10'], ['rental', '租号（共享）', '租号', '10']])('membership %s overrides newcomer, reaches previews and details, survives history and clears with filters', async (kind, choice, label, id) => {
   localStorage.removeItem(storageKey);
   const requests = mockMembershipCatalog();
   mount(undefined, 2400);
-  await screen.findByRole('link', { name: 'YouTube Premium' });
-  expect(await screen.findByRole('link', { name: 'ChatGPT Plus · 租号' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'ChatGPT Plus · 短期' })).toBeInTheDocument();
+  await screen.findByRole('button', { name: 'YouTube Premium' });
+  expect(await screen.findByRole('button', { name: 'ChatGPT Plus · 租号' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'ChatGPT Plus · 短期' })).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   const kinds = within(await screen.findByRole('group', { name: 'AI会员类型' }));
+  expect(kinds.queryByRole('checkbox', { name: '未分类' })).not.toBeInTheDocument();
   fireEvent.click(kinds.getByRole('checkbox', { name: choice, exact: true }));
   await waitFor(() => expect(requests.some(url => url.searchParams.get('limit') === '1' && url.searchParams.get('membershipKind') === kind)).toBe(true));
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（1）' }));
-  expect(await screen.findByRole('link', { name: 'ChatGPT Plus · ' + label })).toHaveAttribute('href', `/products/${id}/features/${kind}`);
+  const selectedTitle = await screen.findByRole('button', { name: 'ChatGPT Plus · ' + label });
+  fireEvent.click(selectedTitle);
+  expect(within(selectedTitle.closest('article')).getByRole('link', { name: '更多报价：ChatGPT Plus · ' + label })).toHaveAttribute('href', `/products/${id}/features/${kind}`);
   expect(screen.getByRole('switch', { name: '新手' })).not.toBeChecked();
   const saved = window.location.search;
   expect(new URLSearchParams(saved).getAll('membershipKind')).toEqual([kind]);
@@ -276,7 +279,7 @@ test.each([['short_term', '短期', '短期', '10'], ['rental', '租号（共享
   await waitFor(() => expect(new URLSearchParams(window.location.search).getAll('membershipKind')).toEqual(['account', kind]));
   window.history.replaceState({}, '', '/' + saved);
   fireEvent(window, new PopStateEvent('popstate'));
-  await waitFor(() => expect(screen.queryByRole('link', { name: 'ChatGPT Plus · 成品号' })).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'ChatGPT Plus · 成品号' })).not.toBeInTheDocument());
   fireEvent.click(within(screen.getByLabelText('已选筛选条件')).getByRole('button', { name: '清除全部' }));
   await waitFor(() => expect(new URLSearchParams(window.location.search).has('membershipKind')).toBe(false));
 });
@@ -285,7 +288,7 @@ test('choosing a standard keeps feature selection independent and names plain', 
   localStorage.removeItem(storageKey);
   const requests = mockMembershipCatalog();
   mount();
-  await screen.findByRole('link', { name: 'ChatGPT Plus · 成品号' });
+  await screen.findByRole('button', { name: 'ChatGPT Plus · 成品号' });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   const selector = await screen.findByRole('combobox', { name: '标准商品' });
   expect(within(selector).getByRole('option', { name: 'ChatGPT Plus', exact: true })).toHaveValue('10');
@@ -305,12 +308,12 @@ test('rental URL restores filters and carries the class into offer details', asy
   window.history.replaceState({}, '', '/?membershipKind=rental');
   const requests = mockMembershipCatalog();
   mount();
-  expect(await screen.findByRole('link', { name: 'ChatGPT Plus · 租号' })).toHaveAttribute('href', '/products/10/features/rental');
+  const rentalTitle = await screen.findByRole('button', { name: 'ChatGPT Plus · 租号' });
   expect(screen.getByRole('switch', { name: '新手' })).not.toBeChecked();
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
   expect(within(await screen.findByRole('group', { name: 'AI会员类型' })).getByRole('checkbox', { name: '租号（共享）' })).toBeChecked();
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（1）' }));
-  const rental = screen.getByRole('link', { name: 'ChatGPT Plus · 租号' }).closest('article');
+  const rental = rentalTitle.closest('article');
   fireEvent.click(within(rental).getByRole('button', { name: '1 条报价' }));
   await waitFor(() => {
     const request = requests.filter(url => url.searchParams.has('detailKind')).at(-1);
@@ -433,7 +436,7 @@ test('non-AI standard product selection clears membership restrictions and hides
   const requests = mockMembershipCatalog();
   window.history.replaceState({}, '', '/?membershipKind=short_term');
   mount();
-  await screen.findByRole('link', { name: 'ChatGPT Plus · 短期' });
+  await screen.findByRole('button', { name: 'ChatGPT Plus · 短期' });
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
   fireEvent.change(await screen.findByRole('combobox', { name: '标准商品' }), { target: { value: '4' } });
   expect(screen.queryByRole('group', { name: 'AI会员类型' })).not.toBeInTheDocument();

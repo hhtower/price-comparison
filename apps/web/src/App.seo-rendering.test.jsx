@@ -237,14 +237,14 @@ test('home client keeps cursor pagination and resets it when searching', async (
       items: [{ id: searching ? '44' : '43', name: searching ? '搜索结果' : '续页商品', platform: 'openai', offers: [] }] });
   }));
   render(<VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 300 }}><App /></VirtuosoMockContext.Provider>);
-  await screen.findByRole('link', { name: '续页商品' });
+  await screen.findByRole('button', { name: '续页商品' });
   expect(calls[0].searchParams.get('cursor')).toBe(cursor);
   expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/?cursor=' + cursor);
-  expect(screen.getByRole('link', { name: '下一页商品' })).toHaveAttribute('href', '/?cursor=' + nextCursor);
+  expect(screen.queryByRole('link', { name: '下一页商品' })).not.toBeInTheDocument();
   const search = screen.getByRole('textbox', { name: '搜索商品' });
   fireEvent.change(search, { target: { value: '搜索' } });
   fireEvent.keyDown(search, { key: 'Enter' });
-  await screen.findByRole('link', { name: '搜索结果' });
+  await screen.findByRole('button', { name: '搜索结果' });
   expect(calls.at(-1).searchParams.has('cursor')).toBe(false);
   expect(new URLSearchParams(window.location.search).has('cursor')).toBe(false);
   expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/');

@@ -183,6 +183,7 @@ async function normalize(shop, listing, fetchImpl, options, preview = false, set
       price: price(quote?.price), url: new URL(`/item/${item.id}`, shop.url).href,
       imageUrl: image && ['http:', 'https:'].includes(image.protocol) ? image.href : null,
       inStock: (Number.isFinite(counted) ? counted : lower) >= minimum,
+      stockQuantity: Number.isSafeInteger(counted) ? counted : null,
     };
     result.push(product);
     freshProducts?.set(product, (item.only_user === 0 || item.only_user === 1 && guestEstimate) && item.purchase_count === 0

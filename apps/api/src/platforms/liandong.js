@@ -108,6 +108,7 @@ function toProducts(items) {
       price: item.price,
       url: item.link,
       imageUrl: item.image || null,
+      stockQuantity: countedStock != null && item.extend?.show_stock_type !== 1 && Number.isSafeInteger(stock) && stock >= 0 ? stock : null,
       inStock: Number.isFinite(stock) && (countedStock == null
         ? stock > 0 : stock >= (minimumPurchaseQuantity(item, 'limit_count') ?? 1))
     };

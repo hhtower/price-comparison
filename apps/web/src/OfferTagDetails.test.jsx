@@ -33,6 +33,42 @@ test('conditions are canonical, prioritized, deduplicated and retain actual mini
   expect(conditions.filter(fact => fact.name === 'delivery')).toHaveLength(1);
   expect(conditions.find(fact => fact.name === 'minimum_quantity').value).toBe('5件起购');
 });
+
+test('explicit restrictions remain visible within the two-tag budget and retain their complete text', () => {
+  const restriction = '不同地区不能升级,需要账号地区与充值地区一致,并且现有订阅已经到期后才能操作';
+  const tags = [
+    { name: 'delivery', value: 'top_up' }, { name: 'access', value: 'shared' },
+    { name: 'warranty_days', value: '30' }, { name: 'usage_restriction', value: restriction },
+  ];
+  render(<><OfferFacts tags={tags} /><OfferTagDetails offer={{ ...offer, tags }} item={{ name: '标准商品' }} onClose={() => {}} /></>);
+  const summary = screen.getByRole('group', { name: '商品标签' });
+  expect(summary.querySelectorAll('span')).toHaveLength(2);
+  expect(summary.querySelector('span[data-field="usage_restriction"]')).toHaveAttribute('title', restriction);
+  expect(summary.querySelector('span[data-field="usage_restriction"]')).toHaveTextContent(restriction);
+  expect(within(summary).getByText('质保30天')).toBeInTheDocument();
+  expect(screen.getByRole('dialog', { name: offer.name })).toHaveTextContent(restriction);
+});
+
+test.each([1, 2])('the %s-tag summary counts hidden conditions and opens their details', limit => {
+  const onOpenDetails = vi.fn();
+  render(<OfferFacts limit={limit} onOpenDetails={onOpenDetails} tags={[
+    { name: 'delivery', value: 'top_up' }, { name: 'access', value: 'shared' },
+    { name: 'warranty_days', value: '30' }, { name: 'usage_restriction', value: '禁止改密' },
+    { name: 'usage_restriction', value: '禁止改密' },
+  ]} />);
+  const summary = screen.getByRole('group', { name: '商品标签' });
+  expect(summary.querySelectorAll('span')).toHaveLength(limit);
+  expect(summary.querySelector('span')).toHaveTextContent('禁止改密');
+  const more = within(summary).getByRole('button', { name: `查看全部商品条件，另有 ${4 - limit} 项` });
+  expect(more).toHaveTextContent(`+${4 - limit}`);
+  fireEvent.click(more);
+  expect(onOpenDetails).toHaveBeenCalledOnce();
+});
+
+test.each([{ tags: [] }, { tags: [{ name: 'warranty_days', value: '30' }] }])('no overflow control is shown when conditions fit: $tags', ({ tags }) => {
+  render(<OfferFacts tags={tags} limit={1} onOpenDetails={() => {}} />);
+  expect(screen.queryByRole('button', { name: /查看全部商品条件/ })).not.toBeInTheDocument();
+});
 test('details bind the exact merchant SKU, show only known conditions and preserve nested focus', () => {
   const opener = document.createElement('button'); document.body.append(opener); opener.focus();
   const close = vi.fn(); const report = vi.fn();

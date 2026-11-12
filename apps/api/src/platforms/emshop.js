@@ -112,7 +112,7 @@ async function readProduct(shop, productId, fetchImpl, signal) {
       ...rawProductContent(serialize(nameNode), descriptionNode ? serialize(descriptionNode) : undefined),
       sourceData: buildSourceEvidence({ description, min_buy: sku.min_buy, max_buy: sku.max_buy, tags: sku.tags }),
       imageUrl: imageUrl && ['http:', 'https:'].includes(imageUrl.protocol) ? imageUrl.href : null,
-      inStock: sku.stock >= sku.min_buy };
+      inStock: sku.stock >= sku.min_buy, stockQuantity: sku.stock };
   });
 }
 

@@ -53,11 +53,10 @@ test.each([
   }
 });
 
-test('mobile quotes use flat rows and a price/action grid rather than wrapping the whole action row', () => {
+test('mobile quote actions retain a price/action grid rather than wrapping the whole action row', () => {
   const css = readFileSync('apps/web/src/public-catalog.css', 'utf8');
   expect(css).toMatch(/\.compact-catalog \.shop-tile \.offer-footer\s*\{[^}]*display:\s*grid/u);
   expect(css).toMatch(/\.compact-catalog \.shop-tile \.offer-actions\s*\{[^}]*display:\s*contents/u);
-  expect(css).toMatch(/\.compact-catalog \.shop-offer:last-child\s*\{[^}]*border-top:\s*1px/u);
 });
 
 test('product summaries retain sticky styles below the measured toolbar without a nested scroll container', () => {

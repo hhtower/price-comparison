@@ -128,7 +128,7 @@ test('SSR home links nonempty AI feature groups to their own details and keeps n
   ] }) }).inject('/');
   const document = new JSDOM(response.body).window.document;
   assert.deepEqual([...document.querySelectorAll('article h3 a')].map(link => link.getAttribute('href')),
-    ['/products/42/features/account', '/products/42/features/rental', '/products/42/features/short_term', '/products/42/features/unclassified', '/products/43']);
+    ['/products/42/features/account', '/products/42/features/rental', '/products/42/features/short_term', '/products/43']);
   assert.equal(document.querySelector('a[href="/products/42"]'), null);
   assert.equal(document.querySelector('a[href="/products/44"]'), null);
   assert.equal(document.querySelector('a[href="/products/42/features/top_up"]'), null);
@@ -477,6 +477,20 @@ test('home cursor pages expose subsequent products with their own canonical and 
   assert.ok(document.querySelector('a[href="/products/43"]'));
   assert.equal(document.querySelector('a[rel="next"]'), null);
   assert.equal((await server.inject('/?cursor=invalid')).statusCode, 404);
+});
+
+test('home SSR omits unclassified membership groups while keeping classified offers', async t => {
+  const membershipGroups = (['account', 'unclassified'] as MembershipGroup[]).map(kind => ({
+    kind, shopCount: 1, productCount: 1, minPrice: '12.50', maxPrice: '12.50',
+    latestCapturedAt: '2026-09-27T00:00:00Z', offers: page.items[0]!.offers,
+  }));
+  const server = setup(t, { getCatalog: async () => ({ ...page,
+    items: [{ ...page.items[0]!, isAiMembership: true, membershipGroups }],
+  }) });
+  const document = new JSDOM((await server.inject('/')).body).window.document;
+  assert.ok(document.querySelector('a[href="/products/42/features/account"]'));
+  assert.equal(document.querySelector('a[href="/products/42/features/unclassified"]'), null);
+  assert.doesNotMatch(document.querySelector('main')!.textContent!, /未分类/u);
 });
 
 test('product pages distinguish missing, merged and unavailable products; sitemap failure is retryable', async t => {

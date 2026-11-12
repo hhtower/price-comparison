@@ -119,6 +119,19 @@ test('Dujiao-Next legacy SKUs use remaining inventory for their fulfillment type
   }
 });
 
+test('Dujiao-Next exposes public counts but never hidden, unlimited or placeholder quantities', async () => {
+  for (const [quantity, hidden, status, expected] of [
+    [16, false, 'in_stock', 16], [16, true, 'in_stock', null],
+    [-1, false, 'unlimited', null], [16, false, 'unlimited', null],
+    [0, false, 'in_stock', null], [1.5, false, 'in_stock', null],
+  ]) {
+    const item = product({ fulfillment_type: 'auto', skus: [{ ...product().skus[0],
+      auto_stock_available: quantity, stock_quantity_hidden: hidden, stock_status: status }] });
+    const [result] = await crawl(async url => String(url).includes('?') ? page([item]) : response({ status_code: 0, data: item }));
+    assert.equal(result.stockQuantity, expected);
+  }
+});
+
 test('Dujiao-Next refuses incomplete localized specifications', async () => {
   for (const spec_values of [{ 'zh-CN': null, 'en-US': '' }, { 'zh-CN': '', 'en-US': ' ' }, { 'zh-CN': 1 }, { 'zh-CN': '月卡', 'en-US': {} }]) {
     const item = product({ skus: [{ ...product().skus[0], spec_values }] });

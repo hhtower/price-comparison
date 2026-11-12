@@ -50,35 +50,36 @@ test('renders nonempty membership groups as same-standard cards with four offers
 
   render(<VirtuosoMockContext.Provider value={{ viewportHeight: 1600, itemHeight: 300 }}><PublicPage /></VirtuosoMockContext.Provider>);
 
-  const link = await screen.findByRole('link', { name: 'ChatGPT Plus · 成品号' });
-  expect(link).toHaveAttribute('href', '/products/standard-1/features/account');
+  const link = await screen.findByRole('button', { name: 'ChatGPT Plus · 成品号' });
+  const accountCard = link.closest('article');
   expect(link.closest('article')).toHaveTextContent('5 家商铺');
   expect(link.closest('article')).toHaveTextContent('11 条报价');
   expect(link.closest('article').querySelectorAll('.shop-offer')).toHaveLength(0);
-  fireEvent.click(within(link.closest('article')).getByRole('button', { name: /^查看报价：/ }));
+  fireEvent.click(link);
+  expect(within(accountCard).getByRole('link', { name: '更多报价：ChatGPT Plus · 成品号' })).toHaveAttribute('href', '/products/standard-1/features/account');
   expect(link.closest('article').querySelectorAll('.shop-offer')).toHaveLength(4);
-  const topUp = screen.getByRole('link', { name: 'ChatGPT Plus · 代充' });
-  expect(topUp).toHaveAttribute('href', '/products/standard-1/features/top_up');
+  const topUp = screen.getByRole('button', { name: 'ChatGPT Plus · 代充' });
   expect(topUp.closest('article').getAttribute('aria-labelledby')).not.toBe(link.closest('article').getAttribute('aria-labelledby'));
-  expect(screen.queryByRole('link', { name: 'ChatGPT Plus', exact: true })).not.toBeInTheDocument();
-  const summary = link.closest('article').querySelector('.standard-product-summary');
+  expect(screen.queryByRole('button', { name: 'ChatGPT Plus', exact: true })).not.toBeInTheDocument();
+  const summary = accountCard.querySelector('.standard-product-summary');
   expect(summary).toHaveTextContent('¥0.5 起');
-  expect(summary).toHaveTextContent('¥0.5 – ¥80');
-  expect(link.closest('article').querySelector('.product-counts time')).toHaveAttribute('dateTime', '2026-11-10T10:00:00Z');
-  const topUpSummary = topUp.closest('article').querySelector('.standard-product-summary');
+  expect(summary).not.toHaveTextContent('–');
+  expect(accountCard.querySelector('.product-counts time')).toHaveAttribute('dateTime', '2026-11-10T10:00:00Z');
+  const topUpCard = topUp.closest('article');
+  fireEvent.click(topUp);
+  expect(within(topUpCard).getByRole('link', { name: '更多报价：ChatGPT Plus · 代充' })).toHaveAttribute('href', '/products/standard-1/features/top_up');
+  const topUpSummary = topUpCard.querySelector('.standard-product-summary');
   expect(topUpSummary).toHaveTextContent('$12 起');
   expect(topUpSummary).not.toHaveTextContent('–');
-  const shortTerm = screen.getByRole('link', { name: 'ChatGPT Plus · 短期' }).closest('article');
-  fireEvent.click(within(shortTerm).getByRole('button', { name: /^查看报价：/ }));
+  const shortTerm = screen.getByRole('button', { name: 'ChatGPT Plus · 短期' }).closest('article');
+  fireEvent.click(within(shortTerm).getByRole('button', { name: 'ChatGPT Plus · 短期' }));
   expect(shortTerm).toHaveTextContent('6 家商铺');
   expect(shortTerm).toHaveTextContent('17 条报价');
   expect(shortTerm.querySelectorAll('.shop-offer')).toHaveLength(1);
-  expect(shortTerm.querySelector('.standard-product-summary')).toHaveTextContent('¥0.1 – ¥90');
-  expect(screen.queryByRole('link', { name: 'ChatGPT Plus · 租号' })).not.toBeInTheDocument();
-  const unclassified = screen.getByRole('link', { name: 'ChatGPT Plus · 未分类' });
-  fireEvent.click(within(unclassified.closest('article')).getByRole('button', { name: /^查看报价：/ }));
-  expect(unclassified).toHaveAttribute('href', '/products/standard-1/features/unclassified');
-  expect(unclassified.closest('article').querySelectorAll('.shop-offer')).toHaveLength(1);
+  expect(shortTerm.querySelector('.standard-product-summary')).toHaveTextContent('¥0.1 起');
+  expect(shortTerm.querySelector('.standard-product-summary')).not.toHaveTextContent('–');
+  expect(screen.queryByRole('button', { name: 'ChatGPT Plus · 租号' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'ChatGPT Plus · 未分类' })).not.toBeInTheDocument();
   fireEvent.click(within(topUp.closest('article')).getByRole('button', { name: '2 条报价' }));
   await waitFor(() => {
     const request = requests.find(url => url.searchParams.get('detailKind') === 'offers');
@@ -89,7 +90,7 @@ test('renders nonempty membership groups as same-standard cards with four offers
     expect(history.searchParams.get('newcomer')).toBe('false');
   });
   fireEvent.click(screen.getByRole('button', { name: '关闭报价详情' }));
-  fireEvent.click(within(link.closest('article')).getByRole('button', { name: '5 家商铺' }));
+  fireEvent.click(within(accountCard).getByRole('button', { name: '5 家商铺' }));
   await waitFor(() => {
     const request = requests.find(url => url.searchParams.get('detailKind') === 'shops');
     expect(request?.searchParams.get('standardProductId')).toBe('standard-1');

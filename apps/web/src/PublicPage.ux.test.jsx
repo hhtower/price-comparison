@@ -270,9 +270,9 @@ test('expands the quote preview and compares up to three offers', async () => {
   const user = userEvent.setup();
   mount();
   await screen.findByRole('heading', { name: /ChatGPT Plus/ });
-  await user.click(screen.getByRole('button', { name: '查看报价：ChatGPT Plus' }));
+  await user.click(screen.getByRole('button', { name: 'ChatGPT Plus' }));
   expect(screen.getByText('报价1')).toHaveAttribute('title', '报价1');
-  expect(screen.getByRole('button', { name: '收起报价：ChatGPT Plus' })).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByRole('button', { name: 'ChatGPT Plus' })).toHaveAttribute('aria-expanded', 'true');
   expect(screen.getAllByRole('link', { name: '去商家' })[0]).toHaveAttribute('href', 'https://example.com/1');
   const choices = screen.getAllByRole('checkbox', { name: /对比报价/ });
   await user.click(choices[0]); await user.click(choices[1]); await user.click(choices[2]);

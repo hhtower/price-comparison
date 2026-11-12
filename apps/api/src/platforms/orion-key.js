@@ -74,6 +74,7 @@ async function readDetail(shop, listing, fetchImpl, signal) {
       price: priceText(sku.price), url: new URL(`/product/${encodeURIComponent(item.id)}`, shop.url).href,
       imageUrl: image && ['http:', 'https:'].includes(image.protocol) ? image.href : null,
       inStock: item.stock_available >= step && sku.stock_available >= step,
+      stockQuantity: sku.stock_available,
     };
   });
 }

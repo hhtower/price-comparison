@@ -108,7 +108,7 @@ async function product(shop, itemId, categoryId, fetchImpl, signal) {
         quantityRestriction: restriction, attributes: item.attr }),
       price, url: new URL(`/item?id=${itemId}`, shop.url).href,
       imageUrl: image && ['http:', 'https:'].includes(image.protocol) ? image.href : null,
-      inStock: sku.stock_available && Number(sku.stock) >= restriction.min };
+      inStock: sku.stock_available && Number(sku.stock) >= restriction.min, stockQuantity: Number(sku.stock) };
   });
 }
 

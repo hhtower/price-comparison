@@ -15,7 +15,7 @@ import { DurationFilterOptions, WarrantyFilter, isValidWarrantyMinimum } from '.
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { MEMBERSHIP_GROUPS, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
 import { updatePageMetadata } from './page-metadata.js';
-import { PRODUCT_PAGE_SIZE, catalogPageMetadata, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
+import { PRODUCT_PAGE_SIZE, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
 import { formatMoney } from './money.js';
 import PriceHistory from './PriceHistory.jsx';
 import { CatalogSeoIntro, CatalogSeoFaq } from './CatalogSeoContent.jsx';
@@ -54,7 +54,7 @@ function matchingProducts(products, query, platform) {
 
 function MembershipFilter({ value, onChange }) {
   return <fieldset className="filter-group"><legend>AI会员类型</legend><div className="filter-group-content"><div className="filter-options">
-    {MEMBERSHIP_GROUPS.map(kind => <label key={kind} className={value.includes(kind) ? 'is-selected' : ''}>
+    {MEMBERSHIP_GROUPS.filter(kind => kind !== 'unclassified').map(kind => <label key={kind} className={value.includes(kind) ? 'is-selected' : ''}>
       <input type="checkbox" aria-label={membershipFilterLabel(kind)} checked={value.includes(kind)}
         onChange={() => onChange(MEMBERSHIP_GROUPS.filter(candidate => candidate === kind ? !value.includes(candidate) : value.includes(candidate)))} />
       <span>{membershipFilterLabel(kind)}</span>
@@ -158,7 +158,7 @@ function OfferPrice({ offer, className = '', starting = false }) {
     offer.priceVerifiedAt ? `核价于 ${new Date(offer.priceVerifiedAt).toLocaleString('zh-CN')}` : null].filter(Boolean).join(' · ') : undefined;
   return <span className={`offer-price ${className}${available ? '' : ' price-unavailable'}`} title={hint}>
     <span aria-label={available ? `结算价 ${amount}，${hint}` : '暂无报价'}>{amount}</span>
-    {available && estimated ? <span className="offer-price-suffix price-estimate">预估</span> : null}
+    {!starting && available && estimated ? <span className="offer-price-suffix price-estimate">预估</span> : null}
     {starting && available ? <span className="offer-price-suffix"> 起</span> : null}
     {!starting && offer ? <span className="offer-listed-price"><span className="offer-price-separator" aria-hidden="true"> / </span>标价 {listedAmount}</span> : null}
   </span>;
@@ -508,7 +508,7 @@ function ShopBadge({ offer }) {
   </span>;
 }
 
-function OfferCard({ offer, item, rank, onOfferDetails, comparison, onCompare, best = rank === 1, showHistory = false, membershipKinds = EMPTY_LIST, newcomer = false }) {
+function OfferCard({ offer, item, rank, onOfferDetails, comparison, onCompare, best = rank === 1, showHistory = false, membershipKinds = EMPTY_LIST, newcomer = false, factLimit = 2 }) {
   const checked = comparison?.some(entry => offerIdentity(entry.offer) === offerIdentity(offer));
   const rankClass = `rank-${Math.min(rank, 4)}`;
   return (
@@ -516,10 +516,11 @@ function OfferCard({ offer, item, rank, onOfferDetails, comparison, onCompare, b
       <div className="shop-tile">
         <span className="offer-meta">
           <span className="offer-shop-identity"><span className={`offer-rank ${rankClass}`} aria-label={`第 ${rank} 条报价`}>{rank}</span><span className="offer-shop">{offer.shop || '未知商铺'}</span><ShopScore offer={offer} /><ShopBadge offer={offer} /></span>
+          <span className="offer-stock" data-available={offer.inStock !== false} title="采集时显示有货，实际库存以商家页面为准">{offer.inStock !== false && Number.isSafeInteger(offer.stockQuantity) && offer.stockQuantity > 0 ? `库存 ${offer.stockQuantity}` : '有货'}</span>
           <span className="offer-updated">{formatRelativeTime(offer.capturedAt)}</span>
         </span>
         <strong className="offer-name" title={offer.name || item.name}>{offer.name || item.name}</strong>
-        <OfferFacts formatValue={displayPurchaseValue} tags={offer.tags} settlementQuantity={offer.settlementQuantity} />
+        <OfferFacts formatValue={displayPurchaseValue} tags={offer.tags} settlementQuantity={offer.settlementQuantity} limit={factLimit} onOpenDetails={() => onOfferDetails(offer, item)} />
         <span className="offer-footer">
           <OfferPrice offer={offer} className={`tile-price ${best && availableOffer(offer) ? 'best' : ''}`} />
           <span className="offer-actions">{onCompare ? <label><input type="checkbox" aria-label={`对比报价 ${offer.name || item.name}`} checked={Boolean(checked)} disabled={!checked && comparison.length >= 3} onChange={() => onCompare(offer, item)} />对比</label> : null}<button type="button" className="offer-details-button" onClick={() => onOfferDetails(offer, item)}>商品说明</button>{offer.productUrl ? <a href={offer.productUrl} target="_blank" rel="noreferrer" onClick={() => trackUsage('outbound')}>去商家</a> : null}</span>
@@ -730,7 +731,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     const rank = index + 1;
     return isShops ? <button type="button" className="catalog-shop-entry" key={entry.key} onClick={() => openShop(entry)}>
       <span className="catalog-shop-identity"><span className="offer-rank">{rank}</span><span className="catalog-shop-copy"><strong><span className="catalog-shop-name">{entry.name}</span><ShopScore offer={entry.offer} /><ShopBadge offer={entry.offer} /></strong><span>{entry.count} 条报价</span></span></span><strong className="catalog-shop-price"><OfferPrice offer={entry.offer} /> →</strong>
-    </button> : <OfferCard key={offerIdentity(entry, index)} offer={entry} item={detail.item} membershipKinds={state.membershipKinds} newcomer={state.newcomer} rank={rank} best={state.offerSort === 'price' && rank === 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} showHistory />;
+    </button> : <OfferCard key={offerIdentity(entry, index)} offer={entry} item={detail.item} membershipKinds={state.membershipKinds} newcomer={state.newcomer} rank={rank} best={state.offerSort === 'price' && rank === 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} factLimit={desktop ? 2 : 1} showHistory />;
   }
   if (missingPage) return <section className="product-route-state" role="alert"><h1>商品分页不存在</h1><header className="product-page-heading"><a href={productPagePath(detail.item.id, 1, fixedMembershipKind)}>返回商品首页</a><a href="/" onClick={returnToCatalog}>返回商品列表</a><span className="official-reference-slot" ref={referenceRef} /></header></section>;
   const Container = standalone ? 'section' : ModalDialog;
@@ -780,13 +781,15 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   </Container>;
 }
 
-const StandardProductCard = memo(function StandardProductCard({ item, group, expanded, onToggle, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, newcomer }) {
+const StandardProductCard = memo(function StandardProductCard({ item, group, expanded, onToggle, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, newcomer, factLimit }) {
   const kind = group?.kind || '';
   const currency = group?.offers[0]?.currency || 'CNY';
   const offers = group?.offers || item.offers || EMPTY_LIST;
   const shopOffers = offers.filter(currentInventory);
   const visible = shopOffers.slice(0, OFFER_PAGE_SIZE);
   const minOffer = shopOffers.find(availableOffer);
+  const estimated = (group ? group.minPrice != null : availableOffer(minOffer))
+    && (minOffer?.priceStatus === 'estimated' || minOffer?.paymentMethod?.includes('预估'));
   const latestCapturedAt = group ? group.latestCapturedAt : item.latestCapturedAt;
   const updatedLabel = formatRelativeTime(latestCapturedAt);
   const shopCount = Number(group ? group.shopCount : item.shopCount ?? new Set(offers.map((offer) => offer.shopId || offer.shop)).size);
@@ -798,38 +801,34 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
 
   return (
     <article className="standard-product-card" aria-labelledby={titleId}>
-      <header className="standard-product-header" onClick={event => {
+      <header className="standard-product-header" data-expanded={expanded} onClick={event => {
         if (!event.target.closest('a, button')) onToggle(`${item.id}:${kind || 'standard'}`);
       }}>
         <div className="product-heading">
-          <h2 id={titleId}><a href={detailHref} aria-label={membershipName(item, kind)} onClick={event => navigateProduct(event, detailHref)}>{formatStandardName(item.name)}{kind ? <span className="product-kind">{membershipKindLabel(kind)}</span> : null}</a></h2>
+          <h2 id={titleId}><button type="button" aria-label={membershipName(item, kind)} aria-expanded={expanded} aria-controls={offersId} onClick={() => onToggle(`${item.id}:${kind || 'standard'}`)}>{membershipName(item, kind)}</button></h2>
           <p className="product-counts">
             <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'shops', kind ? [kind] : [])}>{shopCount} 家商铺</button><span aria-hidden="true">·</span>
             <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'offers', kind ? [kind] : [])}>{productCount} 条报价</button><span aria-hidden="true">·</span>
-            {updatedLabel === '更新时间未知' ? <span className="product-updated">{updatedLabel}</span> : <time className="product-updated" dateTime={latestCapturedAt} title={new Date(latestCapturedAt).toLocaleString('zh-CN')}>{updatedLabel}</time>}
+            {updatedLabel === '更新时间未知' ? <span className="product-updated">{updatedLabel}</span> : <time className="product-updated" dateTime={latestCapturedAt} title={'最近采集：' + new Date(latestCapturedAt).toLocaleString('zh-CN')}>{updatedLabel}</time>}
+            {estimated ? <span className="product-estimate">预估</span> : null}
           </p>
           {activeTagLabels.length ? <div className="product-active-tags">{activeTagLabels.map((label) => <span key={label}>{label}</span>)}</div> : null}
         </div>
-        <div className="standard-product-summary">{group ? <>
-          <span className="offer-price lowest-note"><span>{formatMoney(group.minPrice, currency)}</span>{group.minPrice != null && (minOffer?.priceStatus === 'estimated' || minOffer?.paymentMethod?.includes('预估')) ? <span className="offer-price-suffix price-estimate">预估</span> : null}{group.minPrice != null ? <span className="offer-price-suffix"> 起</span> : null}</span>
-          {expanded && group.minPrice != null && group.maxPrice != null && Number(group.maxPrice) > Number(group.minPrice) ? <small>{formatMoney(group.minPrice, currency)} – {formatMoney(group.maxPrice, currency)}</small> : null}
-        </> : <OfferPrice offer={minOffer} className="lowest-note" starting />}
-          <button type="button" className="product-offers-toggle" aria-label={`${expanded ? '收起报价' : '查看报价'}：${membershipName(item, kind)}`} title={expanded ? '收起报价' : '查看报价'} aria-expanded={expanded} aria-controls={offersId} onClick={() => onToggle(`${item.id}:${kind || 'standard'}`)}>
-            <span className="filter-chevron" aria-hidden="true" />
-          </button>
+        <div className="standard-product-summary">{group ? <span className="offer-price lowest-note"><span>{formatMoney(group.minPrice, currency)}</span>{group.minPrice != null ? <span className="offer-price-suffix"> 起</span> : null}</span> : <OfferPrice offer={minOffer} className="lowest-note" starting />}
+          <svg className="product-offers-indicator" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </div>
       </header>
       {expanded ? <div className="product-offers-panel" id={offersId}>
         <div className="shop-grid">
-        {visible.map((offer, index) => <OfferCard key={offerIdentity(offer, index)} offer={offer} item={item} rank={index + 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} />)}
+        {visible.map((offer, index) => <OfferCard key={offerIdentity(offer, index)} offer={offer} item={item} rank={index + 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} factLimit={factLimit} />)}
         </div>
-        {productCount > visible.length ? <div className="product-offers-more"><span>展示前 {visible.length} 条报价</span><button type="button" className="count-link" onClick={() => onOpenDetail(item, 'offers', kind ? [kind] : [])}>查看全部 {productCount} 条报价</button></div> : null}
+        <div className="product-offers-more"><a href={detailHref} aria-label={`更多报价：${membershipName(item, kind)}`} onClick={event => navigateProduct(event, detailHref)}>更多</a></div>
       </div> : null}
     </article>
   );
 });
 
-const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDetail, onOfferDetails, onEndReached, comparison, onCompare, priceRevision, onHeightChanged, newcomer }) {
+const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDetail, onOfferDetails, onEndReached, comparison, onCompare, priceRevision, onHeightChanged, newcomer, factLimit }) {
   const [expandedProducts, setExpandedProducts] = useState(() => new Set());
   const toggleProduct = useCallback(key => {
     setExpandedProducts(current => {
@@ -839,17 +838,24 @@ const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDe
     });
   }, []);
   const renderItem = useCallback((_index, entry) => (
-    <div className="catalog-virtual-item"><StandardProductCard item={entry.item} group={entry.group} expanded={expandedProducts.has(entry.key)} onToggle={toggleProduct} priceRevision={priceRevision} activeTagLabels={activeTagLabels} onOpenDetail={onOpenDetail} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} newcomer={newcomer} /></div>
-  ), [expandedProducts, toggleProduct, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, priceRevision, newcomer]);
+    <div className="catalog-virtual-item"><StandardProductCard item={entry.item} group={entry.group} expanded={expandedProducts.has(entry.key)} onToggle={toggleProduct} priceRevision={priceRevision} activeTagLabels={activeTagLabels} onOpenDetail={onOpenDetail} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} newcomer={newcomer} factLimit={factLimit} /></div>
+  ), [expandedProducts, toggleProduct, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, priceRevision, newcomer, factLimit]);
   if (!items.length) return null;
   return <div className="catalog-list-surface"><Virtuoso useWindowScroll data={items} computeItemKey={catalogItemKey} itemContent={renderItem} endReached={onEndReached} totalListHeightChanged={onHeightChanged} increaseViewportBy={CATALOG_OVERSCAN} /></div>;
 });
 
-function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatformChange, assistantEnabled, referenceRef }) {
+function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatformChange, assistantEnabled, referenceRef, restoreCatalogScroll }) {
   usePageAnalytics('catalog');
   const requestedProductPage = publicPageNumber(new URLSearchParams(window.location.search).getAll('page'));
   const invalidProductPage = Boolean(productId && requestedProductPage === null);
   const [initial] = useState(readCatalogLocation);
+  const [restorePosition] = useState(() => {
+    const saved = window.history.state?.catalogScroll;
+    const historyNavigation = window.performance.getEntriesByType?.('navigation')?.[0]?.type === 'back_forward';
+    if (!Number.isFinite(saved)) return null;
+    return restoreCatalogScroll || historyNavigation ? saved : 0;
+  });
+  const scrollRestored = useRef(false);
   const [newcomer, setNewcomer] = useState(initial.newcomer);
   useEffect(() => {
     if (productId) return;
@@ -1036,14 +1042,16 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
   }, [catalogQuery.data]);
   const priceRevision = useCatalogRefresh(data, catalogQuery.refetch, !productId);
   useEffect(() => {
-    const position = window.history.state?.catalogScroll;
-    if (!productId && listMeasured && catalogQuery.data && Number.isFinite(position)) {
-      const frame = requestAnimationFrame(() => window.scrollTo(0, position));
+    if (!productId && listMeasured && catalogQuery.data && !scrollRestored.current && Number.isFinite(restorePosition)) {
+      const frame = requestAnimationFrame(() => {
+        scrollRestored.current = true;
+        window.scrollTo(0, restorePosition);
+      });
       return () => cancelAnimationFrame(frame);
     }
-  }, [productId, Boolean(catalogQuery.data), listMeasured]);
+  }, [productId, Boolean(catalogQuery.data), listMeasured, restorePosition]);
   const loading = catalogQuery.isFetching || !membershipReady;
-  const error = catalogQuery.isError ? '商品加载失败' : '';
+  const error = catalogQuery.isError && !catalogQuery.isFetchNextPageError ? '商品加载失败' : '';
   const facetTags = facetQuery.data?.tagFacets || EMPTY_LIST;
   const facetLoading = filterOpen && facetQuery.isFetching && !facetQuery.data;
   const facetError = facetQuery.isError ? '筛选条件加载失败' : '';
@@ -1064,7 +1072,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
       if (!item.isAiMembership && item.offers?.length && !item.offers.some(currentInventory)) return [];
       if (!item.isAiMembership) return [{ item, group: null, key: `${item.id}:standard` }];
       const groups = (item.membershipGroups || EMPTY_LIST).filter(group => (group.offers || EMPTY_LIST).some(currentInventory));
-      return groups.map(group => ({ item, group, key: `${item.id}:${group.kind}` }));
+      return groups.filter(group => group.kind !== 'unclassified').map(group => ({ item, group, key: `${item.id}:${group.kind}` }));
     }),
   [catalogQuery.isPlaceholderData, data.items, priceRevision, membershipReady]);
   const clearFilters = () => { if (selectedCount) { setSelectedTags(new Set()); setWarrantyDaysMin(''); setSelectedProduct(''); setMembershipKinds([]); if (searchMembership.kinds.length) changeSearch(searchMembership.text); trackUsage('filter'); } setDraftTags(new Set()); setDraftWarrantyDaysMin(''); setDraftProduct(''); setDraftMembershipKinds([]); };
@@ -1095,6 +1103,17 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
   const loadNextPage = useCallback(() => {
     if (!catalogQuery.isFetching && catalogQuery.hasNextPage && !catalogQuery.isError) void catalogQuery.fetchNextPage({ cancelRefetch: false });
   }, [catalogQuery.isFetching, catalogQuery.hasNextPage, catalogQuery.isError, catalogQuery.fetchNextPage]);
+  const lastPageHasVisibleItems = useMemo(() => {
+    const page = catalogQuery.data?.pages.at(-1);
+    return Boolean(page?.items?.some(item => !item.isAiMembership
+      ? !item.offers?.length || item.offers.some(currentInventory)
+      : item.membershipGroups?.some(group => group.kind !== 'unclassified' && group.offers?.some(currentInventory))));
+  }, [catalogQuery.data]);
+  useEffect(() => {
+    if (catalogQuery.data && !catalogQuery.isPlaceholderData && !catalogQuery.isFetching && !catalogQuery.isError
+      && catalogQuery.hasNextPage && !lastPageHasVisibleItems) loadNextPage();
+  }, [catalogQuery.data, catalogQuery.isPlaceholderData, catalogQuery.isFetching, catalogQuery.isError,
+    catalogQuery.hasNextPage, lastPageHasVisibleItems, loadNextPage]);
   const openDetail = useCallback((item, kind, detailMembershipKinds = []) => {
     const key = `${request}:${item.id}:${kind}:${detailMembershipKinds.join(',')}`;
     const params = new URLSearchParams(request);
@@ -1250,12 +1269,13 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
             if (searchMembership.kinds.length) { setQuery(searchMembership.text); setSearch(searchMembership.text); }
           }}>AI会员：{membershipKindLabel(kind)} ×</button>)}
           {selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}{warrantyDaysMin ? <button type="button" onClick={() => { setWarrantyDaysMin(''); setDraftWarrantyDaysMin(''); trackUsage('filter'); }}>质保至少{warrantyDaysMin}天 ×</button> : null}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
-        {error ? <div className="catalog-error" role="alert"><span>{error}</span><button type="button" onClick={() => catalogQuery.isFetchNextPageError ? catalogQuery.fetchNextPage() : catalogQuery.refetch()}>重新加载</button></div> : null}
+        {error ? <div className="catalog-error" role="alert"><span>{error}</span><button type="button" onClick={() => catalogQuery.refetch()}>重新加载</button></div> : null}
         {loading && !visibleItems.length ? <CatalogSkeleton /> : null}
-        <section id="catalog-quotes" className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={effectiveNewcomer} /></section>
-        {unfilteredCatalog && data.nextCursor ? <nav className="catalog-pagination" aria-label="商品分页"><a rel="next" href={catalogPageMetadata(data.nextCursor).path}>下一页商品</a></nav> : null}
-        {!catalogQuery.hasNextPage && visibleItems.length ? <p className="catalog-infinite-end">已显示当前条件下的全部商品</p> : null}
-        <section className="empty-state" hidden={Boolean(visibleItems.length) || loading || Boolean(error)}><strong>{hasRecognizedIntent || selectedCount ? '没有同时满足这些条件的报价' : '还没有匹配结果'}</strong><span>{hasRecognizedIntent ? '可以移除一个条件，或换个关键词继续找。' : selectedCount ? '清除部分筛选，或换个关键词试试。' : '试试其他关键词或商品平台。'}</span>{hasRecognizedIntent ? <button type="button" className="primary-button" onClick={() => { setQuery(parseCatalogSearch(searchMembership.text).text); }}>清除已识别条件</button> : selectedCount ? <button type="button" className="primary-button" onClick={clearFilters}>清除筛选</button> : null}</section>
+        <section id="catalog-quotes" className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={effectiveNewcomer} factLimit={desktopFilters ? 2 : 1} /></section>
+        {catalogQuery.isFetchingNextPage ? <p className="catalog-infinite-end catalog-loading-more" role="status" aria-label="正在加载更多商品"><span className="catalog-loading-spinner" aria-hidden="true" />正在为你加载更多商品…</p> : null}
+        {catalogQuery.isFetchNextPageError ? <div className="catalog-error" role="alert"><span>更多商品暂时没能加载出来</span><button type="button" onClick={() => catalogQuery.fetchNextPage()}>重试加载</button></div> : null}
+        {!catalogQuery.hasNextPage && !catalogQuery.isFetching && visibleItems.length ? <p className="catalog-infinite-end">已经到底啦，当前符合条件的商品都在这里了。</p> : null}
+        <section className="empty-state" hidden={Boolean(visibleItems.length) || loading || Boolean(error) || catalogQuery.isFetchNextPageError}><strong>{hasRecognizedIntent || selectedCount ? '没有同时满足这些条件的报价' : '还没有匹配结果'}</strong><span>{hasRecognizedIntent ? '可以移除一个条件，或换个关键词继续找。' : selectedCount ? '清除部分筛选，或换个关键词试试。' : '试试其他关键词或商品平台。'}</span>{hasRecognizedIntent ? <button type="button" className="primary-button" onClick={() => { setQuery(parseCatalogSearch(searchMembership.text).text); }}>清除已识别条件</button> : selectedCount ? <button type="button" className="primary-button" onClick={clearFilters}>清除筛选</button> : null}</section>
       </div>
       <section className="catalog-seo-panel" aria-label="比价说明与常见问题">
         <CatalogSeoIntro />
@@ -1283,9 +1303,12 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
 
 
 export default function PublicPage({ productId, membershipKind, invalidProductRoute = false, onPlatformChange, assistantEnabled = false, referenceRef }) {
+  const previousProductId = useRef(productId);
+  const restoreCatalogScroll = !productId && Boolean(previousProductId.current);
+  useEffect(() => { previousProductId.current = productId; }, [productId]);
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: {
     staleTime: 5_000, gcTime: 300_000, retry: false, refetchOnWindowFocus: false,
   } } }));
   useEffect(() => () => client.clear(), [client]);
-  return <QueryClientProvider client={client}><PublicCatalog key={productId ? `${productId}:${membershipKind || ''}:${invalidProductRoute}` : 'catalog'} productId={productId} membershipKind={membershipKind} invalidProductRoute={invalidProductRoute} onPlatformChange={onPlatformChange} assistantEnabled={assistantEnabled} referenceRef={referenceRef} /></QueryClientProvider>;
+  return <QueryClientProvider client={client}><PublicCatalog key={productId ? `${productId}:${membershipKind || ''}:${invalidProductRoute}` : 'catalog'} productId={productId} membershipKind={membershipKind} invalidProductRoute={invalidProductRoute} onPlatformChange={onPlatformChange} assistantEnabled={assistantEnabled} referenceRef={referenceRef} restoreCatalogScroll={restoreCatalogScroll} /></QueryClientProvider>;
 }

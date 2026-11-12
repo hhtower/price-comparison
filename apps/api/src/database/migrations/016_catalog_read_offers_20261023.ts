@@ -13,13 +13,13 @@ const SOURCES = [
 
 const COLUMNS = [
   'product_id', 'standard_product_id', 'shop_id', 'product_name', 'product_url', 'product_spec',
-  'search_text', 'tags', 'facet_tags', 'listed_price', 'currency', 'captured_at', 'is_stale', 'stock_available',
+  'search_text', 'tags', 'facet_tags', 'listed_price', 'currency', 'captured_at', 'is_stale', 'stock_available', 'stock_quantity',
   'settlement_price', 'settlement_verified_at', 'settlement_payment_method', 'settlement_quantity',
 ] as const;
 
 const PRICE_COLUMNS = [
   'product_id', 'standard_product_id', 'shop_id', 'listed_price', 'currency', 'captured_at', 'is_stale',
-  'stock_available', 'settlement_price', 'settlement_verified_at', 'settlement_payment_method', 'settlement_quantity',
+  'stock_available', 'stock_quantity', 'settlement_price', 'settlement_verified_at', 'settlement_payment_method', 'settlement_quantity',
 ] as const;
 
 export async function up(database: Kysely<unknown>): Promise<void> {
@@ -56,6 +56,7 @@ export async function up(database: Kysely<unknown>): Promise<void> {
     captured_at timestamptz not null,
     is_stale boolean not null,
     stock_available boolean not null,
+    stock_quantity bigint,
     available boolean generated always as (
       not is_stale and stock_available and listed_price >= 0 and listed_price < 'Infinity'::numeric
     ) stored,
@@ -80,6 +81,7 @@ export async function up(database: Kysely<unknown>): Promise<void> {
     captured_at timestamptz not null,
     is_stale boolean not null,
     stock_available boolean not null,
+    stock_quantity bigint,
     available boolean generated always as (
       not is_stale and stock_available and listed_price >= 0 and listed_price < 'Infinity'::numeric
     ) stored,
@@ -124,7 +126,8 @@ export async function up(database: Kysely<unknown>): Promise<void> {
           lower(normalize(concat_ws(' ', p.name, p.spec, p.normalized_key, facts.tag_text), NFKC)) as search_text,
           coalesce(facts.tags, '[]'::jsonb) as tags, coalesce(facts.facet_tags, '[]') as facet_tags,
           latest.price as listed_price, latest.currency, latest.captured_at, latest.is_stale,
-          latest.stock_available, latest.settlement_price, latest.settlement_verified_at,
+          latest.stock_available, (to_jsonb(latest)->>'stock_quantity')::bigint as stock_quantity,
+          latest.settlement_price, latest.settlement_verified_at,
           latest.settlement_payment_method, latest.settlement_quantity
         from products p
         join standard_product_members m on m.product_id = p.id and m.publication_state = 'published'

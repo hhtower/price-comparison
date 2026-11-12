@@ -5,11 +5,11 @@ const SOURCES = ['products', 'offers', 'catalog_product_facts', 'standard_produc
 const EVENTS = ['insert', 'update', 'delete', 'truncate'];
 const PROJECTIONS = {
   catalog_read_offers: {
-    columns: 'product_id standard_product_id shop_id product_name product_url product_spec search_text tags warranty_days facet_tags listed_price currency captured_at is_stale stock_available available settlement_price settlement_verified_at settlement_payment_method settlement_quantity'.split(' '),
+    columns: 'product_id standard_product_id shop_id product_name product_url product_spec search_text tags warranty_days facet_tags listed_price currency captured_at is_stale stock_available stock_quantity available settlement_price settlement_verified_at settlement_payment_method settlement_quantity'.split(' '),
     generated: ['available', 'warranty_days'],
   },
   catalog_read_offer_prices: {
-    columns: 'product_id standard_product_id shop_id listed_price currency captured_at is_stale stock_available available settlement_price settlement_verified_at settlement_payment_method settlement_quantity price verification_at'.split(' '),
+    columns: 'product_id standard_product_id shop_id listed_price currency captured_at is_stale stock_available stock_quantity available settlement_price settlement_verified_at settlement_payment_method settlement_quantity price verification_at'.split(' '),
     generated: ['available', 'price', 'verification_at'],
   },
 };

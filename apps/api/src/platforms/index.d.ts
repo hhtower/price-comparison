@@ -12,6 +12,7 @@ export interface CrawlProduct {
   url: string;
   imageUrl?: string | null;
   inStock: boolean;
+  stockQuantity?: number | null;
   settlement?: { price: string; totalAmount: string; quantity: number; verifiedAt: string; paymentMethod: string };
 }
 export interface PlatformAdapter {

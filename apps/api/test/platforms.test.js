@@ -20,7 +20,7 @@ test('16688 crawl reads products from the goods API', async () => {
   assert.deepEqual(JSON.parse(request.options.body), { shop_no: 'S620172', sort: 'default' });
   assert.deepEqual(products, [{
     externalId: 'G1', name: '商品 A', sourceName: '商品 A', description: '', spec: '', price: 12.5,
-    url: 'https://www.16688.com.cn/goods/G1', imageUrl: 'https://img/a.png', inStock: true
+    url: 'https://www.16688.com.cn/goods/G1', imageUrl: 'https://img/a.png', inStock: true, stockQuantity: 3
   }]);
 });
 
@@ -205,6 +205,7 @@ for (const [label, fields, expected] of [
 for (const [label, fields, expected] of [
   ['nested zero', { extend: { stock_count: 0, show_stock_type: 0 } }, false],
   ['hidden nested zero', { extend: { stock_count: 0, show_stock_type: 1 } }, false],
+  ['hidden nested quantity', { extend: { stock_count: 4, show_stock_type: 1 } }, true],
   ['nested string zero', { extend: { stock_count: '0' } }, false],
   ['nested positive quantity', { extend: { stock_count: 4 } }, true],
   ['nested string quantity', { extend: { stock_count: '4' } }, true],
@@ -229,6 +230,8 @@ for (const [label, fields, expected] of [
       async (_url, options) => apiResponse(JSON.parse(options.body).current === 1
         ? [{ goods_key: 'stock', link: 'https://wzyp.cn/item/stock', name: 'Stock test', price: 10, ...fields }] : []));
     assert.equal(product.inStock, expected);
+    if (label === 'nested positive quantity') assert.equal(product.stockQuantity, 4);
+    if (label === 'hidden nested quantity') assert.equal(product.stockQuantity, null);
   });
 }
 

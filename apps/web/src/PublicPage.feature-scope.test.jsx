@@ -83,18 +83,18 @@ function assertOnlyFeature(container, kind) {
   }
 }
 
-test.each(kinds)('%s cards, both dialogs and dedicated page show only that feature data', async kind => {
+test.each(kinds.filter(kind => kind !== 'unclassified'))('%s cards, both dialogs and dedicated page show only that feature data', async kind => {
   const { requests } = mockCatalog();
   render(<App />);
   const group = kinds.indexOf(kind);
   const values = featureOffers(kind);
   const title = `ChatGPT GO · ${labels[group]}`;
-  const link = await screen.findByRole('link', { name: title });
+  const link = await screen.findByRole('button', { name: `ChatGPT GO · ${labels[group]}` });
   const card = link.closest('article');
-  fireEvent.click(within(card).getByRole('button', { name: `查看报价：${title}` }));
+  fireEvent.click(link);
   expect(card.querySelectorAll('.shop-offer')).toHaveLength(4);
   expect(card.querySelector('.standard-product-summary')).toHaveTextContent(`¥${values[0].price} 起`);
-  expect(card.querySelector('.standard-product-summary')).toHaveTextContent(`¥${values[0].price} – ¥${values.at(-1).price}`);
+  expect(card.querySelector('.standard-product-summary')).not.toHaveTextContent('–');
   fireEvent.click(within(card).getByRole('button', { name: `${values.length} 条报价` }));
   const dialog = await screen.findByRole('dialog', { name: `${title} · 报价` });
   const modal = within(dialog);
@@ -141,7 +141,7 @@ test.each(kinds)('%s cards, both dialogs and dedicated page show only that featu
   assertOnlyFeature(shopDialog, kind);
   fireEvent.click(within(shopDialog).getByRole('button', { name: '关闭报价详情' }));
 
-  fireEvent.click(link);
+  fireEvent.click(within(card).getByRole('link', { name: `更多报价：${title}` }));
   await screen.findByRole('heading', { name: title, level: 1 });
   await screen.findByText(values[0].name, { selector: '.offer-name' });
   assertOnlyFeature(document.querySelector('.product-page-details'), kind);

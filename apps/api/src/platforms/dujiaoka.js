@@ -82,7 +82,8 @@ async function readProduct(shop, productId, fetchImpl, signal) {
       ...rawProductContent(serialize(nameNode), descriptionNode ? serialize(descriptionNode) : undefined),
       sourceData: buildSourceEvidence({ description, ...(minimum === '1' ? {} : { minimum: Number(minimum) }) }), price, url,
       imageUrl: imageUrl && ['http:', 'https:'].includes(imageUrl.protocol) ? imageUrl.href : null,
-      inStock: (stock === '' || Number(stock) >= Number(minimum)) && !hasClass(sku, 'disabled') };
+      inStock: (stock === '' || Number(stock) >= Number(minimum)) && !hasClass(sku, 'disabled'),
+      stockQuantity: stock === '' ? null : Number(stock) };
     freshProducts.set(product, purchase.length <= 1 && minimum === '1');
     return product;
   });

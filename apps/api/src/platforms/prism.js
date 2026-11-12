@@ -74,6 +74,7 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
     url: new URL(shop.url).href,
     imageUrl: typeof item.image === 'string' && item.image ? new URL(item.image, shop.url).href : null,
     inStock: item.stock > 0,
+    stockQuantity: item.stock,
   }));
   options.signal?.throwIfAborted();
   options.onListComplete?.();

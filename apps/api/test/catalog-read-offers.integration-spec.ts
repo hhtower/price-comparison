@@ -9,7 +9,7 @@ import { migrationProvider } from '../scripts/migrate.js';
 
 const PRICE_FIELDS = [
   'product_id', 'standard_product_id', 'shop_id', 'listed_price', 'currency', 'captured_at', 'is_stale',
-  'stock_available', 'available', 'settlement_price', 'settlement_verified_at', 'settlement_payment_method', 'settlement_quantity',
+  'stock_available', 'stock_quantity', 'available', 'settlement_price', 'settlement_verified_at', 'settlement_payment_method', 'settlement_quantity',
 ];
 
 describe('transactional catalog read offers', { concurrency: false }, () => {
@@ -220,7 +220,7 @@ describe('transactional catalog read offers', { concurrency: false }, () => {
     assert.deepEqual(narrow, {
       product_id: wide.product_id, standard_product_id: wide.standard_product_id, shop_id: wide.shop_id,
       listed_price: '19.20', currency: 'CNY', captured_at: new Date('2020-01-01T00:00:00Z'),
-      is_stale: false, stock_available: true, available: true, settlement_price: null, settlement_verified_at: null,
+      is_stale: false, stock_available: true, stock_quantity: null, available: true, settlement_price: null, settlement_verified_at: null,
       settlement_payment_method: null, settlement_quantity: null,
       price: '19.20', verification_at: null,
     });

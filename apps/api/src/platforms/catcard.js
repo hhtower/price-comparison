@@ -116,6 +116,7 @@ async function detail(shop, entry, categories, fetchImpl, signal) {
     url: new URL('/', shop.url).href,
     imageUrl: image && ['http:', 'https:'].includes(image.protocol) ? image.href : null,
     inStock: item.stock > 0 && !item.supply_paused,
+    stockQuantity: item.stock,
   };
 }
 

@@ -17,8 +17,71 @@ vi.mock('react-virtuoso', async importOriginal => {
 // jsdom has no window layout; drive the library event boundary explicitly.
 // Browser smoke checks cover actual scrolling and bounded mounted card counts.
 async function reachCatalogEnd() {
+  await act(async () => new Promise(resolve => setTimeout(resolve, 0)));
   await act(async () => virtualListEvents.endReached());
 }
+
+test('append loading has a status, preserves products and ends without visible pagination', async () => {
+  let resolveNext;
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname !== '/api/catalog') return jsonResponse({});
+    if (url.searchParams.has('cursor')) return new Promise(resolve => { resolveNext = resolve; });
+    return jsonResponse({ items: [{ id: 'first', name: '首批商品', offers: [] }], nextCursor: 'next' });
+  }));
+  render(<PublicPage />);
+  await screen.findByRole('heading', { name: '首批商品' });
+  expect(screen.queryByRole('link', { name: '下一页商品' })).not.toBeInTheDocument();
+  await reachCatalogEnd();
+  expect(await screen.findByRole('status', { name: '正在加载更多商品' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: '首批商品' })).toBeInTheDocument();
+  await act(async () => resolveNext(jsonResponse({ items: [{ id: 'last', name: '末批商品', offers: [] }] })));
+  await screen.findByRole('heading', { name: '末批商品' });
+  expect(screen.queryByRole('status', { name: '正在加载更多商品' })).not.toBeInTheDocument();
+  expect(screen.getByText(/已经到底啦/)).toBeInTheDocument();
+});
+
+test('hidden membership-only pages are skipped, including after a visible page', async () => {
+  const calls = [];
+  const hidden = id => ({ id, name: '未分类套餐', isAiMembership: true, membershipGroups: [{ kind: 'unclassified', offers: [{ productId: id, price: '1' }] }] });
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname !== '/api/catalog') return jsonResponse({});
+    const cursor = url.searchParams.get('cursor');
+    calls.push(cursor);
+    return jsonResponse(cursor === null ? { items: [hidden('0')], nextCursor: 'visible' }
+      : cursor === 'visible' ? { items: [{ id: 'first', name: '可见商品', offers: [] }], nextCursor: 'hidden' }
+      : cursor === 'hidden' ? { items: [hidden('1')], nextCursor: 'last' }
+      : { items: [{ id: 'last', name: '最后商品', offers: [] }] });
+  }));
+  render(<PublicPage />);
+  await screen.findByRole('heading', { name: '可见商品' });
+  expect(screen.queryByText('未分类套餐')).not.toBeInTheDocument();
+  expect(calls).toEqual([null, 'visible']);
+  await reachCatalogEnd();
+  await screen.findByRole('heading', { name: '最后商品' });
+  expect(calls).toEqual([null, 'visible', 'hidden', 'last']);
+});
+
+test('failed append offers an explicit retry without dropping loaded products', async () => {
+  let failed = true;
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname !== '/api/catalog') return jsonResponse({});
+    return url.searchParams.has('cursor') ? failed ? jsonResponse({}, 503)
+      : jsonResponse({ items: [{ id: 'last', name: '重试后的商品', offers: [] }] })
+      : jsonResponse({ items: [{ id: 'first', name: '保留的商品', offers: [] }], nextCursor: 'next' });
+  }));
+  render(<PublicPage />);
+  await screen.findByRole('heading', { name: '保留的商品' });
+  await reachCatalogEnd();
+  expect(await screen.findByText('更多商品暂时没能加载出来')).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: '保留的商品' })).toBeInTheDocument();
+  expect(screen.queryByText(/已经到底啦/)).not.toBeInTheDocument();
+  failed = false;
+  await userEvent.click(screen.getByRole('button', { name: '重试加载' }));
+  await screen.findByRole('heading', { name: '重试后的商品' });
+});
 
 function jsonResponse(value, status = 200) {
   return Response.json(value, { status });
@@ -415,7 +478,7 @@ test('loads paginated quotes with the current purchase filters when a preview ca
   }));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /ChatGPT Plus/ });
-  await user.click(screen.getByRole('button', { name: '查看报价：ChatGPT Plus' }));
+  await user.click(screen.getByRole('button', { name: 'ChatGPT Plus' }));
   const badge = screen.getByRole('button', { name: '自建站' });
   expect(badge).toHaveAttribute('title', '风险相对更高');
   await user.click(badge);
@@ -534,7 +597,7 @@ describe('PublicPage', () => {
     }));
     render(<PublicPage />);
     await screen.findByRole('heading', { name: /ChatGPT Plus/ });
-    await user.click(screen.getByRole('button', { name: '查看报价：ChatGPT Plus' }));
+    await user.click(screen.getByRole('button', { name: 'ChatGPT Plus' }));
     const facts = within(screen.getByLabelText('商品标签'));
     expect(facts.getByText('已接码')).toBeInTheDocument();
     expect(facts.getByText('速刷')).toBeInTheDocument();
@@ -674,14 +737,14 @@ describe('PublicPage', () => {
     render(<PublicPage />);
 
     expect(await screen.findByRole('heading', { name: /洗发水/ })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '查看报价：洗发水' }));
+    await user.click(screen.getByRole('button', { name: '洗发水' }));
     expect(screen.getByRole('button', { name: '其它' })).toBeInTheDocument();
     expect(screen.queryByText('已核验起价')).not.toBeInTheDocument();
     expect(screen.getAllByText('¥9.9')).toHaveLength(2);
     expect(screen.queryByText('25 个标准商品')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '6 家商铺' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '6 条报价' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '查看全部 6 条报价' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '查看全部 6 条报价' })).not.toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: '去商家' }).map(link => link.href)).toEqual(['https://example.com/low', 'https://example.com/2', 'https://example.com/3', 'https://example.com/4']);
     expect(screen.getByLabelText('第 1 条报价')).toHaveClass('rank-1');
     expect(screen.getByLabelText('第 2 条报价')).toHaveClass('rank-2');
@@ -747,7 +810,7 @@ test('shows one winning quote per shop on the product card', async () => {
 
   render(<PublicPage />);
   expect(await screen.findByRole('heading', { name: /ChatGPT 普通账号/ })).toBeInTheDocument();
-  await userEvent.click(screen.getByRole('button', { name: '查看报价：ChatGPT 普通账号' }));
+  await userEvent.click(screen.getByRole('button', { name: 'ChatGPT 普通账号' }));
   const tiles = screen.getAllByRole('link', { name: '去商家' }).map(link => link.closest('.shop-tile'));
   expect(tiles).toHaveLength(2);
   expect(tiles[0]).toHaveTextContent('商铺 A');
@@ -763,7 +826,7 @@ test.each([
     items: [{ id: '42', name, platform: 'openai', offers: [] }],
   })));
   render(<PublicPage />);
-  expect(await screen.findByRole('link', { name: expected })).toHaveAttribute('href', '/products/42?newcomer=false');
+  expect(await screen.findByRole('button', { name: expected })).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByText(name)).not.toBeInTheDocument();
 });
 
@@ -780,7 +843,9 @@ test('opens product details from the explicit card link and records the action',
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /ChatGPT Plus/ });
   await waitFor(() => expect(calls.some(payload => payload.page === 'catalog')).toBe(true));
-  await userEvent.click(within(screen.getByRole('heading', { name: /ChatGPT Plus/ })).getByRole('link'));
+  const title = within(screen.getByRole('heading', { name: /ChatGPT Plus/ })).getByRole('button');
+  await userEvent.click(title);
+  await userEvent.click(within(title.closest('article')).getByRole('link', { name: '更多报价：ChatGPT Plus' }));
   expect(window.location.pathname).toBe('/products/42');
   expect(calls.flatMap(payload => payload.actions).some(action => action.name === 'product_detail')).toBe(true);
   window.history.replaceState({}, '', '/');
@@ -800,7 +865,7 @@ test('filters one standard product card by all selected tags', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input) => { if (String(input) === '/api/analytics/collect') return new Response(null, { status: 204 }); calls.push(String(input)); return jsonResponse(catalog); }));
     render(<PublicPage />);
     expect(await screen.findByRole('heading', { name: /ChatGPT Plus/ })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '查看报价：ChatGPT Plus' }));
+    await user.click(screen.getByRole('button', { name: 'ChatGPT Plus' }));
     expect(screen.queryByText('交付方式：代充')).not.toBeInTheDocument();
     expect(screen.queryByText('质保时长：质保25天')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '筛选' }));
@@ -838,7 +903,7 @@ test('filters one standard product card by all selected tags', async () => {
     await user.click(screen.getByRole('button', { name: '免责声明', exact: true }));
     expect(await screen.findByText(/本站汇总、整理和展示公开渠道及商家主动提交的/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '关闭免责声明' }));
-    await user.click(await screen.findByRole('button', { name: '查看报价：ChatGPT Plus' }));
+    await user.click(await screen.findByRole('button', { name: 'ChatGPT Plus' }));
     await user.click(await screen.findByRole('button', { name: '商品说明' }));
     expect(screen.getByRole('dialog', { name: 'Plus 报价' })).toHaveTextContent('自建站，风险相对更高');
     await user.click(within(screen.getByRole('dialog', { name: 'Plus 报价' })).getByRole('button', { name: '举报此报价' }));
@@ -862,7 +927,7 @@ test('retains all SKU tag options and uses the server ranking after filtering', 
   }));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /Plus/ });
-  await user.click(screen.getByRole('button', { name: '查看报价：Plus' }));
+  await user.click(screen.getByRole('button', { name: 'Plus' }));
   await user.click(screen.getByRole('button', { name: '筛选' }));
   await user.click(screen.getByRole('checkbox', { name: '订阅时长：12个月' }));
   await user.click(screen.getByRole('button', { name: '应用筛选（1）' }));
