@@ -1269,6 +1269,20 @@ describe('catalog SQL read model', () => {
     assert.ok(!JSON.stringify(plan).includes('standard_product_aliases'));
   });
 
+  test('unscoped facets do not load unused membership features', async () => {
+    const plan = await repository.explainFacets({ tags: [] });
+    const relations = new Set<string>();
+    const walk = (value: unknown): void => {
+      if (!value || typeof value !== 'object') return;
+      const node = value as Record<string, unknown>;
+      if (typeof node['Relation Name'] === 'string') relations.add(node['Relation Name']);
+      for (const child of Object.values(node)) walk(child);
+    };
+    walk(plan);
+    assert.ok(!relations.has('products'), 'facet options must not fetch per-SKU membership snapshots');
+    assert.ok(!relations.has('ai_job_input_members'), 'unscoped facets must not inspect feature jobs');
+  });
+
   test('catalog requests read prepared attributes instead of inferring every SKU again', async () => {
     await addPurchaseChoices();
     await addOfferHistory();

@@ -9,7 +9,7 @@ import { catalogOrderRank, catalogPlatformGroup, OTHER_CATALOG_RANK } from './ca
 import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './quote-policy.js';
 import { CATALOG_DISPLAY_SEARCH_LABELS, CATALOG_PRODUCT_ALIASES, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { PriceHistoryRepository } from './price-history.repository.js';
-import { isAiMembership, MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
+import { isAiMembership, MEMBERSHIP_GROUPS, MEMBERSHIP_POLICY_VERSION, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { catalogMembershipKind, failedMembershipFeatures } from '../standardization/membership-classification.js';
 
 export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly identityNames?: readonly string[]; readonly kind: string; readonly mergedIntoId?: string;
@@ -365,9 +365,10 @@ function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly
 function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly?: false): RawBuilder<CatalogResult>;
 function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnly = false): RawBuilder<CatalogResult> | RawBuilder<FacetResult> {
   const pricesOnly = !optionsOnly;
-  const ai = sql<boolean>`coalesce((select is_ai_membership from catalog_standards where id = r.standard_product_id), false)`;
-  const kind = sql<MembershipKind | null>`case when ${ai} then (select ${catalogMembershipKind(sql<boolean>`true`, 'p', 'source_shop')}
-    from products p join shops source_shop on source_shop.id = p.shop_id where p.id = r.product_id) end`;
+  const membershipFiltered = Boolean(input.newcomer || input.membershipKinds?.length || input.membershipSearch);
+  const needsMembership = !optionsOnly || membershipFiltered;
+  const ai = sql<boolean>`cs.is_ai_membership`;
+  const kind = sql<MembershipKind | null>`mk.kind`;
   const failed = sql<boolean>`(select ${failedMembershipFeatures('p', 'source_shop')}
     from products p join shops source_shop on source_shop.id = p.shop_id where p.id = r.product_id)`;
   const verified = sql`r.settlement_price is not null and r.settlement_price >= 0 and r.settlement_price < 'Infinity'::numeric
@@ -524,15 +525,17 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
         ${words.length || input.shopQuery ? sql`lower(normalize(sh.name, NFKC))` : sql`null::text`} as search_text
       from shops sh where sh.enabled = true and sh.deleted_at is null
     ), eligible_skus as not materialized (
-      select r.product_id, r.captured_at, r.standard_product_id, ${kind} as membership_kind,
-        ${optionsOnly ? sql`r.facet_tags` : sql`${price} as price,
-          r.shop_id`}
+      select r.standard_product_id,
+        ${optionsOnly ? sql`r.facet_tags` : sql`r.product_id, r.captured_at, ${kind} as membership_kind,
+          ${price} as price, r.shop_id`}
       from ${sql.table(pricesOnly ? 'catalog_read_offer_prices' : 'catalog_read_offers')} r
-      where r.standard_product_id in (select id from catalog_standards)
-        and r.shop_id in (select shop_id from catalog_shops)
-        and ${sql.join(conditions, sql` and `)}
+      join catalog_standards cs on cs.id = r.standard_product_id
+      join catalog_shops sh on sh.shop_id = r.shop_id
+      ${needsMembership ? sql`left join catalog_membership_kinds mk on cs.is_ai_membership and mk.product_id = r.product_id
+        and mk.policy_version = ${MEMBERSHIP_POLICY_VERSION}` : sql``}
+      where ${sql.join(conditions, sql` and `)}
     )`;
-  const scopeCtes = sql`scoped_skus as materialized (
+  const scopeCtes = sql`scoped_skus as not materialized (
       select * from eligible_skus e where ${platformCondition}
     )`;
   const facetOptionsCtes = sql`facet_sets as materialized (
@@ -568,7 +571,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     : sql`select standard_product_id from product_totals`;
   return sql<CatalogResult>`with ${eligibleCte}, ${tagConditions.length ? sql`purchase_matches as materialized (
       select r.product_id from catalog_read_offers r where ${filters}
-    ),` : sql``} filtered_skus as ${words.length || requestedPlatform || tagConditions.length ? sql`materialized` : sql`not materialized`} (
+    ),` : sql``} filtered_skus as ${words.length || requestedPlatform || tagConditions.length || membershipFiltered ? sql`materialized` : sql`not materialized`} (
       select e.* from eligible_skus e
       where ${platformCondition}
       ${tagConditions.length ? sql`and e.product_id in (select product_id from purchase_matches)` : sql``}
@@ -600,11 +603,13 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       from visible_page page join preview_skus w using (standard_product_id)
       group by page.catalog_rank, page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.is_ai_membership, page.sort_value,
         page.product_count, page.shop_count, page.latest_captured_at
-    ), membership_skus as materialized (
+    ), membership_candidates as materialized (
       select e.* from filtered_skus e join visible_page page using (standard_product_id)
       where page.is_ai_membership
-        and (e.membership_kind is not null or (select ${failedMembershipFeatures('p', 'source_shop')}
-          from products p join shops source_shop on source_shop.id = p.shop_id where p.id = e.product_id))
+    ), membership_skus as materialized (
+      select e.* from membership_candidates e
+      where e.membership_kind is not null or (select ${failedMembershipFeatures('p', 'source_shop')}
+          from products p join shops source_shop on source_shop.id = p.shop_id where p.id = e.product_id)
     ), membership_counts as (
       select standard_product_id, membership_kind, count(distinct shop_id)::int as shop_count, count(*)::int as product_count,
         min(price)::text as min_price, max(price)::text as max_price, max(captured_at) as latest_captured_at

@@ -530,6 +530,7 @@ export interface DatabaseSchema {
   catalog_read_offers: CatalogReadOfferTable;
   catalog_read_offer_prices: CatalogReadOfferPricesTable;
   catalog_read_facet_counts: { facet_tags: string; product_count: bigint };
+  catalog_membership_kinds: { product_id: bigint; kind: string; policy_version: string };
   offers: OfferTable;
   offer_price_history: OfferPriceHistoryTable;
   fetch_runs: FetchRunTable;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { after, before, describe, test } from 'node:test';
+import { after, afterEach, before, describe, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
@@ -13,7 +13,8 @@ import { CatalogController } from '../src/catalog/catalog.controller.js';
 import { publishNextCatalogChange } from '../src/catalog/catalog-projection.js';
 import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
 import { createCache } from '../src/cache/cache.js';
-import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
+import { buildMembershipFeatures, currentMembershipKind } from '../src/standardization/membership-classification.js';
+import { up as installMembershipKinds, down as removeMembershipKinds } from '../src/database/migrations/037_catalog_membership_kinds_20261113.js';
 import { MEMBERSHIP_KINDS, MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { VersioningType } from '@nestjs/common';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -28,6 +29,16 @@ describe('membership catalog features share standard identities', { skip: !proce
   const cache = createCache();
   const ids: Record<string, string> = {};
   const products: Record<string, string> = {};
+
+  afterEach(async () => {
+    const differences = await sql`with expected as (
+      select p.id as product_id, ${currentMembershipKind()} as kind
+      from products p join shops sh on sh.id = p.shop_id
+    )
+    select product_id from expected full join catalog_membership_kinds actual using (product_id)
+    where expected.kind is distinct from actual.kind`.execute(db);
+    assert.deepEqual(differences.rows, [], 'membership projection must match current validated features');
+  });
 
   async function saveFeature(id: string, kind: MembershipKind) {
     const product = await db.selectFrom('products').selectAll().where('id', '=', BigInt(id)).executeTakeFirstOrThrow();
@@ -102,6 +113,36 @@ describe('membership catalog features share standard identities', { skip: !proce
       await admin.query(`drop schema if exists "${schema}" cascade`);
       await admin.end();
     }
+  });
+
+  test('membership projection backfills existing features and rolls back with their source', async () => {
+    const before = await sql`select * from catalog_membership_kinds order by product_id`.execute(db);
+    await db.transaction().execute(async tx => {
+      await removeMembershipKinds(tx);
+      await installMembershipKinds(tx);
+    });
+    assert.deepEqual((await sql`select * from catalog_membership_kinds order by product_id`.execute(db)).rows, before.rows);
+    await assert.rejects(db.transaction().execute(async tx => {
+      await tx.updateTable('products').set({ membership_features: null }).where('id', '=', BigInt(products.account!)).execute();
+      assert.deepEqual((await sql`select * from catalog_membership_kinds
+        where product_id = ${products.account}::bigint`.execute(tx)).rows, []);
+      throw new Error('rollback membership projection');
+    }), /rollback membership projection/);
+    assert.deepEqual((await sql`select * from catalog_membership_kinds order by product_id`.execute(db)).rows, before.rows);
+  });
+
+  test('classified catalog reads do not reopen source products or feature snapshots', async () => {
+    const plan = await repository.explain({ standardProductId: ids.base, membershipKinds: ['account'], tags: [], limit: 20 });
+    let readsProjection = false;
+    const walk = (value: unknown): void => {
+      if (!value || typeof value !== 'object') return;
+      const node = value as Record<string, unknown>;
+      if (node['Relation Name'] === 'catalog_membership_kinds') readsProjection = true;
+      if (node['Relation Name'] === 'products') assert.equal(node['Actual Loops'], 0);
+      for (const child of Object.values(node)) walk(child);
+    };
+    walk(plan);
+    assert.ok(readsProjection);
   });
 
   test('SQL candidates, counts, facets and cursors share hard AI-only scope', async () => {
@@ -249,10 +290,11 @@ describe('membership catalog features share standard identities', { skip: !proce
     const id = BigInt(products.account!);
     const original = (await db.selectFrom('products').select('membership_features').where('id', '=', id).executeTakeFirstOrThrow()).membership_features as Record<string, JsonValue>;
     try {
-      for (const snapshot of [null, {}, { ...original, contentVersion: '-1' }, { ...original, fingerprint: 'changed' },
+      for (const snapshot of [null, {}, [], 'invalid', { ...original, contentVersion: '-1' }, { ...original, fingerprint: 'changed' },
         { ...original, revision: '99999' }, { ...original, policyVersion: 'old' },
         { ...original, decision: { kind: 'other', reason: 'llm_reviewed' } },
         { ...original, decision: { kind: 'account', reason: 'rule_derived' } },
+        { ...original, source: null },
         { ...original, source: { url: 'https://changed.invalid', protocol: null, platform: 'test' } }]) {
         await db.updateTable('products').set({ membership_features: snapshot === null ? null : jsonb(snapshot) }).where('id', '=', id).execute();
         const page = await repository.search({ standardProductId: ids.base, tags: [], limit: 10, detailKind: 'offers', detailPageSize: 10 });

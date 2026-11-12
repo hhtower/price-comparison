@@ -16,6 +16,11 @@
 性能基准入口为 `apps/api/scripts/benchmark-catalog.ts`，需通过 `TEST_DATABASE_URL`
 指定专用本机 PostgreSQL；脚本自动创建并清理测试 schema，分别测量冷请求、缓存复用和并发请求。
 
+单独检查 SQL 效率可运行 `npx tsx apps/api/scripts/benchmark-catalog-sql.ts`，
+使用当前 `DATABASE_URL` 和 `PG_SCHEMA`，强制只读。每种场景预热一次后测量 20 次，
+以 PostgreSQL 规划及执行时间合计的 P95 小于 100ms 为门槛，不包含网络、
+应用缓存和前端耗时。应使用有代表性的数据量，结果只适用于受测数据库及负载。
+会员分类随源商品变更在同一事务中更新；首次升级需完成迁移回填。
 
 ## 后台任务
 
