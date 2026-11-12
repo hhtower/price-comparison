@@ -33,7 +33,7 @@ test('filter options and the standard selector load metadata without fetching an
       : response([product(0)]);
   }));
   render(<PublicPage />);
-  await screen.findByRole('heading', { name: /^商品0 / });
+  await screen.findByRole('heading', { name: /^商品0$/ });
   expect(requests).toHaveLength(1);
   expect(requests[0].pathname).toBe('/api/catalog');
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
@@ -47,7 +47,7 @@ test('filter options and the standard selector load metadata without fetching an
   for (const parameter of ['view', 'limit', 'cursor', 'sort', 'facets']) {
     expect(facets.searchParams.has(parameter)).toBe(false);
   }
-  expect(screen.getByRole('heading', { name: /^商品0 / })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: /^商品0$/ })).toBeInTheDocument();
 });
 
 test('keeps three common duration shortcuts before expanding all choices', async () => {
@@ -56,7 +56,7 @@ test('keeps three common duration shortcuts before expanding all choices', async
   vi.stubGlobal('fetch', vi.fn(async input => String(input).includes('/catalog/facets')
     ? Response.json({ tagFacets }) : response([product(0)])));
   render(<PublicPage />);
-  await screen.findByRole('heading', { name: /^商品0 / });
+  await screen.findByRole('heading', { name: /^商品0$/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   expect(await screen.findByRole('checkbox', { name: /30/ })).toBeInTheDocument();
   const group = screen.getByRole('checkbox', { name: /30/ }).closest('fieldset');
@@ -69,7 +69,7 @@ test('typing before the debounce does not rerender existing prices', async () =>
   const fetchMock = vi.fn(async () => response(Array.from({ length: 20 }, (_, i) => product(i))));
   vi.stubGlobal('fetch', fetchMock);
   render(<PublicPage />);
-  await screen.findByRole('heading', { name: /^商品0 / });
+  await screen.findByRole('heading', { name: /^商品0$/ });
   const formatting = vi.spyOn(Number.prototype, 'toFixed');
   fireEvent.change(screen.getByRole('textbox', { name: '搜索商品' }), { target: { value: 'x' } });
   expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/catalog?'))).toHaveLength(1);
@@ -80,21 +80,21 @@ test('selecting the active platform and applying unchanged filters keep the exis
   const fetchMock = vi.fn(async url => String(url).includes('/catalog/facets') ? facetsResponse() : response([product(0)]));
   vi.stubGlobal('fetch', fetchMock);
   render(<PublicPage />);
-  await screen.findByRole('heading', { name: /^商品0 / });
+  await screen.findByRole('heading', { name: /^商品0$/ });
   fireEvent.click(screen.getByRole('button', { name: '全部', exact: true }));
   expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/catalog?'))).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   await screen.findByRole('checkbox', { name: /独享/ });
   fireEvent.click(screen.getByRole('button', { name: '应用筛选', exact: true }));
   expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/catalog?'))).toHaveLength(1);
-  expect(screen.getByRole('heading', { name: /^商品0 / })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: /^商品0$/ })).toBeInTheDocument();
 });
 
 test('reopening filters reuses prepared options until refresh', async () => {
   const fetchMock = vi.fn(async url => String(url).includes('/catalog/facets') ? facetsResponse() : response([product(0)]));
   vi.stubGlobal('fetch', fetchMock);
   render(<PublicPage />);
-  await screen.findByRole('heading', { name: /^商品0 / });
+  await screen.findByRole('heading', { name: /^商品0$/ });
   for (let i = 0; i < 2; i++) {
     fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
     await screen.findByRole('checkbox', { name: /独享/ });
@@ -103,7 +103,7 @@ test('reopening filters reuses prepared options until refresh', async () => {
   const facetCalls = () => fetchMock.mock.calls.filter(([url]) => new URL(url, 'http://localhost').pathname === '/api/catalog/facets');
   expect(facetCalls()).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: '刷新价格' }));
-  await screen.findByRole('heading', { name: /^商品0 / });
+  await screen.findByRole('heading', { name: /^商品0$/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   await screen.findByRole('checkbox', { name: /独享/ });
   expect(facetCalls()).toHaveLength(2);
@@ -115,7 +115,7 @@ test('facet reuse expires so reopening filters can show updated conditions', asy
   const fetchMock = vi.fn(async url => String(url).includes('/catalog/facets') ? Response.json({ tagFacets: facets }) : response([product(0)]));
   vi.stubGlobal('fetch', fetchMock);
   render(<PublicPage />);
-  await screen.findByRole('heading', { name: /^商品0 / });
+  await screen.findByRole('heading', { name: /^商品0$/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   await screen.findByRole('checkbox', { name: /独享/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
@@ -138,7 +138,7 @@ test('detail batches append quotes and reuse loaded batches when reopened', asyn
     return response([{ ...item, detail: { kind: 'offers', page, pageSize: 12, total: 24, entries: Array.from({ length: 12 }, (_, i) => quote(page * 12 + i + 100)) } }]);
   }));
   render(<PublicPage />);
-  await screen.findByRole('heading', { name: /^商品0 / });
+  await screen.findByRole('heading', { name: /^商品0$/ });
   fireEvent.click(screen.getByRole('button', { name: '24 条报价' }));
   const dialog = screen.getByRole('dialog', { name: /报价/ });
   await within(dialog).findByText('报价100');
@@ -179,6 +179,6 @@ test('a cached quote dialog still reports refresh failures and allows retry', as
 test('virtualization bounds mounted cards when the loaded catalog grows', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => response(Array.from({ length: 200 }, (_, i) => product(i)))));
   const { container } = render(<PublicPage />);
-  await screen.findByRole('heading', { name: /^商品0 / });
+  await screen.findByRole('heading', { name: /^商品0$/ });
   expect(container.querySelectorAll('.standard-product-card').length).toBeLessThan(30);
 });

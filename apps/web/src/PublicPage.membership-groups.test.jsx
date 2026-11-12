@@ -64,7 +64,7 @@ test('renders nonempty membership groups as same-standard cards with four offers
   const summary = link.closest('article').querySelector('.standard-product-summary');
   expect(summary).toHaveTextContent('¥0.5 起');
   expect(summary).toHaveTextContent('¥0.5 – ¥80');
-  expect(summary.querySelector('time')).toHaveAttribute('dateTime', '2026-11-10T10:00:00Z');
+  expect(link.closest('article').querySelector('.product-counts time')).toHaveAttribute('dateTime', '2026-11-10T10:00:00Z');
   const topUpSummary = topUp.closest('article').querySelector('.standard-product-summary');
   expect(topUpSummary).toHaveTextContent('$12 起');
   expect(topUpSummary).not.toHaveTextContent('–');

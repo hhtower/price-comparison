@@ -10,17 +10,17 @@ vi.mock('react-virtuoso', async importOriginal => {
   return { ...original, Virtuoso: props => <original.Virtuoso {...props} endReached={undefined} /> };
 });
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-function mount(membership = false) {
+function mount(membership = false, latestCapturedAt) {
   const offers = Array.from({ length: 5 }, (_, index) => ({
     productId: String(index), shopId: String(index), shop: `商家${index}`, name: `报价${index}`,
     price: String(index + 10), priceStatus: 'estimated', currency: 'CNY',
     productUrl: `https://example.com/${index}`, tags: [],
   }));
-  const item = { id: '1', name: 'ChatGPT Plus', platform: 'openai', shopCount: 5, productCount: 9, offers,
+  const item = { id: '1', name: 'ChatGPT Plus', platform: 'openai', shopCount: 5, productCount: 9, offers, latestCapturedAt,
     ...(membership ? { isAiMembership: true, membershipGroups: [
-      { kind: 'top_up', shopCount: 5, productCount: 9, minPrice: '10', maxPrice: '14', offers },
+      { kind: 'top_up', shopCount: 5, productCount: 9, minPrice: '10', maxPrice: '14', offers, latestCapturedAt },
     ] } : {}) };
   vi.stubGlobal('fetch', vi.fn(async input => {
     const url = new URL(input, 'http://localhost');
@@ -63,6 +63,30 @@ test('all products start collapsed with prices and counts, then independently sh
   expect(first).toHaveAttribute('aria-expanded', 'false');
   expect(panel).not.toBeInTheDocument();
   expect(second).toHaveAttribute('aria-expanded', 'true');
+});
+
+test.each([false, true])('collapsed summaries show the latest collection time with counts (membership: %s)', async membership => {
+  const now = Date.now();
+  vi.spyOn(Date, 'now').mockReturnValue(now);
+  const capturedAt = new Date(now - 6 * 60 * 1000).toISOString();
+  mount(membership, capturedAt);
+  const trigger = await screen.findByRole('button', { name: membership ? '查看报价：ChatGPT Plus · 代充' : '查看报价：ChatGPT Plus' });
+  const card = trigger.closest('article');
+  const timestamp = within(card).getByText('6 分钟前更新');
+  expect(timestamp).toHaveAttribute('dateTime', capturedAt);
+  expect(timestamp).toHaveAttribute('title', new Date(capturedAt).toLocaleString('zh-CN'));
+  expect(timestamp.closest('p')).toContainElement(within(card).getByRole('button', { name: '9 条报价' }));
+  expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  fireEvent.click(trigger);
+  expect(within(card).getAllByText('6 分钟前更新')).toHaveLength(1);
+});
+
+test.each([undefined, 'invalid-date'])('missing or invalid collection time stays explicit: %s', async capturedAt => {
+  mount(false, capturedAt);
+  const trigger = await screen.findByRole('button', { name: '查看报价：ChatGPT Plus' });
+  const card = trigger.closest('article');
+  expect(within(card).getByText('更新时间未知')).toBeInTheDocument();
+  expect(card.querySelector('time')).not.toBeInTheDocument();
 });
 
 test('keyboard toggles quotes while count buttons keep their independent detail action', async () => {

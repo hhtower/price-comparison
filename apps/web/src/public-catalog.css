@@ -2,7 +2,7 @@
 .detail-kind-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
 .detail-kind-tabs button { border: 1px solid var(--catalog-line); border-radius: 6px; padding: 7px 10px; background: #fff; color: inherit; font: inherit; cursor: pointer; }
 .detail-kind-tabs button[aria-pressed="true"] { border-color: #438275; background: #edf7f3; color: #245f57; }
-.product-heading h2 a { color: inherit; text-decoration: none; }
+.product-heading h2 a { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; color: inherit; text-decoration: none; }
 .product-heading h2 a:hover { text-decoration: underline; }
 .compact-catalog .catalog-toolbar {
   grid-column: 1 / -1;
@@ -123,8 +123,10 @@
 
 /* Keep spacing inside each measured virtual row; external margins are excluded. */
 .catalog-virtual-item {
-  padding-bottom: 10px;
+  padding: 0 20px;
 }
+
+.catalog-list-surface { border: 1px solid var(--catalog-line); border-radius: 12px; background: #fff; }
 
 .compact-catalog .intent-chips {
   display: flex;
@@ -164,26 +166,26 @@
 }
 
 .compact-catalog .standard-product-card {
-  border-color: #e0e9e8;
-  border-radius: 14px;
+  border: 0;
+  border-bottom: 1px solid var(--catalog-line);
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
 }
 
 .compact-catalog .standard-product-header {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 16px;
-  padding: 12px 18px;
+  gap: 20px;
+  min-height: 82px;
+  padding: 14px 0;
   border: 0;
   background: #fff;
   cursor: pointer;
 }
 
 .compact-catalog .product-heading {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 18px;
+  display: block;
 }
 
 .compact-catalog .standard-product-header h2 {
@@ -194,43 +196,59 @@
   letter-spacing: -.04em;
 }
 
-.compact-catalog .standard-product-header h2 .platform-pill {
-  border-color: #d8eae5;
-  background: #eaf5f1;
-  color: #286a60;
-  padding: 5px 10px;
-}
-
-.compact-catalog .standard-product-header p {
-  margin: 0;
-  font-size: 12px;
+.product-kind {
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: #eff4f3;
+  color: #536b65;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0;
   white-space: nowrap;
 }
 
+.compact-catalog .standard-product-header p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .compact-catalog .standard-product-summary {
-  grid-template-columns: auto auto;
+  grid-template-columns: auto 44px;
   align-items: center;
-  gap: 2px 18px;
+  gap: 2px 8px;
   margin: 0;
 }
 
 .compact-catalog .standard-product-summary > small {
   grid-column: 1;
+  grid-row: 2;
 }
 
 .compact-catalog .lowest-note {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 2px 5px;
   color: var(--catalog-accent);
   font-size: 23px;
   line-height: 1.15;
 }
 
+.compact-catalog .lowest-note > span:first-child { grid-column: 1; grid-row: 1; }
+.compact-catalog .lowest-note > .offer-price-suffix:not(.price-estimate) { grid-column: 2; grid-row: 1; }
+.compact-catalog .lowest-note > .price-estimate { grid-column: 1 / -1; grid-row: 2; justify-self: end; color: var(--catalog-muted); font-size: 11px; }
+
 .compact-catalog .product-offers-toggle {
   display: inline-flex;
   grid-column: 2;
-  grid-row: 1;
+  grid-row: 1 / span 2;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   min-height: 44px;
+  width: 44px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -245,13 +263,14 @@
 .product-offers-toggle:focus-visible { outline: 2px solid var(--catalog-accent); outline-offset: 3px; border-radius: 4px; }
 .product-offers-toggle[aria-expanded="true"] .filter-chevron { margin-top: 3px; transform: rotate(225deg); }
 .compact-catalog .product-active-tags { flex-basis: 100%; margin-top: 2px; }
-.product-offers-more { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 28px 16px; color: var(--catalog-muted); font-size: 12px; }
+.product-offers-panel { padding-top: 14px; border-top: 1px solid var(--catalog-line); background: #f6f9f8; }
+.product-offers-more { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px 8px; color: var(--catalog-muted); font-size: 12px; }
 .compact-catalog .product-offers-more button { min-height: 44px; color: var(--catalog-accent); }
 
 .compact-catalog .shop-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  padding: 0 28px 16px;
+  padding: 0 16px 12px;
 }
 
 .compact-catalog .shop-offer,
@@ -429,9 +448,13 @@
 
 .compact-catalog .product-counts {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 2px 6px;
 }
+
+.compact-catalog .product-counts > * { white-space: nowrap; }
+.product-updated { color: var(--catalog-muted); }
 
 .compact-catalog .count-link {
   border: 0;
@@ -718,29 +741,33 @@
 
   .compact-catalog .standard-product-header {
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 14px;
-    padding: 12px 16px;
+    gap: 2px 8px;
+    padding: 12px 0;
   }
 
-  .compact-catalog .product-heading { display: block; }
+  .catalog-virtual-item { padding: 0 12px; }
+  .compact-catalog .product-heading { display: contents; }
+  .compact-catalog .product-heading h2 { grid-column: 1; grid-row: 1; }
+  .compact-catalog .product-heading .product-counts { grid-column: 1 / -1; grid-row: 2; margin: 0; font-size: 11px; }
+  .compact-catalog .product-heading .product-active-tags { grid-column: 1 / -1; grid-row: 3; }
 
   .compact-catalog .standard-product-header h2 {
-    font-size: 17px;
+    font-size: 16px;
   }
 
   .compact-catalog .standard-product-header p { margin-top: 4px; }
 
   .compact-catalog .standard-product-summary {
-    grid-template-columns: auto;
-    gap: 0;
+    grid-column: 2;
+    grid-row: 1;
+    grid-template-columns: auto 44px;
+    gap: 0 2px;
     justify-items: end;
     text-align: right;
   }
 
-  .compact-catalog .product-offers-toggle { grid-column: 1; grid-row: auto; }
-
   .compact-catalog .lowest-note {
-    font-size: 21px;
+    font-size: 20px;
   }
 
   .product-offers-more { padding: 0 16px 8px; }
@@ -1131,7 +1158,7 @@
   .compact-catalog .standard-product-card { overflow: clip; }
   .compact-catalog .standard-product-header {
     position: sticky; top: var(--catalog-toolbar-height, 0px); z-index: 9;
-    border-radius: 12px 12px 0 0; background: #fff; box-shadow: 0 1px 0 var(--catalog-line);
+    border-radius: 0; background: #fff; box-shadow: 0 1px 0 var(--catalog-line);
   }
   .comparison-scroll { padding: 12px; }
   .comparison-offer-heading button, .offer-comparison .dialog-header > button { width: 40px; height: 40px; }

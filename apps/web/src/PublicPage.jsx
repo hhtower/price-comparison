@@ -158,7 +158,7 @@ function OfferPrice({ offer, className = '', starting = false }) {
     offer.priceVerifiedAt ? `核价于 ${new Date(offer.priceVerifiedAt).toLocaleString('zh-CN')}` : null].filter(Boolean).join(' · ') : undefined;
   return <span className={`offer-price ${className}${available ? '' : ' price-unavailable'}`} title={hint}>
     <span aria-label={available ? `结算价 ${amount}，${hint}` : '暂无报价'}>{amount}</span>
-    {available && estimated ? <span className="offer-price-suffix">预估</span> : null}
+    {available && estimated ? <span className="offer-price-suffix price-estimate">预估</span> : null}
     {starting && available ? <span className="offer-price-suffix"> 起</span> : null}
     {!starting && offer ? <span className="offer-listed-price"><span className="offer-price-separator" aria-hidden="true"> / </span>标价 {listedAmount}</span> : null}
   </span>;
@@ -787,6 +787,8 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
   const shopOffers = offers.filter(currentInventory);
   const visible = shopOffers.slice(0, OFFER_PAGE_SIZE);
   const minOffer = shopOffers.find(availableOffer);
+  const latestCapturedAt = group ? group.latestCapturedAt : item.latestCapturedAt;
+  const updatedLabel = formatRelativeTime(latestCapturedAt);
   const shopCount = Number(group ? group.shopCount : item.shopCount ?? new Set(offers.map((offer) => offer.shopId || offer.shop)).size);
   const productCount = Number(group ? group.productCount : item.productCount ?? offers.length);
   const titleId = `product-${item.id}-${kind || 'standard'}-title`;
@@ -799,18 +801,25 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
       <header className="standard-product-header" onClick={event => {
         if (!event.target.closest('a, button')) onToggle(`${item.id}:${kind || 'standard'}`);
       }}>
-        <div className="product-heading"><h2 id={titleId}><a href={detailHref} onClick={event => navigateProduct(event, detailHref)}>{membershipName(item, kind)}</a> <span className="platform-pill">{displayPlatform(item.platform)}</span></h2><p className="product-counts"><button type="button" className="count-link" onClick={() => onOpenDetail(item, 'shops', kind ? [kind] : [])}>{shopCount} 家商铺</button><span aria-hidden="true"> · </span><button type="button" className="count-link" onClick={() => onOpenDetail(item, 'offers', kind ? [kind] : [])}>{productCount} 条报价</button></p>{activeTagLabels.length ? <div className="product-active-tags">{activeTagLabels.map((label) => <span key={label}>{label}</span>)}</div> : null}</div>
+        <div className="product-heading">
+          <h2 id={titleId}><a href={detailHref} aria-label={membershipName(item, kind)} onClick={event => navigateProduct(event, detailHref)}>{formatStandardName(item.name)}{kind ? <span className="product-kind">{membershipKindLabel(kind)}</span> : null}</a></h2>
+          <p className="product-counts">
+            <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'shops', kind ? [kind] : [])}>{shopCount} 家商铺</button><span aria-hidden="true">·</span>
+            <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'offers', kind ? [kind] : [])}>{productCount} 条报价</button><span aria-hidden="true">·</span>
+            {updatedLabel === '更新时间未知' ? <span className="product-updated">{updatedLabel}</span> : <time className="product-updated" dateTime={latestCapturedAt} title={new Date(latestCapturedAt).toLocaleString('zh-CN')}>{updatedLabel}</time>}
+          </p>
+          {activeTagLabels.length ? <div className="product-active-tags">{activeTagLabels.map((label) => <span key={label}>{label}</span>)}</div> : null}
+        </div>
         <div className="standard-product-summary">{group ? <>
-          <span className="offer-price lowest-note">{formatMoney(group.minPrice, currency)}{group.minPrice != null && (minOffer?.priceStatus === 'estimated' || minOffer?.paymentMethod?.includes('预估')) ? <span className="offer-price-suffix">预估</span> : null}{group.minPrice != null ? <span className="offer-price-suffix"> 起</span> : null}</span>
+          <span className="offer-price lowest-note"><span>{formatMoney(group.minPrice, currency)}</span>{group.minPrice != null && (minOffer?.priceStatus === 'estimated' || minOffer?.paymentMethod?.includes('预估')) ? <span className="offer-price-suffix price-estimate">预估</span> : null}{group.minPrice != null ? <span className="offer-price-suffix"> 起</span> : null}</span>
           {expanded && group.minPrice != null && group.maxPrice != null && Number(group.maxPrice) > Number(group.minPrice) ? <small>{formatMoney(group.minPrice, currency)} – {formatMoney(group.maxPrice, currency)}</small> : null}
-          {expanded && group.latestCapturedAt ? <small><time dateTime={group.latestCapturedAt}>{formatRelativeTime(group.latestCapturedAt)}</time></small> : null}
         </> : <OfferPrice offer={minOffer} className="lowest-note" starting />}
-          <button type="button" className="product-offers-toggle" aria-label={`${expanded ? '收起报价' : '查看报价'}：${membershipName(item, kind)}`} aria-expanded={expanded} aria-controls={offersId} onClick={() => onToggle(`${item.id}:${kind || 'standard'}`)}>
-            {expanded ? '收起报价' : '查看报价'}<span className="filter-chevron" aria-hidden="true" />
+          <button type="button" className="product-offers-toggle" aria-label={`${expanded ? '收起报价' : '查看报价'}：${membershipName(item, kind)}`} title={expanded ? '收起报价' : '查看报价'} aria-expanded={expanded} aria-controls={offersId} onClick={() => onToggle(`${item.id}:${kind || 'standard'}`)}>
+            <span className="filter-chevron" aria-hidden="true" />
           </button>
         </div>
       </header>
-      {expanded ? <div id={offersId}>
+      {expanded ? <div className="product-offers-panel" id={offersId}>
         <div className="shop-grid">
         {visible.map((offer, index) => <OfferCard key={offerIdentity(offer, index)} offer={offer} item={item} rank={index + 1} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} />)}
         </div>
@@ -833,7 +842,7 @@ const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDe
     <div className="catalog-virtual-item"><StandardProductCard item={entry.item} group={entry.group} expanded={expandedProducts.has(entry.key)} onToggle={toggleProduct} priceRevision={priceRevision} activeTagLabels={activeTagLabels} onOpenDetail={onOpenDetail} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} newcomer={newcomer} /></div>
   ), [expandedProducts, toggleProduct, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, priceRevision, newcomer]);
   if (!items.length) return null;
-  return <Virtuoso useWindowScroll data={items} computeItemKey={catalogItemKey} itemContent={renderItem} endReached={onEndReached} totalListHeightChanged={onHeightChanged} increaseViewportBy={CATALOG_OVERSCAN} />;
+  return <div className="catalog-list-surface"><Virtuoso useWindowScroll data={items} computeItemKey={catalogItemKey} itemContent={renderItem} endReached={onEndReached} totalListHeightChanged={onHeightChanged} increaseViewportBy={CATALOG_OVERSCAN} /></div>;
 });
 
 function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatformChange, assistantEnabled, referenceRef }) {
