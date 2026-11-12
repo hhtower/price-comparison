@@ -91,6 +91,7 @@ test.each(kinds)('%s cards, both dialogs and dedicated page show only that featu
   const title = `ChatGPT GO · ${labels[group]}`;
   const link = await screen.findByRole('link', { name: title });
   const card = link.closest('article');
+  fireEvent.click(within(card).getByRole('button', { name: `查看报价：${title}` }));
   expect(card.querySelectorAll('.shop-offer')).toHaveLength(4);
   expect(card.querySelector('.standard-product-summary')).toHaveTextContent(`¥${values[0].price} 起`);
   expect(card.querySelector('.standard-product-summary')).toHaveTextContent(`¥${values[0].price} – ¥${values.at(-1).price}`);

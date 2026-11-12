@@ -415,6 +415,7 @@ test('loads paginated quotes with the current purchase filters when a preview ca
   }));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /ChatGPT Plus/ });
+  await user.click(screen.getByRole('button', { name: '查看报价：ChatGPT Plus' }));
   const badge = screen.getByRole('button', { name: '自建站' });
   expect(badge).toHaveAttribute('title', '风险相对更高');
   await user.click(badge);
@@ -533,6 +534,7 @@ describe('PublicPage', () => {
     }));
     render(<PublicPage />);
     await screen.findByRole('heading', { name: /ChatGPT Plus/ });
+    await user.click(screen.getByRole('button', { name: '查看报价：ChatGPT Plus' }));
     const facts = within(screen.getByLabelText('商品标签'));
     expect(facts.getByText('已接码')).toBeInTheDocument();
     expect(facts.getByText('速刷')).toBeInTheDocument();
@@ -672,13 +674,14 @@ describe('PublicPage', () => {
     render(<PublicPage />);
 
     expect(await screen.findByRole('heading', { name: /洗发水/ })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '查看报价：洗发水' }));
     expect(screen.getByRole('button', { name: '其它' })).toBeInTheDocument();
     expect(screen.queryByText('已核验起价')).not.toBeInTheDocument();
     expect(screen.getAllByText('¥9.9')).toHaveLength(2);
     expect(screen.queryByText('25 个标准商品')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '6 家商铺' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '6 条报价' })).toBeInTheDocument();
-    expect(screen.queryByText('查看全部 6 条报价')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '查看全部 6 条报价' })).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: '去商家' }).map(link => link.href)).toEqual(['https://example.com/low', 'https://example.com/2', 'https://example.com/3', 'https://example.com/4']);
     expect(screen.getByLabelText('第 1 条报价')).toHaveClass('rank-1');
     expect(screen.getByLabelText('第 2 条报价')).toHaveClass('rank-2');
@@ -744,6 +747,7 @@ test('shows one winning quote per shop on the product card', async () => {
 
   render(<PublicPage />);
   expect(await screen.findByRole('heading', { name: /ChatGPT 普通账号/ })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: '查看报价：ChatGPT 普通账号' }));
   const tiles = screen.getAllByRole('link', { name: '去商家' }).map(link => link.closest('.shop-tile'));
   expect(tiles).toHaveLength(2);
   expect(tiles[0]).toHaveTextContent('商铺 A');
@@ -796,6 +800,7 @@ test('filters one standard product card by all selected tags', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input) => { if (String(input) === '/api/analytics/collect') return new Response(null, { status: 204 }); calls.push(String(input)); return jsonResponse(catalog); }));
     render(<PublicPage />);
     expect(await screen.findByRole('heading', { name: /ChatGPT Plus/ })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '查看报价：ChatGPT Plus' }));
     expect(screen.queryByText('交付方式：代充')).not.toBeInTheDocument();
     expect(screen.queryByText('质保时长：质保25天')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '筛选' }));
@@ -833,6 +838,7 @@ test('filters one standard product card by all selected tags', async () => {
     await user.click(screen.getByRole('button', { name: '免责声明', exact: true }));
     expect(await screen.findByText(/本站汇总、整理和展示公开渠道及商家主动提交的/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '关闭免责声明' }));
+    await user.click(await screen.findByRole('button', { name: '查看报价：ChatGPT Plus' }));
     await user.click(await screen.findByRole('button', { name: '商品说明' }));
     expect(screen.getByRole('dialog', { name: 'Plus 报价' })).toHaveTextContent('自建站，风险相对更高');
     await user.click(within(screen.getByRole('dialog', { name: 'Plus 报价' })).getByRole('button', { name: '举报此报价' }));
@@ -856,6 +862,7 @@ test('retains all SKU tag options and uses the server ranking after filtering', 
   }));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /Plus/ });
+  await user.click(screen.getByRole('button', { name: '查看报价：Plus' }));
   await user.click(screen.getByRole('button', { name: '筛选' }));
   await user.click(screen.getByRole('checkbox', { name: '订阅时长：12个月' }));
   await user.click(screen.getByRole('button', { name: '应用筛选（1）' }));

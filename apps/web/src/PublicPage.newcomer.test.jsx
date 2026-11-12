@@ -35,12 +35,14 @@ function mockCatalog() {
   return requests;
 }
 
-test('first visit defaults to browse, shows all membership kinds and four offers per category', async () => {
+test('first visit defaults to browse with collapsed membership kinds and four offers when expanded', async () => {
   localStorage.removeItem(storageKey);
   const requests = mockMembershipCatalog({ offersPerKind: 4 });
   mount(undefined, 2400);
   for (const kind of ['成品号', '代充', '租号', '短期', '未分类']) {
     const link = await screen.findByRole('link', { name: 'ChatGPT Plus · ' + kind });
+    expect(link.closest('article').querySelectorAll('.shop-offer')).toHaveLength(0);
+    fireEvent.click(within(link.closest('article')).getByRole('button', { name: /^查看报价：/ }));
     expect(link.closest('article').querySelectorAll('.shop-offer')).toHaveLength(4);
   }
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();

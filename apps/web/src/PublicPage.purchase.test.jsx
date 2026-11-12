@@ -7,7 +7,7 @@ import App from './App.jsx';
 const measurement = vi.hoisted(() => ({ automatic: true, callback: null }));
 vi.mock('react-virtuoso', () => ({ Virtuoso: ({ data, itemContent, totalListHeightChanged }) => {
   React.useEffect(() => { measurement.callback = totalListHeightChanged; if (measurement.automatic) totalListHeightChanged?.(data.length * 500); }, [totalListHeightChanged, data.length]);
-  return <>{data.map((item, index) => <React.Fragment key={item.id}>{itemContent(index, item)}</React.Fragment>)}</>;
+  return <>{data.map((item, index) => <React.Fragment key={item.key || item.id}>{itemContent(index, item)}</React.Fragment>)}</>;
 } }));
 const product = { id: '42', name: 'Codex 手机接码', platform: 'openai', kind: '手机接码' };
 const quote = { productId: '9', shop: '示例店', name: '接码服务', spec: '月付 · 独享 · 质保30天', price: '12.50', listedPrice: '9.00', currency: 'CNY',
@@ -34,11 +34,18 @@ function mockApi({ status = 200, merged = false, expires = false, inventoryExpir
   }));
   return calls;
 }
+async function renderWithOffers() {
+  const result = render(<App />);
+  if (window.location.pathname === '/') {
+    fireEvent.click(await screen.findByRole('button', { name: /^查看报价：/ }));
+  }
+  return result;
+}
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); window.history.replaceState({}, '', '/'); });
 beforeEach(() => { vi.stubGlobal('scrollTo', vi.fn()); measurement.automatic = true; measurement.callback = null; });
 
 test('estimated payment prices visibly identify their assumption while remaining available for comparison', async () => {
-  mockApi({priceStatus:'estimated',listedPrice:'12.50',paymentMethod:'支付价（预估：售价）'}); render(<App />);
+  mockApi({priceStatus:'estimated',listedPrice:'12.50',paymentMethod:'支付价（预估：售价）'}); await renderWithOffers();
   expect((await screen.findAllByText('预估')).length).toBeGreaterThan(0);
   expect(screen.getAllByLabelText(/结算价.*预估.*售价/).length).toBeGreaterThan(0);
   expect(screen.getAllByText('¥12.5').length).toBeGreaterThan(0);
@@ -49,7 +56,7 @@ test('estimated payment prices visibly identify their assumption while remaining
 
 test.each(['/', '/products/42'])('observed quotes with no expiry remain visible and comparable on %s', async path => {
   window.history.replaceState({}, '', path);
-  mockApi({ inventoryExpiresAt: null }); render(<App />);
+  mockApi({ inventoryExpiresAt: null }); await renderWithOffers();
   await screen.findAllByText('¥12.5');
   fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
   fireEvent.click(screen.getAllByRole('button', { name: '对比（1）' })[0]);
@@ -61,7 +68,7 @@ test.each(['/', '/products/42'])('observed quotes with no expiry remain visible 
 test.each(['/', '/products/42'])('elapsed quote and stock deadlines never remove listings or trigger SQL rereads on %s', async path => {
   window.history.replaceState({}, '', path);
   const calls = mockApi({ expires: true, inventoryExpiresAt: new Date(Date.now() + 200).toISOString() });
-  render(<App />); await screen.findAllByText('¥12.5');
+  await renderWithOffers(); await screen.findAllByText('¥12.5');
   fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
   fireEvent.click(screen.getAllByRole('button', { name: '对比（1）' })[0]);
   const before = calls.filter(url => url.pathname === '/api/catalog').length;
@@ -72,7 +79,7 @@ test.each(['/', '/products/42'])('elapsed quote and stock deadlines never remove
 });
 
 test('keeps history off the homepage and offers both aggregate and individual history in product details', async () => {
-  const calls = mockApi(); render(<App />);
+  const calls = mockApi(); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   expect(screen.queryByRole('region', { name: '商品价格历史' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /价格历史/ })).not.toBeInTheDocument();
@@ -91,7 +98,7 @@ test.each(['/', '/products/42'])('shows database minimum quantity once in cards 
     { name: 'minimum_quantity', value: '10' }, { name: 'minimum_quantity', value: '5' },
     { name: 'delivery', value: 'top_up' },
   ] });
-  render(<App />);
+  await renderWithOffers();
   const facts = await screen.findByRole('group', { name: '商品标签' });
   expect(within(facts).getAllByText('5件起购')).toHaveLength(1);
   expect(facts).toHaveTextContent('代充');
@@ -116,7 +123,7 @@ test.each([
   [undefined, '12.50', '¥12.5'],
 ])('formats quantity %s unit price %s with at most two decimals and no trailing zeros in cards and comparison', async (settlementQuantity, price, expected) => {
   mockApi({ settlementQuantity, price, tags: [{ name: 'minimum_quantity', value: '10' }] });
-  render(<App />);
+  await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   const tile = screen.getAllByRole('link', { name: '去商家' })[0].closest('.shop-tile');
   expect(within(tile).getByText(expected, { exact: true })).toBeInTheDocument();
@@ -134,7 +141,7 @@ test.each([
 
 test.each([{ tags: [] }, { tags: [{ name: 'access', value: 'unknown' }] }])('reserves a non-focusable tag row when no offer facts are visible: $tags', async ({ tags }) => {
   mockApi({ tags });
-  render(<App />);
+  await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   const tile = screen.getAllByRole('link', { name: '去商家' })[0].closest('.shop-tile');
   const facts = tile.querySelector('.offer-facts');
@@ -149,7 +156,7 @@ test.each([{ tags: [] }, { tags: [{ name: 'access', value: 'unknown' }] }])('res
 
 test('keeps visible offer facts accessible beside an empty tag row', async () => {
   mockApi({ tags: [{ name: 'delivery', value: 'top_up' }] });
-  render(<App />);
+  await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   const facts = screen.getByRole('group', { name: '商品标签' });
   expect(facts).toHaveTextContent('代充');
@@ -159,7 +166,7 @@ test('keeps visible offer facts accessible beside an empty tag row', async () =>
 });
 
 test('keeps inline filters below the sticky toolbar without scrolling an already visible panel', async () => {
-  mockApi(); render(<App />);
+  mockApi(); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   const toolbar = screen.getByRole('region', { name: '搜索和筛选' }).closest('.catalog-sticky-header');
   const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect');
@@ -181,7 +188,7 @@ test('keeps inline filters below the sticky toolbar without scrolling an already
 });
 
 test('keeps main search and delivery filters independent of the standard product selector', async () => {
-  const calls = mockApi(); render(<App />);
+  const calls = mockApi(); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   fireEvent.change(screen.getByRole('textbox', { name: '搜索商品' }), { target: { value: 'Plus' } });
   await waitFor(() => expect(calls.some(url => url.pathname === '/api/catalog' && url.searchParams.get('q') === 'Plus')).toBe(true));
@@ -203,8 +210,8 @@ test('keeps main search and delivery filters independent of the standard product
 
 test('keeps old product links in the selector and discards unapplied edits', async () => {
   window.history.replaceState({}, '', '/?platform=openai&standardProductId=42');
-  const calls = mockApi(); render(<App />);
-  await screen.findByRole('button', { name: /Codex 手机接码/ });
+  const calls = mockApi(); await renderWithOffers();
+  await screen.findByRole('button', { name: 'Codex 手机接码 ×' });
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
   const panel = within(screen.getByRole('region', { name: '筛选报价' }));
   fireEvent.click(await panel.findByRole('checkbox', { name: /代充/ }));
@@ -222,7 +229,7 @@ test('keeps old product links in the selector and discards unapplied edits', asy
 
 test.each(['search', 'platform'])('clears a legacy product restriction when changing %s', async mode => {
   window.history.replaceState({}, '', '/?standardProductId=42');
-  const calls = mockApi(); render(<App />);
+  const calls = mockApi(); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   if (mode === 'search') fireEvent.change(screen.getByRole('textbox', { name: '搜索商品' }), { target: { value: 'Claude' } });
   else fireEvent.click(screen.getByRole('button', { name: 'Claude', exact: true }));
@@ -244,7 +251,7 @@ test.each([
   ['pdf', '无', ['PDF', '无2FA']],
 ])('shows compact delivery %s and 2FA %s badges', async (format, twoFactor, expected) => {
   mockApi({ tags: [{ name: 'delivery_format', value: format }, { name: '2fa', value: twoFactor }] });
-  render(<App />); await screen.findByRole('link', { name: product.name });
+  await renderWithOffers(); await screen.findByRole('link', { name: product.name });
   const facts = screen.getByLabelText('商品标签');
   expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(expected);
   expect(facts).not.toHaveTextContent(/交付资料：|双重验证：/);
@@ -257,7 +264,7 @@ test('shows distinct badges with warranty in the same strip and no prefix', asyn
     { name: 'duration', value: '1 month' }, { name: 'intended_use', value: 'rapid' },
     { name: 'account_type', value: '黑号' }, { name: 'warranty', value: 'covered' },
     { name: 'warranty_scope', value: 'period' }, { name: 'warranty_days', value: '30' },
-  ] }); render(<App />);
+  ] }); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   const facts = screen.getByLabelText('商品标签');
   expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['质保30天', '独享', '成品账号']);
@@ -273,7 +280,7 @@ test.each(['personal', 'enterprise'])('shows duration in cards and comparison wh
   mockApi({ tags: [
     { name: 'duration', value: '1 month' },
     { name: 'account_type', value: accountType },
-  ] }); render(<App />);
+  ] }); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   expect(screen.getByLabelText('商品标签')).toHaveTextContent('1个月');
   fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
@@ -288,7 +295,7 @@ test('detail badges distinguish usage duration from warranty duration', async ()
   mockApi({ tags: [
     { name: 'duration', value: '30 days' }, { name: 'account_type', value: 'seat' },
     { name: 'account_type', value: 'personal' }, { name: 'warranty_days', value: '7' },
-  ] }); render(<App />);
+  ] }); await renderWithOffers();
   await screen.findByText('¥12.5');
   expect([...screen.getByLabelText('商品标签').children].map(tag => tag.textContent)).toEqual(['质保7天', '席位', '30天']);
 });
@@ -296,12 +303,12 @@ test('detail badges distinguish usage duration from warranty duration', async ()
 test.each(['/', '/products/42'])('shows both dedicated and shared access explicitly on %s', async path => {
   window.history.replaceState({}, '', path);
   mockApi({ tags: [{ name: 'access', value: 'dedicated' }] });
-  const view = render(<App />);
+  const view = await renderWithOffers();
   await screen.findAllByText('¥12.5');
   expect(within(screen.getByLabelText('商品标签')).getByText('独享')).toBeInTheDocument();
   view.unmount();
   mockApi({ tags: [{ name: 'access', value: 'shared' }] });
-  render(<App />);
+  await renderWithOffers();
   await screen.findAllByText('¥12.5');
   expect(within(screen.getByLabelText('商品标签')).getByText('共享')).toBeInTheDocument();
 });
@@ -315,7 +322,7 @@ test.each([
     { name: 'delivery', value: 'top_up' }, { name: 'region', value: region },
     { name: 'region', value: region }, { name: 'duration', value: '1 month' },
     { name: 'access', value: 'dedicated' }, { name: 'warranty_days', value: '30' },
-  ] }); render(<App />);
+  ] }); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   expect([...screen.getByLabelText('商品标签').querySelectorAll('span')].map(tag => tag.textContent))
     .toEqual(['质保30天', '独享', '代充']);
@@ -329,7 +336,7 @@ test.each([
 test('shows the same region in detail badges and quote comparison', async () => {
   window.history.replaceState({}, '', '/products/42');
   mockApi({ tags: [{ name: 'delivery', value: 'top_up' }, { name: 'region', value: 'ph' }] });
-  render(<App />);
+  await renderWithOffers();
   await screen.findByText('¥12.5');
   expect(within(screen.getByLabelText('商品标签')).getByText('菲律宾')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('checkbox', { name: /对比报价/ }));
@@ -351,7 +358,7 @@ test.each([
   ['covered unknown term', [{ name: 'warranty', value: 'covered' }], null],
   ['none', [{ name: 'warranty', value: 'none' }], null],
 ])('renders %s warranty without unknown placeholders in cards and comparison', async (_name, tags, warranty) => {
-  mockApi({ tags }); render(<App />);
+  mockApi({ tags }); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   if (warranty) expect(within(screen.getByLabelText('商品标签')).getByText(warranty)).toBeInTheDocument();
   else expect(screen.queryByLabelText('商品标签')).not.toBeInTheDocument();
@@ -373,7 +380,7 @@ test('offers one canonical rapid purchase condition and hides unknown facets', a
     { name: 'warranty_scope', value: 'activation' }, { name: 'warranty_scope', value: 'first_login' },
     { name: 'warranty', value: 'unknown' }, { name: 'warranty_scope', value: 'unspecified' },
   ];
-  const calls = mockApi({ facets }); render(<App />);
+  const calls = mockApi({ facets }); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   const panel = within(screen.getByRole('region', { name: '筛选报价' }));
@@ -393,7 +400,7 @@ test('offers one canonical rapid purchase condition and hides unknown facets', a
 test('preserves the canonical rapid filter in comparison without creating an account type', async () => {
   window.history.replaceState({}, '', '/?' + new URLSearchParams({ tag: '{"name":"intended_use","value":"rapid"}' }));
   const calls = mockApi({ tags: [{ name: 'intended_use', value: 'rapid' }] });
-  render(<App />);
+  await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   expect(within(screen.getByLabelText('已选筛选条件')).getByRole('button', { name: /速刷/ })).toBeInTheDocument();
   expect(calls.some(url => url.searchParams.getAll('tag').includes('{"name":"intended_use","value":"rapid"}'))).toBe(true);
@@ -406,7 +413,7 @@ test('preserves the canonical rapid filter in comparison without creating an acc
 
 test('removing the rapid intent clears every daily synonym while keeping product search text', async () => {
   window.history.replaceState({}, '', '/?' + new URLSearchParams({ q: 'Claude 日抛 速刷' }));
-  mockApi(); render(<App />);
+  mockApi(); await renderWithOffers();
   const intents = await screen.findByLabelText('已识别购买条件');
   expect(within(intents).getAllByRole('button', { name: '移除速刷' })).toHaveLength(1);
   fireEvent.click(within(intents).getByRole('button', { name: '移除速刷' }));
@@ -419,7 +426,7 @@ test.each([
 ])('keeps %s and full-period minimum days mutually exclusive in detail filters', async (scope, label) => {
   window.history.replaceState({}, '', '/products/42');
   const calls = mockApi({ facets: [{ name: 'warranty_days', value: '30' }, { name: 'warranty_scope', value: scope }] });
-  render(<App />);
+  await renderWithOffers();
   await screen.findByText('¥12.5');
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   const option = await screen.findByRole('radio', { name: label });
@@ -439,7 +446,7 @@ test.each([
 });
 
 test('homepage shows compact settlement and listed prices with verification time in a hint and one click merchant links', async () => {
-  mockApi(); render(<App />);
+  mockApi(); await renderWithOffers();
   expect(await screen.findByRole('link', { name: 'Codex 手机接码' })).toHaveAttribute('href', '/products/42?newcomer=false');
   expect(screen.getAllByText('¥12.5')).toHaveLength(2);
   expect(document.querySelector('.tile-price')).toHaveTextContent('¥12.5 / 标价 9');
@@ -448,7 +455,7 @@ test('homepage shows compact settlement and listed prices with verification time
   expect(screen.getByLabelText(/结算价.*预估.*售价/).closest('.tile-price')).toHaveTextContent('¥18预估 / 标价 18');
   expect(document.querySelector('.tile-price.price-unavailable')).not.toBeInTheDocument();
   expect(screen.queryByText(/核验|核价于|支付宝/)).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: /展开报价|收起报价/ })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '收起报价：Codex 手机接码' })).toHaveAttribute('aria-expanded', 'true');
   expect(screen.queryByText(quote.spec)).not.toBeInTheDocument();
   expect(screen.getAllByTitle(/支付宝.*核价于/)).toHaveLength(2);
   expect(screen.queryByText('¥0')).not.toBeInTheDocument();
@@ -458,7 +465,7 @@ test('homepage shows compact settlement and listed prices with verification time
 test.each([
   ['15.10', '15.1'], ['15.00', '15'], ['15.05', '15.05'], ['15.126', '15.13'], ['0.00', '0'],
 ])('formats both prices %s with at most two decimals and no trailing zeros', async (price, expected) => {
-  mockApi({ price, listedPrice: price }); render(<App />);
+  mockApi({ price, listedPrice: price }); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   expect(document.querySelector('.tile-price')).toHaveTextContent(`¥${expected} / 标价 ${expected}`);
 });
@@ -467,13 +474,13 @@ test.each([
   ['12.50', '12.5'], ['350.00', '350'], ['350.10', '350.1'], ['350.05', '350.05'],
   ['0', '0'], [null, '—'], ['', '—'], [' ', '—'], ['invalid', '—'], ['Infinity', '—'], ['-1', '—'],
 ])('compact listed price %j displays as %s without replacing settlement', async (listedPrice, expected) => {
-  mockApi({ listedPrice }); render(<App />);
+  mockApi({ listedPrice }); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   expect(document.querySelector('.tile-price')).toHaveTextContent(`¥12.5 / 标价 ${expected}`);
 });
 
 test('direct product page is nonmodal, defaults to CNY and loads batches with dedicated SEO', async () => {
-  window.history.replaceState({}, '', '/products/42'); const calls = mockApi(); render(<App />);
+  window.history.replaceState({}, '', '/products/42'); const calls = mockApi(); await renderWithOffers();
   expect(await screen.findByRole('heading', { level: 1, name: 'Codex 手机接码' })).toBeInTheDocument();
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   await screen.findByText('¥12.5');
@@ -494,7 +501,7 @@ test('product search keeps the query toolbar in view after debounced SEO intro p
   const scrollTo = vi.fn();
   vi.stubGlobal('scrollTo', scrollTo);
   vi.spyOn(window, 'scrollY', 'get').mockReturnValue(500);
-  render(<App />);
+  await renderWithOffers();
   const input = await screen.findByRole('textbox', { name: '搜索商铺或报价' });
   vi.spyOn(input.closest('.detail-query-panel'), 'getBoundingClientRect').mockReturnValue({ top: 120 });
   fireEvent.change(input, { target: { value: '月付' } });
@@ -504,7 +511,7 @@ test('product search keeps the query toolbar in view after debounced SEO intro p
 test.each(['/', '/products/42'])('keeps SEO answers, facts and FAQs visible after client rendering on %s', async path => {
   window.history.replaceState({}, '', path);
   mockApi();
-  render(<App />);
+  await renderWithOffers();
   await screen.findAllByText('¥12.5');
   const answer = document.querySelector('.seo-answer');
   expect(answer).toBeVisible();
@@ -539,7 +546,7 @@ test.each(['/', '/products/42'])('keeps SEO answers, facts and FAQs visible afte
 
 test('refresh keeps product page filters and starts continuous loading from the first batch', async () => {
   const params = new URLSearchParams({ detailPage: '1', detailPageSize: '12', currency: 'USD', offerSort: 'updated', shopQuery: '示例' });
-  window.history.replaceState({}, '', '/products/42?' + params); const calls = mockApi(); render(<App />);
+  window.history.replaceState({}, '', '/products/42?' + params); const calls = mockApi(); await renderWithOffers();
   await screen.findByText('¥12.5');
   const request = calls.find(url => url.searchParams.has('detailKind'));
   expect(request.searchParams.get('detailPage')).toBe('0');
@@ -552,22 +559,22 @@ test('refresh keeps product page filters and starts continuous loading from the 
 });
 
 test('product 404 and service failure remain distinct and retry is available', async () => {
-  window.history.replaceState({}, '', '/products/42'); mockApi({ status: 404 }); const view = render(<App />);
+  window.history.replaceState({}, '', '/products/42'); mockApi({ status: 404 }); const view = await renderWithOffers();
   expect(await screen.findByRole('heading', { name: '商品不存在或已下架' })).toBeInTheDocument();
   expect(document.querySelector('meta[name="robots"]').content).toContain('noindex');
-  view.unmount(); mockApi({ status: 503 }); render(<App />);
+  view.unmount(); mockApi({ status: 503 }); await renderWithOffers();
   expect(await screen.findByRole('heading', { name: '商品暂时无法加载' })).toBeInTheDocument();
   mockApi(); fireEvent.click(screen.getByRole('button', { name: '重试' }));
   expect(await screen.findByRole('heading', { level: 1, name: 'Codex 手机接码' })).toBeInTheDocument();
 });
 
 test('merged product replaces URL and a list return restores filters and scroll position', async () => {
-  window.history.replaceState({}, '', '/products/41'); mockApi({ merged: true }); const view = render(<App />);
+  window.history.replaceState({}, '', '/products/41'); mockApi({ merged: true }); const view = await renderWithOffers();
   await screen.findByRole('heading', { level: 1, name: product.name });
   expect(window.location.pathname).toBe('/products/42'); view.unmount();
   window.history.replaceState({}, '', '/?platform=openai&sort=price'); mockApi();
   const scrollTo = vi.fn(); vi.stubGlobal('scrollTo', scrollTo); Object.defineProperty(window, 'scrollY', { configurable: true, value: 420 });
-  render(<App />); fireEvent.click(await screen.findByRole('link', { name: product.name }));
+  await renderWithOffers(); fireEvent.click(await screen.findByRole('link', { name: product.name }));
   await screen.findByRole('heading', { level: 1, name: product.name });
   fireEvent.click(screen.getByRole('link', { name: '返回商品列表' }));
   await waitFor(() => expect(window.location.pathname).toBe('/'));
@@ -579,7 +586,7 @@ test('merged product replaces URL and a list return restores filters and scroll 
 test('restores list scroll only after the virtual rows have measurable height', async () => {
   measurement.automatic = false;
   window.history.replaceState({ catalogScroll: 250 }, '', '/?platform=openai&standardProductId=42');
-  const scrollTo = vi.fn(); vi.stubGlobal('scrollTo', scrollTo); mockApi(); render(<App />);
+  const scrollTo = vi.fn(); vi.stubGlobal('scrollTo', scrollTo); mockApi(); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   expect(scrollTo).not.toHaveBeenCalled();
   await act(async () => measurement.callback(0));
@@ -590,14 +597,14 @@ test('restores list scroll only after the virtual rows have measurable height', 
 
 test('product pages keep official prices accessible from the product header', async () => {
   window.history.replaceState({}, '', '/products/42');
-  mockApi(); render(<App />);
+  mockApi(); await renderWithOffers();
   await screen.findByRole('heading', { level: 1, name: product.name });
   expect(screen.getByRole('button', { name: '官网正价参考' }).closest('header')).toHaveClass('product-page-heading');
 });
 
 test('out-of-range product pages keep the official price entry', async () => {
   window.history.replaceState({}, '', '/products/42?page=4');
-  mockApi(); render(<App />);
+  mockApi(); await renderWithOffers();
   await screen.findByRole('heading', { name: '商品分页不存在' });
   expect(screen.getByRole('button', { name: '官网正价参考' })).toBeInTheDocument();
 });
@@ -612,7 +619,7 @@ test('an open official price panel survives product loading', async () => {
     if (url === '/api/official-reference/catalog') return Promise.resolve(Response.json({ apps: [] }));
     return original(url, options);
   }));
-  render(<App />);
+  await renderWithOffers();
   fireEvent.click(screen.getByRole('button', { name: '官网正价参考' }));
   await screen.findByRole('dialog', { name: '官网正价参考' });
   await act(async () => resolveProduct(Response.json(product)));
@@ -623,7 +630,7 @@ test('an open official price panel survives product loading', async () => {
 });
 
 test('visibility restoration refreshes observed quotes without changing their price status', async () => {
-  const calls = mockApi({ expires: true }); render(<App />);
+  const calls = mockApi({ expires: true }); await renderWithOffers();
   await screen.findAllByText('¥12.5');
   await screen.findAllByText('预估');
   await waitFor(() => expect(document.querySelector('.tile-price.best')).toHaveTextContent('¥12.5'));
@@ -644,7 +651,7 @@ test('a failed visibility refresh preserves the last observed minimum', async ()
     }
     return fetchMock(input);
   }));
-  render(<App />); await screen.findAllByText('¥12.5');
+  await renderWithOffers(); await screen.findAllByText('¥12.5');
   await screen.findAllByText('预估');
   await waitFor(() => expect(document.querySelector('.tile-price.best')).toHaveTextContent('¥12.5'));
   expect(document.querySelector('.lowest-note')).toHaveTextContent('¥12.5');
@@ -658,7 +665,7 @@ test('a failed visibility refresh preserves the last observed minimum', async ()
 test.each(['/', '/products/42'])('opens SKU details without requests and keeps nested report and comparison layers on %s', async path => {
   window.history.replaceState({}, '', path);
   const calls = mockApi({ tags: [{ name: 'delivery', value: 'top_up' }, { name: 'access', value: 'shared' }, { name: 'duration', value: '30 days' }, { name: 'usage_restriction', value: '禁止改密' }] });
-  render(<App />); await screen.findAllByText('¥12.5');
+  await renderWithOffers(); await screen.findAllByText('¥12.5');
   expect(screen.queryByRole('button', { name: '举报此报价' })).not.toBeInTheDocument();
   const trigger = screen.getAllByRole('button', { name: '商品说明', exact: true })[0]; trigger.focus();
   const before = calls.length; fireEvent.click(trigger);
@@ -682,7 +689,7 @@ test.each(['/', '/products/42'])('opens SKU details without requests and keeps n
 });
 
 test('aggregate details reuse the selected SKU and closing its explanation preserves the parent dialog', async () => {
-  mockApi({ tags: [{ name: 'usage_restriction', value: '禁止改密' }] }); render(<App />);
+  mockApi({ tags: [{ name: 'usage_restriction', value: '禁止改密' }] }); await renderWithOffers();
   fireEvent.click(await screen.findByRole('button', { name: '25 条报价' }));
   const parent = await screen.findByRole('dialog', { name: /报价/ });
   const trigger = (await within(parent).findAllByRole('button', { name: '商品说明', exact: true }))[0]; trigger.focus(); fireEvent.click(trigger);
@@ -693,7 +700,7 @@ test('aggregate details reuse the selected SKU and closing its explanation prese
 });
 
 test('switching merchant products never carries conditions from the previous SKU', async () => {
-  mockApi({ tags: [{ name: 'usage_restriction', value: '禁止改密' }] }); render(<App />);
+  mockApi({ tags: [{ name: 'usage_restriction', value: '禁止改密' }] }); await renderWithOffers();
   await screen.findByRole('link', { name: product.name });
   const triggers = screen.getAllByRole('button', { name: '商品说明', exact: true });
   fireEvent.click(triggers[0]); expect(screen.getByRole('dialog', { name: quote.name })).toHaveTextContent('禁止改密');
@@ -709,7 +716,7 @@ test.each(['/', '/products/42'])('prioritizes warranty, account access and deliv
     { name: 'access', value: 'shared' }, { name: 'warranty', value: 'covered' },
     { name: 'warranty_scope', value: 'period' }, { name: 'warranty_days', value: '30' },
   ] });
-  render(<App />); await screen.findAllByText('¥12.5');
+  await renderWithOffers(); await screen.findAllByText('¥12.5');
   const facts = screen.getByLabelText('商品标签');
   expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual(['质保30天', '共享', '代充']);
   expect(facts).toHaveTextContent('另 4 个标签');
@@ -727,7 +734,7 @@ test.each([
     { name: 'usage_restriction', value: '禁止改密' }, { name: 'delivery_mode', value: 'automatic' },
     { name: 'delivery', value: 'top_up' }, { name: 'access', value: 'dedicated' }, ...warrantyTags,
   ] });
-  render(<App />); await screen.findByRole('link', { name: product.name });
+  await renderWithOffers(); await screen.findByRole('link', { name: product.name });
   expect([...screen.getByLabelText('商品标签').querySelectorAll('span')].map(element => element.textContent)).toEqual(expected);
 });
 
@@ -738,7 +745,7 @@ test.each([false, true])('prioritizes account role and lifecycle when core tags 
     { name: 'usage_restriction', value: '禁止改密' },
   ];
   mockApi({ tags: reversed ? tags.reverse() : tags });
-  render(<App />); await screen.findByRole('link', { name: product.name });
+  await renderWithOffers(); await screen.findByRole('link', { name: product.name });
   const facts = screen.getByLabelText('商品标签');
   expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual(['子号', '老号', '禁止改密']);
   expect(facts).toHaveTextContent('另 2 个标签');
@@ -749,7 +756,7 @@ test('equal boolean values retain distinct field identities, three-item budget a
     { name: 'single_use', value: '有' }, { name: 'renewable', value: '有' },
     { name: 'sms_required', value: '有' }, { name: 'single_use', value: '有' },
     { name: 'renewal_timing', value: 'after_expiry' }, { name: 'account_age', value: '1 year' },
-  ] }); render(<App />); await screen.findByRole('link', { name: product.name });
+  ] }); await renderWithOffers(); await screen.findByRole('link', { name: product.name });
   const facts = screen.getByLabelText('商品标签');
   expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual(['一次性使用', '可续费', '到期后续费']);
   expect(facts).toHaveTextContent('另 2 个标签');
@@ -761,7 +768,7 @@ test('equal boolean values retain distinct field identities, three-item budget a
 });
 test('canonical year duration is readable in summaries and details', async () => {
   mockApi({ tags: [{ name: 'delivery', value: 'top_up' }, { name: 'duration', value: '1 year' }, { name: 'sms_required', value: '有' }] });
-  render(<App />); await screen.findByRole('link', { name: product.name });
+  await renderWithOffers(); await screen.findByRole('link', { name: product.name });
   expect(screen.getByLabelText('商品标签')).toHaveTextContent('代充需接码1年');
   fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
   expect(screen.getByRole('dialog', { name: quote.name })).toHaveTextContent('1年');
@@ -769,7 +776,7 @@ test('canonical year duration is readable in summaries and details', async () =>
 
 test('cards and dialogs share localized delivery and login values', async () => {
   mockApi({ tags: [{ name: 'delivery_mode', value: 'automatic' }, { name: 'delivery_format', value: 'credentials' }, { name: 'login_method', value: 'email_code' }] });
-  render(<App />); await screen.findByRole('link', { name: product.name });
+  await renderWithOffers(); await screen.findByRole('link', { name: product.name });
   const facts = screen.getByLabelText('商品标签');
   expect(facts).toHaveTextContent('自动发货');
   expect(facts).toHaveTextContent('账密');
@@ -791,7 +798,7 @@ test('keeps resource, region and period labels distinct after shortening', async
     { name: 'memory', value: '8 gb' }, { name: 'storage', value: '8 gb' },
     { name: 'single_use', value: '无' }, { name: 'renewable', value: '无' },
   ] });
-  render(<App />); await screen.findByRole('link', { name: product.name });
+  await renderWithOffers(); await screen.findByRole('link', { name: product.name });
   fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
   const dialog = screen.getByRole('dialog', { name: quote.name });
   for (const label of ['可选美国', '注册地美国', '令牌至少3个月', '约3个月', '内存 8GB', '存储 8GB', '可多次使用', '不可续费']) {
@@ -804,7 +811,7 @@ test('summarizes additional tags with only their count', async () => {
     { name: 'delivery', value: 'account' }, { name: 'delivery_mode', value: 'automatic' },
     { name: 'access', value: 'dedicated' }, { name: 'duration', value: '30 days' },
   ] });
-  render(<App />); await screen.findByRole('link', { name: product.name });
+  await renderWithOffers(); await screen.findByRole('link', { name: product.name });
   const facts = screen.getByLabelText('商品标签');
   expect(facts.querySelector('small')).toHaveTextContent(/^另 1 个标签$/);
   expect(facts).not.toHaveTextContent(/条件，请查看商品说明/);
