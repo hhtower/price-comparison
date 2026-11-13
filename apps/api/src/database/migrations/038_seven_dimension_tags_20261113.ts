@@ -13,8 +13,26 @@ const VALUES = {
 
 export async function up(database: Kysely<unknown>): Promise<void> {
   if (!database.isTransaction) return database.transaction().execute(up);
-  await sql`lock table products, product_tags, catalog_product_facts, catalog_read_offers
-    in share row exclusive mode`.execute(database);
+  // Release partial locks before retrying; DDL and projection triggers must not upgrade locks mid-migration.
+  await sql`do $locks$
+    begin
+      for attempt in 1..40 loop
+        begin
+          lock table products, product_tags, offers, standard_product_members,
+            catalog_product_facts, catalog_read_offers, catalog_read_offer_prices,
+            catalog_read_facet_counts, catalog_projection_changes, catalog_cache_versions
+            in access exclusive mode nowait;
+          return;
+        exception when lock_not_available then
+          if attempt = 40 then
+            raise exception 'Seven-dimension tag migration could not acquire table locks'
+              using errcode = '55P03', hint = 'Pause application writers and workers, then retry the migration.';
+          end if;
+        end;
+        perform pg_sleep(0.25);
+      end loop;
+    end
+  $locks$`.execute(database);
   // Preserve legacy text as JSON strings; operations clears it separately, without semantic conversion.
   await sql`alter table product_tags alter column value type jsonb using to_jsonb(value)`.execute(database);
   await sql`drop index catalog_read_offers_warranty_days`.execute(database);
