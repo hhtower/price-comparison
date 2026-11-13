@@ -18,6 +18,7 @@ import { defaultQuotePolicy } from '../src/catalog/quote-policy.js';
 import { mergeShopObservation } from '../src/shops/shop-rating.js';
 import { publishNextCatalogChange } from '../src/catalog/catalog-projection.js';
 import { TEXT_REVIEW_VERSION } from '../src/shops/shop-text-review.js';
+import { AdminRepository } from '../src/admin/admin.repository.js';
 
 const quotePolicy = { now: () => Date.now(), ttlMs: 3 * 3_600_000 };
 
@@ -513,7 +514,7 @@ describe('catalog SQL read model', () => {
     assert.deepEqual(values(await repository.facets({ newcomer: true, tags: [] })), values(await repository.facets({ tags: [] })));
   });
 
-  test('orders all public products by approved platform and product order before pagination', async () => {
+  test('orders all public products only by editable sort order before pagination', async () => {
     const identities = [
       ['openai', 'chatgpt', 'free'], ['openai', 'chatgpt', 'plus'],
       ['openai', 'chatgpt', 'team'], ['openai', 'chatgpt', 'team_5x'],
@@ -538,10 +539,10 @@ describe('catalog SQL read model', () => {
       await database.updateTable('standard_product_members').set({ standard_product_id: standard.id }).where('product_id', '=', sku).execute();
       ids.push(String(standard.id));
     }
-    const expected = [...ids, String(standardOne), String(standardTwo)];
+    const expected = [String(standardOne), String(standardTwo), ...ids.toReversed()];
     {
       assert.deepEqual((await readPublished({ tags: [], limit: 100 })).items.map(item => item.id), expected);
-      const combined = identities.flatMap(([family], index) => ['xai', 'x', 'cursor'].includes(family!) ? [ids[index]!] : []);
+      const combined = identities.flatMap(([family], index) => ['xai', 'x', 'cursor'].includes(family!) ? [ids[index]!] : []).reverse();
       for (const platform of ['xai', 'x', 'twitter', 'cursor']) {
         assert.deepEqual((await readPublished({ platform, tags: [], limit: 100 })).items.map(item => item.id), combined);
       }
@@ -553,15 +554,24 @@ describe('catalog SQL read model', () => {
         cursor = page.nextCursor;
       } while (cursor);
       assert.deepEqual(paged, expected);
-      assert.deepEqual((await readPublished({ platform: 'openai', tags: [], limit: 100 })).items.map(item => item.id), ids.slice(0, 7));
-      assert.deepEqual((await readPublished({ platform: 'email', tags: [], limit: 100 })).items.map(item => item.id), ids.slice(22));
-      assert.deepEqual((await readPublished({ search: 'Approved', tags: [], limit: 100 })).items.map(item => item.id), ids);
+      assert.deepEqual((await readPublished({ platform: 'openai', tags: [], limit: 100 })).items.map(item => item.id), ids.slice(0, 7).reverse());
+      assert.deepEqual((await readPublished({ platform: 'email', tags: [], limit: 100 })).items.map(item => item.id), ids.slice(22).reverse());
+      assert.deepEqual((await readPublished({ search: 'Approved', tags: [], limit: 100 })).items.map(item => item.id), ids.toReversed());
       assert.deepEqual((await readPublished({ sort: 'price', tags: [], limit: 100 })).items.map(item => item.id),
         [String(standardTwo), String(standardOne), ...ids.toReversed()]);
     }
     assert.deepEqual((await repository.publicProducts()).items.map(item => item.id), expected);
     const legacyCursor = encodeCatalogCursor({ sortOrder: 97n, standardProductId: BigInt(ids[3]!) });
-    assert.deepEqual((await readPublished({ tags: [], limit: 100, cursor: legacyCursor })).items.map(item => item.id), expected.slice(4));
+    assert.deepEqual((await readPublished({ tags: [], limit: 100, cursor: legacyCursor })).items.map(item => item.id), ids.slice(0, 3).reverse());
+    const rankedCursor = Buffer.from(JSON.stringify({ v: 4, s: '97', sp: ids[3], r: 107 })).toString('base64url');
+    assert.deepEqual((await readPublished({ tags: [], limit: 100, cursor: rankedCursor })).items.map(item => item.id), ids.slice(0, 3).reverse());
+    await database.updateTable('standard_products').set({ sort_order: -1n }).where('id', '=', BigInt(ids[0]!)).execute();
+    assert.equal((await readPublished({ tags: [], limit: 1 })).items[0]?.id, ids[0]);
+    assert.equal((await repository.publicProducts()).items[0]?.id, ids[0]);
+    const memberBefore = await database.selectFrom('products').select('standardization_revision').where('id', '=', productOne).executeTakeFirstOrThrow();
+    await new AdminRepository(database).updateStandardProduct(standardOne, { platform: 'Alpha', sortOrder: '-2' });
+    assert.deepEqual(await database.selectFrom('products').select('standardization_revision').where('id', '=', productOne).executeTakeFirstOrThrow(), memberBefore);
+    assert.equal((await readPublished({ tags: [], limit: 1 })).items[0]?.id, String(standardOne));
   });
 
   async function addOfferHistory() {
@@ -1846,7 +1856,7 @@ describe('catalog SQL read model', () => {
     const first = await readPublished({ platform: 'alpha', search: 'widget', tags: [], limit: 1 });
     assert.equal(first.items.length, 1);
     assert.ok(first.nextCursor);
-    assert.deepEqual(decodeCatalogCursor(first.nextCursor!), { sortOrder: 1n, standardProductId: standardOne, catalogRank: 999 });
+    assert.deepEqual(decodeCatalogCursor(first.nextCursor!), { sortOrder: 1n, standardProductId: standardOne });
     const second = await readPublished({ platform: 'alpha', search: 'widget', tags: [], cursor: first.nextCursor, limit: 1 });
     assert.deepEqual(second.items.map((item) => item.name), ['Widget Two']);
   });
@@ -1901,8 +1911,8 @@ describe('catalog SQL read model', () => {
   test('cursor encoding is strict and composite', () => {
     const cursor = encodeCatalogCursor({ sortOrder: 2n, standardProductId: 42n });
     assert.deepEqual(decodeCatalogCursor(cursor), { sortOrder: 2n, standardProductId: 42n });
-    const ranked = { sortOrder: -2n, standardProductId: 42n, catalogRank: 107 };
-    assert.deepEqual(decodeCatalogCursor(encodeCatalogCursor(ranked)), ranked);
+    const ranked = Buffer.from(JSON.stringify({ v: 4, s: '-2', sp: '42', r: 107 })).toString('base64url');
+    assert.deepEqual(decodeCatalogCursor(ranked), { sortOrder: -2n, standardProductId: 42n });
     for (const rank of [null, '107', 99, 1000, 107.5]) {
       assert.throws(() => decodeCatalogCursor(Buffer.from(JSON.stringify({ v: 4, s: '2', sp: '42', r: rank })).toString('base64url')), { code: 'INVALID_CURSOR' });
     }

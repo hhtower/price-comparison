@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { ValidationPipe } from '@nestjs/common';
+import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants.js';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
@@ -17,6 +18,24 @@ describe('admin pagination bounds database reads and response payloads', () => {
   let shopId: bigint;
   let jobIds: string[];
   const statements: string[] = [];
+
+  test('sort order can be edited as an exact signed bigint without changing identity', async () => {
+    const before = await db.selectFrom('standard_products').selectAll().orderBy('id').executeTakeFirstOrThrow();
+    const parameters = Reflect.getMetadata(ROUTE_ARGS_METADATA, AdminController, 'updateStandardProduct') as Record<string, { pipes: ValidationPipe[] }>;
+    const pipe = Object.values(parameters).flatMap(parameter => parameter.pipes).find(pipe => pipe instanceof ValidationPipe)!;
+    const update = async (sortOrder: unknown) => controller.updateStandardProduct(String(before.id), await pipe.transform({ sortOrder }, { type: 'body' }));
+    for (const sortOrder of ['-9223372036854775808', '9223372036854775807', '-10', '0']) {
+      assert.equal((await update(sortOrder)).sortOrder, sortOrder);
+      const stored = await db.selectFrom('standard_products').selectAll().where('id', '=', before.id).executeTakeFirstOrThrow();
+      assert.equal(stored.sort_order, BigInt(sortOrder));
+      assert.equal(stored.standard_key, before.standard_key);
+      assert.equal(stored.verification_state, before.verification_state);
+    }
+    for (const sortOrder of ['', '1.5', '1e3', '9223372036854775808', '-9223372036854775809', 10, null]) {
+      await assert.rejects(update(sortOrder));
+    }
+    await update(String(before.sort_order));
+  });
 
   before(async () => {
     assert.ok(process.env.TEST_DATABASE_URL, 'TEST_DATABASE_URL is required');

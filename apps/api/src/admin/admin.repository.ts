@@ -574,7 +574,11 @@ export class AdminRepository {
     if (page.afterId !== undefined) query = query.where('products.id', '>', page.afterId);
     return buildCursorPage(await query.limit(page.limit + 1).execute(), page.limit);
   }
-  async updateStandardProduct(id: bigint, changes: { name?: string; platform?: string; canonicalFamily?: string; canonicalProduct?: string; canonicalTier?: string; aliases?: string[] }): Promise<AdminStandardProductRow | undefined> {
+  async updateStandardProduct(id: bigint, changes: { name?: string; platform?: string; canonicalFamily?: string; canonicalProduct?: string; canonicalTier?: string; aliases?: string[]; sortOrder?: string }): Promise<AdminStandardProductRow | undefined> {
+    if (changes.sortOrder !== undefined && (typeof changes.sortOrder !== 'string' || !/^-?\d{1,19}$/u.test(changes.sortOrder)
+      || BigInt(changes.sortOrder) < -(2n ** 63n) || BigInt(changes.sortOrder) >= 2n ** 63n)) {
+      throw new DomainValidationError('STANDARD_PRODUCT_SORT_ORDER_INVALID', '请输入有效的整数排序值');
+    }
     const row = await this.database.transaction().execute(async tx => {
       const existing = await tx.selectFrom('standard_products').select(['id', 'name', 'platform', 'sort_order', 'standard_key', 'canonical_family', 'canonical_product', 'canonical_tier', 'aliases', 'hidden', 'merged_into_id']).where('id', '=', id).where('merged_into_id', 'is', null).forUpdate().executeTakeFirst();
       if (!existing) return undefined;
@@ -590,13 +594,17 @@ export class AdminRepository {
       const previousIdentity = { family: existing.canonical_family ?? '', product: existing.canonical_product ?? '', tier: existing.canonical_tier ?? '' };
       const requestedIdentity = normalizeIdentity({ family: changes.canonicalFamily ?? existing.canonical_family, product: changes.canonicalProduct ?? existing.canonical_product, tier: changes.canonicalTier ?? existing.canonical_tier });
       const hasIdentityChange = requestedIdentity.family !== previousIdentity.family || requestedIdentity.product !== previousIdentity.product || requestedIdentity.tier !== previousIdentity.tier;
-      const { canonicalFamily: _canonicalFamily, canonicalProduct: _canonicalProduct, canonicalTier: _canonicalTier, ...baseChanges } = changes;
+      const { canonicalFamily: _canonicalFamily, canonicalProduct: _canonicalProduct, canonicalTier: _canonicalTier, sortOrder, ...displayChanges } = changes;
+      const baseChanges = { ...displayChanges, ...(sortOrder === undefined ? {} : { sort_order: BigInt(sortOrder) }) };
+      const displayChanged = (changes.name !== undefined && changes.name !== existing.name)
+        || (changes.platform !== undefined && changes.platform !== existing.platform)
+        || (changes.aliases !== undefined && JSON.stringify(changes.aliases) !== JSON.stringify(existing.aliases));
       if (!hasIdentityChange) {
         if (!Object.values(baseChanges).some(value => value !== undefined)) return existing;
         const members = await tx.selectFrom('standard_product_members').select('product_id').where('standard_product_id', '=', id).orderBy('product_id').forUpdate().execute();
         const updated = await tx.updateTable('standard_products').set(baseChanges).where('id', '=', id).where('merged_into_id', 'is', null).returning(['id', 'name', 'platform', 'sort_order', 'standard_key', 'canonical_family', 'canonical_product', 'canonical_tier', 'aliases', 'hidden', 'merged_into_id']).executeTakeFirst();
         if (updated) {
-          await advanceAdminDisplayRevision(tx, members.map(member => member.product_id));
+          if (displayChanged) await advanceAdminDisplayRevision(tx, members.map(member => member.product_id));
           await bumpCatalogVersion(tx);
           await recordCandidateCatalogChanges(tx, aliasOwnersBefore, IDENTITY_POLICY_VERSION);
         }

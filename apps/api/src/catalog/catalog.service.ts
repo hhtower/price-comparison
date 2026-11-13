@@ -219,7 +219,7 @@ export class CatalogService {
 
   async getCatalog(input: CatalogQueryInput): Promise<CatalogPage> {
     const query = normalizeCatalogQuery(input);
-    return this.readCached(`catalog:page:v3:${JSON.stringify(query)}`, () => this.repository.search(query));
+    return this.readCached(`catalog:page:v4:${JSON.stringify(query)}`, () => this.repository.search(query));
   }
 
   getReferenceOffers(input: Pick<CatalogQueryInput, 'standardProductId' | 'currency' | 'priceMax' | 'tags' | 'warrantyDaysMin' | 'newcomer' | 'membershipKinds'>) {

@@ -142,6 +142,7 @@ class StandardProductBindDto { @IsArray() @ArrayNotEmpty() @IsString({ each: tru
 class TagBindDto { @IsArray() @ArrayNotEmpty() @IsString({ each: true }) productIds!: string[]; @IsString() name!: string; @IsString() value!: string }
 class TagMutationDto { @IsString() name!: string; @IsString() value!: string; @IsOptional() @IsString() nextName?: string; @IsOptional() @IsString() nextValue?: string }
 class StandardProductPatchDto {
+  @IsOptional() @IsString() @MaxLength(20) sortOrder?: string;
   @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) @MaxLength(80, { each: true }) aliases?: string[];
   @IsOptional() @IsString() name?: string;
   @IsOptional() @IsString() platform?: string;

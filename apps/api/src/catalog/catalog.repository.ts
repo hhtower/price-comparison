@@ -5,7 +5,7 @@ import { DomainValidationError } from '../common/errors.js';
 import type { DatabaseSchema } from '../database/types.js';
 import { type ShopRatingDetails } from '../shops/shop-rating.js';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
-import { catalogOrderRank, catalogPlatformGroup, OTHER_CATALOG_RANK } from './catalog-order.js';
+import { catalogPlatformGroup } from './catalog-order.js';
 import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './quote-policy.js';
 import { CATALOG_DISPLAY_SEARCH_LABELS, CATALOG_PRODUCT_ALIASES, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { PriceHistoryRepository } from './price-history.repository.js';
@@ -48,7 +48,7 @@ function membershipScope(input: Pick<CatalogQuery, 'newcomer' | 'membershipKinds
 export interface CatalogTag { readonly name: string; readonly value: string }
 export type CatalogSort = 'default' | 'price' | 'updated';
 export type CatalogOfferSort = 'price' | 'priceDesc' | 'updated';
-export interface CatalogCursor { readonly sortOrder: bigint; readonly standardProductId: bigint; readonly catalogRank?: number; readonly sort?: Exclude<CatalogSort, 'default'>; readonly sortValue?: string }
+export interface CatalogCursor { readonly sortOrder: bigint; readonly standardProductId: bigint; readonly sort?: Exclude<CatalogSort, 'default'>; readonly sortValue?: string }
 export interface CatalogQuery {
   readonly sort?: CatalogSort;
   readonly standardProductId?: string;
@@ -154,7 +154,7 @@ export interface CatalogFacets { readonly nextExpiryAt?: string | null; readonly
 interface CatalogResult {
   has_next: boolean;
   shop_ratings: { shop_id: string; score: string | null; details: ShopRatingDetails | null }[];
-  entries: (Omit<CatalogItem, 'standardProductId' | 'minPrice'> & { sortOrder: string; sortValue: string; catalogRank: number })[];
+  entries: (Omit<CatalogItem, 'standardProductId' | 'minPrice'> & { sortOrder: string; sortValue: string })[];
   platform_facets: string[];
   total: number;
   offer_total: number;
@@ -187,8 +187,7 @@ function offerPayload(alias: string): RawBuilder<unknown> {
 }
 
 export function encodeCatalogCursor(cursor: CatalogCursor): string {
-  return Buffer.from(JSON.stringify({ v: cursor.sort ? 3 : cursor.catalogRank !== undefined ? 4 : 2, s: cursor.sortOrder.toString(), sp: cursor.standardProductId.toString(),
-    ...(!cursor.sort && cursor.catalogRank !== undefined ? { r: cursor.catalogRank } : {}),
+  return Buffer.from(JSON.stringify({ v: cursor.sort ? 3 : 2, s: cursor.sortOrder.toString(), sp: cursor.standardProductId.toString(),
     ...(cursor.sort ? { order: cursor.sort, k: cursor.sortValue } : {}) }), 'utf8').toString('base64url');
 }
 
@@ -206,8 +205,8 @@ export function decodeCatalogCursor(value: string): CatalogCursor {
       return { sortOrder, standardProductId, sort: payload.order, sortValue: payload.k };
     }
     if (payload.v === 4) {
-      if (typeof payload.r !== 'number' || !Number.isInteger(payload.r) || payload.r < 100 || payload.r > OTHER_CATALOG_RANK) throw new Error();
-      return { sortOrder, standardProductId, catalogRank: payload.r };
+      // Accept existing ranked cursors, but ordering now belongs to sort_order alone.
+      if (typeof payload.r !== 'number' || !Number.isInteger(payload.r) || payload.r < 100 || payload.r > 999) throw new Error();
     }
     return { sortOrder, standardProductId };
   } catch {
@@ -234,7 +233,7 @@ export class CatalogRepository {
     const result = await sql<ProductMetadataRow>`select sp.id::text, sp.name, sp.platform, sp.aliases,
       ${catalogPlatformGroup()} as platform_group,
       sp.canonical_family as family, sp.canonical_product as product, sp.canonical_tier as tier, null::text as merged_into_id
-      from standard_products sp where ${publicStandard('sp')} order by ${catalogOrderRank()}, sp.sort_order, sp.id limit 10001`.execute(this.database);
+      from standard_products sp where ${publicStandard('sp')} order by sp.sort_order, sp.id limit 10001`.execute(this.database);
     // ponytail: bounded navigation; add cursor pagination if the public catalog exceeds 10000 products.
     if (result.rows.length > 10000) throw new ServiceUnavailableException('公开商品目录超过10000项，请启用目录分页');
     return { items: result.rows.map(productMetadata) };
@@ -275,7 +274,7 @@ export class CatalogRepository {
       return { ...offer, name: sanitizeOfferName(offer.name), shopScore: rating?.score ?? null,
         shopScoreDetails: rating?.details ?? null, shopScoreExpiresAt: null };
     };
-    const items = visible.map(({ sortOrder: _sortOrder, sortValue: _sortValue, catalogRank: _catalogRank, ...item }): CatalogItem => {
+    const items = visible.map(({ sortOrder: _sortOrder, sortValue: _sortValue, ...item }): CatalogItem => {
       const detail = item.detail?.kind === 'shops' ? { ...item.detail, entries: item.detail.entries.map(entry => ({ ...entry, offer: withRating(entry.offer) })) }
         : item.detail ? { ...item.detail, entries: item.detail.entries.map(withRating) } : undefined;
       return { ...item, offers: item.offers.map(withRating),
@@ -287,7 +286,7 @@ export class CatalogRepository {
       appliedQuery: { text: query.search ?? '', tags: query.tags, ...(query.membershipKinds ? { membershipKinds: query.membershipKinds } : {}),
         ...(query.warrantyDaysMin ? { warrantyDaysMin: query.warrantyDaysMin } : {}) },
       ...(hasNext && last ? { nextCursor: encodeCatalogCursor({ sortOrder: BigInt(last.sortOrder), standardProductId: BigInt(last.id),
-        ...(query.sort && query.sort !== 'default' ? { sort: query.sort, sortValue: last.sortValue } : { catalogRank: last.catalogRank }) }) } : {}) };
+        ...(query.sort && query.sort !== 'default' ? { sort: query.sort, sortValue: last.sortValue } : {}) }) } : {}) };
   }
 
   async referenceOffers(input: CatalogQuery): Promise<CatalogOffer[]> {
@@ -456,11 +455,8 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   const sort = input.sort ?? 'default';
   if (cursor && (cursor.sort ?? 'default') !== sort) throw new DomainValidationError('INVALID_CURSOR', '分页游标与排序方式不一致');
   const sortValue = sort === 'price' ? sql`coalesce(min_price, 'Infinity'::numeric)` : sort === 'updated' ? sql`-extract(epoch from latest_captured_at)` : sql`0::numeric`;
-  // Resolve the rank for pre-existing v2 cursors so an open page survives the rollout.
-  const cursorRank = cursor?.catalogRank ?? (cursor ? sql`coalesce((select ${catalogOrderRank()} from standard_products sp
-    where sp.id = ${cursor.standardProductId}), ${OTHER_CATALOG_RANK})` : OTHER_CATALOG_RANK);
   const afterCursor = !cursor ? sql`true` : sort === 'default'
-    ? sql`(catalog_rank, sort_order, standard_product_id) > (${cursorRank}, ${cursor.sortOrder}, ${cursor.standardProductId})`
+    ? sql`(sort_order, standard_product_id) > (${cursor.sortOrder}, ${cursor.standardProductId})`
     : sql`(${sortValue}, sort_order, standard_product_id) > (${cursor.sortValue}::numeric, ${cursor.sortOrder}, ${cursor.standardProductId})`;
   const preparedTotals = !words.length && !tagConditions.length && !input.newcomer && !input.detailKind
     && !input.membershipKinds?.length && !input.membershipSearch
@@ -482,13 +478,13 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
         sum(product_count)::int as product_count, count(*)::int as shop_count
       from shop_totals group by standard_product_id
     ), page as (
-      select t.*, sp.catalog_rank, sp.sort_order, sp.name as standard_product_name, sp.platform, sp.is_ai_membership, ${sortValue} as sort_value
+      select t.*, sp.sort_order, sp.name as standard_product_name, sp.platform, sp.is_ai_membership, ${sortValue} as sort_value
       from product_totals t join catalog_standards sp on sp.id = t.standard_product_id
       where ${afterCursor}
-      order by sort_value, ${sort === 'default' ? sql`catalog_rank,` : sql``} sort_order, standard_product_id limit ${limit + 1}
+      order by sort_value, sort_order, standard_product_id limit ${limit + 1}
     ), visible_page as materialized (
       select * from page
-      order by sort_value, ${sort === 'default' ? sql`catalog_rank,` : sql``} sort_order, standard_product_id limit ${limit}
+      order by sort_value, sort_order, standard_product_id limit ${limit}
     )${input.detailKind !== 'shops' ? sql`, preview_shop_totals as materialized (
       select * from (
         select s.*, row_number() over (partition by s.standard_product_id order by s.min_price, s.shop_id) as shop_rank
@@ -515,8 +511,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
         ${input.standardProductId ? sql`and sp.id = ${input.standardProductId}::bigint` : sql``}
     ), catalog_standards as materialized (
       select sp.id, sp.name, sp.platform, sp.sort_order, sp.platform_group, sp.search_text,
-        is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier) as is_ai_membership,
-        ${optionsOnly || sort !== 'default' ? sql`0::int` : catalogOrderRank(sql<string>`sp.platform_group`)} as catalog_rank
+        is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier) as is_ai_membership
       from catalog_groups sp
     ), catalog_shops as materialized (
       select sh.id as shop_id, sh.name as shop_name,
@@ -598,10 +593,10 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
         order by ${detailOrder}), '[]'::jsonb) as entries
       from detail_entries d group by d.standard_product_id
     )` : sql``}, catalog_items as (
-      select page.catalog_rank, page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.is_ai_membership, page.sort_value,
+      select page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.is_ai_membership, page.sort_value,
         page.product_count, page.shop_count, page.latest_captured_at, jsonb_agg(${offerPayload('w')} order by w.price nulls last, case when w.price is null then w.captured_at end desc, w.shop_id, w.product_id) as offers
       from visible_page page join preview_skus w using (standard_product_id)
-      group by page.catalog_rank, page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.is_ai_membership, page.sort_value,
+      group by page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.is_ai_membership, page.sort_value,
         page.product_count, page.shop_count, page.latest_captured_at
     ), membership_candidates as materialized (
       select e.* from filtered_skus e join visible_page page using (standard_product_id)
@@ -642,7 +637,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       (select count(*) > ${limit} from page) as has_next,
       (select coalesce(jsonb_agg(jsonb_build_object(
         'id', standard_product_id::text, 'name', standard_product_name, 'platform', platform, 'isAiMembership', is_ai_membership,
-        'catalogRank', catalog_rank, 'sortOrder', sort_order::text, 'sortValue', sort_value::text, 'offers', offers,
+        'sortOrder', sort_order::text, 'sortValue', sort_value::text, 'offers', offers,
         'shopCount', shop_count, 'productCount', product_count, 'latestCapturedAt', latest_captured_at
       ) || case when is_ai_membership and exists (select 1 from membership_groups g where g.standard_product_id = catalog_items.standard_product_id)
         then jsonb_build_object('membershipGroups', (select groups from membership_groups g where g.standard_product_id = catalog_items.standard_product_id))
@@ -650,7 +645,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
         'kind', ${input.detailKind}::text, 'page', ${detailPage}::bigint, 'pageSize', ${detailPageSize}::int,
         'total', ${input.detailKind === 'shops' ? sql`shop_count` : sql`product_count`},
         'entries', coalesce((select entries from detail_payload d where d.standard_product_id = catalog_items.standard_product_id), '[]'::jsonb)
-      ))` : sql``} order by sort_value, ${sort === 'default' ? sql`catalog_rank,` : sql``} sort_order, standard_product_id), '[]'::jsonb) from catalog_items) as entries,
+      ))` : sql``} order by sort_value, sort_order, standard_product_id), '[]'::jsonb) from catalog_items) as entries,
       (select coalesce(jsonb_agg(platform order by platform), '[]'::jsonb)
        from (select distinct sp.platform_group as platform from (${navigationIds}) e
          join catalog_standards sp on sp.id = e.standard_product_id) platforms) as platform_facets,

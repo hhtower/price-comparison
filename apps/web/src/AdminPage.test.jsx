@@ -214,8 +214,16 @@ describe('AdminPage', () => {
     await user.type(nameInput, '标准商品 A（更新）');
     const aliasInput = screen.getByLabelText('搜索别名 标准商品 A');
     await user.type(aliasInput, '常用名称，Alternate Name');
+    const sortInput = screen.getByLabelText('浏览排序 标准商品 A');
+    await user.clear(sortInput);
+    await user.type(sortInput, '1.5');
     await user.click(screen.getAllByRole('button', { name: '保存' })[0]);
-    await waitFor(() => expect(calls.find((call) => call.method === 'PATCH' && call.path === '/api/admin/standard-products/11')?.body).toEqual({ name: '标准商品 A（更新）', platform: '平台 A', aliases: ['常用名称', 'Alternate Name'] }));
+    expect(await screen.findByText('请输入有效的整数排序值')).toBeInTheDocument();
+    expect(calls.some(call => call.method === 'PATCH')).toBe(false);
+    await user.clear(sortInput);
+    await user.type(sortInput, '-9007199254740993');
+    await user.click(screen.getAllByRole('button', { name: '保存' })[0]);
+    await waitFor(() => expect(calls.find((call) => call.method === 'PATCH' && call.path === '/api/admin/standard-products/11')?.body).toEqual({ name: '标准商品 A（更新）', platform: '平台 A', aliases: ['常用名称', 'Alternate Name'], sortOrder: '-9007199254740993' }));
   });
 
   test.each([

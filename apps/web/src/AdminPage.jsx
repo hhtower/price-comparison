@@ -618,6 +618,12 @@ function ProductManagement({ setMessage }) {
       if (aliasInput && aliasInput.value !== (standardProduct.aliases ?? []).join(', ')) {
         body.aliases = aliasInput.value.split(/[,，\n]/u).map(value => value.trim()).filter(Boolean);
       }
+      const sortOrder = row.querySelector('[data-standard-product-sort-order]').value.trim();
+      if (!/^-?\d{1,19}$/u.test(sortOrder) || BigInt(sortOrder) < -(2n ** 63n) || BigInt(sortOrder) >= 2n ** 63n) {
+        setMessage('请输入有效的整数排序值');
+        return;
+      }
+      if (sortOrder !== String(standardProduct.sortOrder ?? '0')) body.sortOrder = sortOrder;
       if (!familyInput && !name) {
         setMessage('标准商品名称不能为空');
         return;
@@ -626,9 +632,9 @@ function ProductManagement({ setMessage }) {
       setMessage('正在保存标准商品…');
       const updated = await requestJson(`/api/admin/standard-products/${standardProduct.id}`, { method: 'PATCH', body: JSON.stringify(body) });
       if (updated?.id) {
-        const { name, platform, canonicalFamily, canonicalProduct, canonicalTier, aliases } = updated;
+        const { name, platform, canonicalFamily, canonicalProduct, canonicalTier, aliases, sortOrder } = updated;
         setStandardProducts(current => ({ ...current, items: current.items.map(item => String(item.id) === id
-          ? { ...item, name, platform, canonicalFamily, canonicalProduct, canonicalTier, aliases } : item) }));
+          ? { ...item, name, platform, canonicalFamily, canonicalProduct, canonicalTier, aliases, sortOrder } : item) }));
       }
       setStandardProductDrafts(current => { const next = { ...current }; delete next[id]; return next; });
       setMessage('标准商品已保存');
@@ -1083,6 +1089,7 @@ function ProductManagement({ setMessage }) {
                         </div>
                         : <input disabled={saving} aria-label={`标准商品名称 ${standardProduct.name}`} data-standard-product-name value={draft.name ?? standardProduct.name} onChange={event => editStandardProduct(id, 'name', event.target.value)} />}
                       <label className="standard-product-aliases"><span>搜索别名</span><input disabled={saving || Boolean(standardProduct.mergedIntoId)} aria-label={'搜索别名 ' + standardProduct.name} data-standard-product-aliases placeholder="多个别名用逗号分隔" value={draft.aliases ?? (standardProduct.aliases ?? []).join(', ')} onChange={event => editStandardProduct(id, 'aliases', event.target.value)} /></label>
+                      <label className="standard-product-aliases"><span>浏览排序</span><input disabled={saving || Boolean(standardProduct.mergedIntoId)} aria-label={'浏览排序 ' + standardProduct.name} data-standard-product-sort-order title="数字越小越靠前，支持负数" value={draft.sortOrder ?? standardProduct.sortOrder ?? '0'} onChange={event => editStandardProduct(id, 'sortOrder', event.target.value)} /></label>
                     </div>
                     <select disabled={saving} data-standard-product-platform aria-label={`标准商品平台 ${standardProduct.name}`} value={draft.platform ?? standardProduct.platform ?? ''} onChange={event => editStandardProduct(id, 'platform', event.target.value)}>
                       <option value="">未分类</option>
