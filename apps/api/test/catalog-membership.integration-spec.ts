@@ -88,17 +88,17 @@ describe('membership catalog features share standard identities', { skip: !proce
       ids[key] = standard;
       if (!price) continue;
       const source = (await sql<{ id: string }>`insert into products (shop_id, external_id, name, spec, normalized_key, url)
-        values (${shop}::bigint, ${key}, ${key}, '', ${key}, ${`https://membership.invalid/${key}`}) returning id::text`.execute(db)).rows[0]!.id;
+        values (${shop}::bigint, ${key}, ${key === 'free' ? 'free 成品账号' : key === 'youtube' ? 'youtube 共享 合租' : key}, '', ${key}, ${`https://membership.invalid/${key}`}) returning id::text`.execute(db)).rows[0]!.id;
       products[key] = source;
       if (kind) await saveFeature(source, kind);
       if (key === 'account' || key === 'pending') await saveFeatureTask(source, 'unclassified');
       await sql`insert into standard_product_members (standard_product_id, product_id, publication_state, assignment_source)
         values (${standard}::bigint, ${source}::bigint, 'published', 'ai')`.execute(db);
       await sql`insert into product_tags (product_id, name, value) values
-        (${source}::bigint, 'delivery', ${delivery}), (${source}::bigint, 'warranty_days', ${days})`.execute(db);
+        (${source}::bigint, 'bulk_purchase', ${jsonb(delivery === 'account' ? 'supported' : delivery === 'top_up' ? 'required' : 'bundle')}), (${source}::bigint, 'duration', ${jsonb(Number(days))})`.execute(db);
       if (key === 'rental' || key === 'youtube') {
         await sql`insert into product_tags (product_id, name, value)
-          values (${source}::bigint, 'access', ${key === 'rental' ? 'dedicated' : 'shared'})`.execute(db);
+          values (${source}::bigint, 'access_channel', ${jsonb(key === 'rental' ? 'web' : 'api')})`.execute(db);
       }
       await sql`insert into offers (product_id, idempotency_key, price, currency, captured_at, stock_available, is_stale)
         values (${source}::bigint, ${key}, ${price}::numeric, 'CNY', now(), true, false)`.execute(db);
@@ -166,20 +166,20 @@ describe('membership catalog features share standard identities', { skip: !proce
     } while (cursor);
     assert.deepEqual(seen, page.items.map(item => item.id));
     const facets = await repository.facets({ newcomer: true, tags: [] });
-    assert.ok(!facets.tagFacets.some(tag => tag.name === 'warranty_days' && tag.value === '99'));
-    assert.equal(facets.tagFacets.find(tag => tag.name === 'delivery' && tag.value === 'account')?.priority, 1);
+    assert.ok(!facets.tagFacets.some(tag => tag.name === 'duration' && tag.value === 99));
+    assert.equal(facets.tagFacets.find(tag => tag.name === 'bulk_purchase' && tag.value === 'supported')?.priority, 1);
   });
 
-  test('explicit kind overrides newcomer and delivery tags remain independent', async () => {
+  test('explicit kind overrides newcomer and purchase tags remain independent', async () => {
     const short = await service.getCatalog({ newcomer: true, membershipKinds: ['short_term'] });
     assert.deepEqual(short.items.map(item => item.id), [ids.short_term]);
     const rental = await service.getCatalog({ newcomer: true, membershipKinds: ['rental'] });
     assert.deepEqual(rental.items.map(item => item.id), [ids.rental]);
     assert.equal(rental.items[0]?.offers[0]?.membershipKind, 'rental');
     assert.equal((await service.getCatalog({ membershipKinds: ['account', 'top_up', 'rental', 'short_term'] })).total, 1);
-    const account = await service.getCatalog({ newcomer: true, membershipKind: 'account', tag: { name: 'delivery', value: 'redemption' } });
+    const account = await service.getCatalog({ newcomer: true, membershipKind: 'account', tag: { name: 'bulk_purchase', value: 'bundle' } });
     assert.deepEqual(account.items.map(item => item.id), [ids.account]);
-    assert.equal((await service.getCatalog({ membershipKind: 'account', warrantyDaysMin: 30 })).total, 0);
+    assert.equal((await service.getCatalog({ membershipKind: 'account', tags: [{ name: 'duration', value: 60 }] })).total, 0);
     assert.equal((await service.getCatalog({ newcomer: true, standardProductId: ids.base, priceMax: '5' })).total, 0);
     assert.equal((await service.getCatalog({ newcomer: false, standardProductId: ids.base, priceMax: '5' })).total, 1);
   });
@@ -191,12 +191,10 @@ describe('membership catalog features share standard identities', { skip: !proce
     assert.deepEqual((await service.getCatalog({ q: '成品账号' })).items.map(item => item.id).sort(),
       [ids.account, ids.free].sort());
     assert.equal((await service.getCatalog({ q: '短期', searchMode: 'literal' })).total, 0);
-    const oldDelivery = await service.getCatalog({ tag: { name: 'delivery', value: 'account' }, newcomer: false });
-    assert.ok(oldDelivery.items.some(item => item.id === ids.short_term));
-    assert.ok(!oldDelivery.items.flatMap(item => item.membershipGroups ?? []).some(group => group.kind === 'account'));
+    await assert.rejects(service.getCatalog({ tag: { name: 'delivery', value: 'account' } }), { code: 'INVALID_FILTER' });
   });
 
-  test('rental searches consume labels only for AI and preserve explicit access and non-AI filters', async () => {
+  test('rental searches consume labels only for AI and preserve explicit channels and non-AI text filters', async () => {
     for (const term of ['租号', '共享', '合租', '租号（共享）', '租号 ( 合租 )']) {
       assert.deepEqual((await service.getCatalog({ q: `ChatGPT ${term}`, newcomer: true })).items.map(item => item.id),
         [ids.rental], term);
@@ -207,13 +205,13 @@ describe('membership catalog features share standard identities', { skip: !proce
       assert.deepEqual(new Set((await service.getCatalog({ q: term, newcomer: true })).items.map(item => item.id)),
         new Set([ids.rental, ids.youtube]));
       assert.deepEqual((await service.getCatalog({ q: `youtube ${term}`, newcomer: true })).items.map(item => item.id), [ids.youtube]);
-      assert.equal((await service.getCatalog({ q: `ChatGPT ${term}`, tag: { name: 'access', value: 'shared' } })).total, 0);
+      assert.equal((await service.getCatalog({ q: `ChatGPT ${term}`, tag: { name: 'access_channel', value: 'api' } })).total, 0);
     }
     for (const q of ['ChatGPT 共享未说明', 'ChatGPT 不接受合租', 'ChatGPT 租号(共享)未知']) {
       assert.equal((await service.getCatalog({ q, newcomer: true })).total, 0, q);
     }
     const facets = await service.getFacets({ membershipKinds: ['rental'], newcomer: true });
-    assert.equal(facets.tagFacets.find(tag => tag.name === 'access' && tag.value === 'dedicated')?.priority, 1);
+    assert.equal(facets.tagFacets.find(tag => tag.name === 'access_channel' && tag.value === 'web')?.priority, 1);
   });
 
   test('assistant reference reads enforce the same scope before returning candidates', async () => {
@@ -319,8 +317,8 @@ describe('membership catalog features share standard identities', { skip: !proce
         assert.deepEqual(pendingPage.items[0]?.offers.map(offer => offer.productId), [products.account]);
         assert.deepEqual((await repository.referenceOffers(pendingScope)).map(offer => offer.productId), [products.account]);
         const facets = await repository.facets(pendingScope);
-        assert.equal(facets.tagFacets.find(tag => tag.name === 'delivery' && tag.value === 'redemption')?.priority, 1);
-        assert.ok(!facets.tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'top_up'));
+        assert.equal(facets.tagFacets.find(tag => tag.name === 'bulk_purchase' && tag.value === 'bundle')?.priority, 1);
+        assert.ok(!facets.tagFacets.some(tag => tag.name === 'bulk_purchase' && tag.value === 'required'));
         const filtered = await repository.search({ standardProductId: ids.base, membershipKinds: ['short_term'], tags: [], limit: 1,
           detailKind: 'offers', detailPageSize: 10 });
         assert.equal(filtered.offerTotal, 1);
@@ -370,7 +368,7 @@ describe('membership catalog features share standard identities', { skip: !proce
         assert.deepEqual((await repository.referenceOffers(scope)).map(offer => offer.productId),
           visible ? [products.rental] : [], status);
         const facets = await repository.facets(scope);
-        assert.equal(facets.tagFacets.some(tag => tag.name === 'delivery' && tag.value === 'account'), visible, status);
+        assert.equal(facets.tagFacets.some(tag => tag.name === 'bulk_purchase' && tag.value === 'supported'), visible, status);
         const all = await repository.search({ standardProductId: ids.base, tags: [], limit: 10 });
         assert.equal(all.items[0]?.membershipGroups?.some(group => group.kind === 'unclassified') ?? false, visible, status);
       }
@@ -396,23 +394,23 @@ describe('membership catalog features share standard identities', { skip: !proce
     assert.equal((await repository.search({ standardProductId: ids.free, membershipKinds: ['unclassified'], tags: [], limit: 10 })).offerTotal, 0);
   });
 
-  test('rental alias keeps dedicated access hard on AI while non-AI access values retain OR semantics', async () => {
+  test('rental aliases preserve explicit channel filters and same-field OR semantics', async () => {
     const shared = (await sql<{ id: string }>`insert into products (shop_id, external_id, name, spec, normalized_key, url)
       select shop_id, 'shared-rental', 'Shared rental', '', 'shared-rental', 'https://membership.invalid/shared-rental'
       from products where id = ${products.rental}::bigint returning id::text`.execute(db)).rows[0]!.id;
     await saveFeature(shared, 'rental');
     await sql`insert into standard_product_members (standard_product_id, product_id, publication_state, assignment_source)
       values (${ids.rental}::bigint, ${shared}::bigint, 'published', 'ai')`.execute(db);
-    await sql`insert into product_tags (product_id, name, value) values (${shared}::bigint, 'access', 'shared')`.execute(db);
+    await sql`insert into product_tags (product_id, name, value) values (${shared}::bigint, 'access_channel', ${jsonb('api')})`.execute(db);
     await sql`insert into offers (product_id, idempotency_key, price, currency, captured_at, stock_available, is_stale)
       values (${shared}::bigint, 'shared-rental', 1, 'CNY', now(), true, false)`.execute(db);
     while (await publishNextCatalogChange(db)) {}
     const controller = new CatalogController(service);
-    for (const q of ['ChatGPT Plus 租号（共享） 独享', 'ChatGPT Plus 租号(共享) 独享', 'ChatGPT Plus 合租 独享']) {
-      const input = { q, newcomer: true };
+    for (const q of ['ChatGPT Plus 租号（共享）', 'ChatGPT Plus 租号(共享)', 'ChatGPT Plus 合租']) {
+      const input = { q, newcomer: true, tags: [{ name: 'access_channel', value: 'web' }] };
       const query = normalizeCatalogQuery(input);
       const direct = await repository.search(query);
-      const api = await controller.getCatalog({ q, newcomer: 'true' });
+      const api = await controller.getCatalog({ q, newcomer: 'true', tag: JSON.stringify({ name: 'access_channel', value: 'web' }) });
       for (const page of [direct, api]) {
         assert.equal(page.offerTotal, 1, q);
         assert.deepEqual(page.items.flatMap(item => item.offers.map(offer => offer.productId)), [products.rental], q);
@@ -420,7 +418,7 @@ describe('membership catalog features share standard identities', { skip: !proce
     }
     const sharedOnly = await repository.search(normalizeCatalogQuery({ q: 'ChatGPT Plus 共享' }));
     assert.equal(sharedOnly.offerTotal, 2, 'shared alias alone must still allow both rental access types');
-    const nonAi = await controller.getCatalog({ q: 'youtube 共享 独享' });
+    const nonAi = await controller.getCatalog({ q: 'youtube 共享', tag: [JSON.stringify({ name: 'access_channel', value: 'web' }), JSON.stringify({ name: 'access_channel', value: 'api' })] });
     assert.deepEqual(nonAi.items.flatMap(item => item.offers.map(offer => offer.productId)), [products.youtube]);
     for (const q of ['ChatGPT Plus 没有共享', 'ChatGPT Plus 共享状态未知']) {
       assert.equal((await controller.getCatalog({ q })).total, 0, q);
@@ -489,20 +487,20 @@ describe('membership catalog features share standard identities', { skip: !proce
     const standard = await db.insertInto('standard_products').values({ name: 'Scoped Claude Pro', platform: 'anthropic',
       canonical_family: 'anthropic', canonical_product: 'claude', canonical_tier: 'pro', verification_state: 'verified',
     }).returning('id').executeTakeFirstOrThrow();
-    const samples: Array<{ id: string; shopId: string; kind: MembershipGroup; price: number; name: string; duration: string }> = [];
+    const samples: Array<{ id: string; shopId: string; kind: MembershipGroup; price: number; name: string; duration: number }> = [];
     for (let merchant = 0; merchant < 5; merchant++) {
       const shop = await db.insertInto('shops').values({ name: `Scoped merchant ${merchant}`, platform: 'test',
         url: `https://scoped${merchant}.invalid` }).returning('id').executeTakeFirstOrThrow();
       for (const [key, kind, price, duration] of [
-        ['account', 'account', 100, '1 month'], ['account-extra', 'account', 300, '1 month'],
-        ['top_up', 'top_up', 200, '2 months'], ['rental', 'rental', 10, '3 months'],
-        ['short_term', 'short_term', 50, '4 months'], ['unknown', null, 1, '4 months'],
+        ['account', 'account', 100, 30], ['account-extra', 'account', 300, 30],
+        ['top_up', 'top_up', 200, 60], ['rental', 'rental', 10, 90],
+        ['short_term', 'short_term', 50, 120], ['unknown', null, 1, 120],
       ] as const) {
         const name = `Original merchant quote ${merchant}/${key}`;
         const source = await db.insertInto('products').values({ shop_id: shop.id, external_id: key, name,
           normalized_key: `${merchant}/${key}`, url: `https://scoped${merchant}.invalid/${key}`,
         }).returning('id').executeTakeFirstOrThrow();
-        await db.insertInto('product_tags').values({ product_id: source.id, name: 'duration', value: duration }).execute();
+        await db.insertInto('product_tags').values({ product_id: source.id, name: 'duration', value: jsonb(duration) }).execute();
         await db.insertInto('standard_product_members').values({ standard_product_id: standard.id,
           product_id: source.id, publication_state: 'published' }).execute();
         if (kind) await saveFeature(String(source.id), kind);
@@ -603,7 +601,7 @@ describe('membership catalog features share standard identities', { skip: !proce
       assert.deepEqual(await read('', { membershipKind: ['account', 'top_up'], detailKind: 'shops', detailPageSize: '10' }), combined);
       const facets = await read('/facets', { membershipKinds: ['account', 'top_up'] });
       assert.deepEqual(facets.tagFacets.filter((tag: { name: string }) => tag.name === 'duration')
-        .map((tag: { value: string }) => tag.value).sort(), ['1 month', '2 months']);
+        .map((tag: { value: string }) => tag.value).sort(), [30, 60]);
       for (const path of ['', '/facets', `/products/${standard.id}/price-history`]) {
         for (const scope of [{ membershipKind: 'account', membershipKinds: ['rental', 'short_term'] }, { membershipKinds: 'account' }]) {
           assert.equal((await read(path, scope, 400)).error.code, 'INVALID_MEMBERSHIP_KIND');

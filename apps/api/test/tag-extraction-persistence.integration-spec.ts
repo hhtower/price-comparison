@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect } from 'kysely';
@@ -42,15 +43,16 @@ async function fixture(count = 1) {
 const claim = { workerId: 'test', attempt: 1n, token: 'claim' };
 async function outputs(jobId: bigint) { return db.selectFrom('ai_job_input_members').select(['output', 'reason_code']).where('job_id','=',jobId).orderBy('product_id').execute(); }
 
-test('atomic audited fanout, real diff, retention, independent locked guard and done idempotence', async () => {
+test('atomic audited full replacement, independent locked guard and done idempotence', async () => {
   const f=await fixture(2);
-  await db.insertInto('product_tags').values({ product_id: f.inputId, name: 'renewable', value: '有' }).execute();
+  await db.insertInto('product_tags').values(tagRows({ product_id: f.inputId, name: 'renewable', value: '有' })).execute();
   await db.updateTable('products').set({ standardization_locked: true }).where('id','=',f.products[1]!.id).execute();
-  const decision=validateTagExtractionDecision(f.inputId,[{ name:'duration', value:'1 month', evidence:[{path:'spec',quote:'1个月'}] }],f.payload);
+  const decision=validateTagExtractionDecision(f.inputId,[{ name:'duration', value:30, evidence:[{path:'spec',quote:'1个月'}] }],f.payload);
   await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[decision],{},claim);
   const result=await outputs(f.job.id);
   assert.equal((result[0]!.output as any).outcome,'updated');
-  assert.deepEqual((result[0]!.output as any).retainedUnconfirmed,[{name:'renewable',value:'有'}]);
+  assert.equal((result[0]!.output as any).retainedUnconfirmed, undefined);
+  assert.deepEqual(await db.selectFrom('product_tags').select(['name','value']).where('product_id','=',f.inputId).execute(), [{name:'duration',value:30}]);
   assert.equal((result[1]!.output as any).outcome,'skipped');
   assert.equal(result[1]!.reason_code,'product_locked');
   await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[decision],{},claim);
@@ -128,24 +130,25 @@ test('reserve uses member input IDs and skips fully protected batches without sp
 
 test('unchanged and empty results do not rewrite tags or bump catalog, mixed rejection remains visible',async()=>{
   const f=await fixture();
-  await db.insertInto('product_tags').values({product_id:f.inputId,name:'duration',value:'1 month'}).execute();
-  const decision=validateTagExtractionDecision(f.inputId,[{name:'duration',value:'1 month',evidence:[{path:'spec',quote:'1个月'}]},{name:'renewable',value:'有',evidence:[{path:'spec',quote:'1个月'}]}],f.payload);
+  await db.insertInto('product_tags').values(tagRows({product_id:f.inputId,name:'duration',value:30})).execute();
+  const decision=validateTagExtractionDecision(f.inputId,[{name:'duration',value:30,evidence:[{path:'spec',quote:'1个月'}]},{name:'renewable',value:'有',evidence:[{path:'spec',quote:'1个月'}]}],f.payload);
   const versionBefore=await db.selectFrom('catalog_cache_versions').selectAll().execute();
   await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[decision],{},claim);
   const output=(await outputs(f.job.id))[0]!.output as any;
   assert.equal(output.outcome,'review'); assert.equal(output.rejectedTags.length,1); assert.equal(output.diff.length,0);
   assert.deepEqual(await db.selectFrom('catalog_cache_versions').selectAll().execute(),versionBefore);
-  const empty=await fixture(); await empty.repo.persistTagExtractionBatchDecision(empty.job.id,empty.batch.id,[validateTagExtractionDecision(empty.inputId,[],empty.payload)],{},claim);
-  assert.equal(((await outputs(empty.job.id))[0]!.output as any).outcome,'empty');
+  const empty=await fixture(); await db.insertInto('product_tags').values(tagRows({product_id:empty.inputId,name:'duration',value:90})).execute(); await empty.repo.persistTagExtractionBatchDecision(empty.job.id,empty.batch.id,[validateTagExtractionDecision(empty.inputId,[],empty.payload)],{},claim);
+  assert.equal(((await outputs(empty.job.id))[0]!.output as any).outcome,'updated');
+  assert.equal((await db.selectFrom('product_tags').selectAll().where('product_id','=',empty.inputId).execute()).length,0);
 });
 
 test('persistence revalidation keeps vocabulary rejections and duplicates out of tags across fanout', async () => {
   const f = await fixture(2);
-  const duration = { name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '1个月' }] };
+  const duration = { name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1个月' }] };
   const decision = validateTagExtractionDecision(f.inputId, [
     duration, duration,
     { name: 'invented', value: 'password=hidden', evidence: [{ path: 'spec', quote: '1个月' }] },
-    { name: 'renewable', value: 'yes', evidence: [{ path: 'spec', quote: '1个月' }] },
+    { name: 'subscription_override', value: 'yes', evidence: [{ path: 'spec', quote: '1个月' }] },
   ], f.payload);
   await f.repo.persistTagExtractionBatchDecision(f.job.id, f.batch.id, [decision], {}, claim);
   for (const row of await outputs(f.job.id)) {
@@ -159,5 +162,5 @@ test('persistence revalidation keeps vocabulary rejections and duplicates out of
   const stored = await db.selectFrom('product_tags').select(['product_id', 'name', 'value'])
     .where('product_id', 'in', f.products.map(p => p.id)).execute();
   assert.equal(stored.length, 2);
-  assert.ok(stored.every(tag => tag.name === 'duration' && tag.value === '1 month'));
+  assert.ok(stored.every(tag => tag.name === 'duration' && tag.value === 30));
 });

@@ -6,18 +6,18 @@ import { CatalogService, normalizeCatalogQuery } from '../src/catalog/catalog.se
 import type { CatalogQuery, CatalogRepository } from '../src/catalog/catalog.repository.js';
 
 test('newcomer mode is explicit and does not replace stricter purchase filters', () => {
-  const input = { tag: [{ name: 'delivery', value: 'top_up' }], warrantyDaysMin: 90 };
+  const input = { tag: [{ name: 'bulk_purchase', value: 'supported' }] };
   assert.deepEqual(normalizeCatalogQuery({ ...input, newcomer: 'true' }), {
-    tags: input.tag, warrantyDaysMin: 90, newcomer: true, limit: 20,
+    tags: input.tag, newcomer: true, limit: 20,
   });
   assert.deepEqual(normalizeCatalogQuery({ newcomer: 'false' }), normalizeCatalogQuery({}));
   assert.deepEqual(normalizeCatalogQuery({ newcomer: true }), normalizeCatalogQuery({ newcomer: 'true' }));
 });
 
-test('membership kinds have an explicit validated interface independent of delivery tags', () => {
+test('membership kinds have an explicit validated interface independent of purchase tags', () => {
   assert.deepEqual(normalizeCatalogQuery({ membershipKind: ['top_up', 'account', 'top_up'],
-    tag: { name: 'delivery', value: 'redemption' }, newcomer: true }), {
-    membershipKinds: ['account', 'top_up'], tags: [{ name: 'delivery', value: 'redemption' }], newcomer: true, limit: 20,
+    tag: { name: 'access_channel', value: 'web' }, newcomer: true }), {
+    membershipKinds: ['account', 'top_up'], tags: [{ name: 'access_channel', value: 'web' }], newcomer: true, limit: 20,
   });
   assert.deepEqual(normalizeCatalogQuery({ membershipKinds: ['short_term'] }).membershipKinds, ['short_term']);
   for (const membershipKind of ['', 'all', 'account,top_up', [], ['account', 'invalid'], null, {}, true]) {

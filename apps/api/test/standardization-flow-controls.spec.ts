@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { standardizationFlowCatalog, standardizationFlowControls } from './fixtures/standardization-flow-controls-20261008.js';
+import { isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
 
 const modulePath = '../src/standardization/flow-evaluation.js';
 const loadFlow = async () => {
@@ -61,15 +62,17 @@ test('checked-in control facts contain no private URLs, contact details or crede
   assert.doesNotMatch(copy, /https?:\/\/|www\.|[\w.+-]+@[\w.-]+\.[a-z]{2,}|sk-[a-z0-9]{12,}|-----/iu);
   assert.equal(new Set(standardizationFlowControls.map(row => row.id)).size, standardizationFlowControls.length);
   assert.ok(standardizationFlowControls.every(row => row.soldObject && row.body));
+  assert.ok(standardizationFlowControls.flatMap(row => row.proposalTags ?? []).every(isCanonicalProductTag),
+    'label controls use current typed vocabulary even when their cited meaning is deliberately wrong');
 });
 
-test('multiple delivery formats cannot hide the erroneous credentials proposal behind a valid JSON sibling', async () => {
+test('multiple clients cannot hide a forbidden client proposal behind an explicitly supported sibling', async () => {
   const evaluate = await loadFlow();
-  const control = standardizationFlowControls.find(row => row.id === 'rt-wrong-credentials')!;
+  const control = standardizationFlowControls.find(row => row.id === 'rt-wrong-client')!;
   const report = evaluate([control], standardizationFlowCatalog);
-  assert.deepEqual(report.controls[0].proposedTags, { delivery_format: ['credentials', 'json'] });
+  assert.deepEqual(report.controls[0].proposedTags, { supported_client: ['codex', 'sub2api'] });
   assert.deepEqual(report.metrics.syntheticProposalCorrectness, { numerator: 0, denominator: 1, value: 0 });
-  assert.deepEqual(report.controls[0].finalTags, { delivery_format: 'json' });
+  assert.deepEqual(report.controls[0].finalTags, { supported_client: 'sub2api' });
 });
 
 test('offline CLI reports current controls separately from historical mocked accuracy', () => {

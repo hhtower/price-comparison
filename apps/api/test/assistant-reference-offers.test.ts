@@ -21,7 +21,7 @@ test('reference lookup uses one scoped read without catalog aggregates or freshn
   try {
     const service = new CatalogService(new CatalogRepository(db), {} as Cache);
     await service.getReferenceOffers({ standardProductId: '42', currency: 'CNY', priceMax: '80',
-      tags: [{ name: 'delivery', value: 'top_up' }], warrantyDaysMin: 30 });
+      tags: [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }, { name: 'region', value: 'jp' }] });
     assert.equal(queries.length, 1);
     const query = queries[0]!;
     assert.match(query.sql, /r.standard_product_id = \$\d+::bigint/u);
@@ -30,12 +30,12 @@ test('reference lookup uses one scoped read without catalog aggregates or freshn
     assert.match(query.sql, /p.deleted_at is null/u);
     assert.match(query.sql, /sh.enabled = true and sh.deleted_at is null/u);
     assert.match(query.sql, /r.tags @>/u);
-    assert.match(query.sql, /r.warranty_days >=/u);
+    assert.doesNotMatch(query.sql, /warranty_days/u);
     assert.doesNotMatch(query.sql, /count\(|offset |limit |captured_at >|available =|reviews/iu);
     assert.ok(query.parameters.includes('42'));
     assert.ok(query.parameters.includes('80.00'));
     assert.ok(query.parameters.includes('CNY'));
-    assert.ok(query.parameters.includes(30));
+    assert.match(JSON.stringify(query.parameters), /duration/u);
     assert.throws(() => service.getReferenceOffers({}), DomainValidationError);
     assert.throws(() => service.getReferenceOffers({ standardProductId: '42;select 1' }), DomainValidationError);
   } finally { await db.destroy(); }

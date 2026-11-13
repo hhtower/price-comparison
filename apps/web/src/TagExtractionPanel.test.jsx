@@ -683,7 +683,7 @@ function installApi({ state = 'succeeded', handle } = {}) {
     if (handled) return handled;
     if (url.pathname.endsWith('task-queue')) return Response.json({ items: [{ ...job, parentIdentityJobId: '7', pipelineVersions: { tags: 'v3' }, processed: 2, total: 2, uniqueInputCount: 1 }], summary: { pendingProducts: 4, reviewProducts: 1, failedProducts: 1, coveredProducts: 8 } });
     if (/tag-results$/.test(url.pathname)) return Response.json({ items: [{ id: '3', name: '失败商品', status: 'unclassified', outcome: 'failed', changedFields: 0 }, { id: '4', name: '复核商品', outcome: 'review', changedFields: 1 }] });
-    if (/tag-results\/3$/.test(url.pathname)) return Response.json({ member: { content_version: '2', standardization_revision: '1', output: { outcome: 'updated', acceptedTags: [{ name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '一个月' }] }], rejectedTags: [{ name: 'renewable', value: 'yes', evidence: [], reason: '证据不足', reasonCode: 'evidence_invalid' }], diff: [{ name: 'duration', before: [], after: ['1 month'] }], retainedUnconfirmed: [{ name: 'warranty', value: 'covered' }] } }, batches: [{ batch_index: 0, round: 'initial', status: 'succeeded', response_ms: 500, response_usage: { total_tokens: 42 } }] });
+    if (/tag-results\/3$/.test(url.pathname)) return Response.json({ member: { content_version: '2', standardization_revision: '1', output: { outcome: 'updated', acceptedTags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '一个月' }] }], rejectedTags: [{ name: 'renewable', value: 'yes', evidence: [], reason: '证据不足', reasonCode: 'evidence_invalid' }], diff: [{ name: 'duration', before: [], after: [30] }], retainedUnconfirmed: [{ name: 'warranty', value: 'covered' }] } }, batches: [{ batch_index: 0, round: 'initial', status: 'succeeded', response_ms: 500, response_usage: { total_tokens: 42 } }] });
     if (/jobs\/\d+$/.test(url.pathname)) return Response.json({ job: { ...job, id: url.pathname.split('/').at(-1) }, progress: { rawProductCount: 2, processed: '2', uniqueInputCount: 1, tagResults: { failed: 1, review: 1 }, requests: { totalBatches: 1 } } });
     return Response.json({}, { status: 404 });
   }));
@@ -745,17 +745,17 @@ test('复盘展开冻结 JSON，保留当时版本而不拿实时商品代替', 
 
 test('候选按实际提取来源和索引对应重复标签、原始布尔票与程序拒绝', async () => {
   const proposals = [
-    { proposalIndex: 0, name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '第一个月' }] },
-    { proposalIndex: 1, name: 'duration', value: '1 month', evidence: [{ path: 'sourceData.evidence', quote: '另一个月' }] },
+    { proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '第一个月' }] },
+    { proposalIndex: 1, name: 'duration', value: 30, evidence: [{ path: 'sourceData.evidence', quote: '另一个月' }] },
     { proposalIndex: 2, name: 'unknown_field', value: 'x', evidence: [{ path: 'spec', quote: '原始候选' }] },
     { proposalIndex: 3, name: 'region', value: 'US', evidence: [{ path: 'spec', quote: '引文不符' }] },
   ];
   const audit = await openAudit({ member: { payload: { spec: '第一个月' }, output: {
     outcome: 'updated', review: { mode: 'per_tag_binary', decisions: [false, true, true, true] },
-    acceptedTags: [{ proposalIndex: 1, name: 'duration', value: '1 month', evidence: [] }],
+    acceptedTags: [{ proposalIndex: 1, name: 'duration', value: 30, evidence: [] }],
     rejectedTags: [
       { proposalIndex: 3, name: 'region', value: 'US', reasonCode: 'citation_quote_mismatch', evidence: [] },
-      { proposalIndex: 0, name: 'duration', value: '1 month', reasonCode: 'review_rejected', evidence: [] },
+      { proposalIndex: 0, name: 'duration', value: 30, reasonCode: 'review_rejected', evidence: [] },
       { proposalIndex: 2, name: 'unknown_field', value: 'x', reasonCode: 'tag_name_unknown', evidence: [] },
     ],
   } }, batches: [
@@ -784,7 +784,7 @@ test('候选按实际提取来源和索引对应重复标签、原始布尔票�
 
 test('无发布结果时仍展示持久化复核票，拆分复核各自关联提取批次', async () => {
   const audit = await openAudit({ member: { status: 'processing', output: null }, batches: [
-    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '来源甲' }] }] },
+    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '来源甲' }] }] },
     { id: '22', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [{ path: 'name', quote: '来源乙' }] }] },
     { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: [true], step: 'publish', status: 'queued' },
     { id: '32', stage: 'review', extraction_batch_id: '22', review_decisions: [false], step: 'publish', status: 'queued' },
@@ -820,9 +820,9 @@ test('来源批次未记录时保留原始票但不拿最新提取冒充来源',
 test('商品已保存的原始票可用于关联来源，缺失批次票不等于投票丢失', async () => {
   const audit = await openAudit({ member: { output: {
     outcome: 'updated', review: { mode: 'per_tag_binary', decisions: [true] },
-    acceptedTags: [{ proposalIndex: 0, name: 'duration', value: '1 month', evidence: [] }], rejectedTags: [],
+    acceptedTags: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }], rejectedTags: [],
   } }, batches: [
-    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '原始引用' }] }] },
+    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '原始引用' }] }] },
     { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: null },
   ] });
   await userEvent.setup().click(within(audit).getByText('复核批次 #31 详情'));
@@ -835,9 +835,9 @@ test('商品已保存的原始票可用于关联来源，缺失批次票不等�
 test('多个提取来源时最终处置不凭相同索引归给某个复核批次', async () => {
   const audit = await openAudit({ member: { output: {
     outcome: 'updated', review: { mode: 'per_tag_binary', decisions: [true] },
-    acceptedTags: [{ proposalIndex: 0, name: 'duration', value: '1 month', evidence: [] }], rejectedTags: [],
+    acceptedTags: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }], rejectedTags: [],
   } }, batches: [
-    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: '1 month', evidence: [] }] },
+    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }] },
     { id: '22', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [] }] },
     { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: [true] },
     { id: '32', stage: 'review', extraction_batch_id: '22', review_decisions: [true] },
@@ -852,9 +852,9 @@ test('多个提取来源时最终处置不凭相同索引归给某个复核批�
 test('历史缺少输入、索引和原始投票时明确未记录，不按最终去向反推原始票', async () => {
   const audit = await openAudit({ member: { output: {
     outcome: 'review', review: { mode: 'per_tag_binary' }, acceptedTags: [],
-    rejectedTags: [{ name: 'duration', value: '1 month', reasonCode: 'review_rejected', evidence: [] }],
+    rejectedTags: [{ name: 'duration', value: 30, reasonCode: 'review_rejected', evidence: [] }],
   } }, batches: [
-    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '历史原文' }] }] },
+    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '历史原文' }] }] },
     { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: null },
   ] });
   await userEvent.setup().click(within(audit).getByText('复核批次 #31 详情'));
@@ -869,7 +869,7 @@ test('历史缺少输入、索引和原始投票时明确未记录，不按最�
 test.each(['skipped', 'failed', 'cancelled'])('发布 %s 即便存在采纳候选也明确未写入', async outcome => {
   const audit = await openAudit({ member: { output: {
     outcome, review: { mode: 'per_tag_binary', decisions: [true] },
-    acceptedTags: [{ proposalIndex: 0, name: 'duration', value: '1 month', evidence: [] }], rejectedTags: [],
+    acceptedTags: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }], rejectedTags: [],
   } }, batches: [] });
   expect(audit).toHaveTextContent('本次未写入商品标签');
   expect(audit).toHaveTextContent('YES (true)');
@@ -959,7 +959,7 @@ test.each([true, false])('逐标签二元复核按原始标签计数并保留引
   installApi({ handle(call) {
     if (call.path.endsWith('/tag-results/3')) return Response.json({ member: { output: {
       outcome: accepted ? 'updated' : 'review', review: { mode: 'per_tag_binary' },
-      acceptedTags: accepted ? [{ name: 'duration', value: '1 month', evidence: [{ path: 'sourceData.spec', quote: '一个月' }] }] : [],
+      acceptedTags: accepted ? [{ name: 'duration', value: 30, evidence: [{ path: 'sourceData.spec', quote: '一个月' }] }] : [],
       rejectedTags: [{ name: 'renewable', value: 'yes', reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否', evidence: [{ path: 'sourceData.description', quote: '续费操作教程' }] }],
     } }, batches: [] });
   } });
@@ -1042,7 +1042,7 @@ test.each([
   ['unchanged', 2, 0, 0, '无变化'],
   ['empty', 0, 0, 0, '无可确认标签'],
 ])('商品 %s（通过 %i、拒绝 %i）在列表和依据中准确显示结果', async (outcome, acceptedCount, rejectedCount, changedFields, label) => {
-  const acceptedTags = [{ name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '一个月' }] }, { name: 'region', value: 'US', evidence: [{ path: 'spec', quote: '美区' }] }].slice(0, acceptedCount);
+  const acceptedTags = [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '一个月' }] }, { name: 'region', value: 'US', evidence: [{ path: 'spec', quote: '美区' }] }].slice(0, acceptedCount);
   const rejectedTags = Array.from({ length: rejectedCount }, () => ({ name: 'renewable', value: 'yes', evidence: [], reasonCode: 'evidence_invalid', reason: '证据不足' }));
   installApi({ handle(call) {
     if (call.path.endsWith('task-queue')) return Response.json({ items: [{ id: '8', status: 'succeeded', unclassified: rejectedCount ? 1 : 0 }], summary: { currentReasons: rejectedCount ? { tag_evidence_rejected: 1 } : {} } });
@@ -1325,4 +1325,25 @@ test('任务和商品分页在刷新详情后保留', async () => {
   await user.click(screen.getByRole('button', { name: '关闭标签任务详情' }));
   expect(screen.getByRole('button', { name: '查看标签任务 #7' })).toBeInTheDocument();
   expect(screen.getByLabelText('标签抽取记录分页')).toHaveTextContent('第 2 / 2 页，共 11 条');
+});
+
+test('keyed review votes follow tag IDs after reordering and render typed values without affecting classification votes', async () => {
+  installApi({ handle(call) {
+    if (call.path.endsWith('/tag-results/3')) return Response.json({ member: { status: 'succeeded', output: { outcome: 'updated', acceptedTags: [{ tagId: '3:0', name: 'duration', value: { kind: 'min', days: 30 } }], rejectedTags: [{ tagId: '3:1', name: 'bulk_purchase', value: 'supported', reasonCode: 'review_rejected' }] } }, batches: [
+      { id: '91', stage: 'extract', proposals: [
+        { tagId: '3:0', name: 'duration', value: { kind: 'min', days: 30 }, evidence: [{ path: 'sourceData.spec', quote: '至少一个月' }] },
+        { tagId: '3:1', name: 'bulk_purchase', value: 'supported', evidence: [{ path: 'sourceData.description', quote: '支持批量下单' }] },
+      ] },
+      { id: '92', stage: 'review', extraction_batch_id: '91', review_decisions: [{ tagId: '3:1', accepted: false }, { tagId: '3:0', accepted: true }] },
+    ] });
+  } });
+  const user = userEvent.setup(); render(<TagExtractionPanel shops={shops} />);
+  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
+  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
+  await user.click(await screen.findByText('复核批次 #92 详情'));
+  const table = screen.getByRole('table', { name: '复核批次 #92 候选判定' });
+  const duration = within(table).getByText('使用期限：至少1个月').closest('tr');
+  expect(duration).toHaveTextContent('3:0'); expect(duration).toHaveTextContent('YES (true)'); expect(duration).toHaveTextContent('程序采纳');
+  const bulk = within(table).getByText('批量购买：支持批量购买').closest('tr');
+  expect(bulk).toHaveTextContent('3:1'); expect(bulk).toHaveTextContent('NO (false)'); expect(bulk).toHaveTextContent('LLM 对该标签判定为否');
 });

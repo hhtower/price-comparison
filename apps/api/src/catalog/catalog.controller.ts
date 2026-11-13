@@ -3,6 +3,9 @@ import { CatalogService, type CatalogQueryInput } from './catalog.service.js';
 import { DomainValidationError } from '../common/errors.js';
 
 function catalogFilters(query: Record<string, unknown>): CatalogQueryInput {
+  if ('warrantyDaysMin' in query) {
+    throw new DomainValidationError('INVALID_FILTER', '质保天数筛选已移除，请使用售后保障说明');
+  }
   return {
     standardProductId: query.standardProductId,
     shopQuery: query.shopQuery,
@@ -17,7 +20,6 @@ function catalogFilters(query: Record<string, unknown>): CatalogQueryInput {
     newcomer: query.newcomer,
     membershipKind: query.membershipKind,
     membershipKinds: query.membershipKinds,
-    warrantyDaysMin: typeof query.warrantyDaysMin === 'string' ? Number(query.warrantyDaysMin) : undefined,
     tag: query.tag === undefined ? undefined : (Array.isArray(query.tag) ? query.tag : [query.tag]).map(String),
   };
 }

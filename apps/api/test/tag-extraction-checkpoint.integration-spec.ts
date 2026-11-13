@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
@@ -71,7 +72,7 @@ async function fixture(count = 1, evidence?: string) {
     claim_token: claim.token, lease_until: new Date(Date.now() + 60000), request_budget_used: 1, request_budget_limit: 2,
   }).returning('id').executeTakeFirstOrThrow();
   const decision = validateTagExtractionDecision(inputId, [
-    { name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: payload.spec }] },
+    { name: 'duration', value: 30, evidence: [{ path: 'spec', quote: payload.spec }] },
     { name: 'unknown', value: 'no', evidence: [{ path: 'spec', quote: payload.spec }] },
   ], payload);
   return { job, batch, inputId, products, decision, repo: new AiRepository(db) };
@@ -114,7 +115,7 @@ test('extraction checkpoints and enqueues exactly one review before any member r
   const restored = await new AiRepository(db).getTagExtractionBatchInputs(review.id);
   assert.equal(restored.stage, 'review');
   assert.deepEqual(restored.proposals, { items: [{ id: String(f.inputId), tags: [
-    { name: 'duration', value: '1 month', path: 'spec', quote: '1\u4e2a\u6708' },
+    { name: 'duration', value: 30, path: 'spec', quote: '1\u4e2a\u6708' },
     { name: 'unknown', value: 'no', path: 'spec', quote: '1\u4e2a\u6708' },
   ] }] });
   const members = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).execute();
@@ -201,42 +202,41 @@ test('publication preserves reviewer rejections instead of semantically acceptin
   assert.deepEqual((member.output as any).review, { mode: 'per_tag_binary' });
 });
 
-test('reviewed official bill passes citation revalidation even when legacy semantic rules reject it', async () => {
-  const f = await fixture(1, '\u63d0\u4f9b\u5b98\u65b9\u8d26\u5355\u3002');
-  const tag = { name: 'official_bill', value: '\u6709', evidence: [{ path: 'sourceData.evidence', quote: '\u5b98\u65b9\u8d26\u5355' }] };
-  const legacy = validateTagExtractionDecision(f.inputId, [tag], { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData: { evidence: '\u63d0\u4f9b\u5b98\u65b9\u8d26\u5355\u3002' } });
-  assert.equal(legacy.tags.length, 0);
+test('reviewed client passes literal citation revalidation without inventing a second classification', async () => {
+  const f = await fixture(1, '可使用Codex。');
+  const tag = { name: 'supported_client', value: 'codex', evidence: [{ path: 'sourceData.evidence', quote: 'Codex' }] };
+  const legacy = validateTagExtractionDecision(f.inputId, [tag], { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData: { evidence: '可使用Codex。' } });
+  assert.equal(legacy.tags.length, 1);
   const reviewed = { productId: f.inputId, tags: [tag], rejectedTags: [], reviewed: true, textReview: null };
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).execute(),
-    [{ name: 'official_bill', value: '\u6709' }]);
+    [{ name: 'supported_client', value: 'codex' }]);
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   assert.deepEqual((member.output as any).review, { mode: 'per_tag_binary' });
 });
 
-test('accepted warranty replaces only its own field and retains stored qualifier fields', async () => {
+test('accepted warranty replaces the complete tag set and removes retired qualifier fields', async () => {
   const f = await fixture(1, '\u672c\u5546\u54c1\u8d28\u4fdd30\u5929\u3002');
-  await db.insertInto('product_tags').values([
+  await db.insertInto('product_tags').values(tagRows([
     { product_id: f.inputId, name: 'warranty', value: 'none' },
     { product_id: f.inputId, name: 'warranty_exclusion', value: 'ban' },
-  ]).execute();
+  ])).execute();
   const reviewed = {
     productId: f.inputId,
-    tags: [{ name: 'warranty', value: 'covered', evidence: [{ path: 'sourceData.evidence', quote: '\u8d28\u4fdd30\u5929' }] }],
+    tags: [{ name: 'warranty', value: '质保30天', evidence: [{ path: 'sourceData.evidence', quote: '\u8d28\u4fdd30\u5929' }] }],
     rejectedTags: [], reviewed: true, textReview: null,
   };
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).orderBy('name').execute(),
-    [{ name: 'warranty', value: 'covered' }, { name: 'warranty_exclusion', value: 'ban' }]);
+    [{ name: 'warranty', value: '质保30天' }]);
 });
 
-test('local publication of only false votes leaves all stored tags untouched without inserts, updates or deletes', async () => {
+test('local publication of only false votes clears stored tags without model requests or tag inserts', async () => {
   const f = await fixture(1, '\u8d28\u4fdd30\u5929\u3002\u672c\u5546\u54c1\u65e0\u4efb\u4f55\u552e\u540e\u3002');
   const before = [{ name: 'access', value: 'dedicated' }, { name: 'warranty', value: 'covered' }, { name: 'warranty_days', value: '30' }];
-  await db.insertInto('product_tags').values(before.map(tag => ({ ...tag, product_id: f.inputId }))).execute();
-  const storedBefore = await db.selectFrom('product_tags').selectAll().where('product_id', '=', f.inputId).orderBy('name').execute();
+  await db.insertInto('product_tags').values(tagRows(before.map(tag => ({ ...tag, product_id: f.inputId })))).execute();
   const reviewed = {
     productId: f.inputId, tags: [],
     rejectedTags: [{ name: 'warranty', value: 'covered', evidence: [{ path: 'sourceData.evidence', quote: '\u8d28\u4fdd30\u5929' }],
@@ -264,7 +264,7 @@ test('local publication of only false votes leaves all stored tags untouched wit
       if coalesce(new.product_id, old.product_id) = ${sql.raw(String(f.inputId))} then raise exception 'false votes must not mutate product tags'; end if;
       return null;
     end $$`.execute(db);
-  await sql`create trigger forbid_rejected_tag_write before insert or update or delete on product_tags for each row execute function forbid_rejected_tag_write()`.execute(db);
+  await sql`create trigger forbid_rejected_tag_write before insert or update on product_tags for each row execute function forbid_rejected_tag_write()`.execute(db);
   try { assert.equal(await worker.runOnce(), 1); await settled.promise; } finally {
     await worker.stop();
     await sql`drop trigger forbid_rejected_tag_write on product_tags`.execute(db);
@@ -273,16 +273,16 @@ test('local publication of only false votes leaves all stored tags untouched wit
   assert.deepEqual(failures, []);
   assert.equal(modelCalls, 0);
   assert.equal(reservations, 0);
-  assert.deepEqual(await db.selectFrom('product_tags').selectAll().where('product_id', '=', f.inputId).orderBy('name').execute(), storedBefore);
+  assert.deepEqual(await db.selectFrom('product_tags').selectAll().where('product_id', '=', f.inputId).orderBy('name').execute(), []);
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   const audit = member.output as any;
   assert.deepEqual(audit.acceptedTags, []);
   assert.deepEqual(audit.rejectedTags, reviewed.rejectedTags);
   assert.deepEqual(audit.review, { mode: 'per_tag_binary' });
   assert.deepEqual(audit.before, before);
-  assert.deepEqual(audit.after, before);
-  assert.deepEqual(audit.retainedUnconfirmed, before);
-  assert.deepEqual(audit.diff, []);
+  assert.deepEqual(audit.after, []);
+  assert.equal('retainedUnconfirmed' in audit, false);
+  assert.deepEqual(audit.diff, before.map(tag => ({ name: tag.name, before: [tag.value], after: [] })));
   const done = await batchRow(f.batch.id);
   assert.equal(done.step, 'done');
   assert.equal(done.request_budget_used, 1);
@@ -354,6 +354,29 @@ test('invalid IDs, stale claims and an unresolved request cannot checkpoint or c
   assert.equal(unchanged.validated_decision, null);
   assert.equal(unchanged.confirmed_requests, 0);
   await db.updateTable('ai_job_batches').set({ status: 'cancelled' }).where('id', '=', f.batch.id).execute();
+});
+
+test('old tag protocol cannot checkpoint or publish a saved response over current tags', async () => {
+  for (const stage of ['request', 'publish'] as const) {
+    const f = await fixture();
+    const before = [{ name: 'duration', value: 365 }];
+    await db.insertInto('product_tags').values(tagRows(before.map(tag => ({ ...tag, product_id: f.inputId })))).execute();
+    if (stage === 'publish') await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim);
+    await db.updateTable('ai_jobs').set({ pipeline_versions: jsonb({
+      ...(pipelineVersionSnapshot('mock') as Record<string, string>), tagProtocol: 'tag-json-object-per-tag-20261023-v2',
+    }) }).where('id', '=', f.job.id).execute();
+    if (stage === 'request') {
+      await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim),
+        { code: 'AI_POLICY_STALE' });
+      assert.equal((await batchRow(f.batch.id)).confirmed_requests, 0);
+    } else {
+      await assert.rejects(f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id)), { code: 'AI_POLICY_STALE' });
+      assert.equal((await batchRow(f.batch.id)).step, 'publish');
+    }
+    assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).execute(), before);
+    assert.equal((await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow()).output, null);
+    await db.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', f.job.id).execute();
+  }
 });
 
 test('a failed checkpoint update rolls back its confirmation and leaves no durable response', async () => {
@@ -438,7 +461,7 @@ test('extraction and review survive a product SQL failure with no model request 
 });
 
 test('one batched extraction and one per-tag binary review publish only original true proposals for two products', async () => {
-  const evidence = '\u63d0\u4f9b\u5b98\u65b9\u8d26\u5355\u3002\u8d26\u53f7\u5df2\u542f\u7528\u53cc\u91cd\u8eab\u4efd\u9a8c\u8bc1\uff0c\u9644\u9a8c\u8bc1\u5668\u5bc6\u94a5\u3002\u8d28\u4fdd30\u5929\u3002\u5c01\u53f7\u4e0d\u4fdd\u3002\u4fee\u6539\u5bc6\u7801\u540e\u4e0d\u4fdd\u3002';
+  const evidence = '支持Codex。账号已接码。支持批量下单。美区账号。质保30天。封号不保。修改密码后不保。';
   const f = await fixture(2, evidence);
   const second = f.products[1]!;
   const secondPayload = { name: 'ChatGPT Plus second SKU', spec: second.spec, sourceData: { evidence } };
@@ -450,46 +473,36 @@ test('one batched extraction and one per-tag binary review publish only original
     .where('job_id', '=', f.job.id).where('product_id', '=', second.id).execute();
   const before = [
     { product_id: f.inputId, name: 'access', value: 'dedicated' },
-    { product_id: f.inputId, name: 'duration', value: '12 months' },
+    { product_id: f.inputId, name: 'duration', value: 360 },
     { product_id: f.inputId, name: 'warranty', value: 'none' },
-    { product_id: second.id, name: 'duration', value: '12 months' },
+    { product_id: second.id, name: 'duration', value: 360 },
     { product_id: second.id, name: 'warranty_days', value: '60' },
   ];
-  await db.insertInto('product_tags').values(before).execute();
+  await db.insertInto('product_tags').values(tagRows(before)).execute();
   await db.updateTable('ai_job_batches').set({ status: 'queued', attempts: 0n, claimed_by: null,
     claim_token: null, lease_until: null, request_budget_used: 0, product_ids: jsonb([String(f.inputId), String(second.id)]) })
     .where('id', '=', f.batch.id).execute();
-  const officialBill = { name: 'official_bill', value: '\u6709', path: 'sourceData.evidence', quote: '\u5b98\u65b9\u8d26\u5355' };
-  const twoFactor = { name: '2fa', value: '\u6709', path: 'sourceData.evidence', quote: '\u5df2\u542f\u7528\u53cc\u91cd\u8eab\u4efd\u9a8c\u8bc1\uff0c\u9644\u9a8c\u8bc1\u5668\u5bc6\u94a5' };
-  const wrongDuration = { name: 'duration', value: '30 days', path: 'spec', quote: '1\u4e2a\u6708' };
-  const warranty = { name: 'warranty', value: 'covered', path: 'sourceData.evidence', quote: '\u8d28\u4fdd30\u5929' };
-  const warrantyDays = { name: 'warranty_days', value: '30', path: 'sourceData.evidence', quote: '\u8d28\u4fdd30\u5929' };
-  const warrantyExclusion = { name: 'warranty_exclusion', value: 'ban', path: 'sourceData.evidence', quote: '\u5c01\u53f7\u4e0d\u4fdd' };
+  const client = { name: 'supported_client', value: 'codex', path: 'sourceData.evidence', quote: '支持Codex' };
+  const sms = { name: 'sms_verification', value: 'verified', path: 'sourceData.evidence', quote: '账号已接码' };
+  const wrongDuration = { name: 'duration', value: 60, path: 'spec', quote: '1个月' };
+  const warranty = { name: 'warranty', value: '质保30天', path: 'sourceData.evidence', quote: '质保30天' };
+  const fullWarranty = { ...warranty, value: '质保30天。封号不保。修改密码后不保', quote: '质保30天。封号不保。修改密码后不保' };
+  const bulk = { name: 'bulk_purchase', value: 'supported', path: 'sourceData.evidence', quote: '支持批量下单' };
+  const region = { name: 'region', value: 'us', path: 'sourceData.evidence', quote: '美区账号' };
   const proposals = { items: [
-    { id: String(f.inputId), tags: [officialBill, twoFactor, wrongDuration, warranty, warrantyDays, warrantyExclusion,
-      officialBill, { ...officialBill, name: 'unknown_attribute' }, { ...officialBill, value: 'yes' },
-      { ...officialBill, quote: 'not present in the original source' }] },
-    { id: String(second.id), tags: [{ ...wrongDuration, value: '1 month' }, warranty, warrantyDays] },
+    { id: String(f.inputId), tags: [client, sms, wrongDuration, warranty, bulk, region, client,
+      { ...client, quote: 'not present in the original source' }] },
+    { id: String(second.id), tags: [{ ...wrongDuration, value: 30 }, fullWarranty, bulk] },
   ] };
-  const votes = [[true, true, false, false, true, true, false, true, true, true], [true, true, false]];
-  const cited = ({ path, quote, ...tag }: typeof officialBill) => ({ ...tag, evidence: [{ path, quote }] });
+  const votes = [[true, true, false, false, true, true, false, true], [true, true, false]];
+  const cited = ({ path, quote, ...tag }: (typeof proposals.items)[number]['tags'][number]) => ({ ...tag, evidence: [{ path, quote }] });
   const indexed = proposals.items.map(item => item.tags.map((tag, proposalIndex) => ({ ...cited(tag), proposalIndex })));
-  const accepted = [[0, 1, 4, 5].map(index => indexed[0]![index]!),
-    indexed[1]!.filter((_, position) => votes[1]![position])];
+  const accepted = [[0, 1, 4, 5].map(index => indexed[0]![index]!), indexed[1]!.filter((_, position) => votes[1]![position])];
   const rejected = indexed.map((tags, index) => tags.filter((_, position) => !votes[index]![position]).map(tag =>
     ({ ...tag, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' })));
-  rejected[0]!.push(
-    { ...indexed[0]![7]!, reasonCode: 'tag_name_unknown', reason: '标签名称不在规范词表中' },
-    { ...indexed[0]![8]!, reasonCode: 'tag_value_invalid', reason: '标签值不符合规范枚举或格式' },
-    { ...indexed[0]![9]!, reasonCode: 'citation_quote_mismatch', reason: '证据引文不存在于当前商品的指定字段' },
-  );
-  const responses = [
-    proposals,
-    { items: proposals.items.map((item, index) => ({ id: item.id, decisions: votes[index]!, textReview: null })).reverse() },
-  ];
-  const legacy = validateTagExtractionDecision(f.inputId, [officialBill, twoFactor].map(({ path, quote, ...tag }) =>
-    ({ ...tag, evidence: [{ path, quote }] })), { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData: { evidence } });
-  assert.equal(legacy.tags.length, 0);
+  rejected[0]!.push({ ...indexed[0]![7]!, reasonCode: 'citation_quote_mismatch', reason: '证据引文不存在于当前商品的指定字段' });
+  const responses = [proposals, { items: proposals.items.map((item, index) => ({ id: item.id,
+    decisions: votes[index]!.map((accepted, tagIndex) => ({ tagId: item.id + ':' + tagIndex, accepted })).reverse(), textReview: null })).reverse() }];
   let sends = 0, settled = Promise.withResolvers<void>();
   const claims: bigint[] = [], failures: string[] = [];
   const jobs = new JobsRepository(db);
@@ -504,7 +517,7 @@ test('one batched extraction and one per-tag binary review publish only original
       assert.deepEqual(payload.map((input: { id: string }) => input.id), proposals.items.map(item => item.id));
     } else {
       assert.equal(payload.inputs.length, 2);
-      assert.deepEqual(payload.proposals, proposals);
+      assert.deepEqual(payload.proposals, { items: proposals.items.map(item => ({ ...item, tags: item.tags.map((tag, index) => ({ ...tag, tagId: item.id + ':' + index })) })) });
     }
     const body = responses[sends++];
     assert.ok(body, 'publication must never issue a third model request');
@@ -563,9 +576,7 @@ test('one batched extraction and one per-tag binary review publish only original
     assert.deepEqual(claims, [f.batch.id, review.id, review.id]);
     for (const [index, proposal] of proposals.items.entries()) {
       const productId = BigInt(proposal.id);
-      const acceptedNames = new Set(accepted[index]!.map(tag => tag.name));
-      const retained = before.filter(tag => tag.product_id === productId && !acceptedNames.has(tag.name));
-      const expected = [...retained, ...accepted[index]!.map(({ name, value }) => ({ product_id: productId, name, value }))]
+      const expected = accepted[index]!.map(({ name, value }) => ({ product_id: productId, name, value }))
         .sort((a, b) => a.name.localeCompare(b.name));
       assert.deepEqual((await tags()).filter(tag => tag.product_id === productId), expected);
       const member = await db.selectFrom('ai_job_input_members').select('output')
@@ -580,8 +591,8 @@ test('one batched extraction and one per-tag binary review publish only original
       assert.deepEqual(audit.member.output.review.decisions, votes[index]);
     }
     const published = await tags();
-    assert.ok(!published.some(tag => tag.product_id === f.inputId && tag.name === 'duration' && tag.value !== '12 months'),
-      'false duration cannot be rewritten as the supported 1 month correction');
+    assert.ok(!published.some(tag => tag.product_id === f.inputId && tag.name === 'duration'),
+      'false duration is removed rather than corrected or retained');
     assert.ok(!published.some(tag => tag.name === 'warranty_terms'), 'review cannot add missing supported fields');
     assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 2);
     assert.equal((await batchRow(review.id)).step, 'done');
@@ -657,7 +668,7 @@ test('audit redacts bare legacy secrets cited by candidates and member output wi
   const secret = 'legacy-secret';
   const payload = { name: 'Legacy product', spec: '1\u4e2a\u6708', sourceData: { api_key: secret } };
   const sensitive = { name: 'unknown', value: secret, evidence: [{ path: 'sourceData.api_key', quote: secret }] };
-  const publicTag = { name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: payload.spec }] };
+  const publicTag = { name: 'duration', value: 30, evidence: [{ path: 'spec', quote: payload.spec }] };
   const output = { outcome: 'review', acceptedTags: [sensitive, publicTag],
     rejectedTags: [{ ...sensitive, reasonCode: 'tag_value_invalid', reason: 'Legacy rejected tag' }],
     before: [], after: [], diff: [], retainedUnconfirmed: [] };
@@ -696,7 +707,7 @@ test('audit exposes only its own ordered proposals, raw votes and exact lineage 
     .where('job_id', '=', f.job.id).where('product_id', '=', second.id).execute();
   await db.updateTable('ai_job_batches').set({ product_ids: jsonb([String(f.inputId), String(second.id)]),
     started_at: new Date('2026-10-25T01:00:00Z'), request_estimate: jsonb({ totalTokens: 321 }) }).where('id', '=', f.batch.id).execute();
-  const tag = { name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '1\u4e2a\u6708' }] };
+  const tag = { name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1\u4e2a\u6708' }] };
   const long = { name: 'password=private-name', value: 'secret=private-value',
     evidence: [{ path: 'sourceData.password=private-path', quote: `password=private-quote ${'q'.repeat(1200)}` }] };
   const other = { productId: second.id, tags: [{ ...tag, value: 'Other product private candidate' }], rejectedTags: [] };
@@ -851,8 +862,8 @@ test('text publication waits for the shop before locking products held by the cr
 test('text review publication rolls back tags, reviews and audit for all members on SQL failure and retries the saved checkpoint', async () => {
   const f = await textPublicationFixture(2);
   const productIds = f.products.map(product => product.id);
-  const tagsBefore = productIds.map(product_id => ({ product_id, name: 'duration', value: '12 months' }));
-  await db.insertInto('product_tags').values(tagsBefore).execute();
+  const tagsBefore = productIds.map(product_id => ({ product_id, name: 'duration', value: 360 }));
+  await db.insertInto('product_tags').values(tagRows(tagsBefore)).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
   const checkpoint = await batchRow(f.batch.id);
   assert.deepEqual((checkpoint.validated_decision as any).items[0].textReview, f.review);
@@ -888,7 +899,7 @@ test('text review publication rolls back tags, reviews and audit for all members
   assert.ok((await db.selectFrom('products').select('text_review').where('id', 'in', productIds).execute())
     .every(product => { assert.deepEqual(product.text_review, f.stored); return true; }));
   assert.deepEqual((await db.selectFrom('product_tags').select('value').where('product_id', 'in', productIds).execute())
-    .map(tag => tag.value), ['1 month', '1 month']);
+    .map(tag => tag.value), [30, 30]);
   const done = await batchRow(f.batch.id);
   assert.equal(done.step, 'done');
   assert.equal(done.confirmed_requests, 1);
@@ -905,7 +916,7 @@ for (const changed of ['body', 'url', 'protocol', 'platform'] as const) {
       .where('id', '=', second.id).execute();
     await db.updateTable('ai_job_input_members').set({ payload: jsonb({ ...f.payload, shopSource: secondSource }) })
       .where('job_id', '=', f.job.id).where('product_id', '=', second.id).execute();
-    await db.insertInto('product_tags').values({ product_id: second.id, name: 'duration', value: '12 months' }).execute();
+    await db.insertInto('product_tags').values(tagRows({ product_id: second.id, name: 'duration', value: 360 })).execute();
     await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
     if (changed === 'body') {
       const sourceData = { ratingText: { ...f.text, description: '改为交付兑换码。', hash: 'b'.repeat(64) } };
@@ -920,7 +931,7 @@ for (const changed of ['body', 'url', 'protocol', 'platform'] as const) {
     assert.deepEqual(products[0]!.text_review, f.stored, 'the unchanged member uses its own source, not the other shop source');
     assert.deepEqual(products[1]!.text_review, { ...f.stored, source: secondSource }, 'stale publication cannot replace the old bound review');
     assert.deepEqual(await db.selectFrom('product_tags').select(['product_id', 'value']).where('product_id', 'in', [first.id, second.id])
-      .orderBy('product_id').execute(), [{ product_id: first.id, value: '1 month' }, { product_id: second.id, value: '12 months' }]);
+      .orderBy('product_id').execute(), [{ product_id: first.id, value: 30 }, { product_id: second.id, value: 360 }]);
     const members = await db.selectFrom('ai_job_input_members').select(['input_id', 'reason_code', 'output']).where('job_id', '=', f.job.id)
       .orderBy('product_id').execute();
     assert.deepEqual(members.map(member => member.input_id), [f.inputId, f.inputId], 'one shared review fans out across different shop sources');
@@ -936,7 +947,7 @@ test('changing only the text review bumps the catalog version without changing t
   const priorReview = { ...f.review, answers: { ...f.review.answers, L2: { value: null, reason: '旧审核范围不明', evidence: [] } } };
   await db.updateTable('products').set({ text_review: jsonb({ ...f.stored, review: priorReview }) }).where('id', '=', f.inputId).execute();
   const tags = f.decision.tags.map(({ name, value }) => ({ name, value }));
-  await db.insertInto('product_tags').values(tags.map(tag => ({ ...tag, product_id: f.inputId }))).execute();
+  await db.insertInto('product_tags').values(tagRows(tags.map(tag => ({ ...tag, product_id: f.inputId })))).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
   // Make the row eligible for a bump even when the runner uses production coalescing.
   await db.updateTable('catalog_cache_versions').set({ updated_at: new Date(0) }).where('id', '=', 1).execute();

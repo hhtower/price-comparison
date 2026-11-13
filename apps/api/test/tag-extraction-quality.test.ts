@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { evaluateTagFacts, passesTagReleaseGate, compareTagEvaluationRuns } from '../src/ai/tag-extraction-quality.js';
+test('typed duration metrics ignore object key order but distinguish exact and qualified days', () => {
+ const report = evaluateTagFacts([{ id: '1', tags: [
+  { name: 'duration', value: { kind: 'range', min: 7, max: 30 } },
+ ] }], [{ id: '1', tags: [{ name: 'duration', value: { max: 30, min: 7, kind: 'range' } }] }]);
+ assert.equal(report.total.tp, 1);
+ const changed = evaluateTagFacts([{ id: '1', tags: [{ name: 'duration', value: 30 }] }],
+  [{ id: '1', tags: [{ name: 'duration', value: { kind: 'min', days: 30 } }] }]);
+ assert.deepEqual(changed.falseNegatives, [{ id: '1', name: 'duration', value: 30 }]);
+ assert.deepEqual(changed.falsePositives, [{ id: '1', name: 'duration', value: { kind: 'min', days: 30 } }]);
+});
 test('fact metrics count product/field/value, duplicates once, wrong values as FP and FN', () => {
  const expected = [{id:'1',tags:[{name:'duration',value:'1 month'},{name:'renewable',value:'无'}]}];
  const report = evaluateTagFacts(expected, [{id:'1',tags:[{name:'duration',value:'30 days'},{name:'renewable',value:'无'},{name:'renewable',value:'无'}]}]);

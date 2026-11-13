@@ -27,10 +27,8 @@ test('rental search terms infer AI membership while keeping literal and negated 
     const query = normalizeCatalogQuery({ q: `ChatGPT ${term}`, newcomer: true });
     assert.deepEqual(query.membershipSearch?.kinds, ['rental']);
     assert.deepEqual(query.membershipSearch?.terms, [term]);
-    assert.equal(query.membershipSearch?.access, term !== '租号' ? true : undefined);
-    const explicit = normalizeCatalogQuery({ q: `ChatGPT ${term}`, tags: [{ name: 'access', value: 'dedicated' }] });
-    assert.equal(explicit.membershipSearch?.access, undefined);
-    assert.deepEqual(explicit.tags, [{ name: 'access', value: 'dedicated' }]);
+    const explicit = normalizeCatalogQuery({ q: `ChatGPT ${term}`, tags: [{ name: 'access_channel', value: 'web' }] });
+    assert.deepEqual(explicit.tags, [{ name: 'access_channel', value: 'web' }]);
     const literal = normalizeCatalogQuery({ q: `ChatGPT ${term}`, searchMode: 'literal' });
     assert.equal(literal.membershipSearch, undefined);
     assert.equal(literal.search, `ChatGPT ${term}`);
@@ -57,10 +55,10 @@ test('uncertain compound rental labels and mixed negated category searches remai
   }
 });
 
-test('compound rental normalization retains dedicated access alongside the shared alias', () => {
+test('compound rental normalization leaves removed access prose literal', () => {
   const query = normalizeCatalogQuery({ q: 'ChatGPT Plus 租号（共享） 独享', newcomer: true });
-  assert.deepEqual(query.tags, [{ name: 'access', value: 'dedicated' }, { name: 'access', value: 'shared' }]);
-  assert.equal(query.membershipSearch?.access, true);
+  assert.deepEqual(query.tags, []);
+  assert.ok(query.search?.includes('独享'));
   assert.deepEqual(query.membershipSearch?.kinds, ['rental']);
 });
 
@@ -135,7 +133,7 @@ test('invalid page and facet inputs reach no repository query', async () => {
     { input: { detailKind: 'offers' }, code: 'INVALID_DETAIL_QUERY', both: false },
     { input: { standardProductId: '0' }, code: 'INVALID_STANDARD_PRODUCT', both: true },
     { input: { tag: 'not-json' }, code: 'INVALID_FILTER', both: true },
-    { input: { warrantyDaysMin: 0 }, code: 'INVALID_WARRANTY_DAYS', both: true },
+    { input: { warrantyDaysMin: 0 } as never, code: 'INVALID_FILTER', both: true },
     { input: { priceMin: '9', priceMax: '7' }, code: 'INVALID_PRICE_RANGE', both: true },
     { input: { currency: 'cny' }, code: 'INVALID_CURRENCY', both: true },
   ];
@@ -173,13 +171,12 @@ test('detail pagination normalizes defaults and rejects invalid or unbounded req
 
 test('catalog query normalization trims values and bounds page size', () => {
   const query = normalizeCatalogQuery({ platform: '  ChatGPT ', q: ' Plus ', tags: [{ name: ' region ', value: ' Philippines ' }], limit: 999 });
-  assert.deepEqual(query, { platform: 'chatgpt', search: 'plus', tags: [{ name: 'region', value: 'philippines' }], limit: 100 });
+  assert.deepEqual(query, { platform: 'chatgpt', search: 'plus', tags: [{ name: 'region', value: 'ph' }], limit: 100 });
 });
 
 test('explicit purchase filters override inferred same-dimension conditions', () => {
-  const query = normalizeCatalogQuery({ q: 'Plus 已接码 质保30天', tags: [{ name: 'sms_verification', value: 'unverified' }], warrantyDaysMin: 7 });
+  const query = normalizeCatalogQuery({ q: 'Plus 已接码', tags: [{ name: 'sms_verification', value: 'unverified' }] });
   assert.equal(query.search, 'plus');
-  assert.equal(query.warrantyDaysMin, 7);
   assert.deepEqual(query.tags.filter(tag => tag.name === 'sms_verification'), [{ name: 'sms_verification', value: 'unverified' }]);
 });
 
@@ -188,6 +185,6 @@ test('invalid purchase filters fail closed rather than silently broadening searc
     assert.throws(() => normalizeCatalogQuery({ tag }), { code: 'INVALID_FILTER' });
   }
   for (const warrantyDaysMin of [-1, 0, 1.5, Number.NaN, 36501]) {
-    assert.throws(() => normalizeCatalogQuery({ warrantyDaysMin }), { code: 'INVALID_WARRANTY_DAYS' });
+    assert.throws(() => normalizeCatalogQuery({ warrantyDaysMin } as never), { code: 'INVALID_FILTER' });
   }
 });

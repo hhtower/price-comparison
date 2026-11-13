@@ -1,3 +1,5 @@
+import PurchaseTagEditor from './components/PurchaseTagEditor.jsx';
+import { normalizePurchaseTag, purchaseTagLabel, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
 import React, { useEffect, useRef, useState } from 'react';
 import { requestJson, formatTime } from './api.js';
 import { formatMoney } from './money.js';
@@ -38,7 +40,8 @@ const describeEvidenceConflict = (reason) => {
 const describeConflictReason = reason => reason.replace(/^发布证据冲突：/u, '').split('\n')
   .map(line => line.replace(/^(\s*成员 #\d+ )?(.*)$/u, (_, member = '', text) => `${member}${describeEvidenceConflict(text)}`)).join('\n');
 const evidenceConflictPrompt = (items, question) => `有 ${items.length} 项存在标题与描述矛盾：\n${items.map(item => `#${item.id} ${describeConflictReason(item.reason)}`).join('\n')}\n${question}`;
-const tagIdentity =(tag) => `${tag.name}\0${tag.value}`;
+const tagQueryValue = tag => typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value);
+const tagIdentity =(tag) => `${tag.name}\0${tagValueKey(tag.value)}`;
 const batchManagementMessage = (action, result) => {
   const details = result.conflicts.slice(0, 3).map(item => `${item.id}：${item.reason}`).join('；');
   return `${action}完成：成功 ${result.success.length}，无需变更 ${result.skipped.length}，失败 ${result.conflicts.length}${details ? `；${details}${result.conflicts.length > 3 ? '；其余失败项已保留勾选' : ''}` : ''}`;
@@ -554,13 +557,17 @@ function ProductManagement({ setMessage }) {
 
   const saveTags = async (event) => {
     event.preventDefault();
-    const items = tagEditor.items.map(tag => ({ name: tag.name.trim(), value: tag.value.trim() }));
+    const items = tagEditor.items.flatMap(normalizePurchaseTag);
+    if (items.length !== tagEditor.items.length) { setTagEditor(current => ({ ...current, error: '标签无效，请选择有效字段并检查值；期限须为正数天数，范围下限须小于上限。' })); return; }
     try {
-      await requestJson(`/api/admin/products/${tagEditor.product.id}/tags`, { method: 'PUT', body: JSON.stringify({ items }) });
+      if (tagEditor.rename) {
+        await requestJson('/api/admin/tags', { method: 'PATCH', body: JSON.stringify({ name: tagEditor.rename.name, value: tagEditor.rename.value, nextName: items[0].name, nextValue: items[0].value }) });
+        setSelectedTagKeys([]); setSelectedTagItems({}); setTagReload(value => value + 1);
+      } else await requestJson(`/api/admin/products/${tagEditor.product.id}/tags`, { method: 'PUT', body: JSON.stringify({ items }) });
       setTagEditor(null);
       setProductReload(value => value + 1);
       setMessage('商品标签已保存');
-    } catch (error) { setMessage(error.message); }
+    } catch (error) { setTagEditor(current => ({ ...current, error: error.message })); }
   };
 
   const productAction = async (product, action) => {
@@ -763,9 +770,9 @@ function ProductManagement({ setMessage }) {
   };
 
   const removeTag = async (tag) => {
-    if (!window.confirm(`删除标签“${tag.name}：${tag.value}”？`)) return;
+    if (!window.confirm(`删除标签“${tag.name}：${purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}”？`)) return;
     try {
-      await requestJson(`/api/admin/tags?name=${encodeURIComponent(tag.name)}&value=${encodeURIComponent(tag.value)}`, { method: 'DELETE' });
+      await requestJson(`/api/admin/tags?name=${encodeURIComponent(tag.name)}&value=${encodeURIComponent(tagQueryValue(tag))}`, { method: 'DELETE' });
       const key = tagIdentity(tag);
       setSelectedTagKeys(current => current.filter(selectedKey => selectedKey !== key));
       setSelectedTagItems(current => { const next = { ...current }; delete next[key]; return next; });
@@ -774,36 +781,21 @@ function ProductManagement({ setMessage }) {
     catch (error) { setMessage(error.message); }
   };
 
-  const renameTag = async (tag) => {
-    const nextName = window.prompt('标签名', tag.name); const nextValue = window.prompt('标签值', tag.value);
-    if (!nextName?.trim() || !nextValue?.trim()) return;
-    try {
-      await requestJson('/api/admin/tags', { method: 'PATCH', body: JSON.stringify({ name: tag.name, value: tag.value, nextName, nextValue }) });
-      const key = tagIdentity(tag);
-      setSelectedTagKeys(current => current.filter(selectedKey => selectedKey !== key));
-      setSelectedTagItems(current => { const next = { ...current }; delete next[key]; return next; });
-      setTagReload(v => v + 1);
-    }
-    catch (error) { setMessage(error.message); }
-  };
+  const renameTag = tag => setTagEditor({ rename: tag, items: [{ name: tag.name, value: tag.value }] });
 
   const mergeTag = (tagOrTags) => {
     const sources = Array.isArray(tagOrTags) ? tagOrTags : [tagOrTags];
-    setTagMergeOpen({ sources });
+    setTagMergeOpen({ sources, target: { name: sources[0].name, value: '' } });
   };
 
   const submitTagMerge = async (event) => {
     event.preventDefault();
     if (!tagMergeOpen?.sources?.length) return;
-    const form = new FormData(event.currentTarget);
-    const nextName = String(form.get('nextName') || '').trim();
-    const nextValue = String(form.get('nextValue') || '').trim();
-    if (!nextName || !nextValue) {
-      setMessage('目标标签名和值不能为空');
-      return;
-    }
-    if (tagMergeOpen.sources.some(source => nextName === source.name && nextValue === source.value)) {
-      setMessage('目标标签不能与源标签相同');
+    const target = normalizePurchaseTag(tagMergeOpen.target)[0];
+    if (!target) { setTagMergeOpen(current => ({ ...current, error: '目标标签无效，请检查字段和值' })); return; }
+    const { name: nextName, value: nextValue } = target;
+    if (tagMergeOpen.sources.some(source => nextName === source.name && tagValueKey(nextValue) === tagValueKey(source.value))) {
+      setTagMergeOpen(current => ({ ...current, error: '目标标签不能与源标签相同' }));
       return;
     }
     try {
@@ -817,12 +809,12 @@ function ProductManagement({ setMessage }) {
       setSelectedTagItems({});
       setMessage(`标签合并完成：新增关系 ${result.success.length}，去重 ${result.skipped.length}`);
       setTagReload(v => v + 1);
-    } catch (error) { setMessage(error.message); }
+    } catch (error) { setTagMergeOpen(current => ({ ...current, error: error.message })); }
   };
 
   const openTagProducts = async (tag) => {
     try {
-      const params = new URLSearchParams({ name: tag.name, value: tag.value, limit: String(PAGE_SIZE), page: '1' });
+      const params = new URLSearchParams({ name: tag.name, value: tagQueryValue(tag), limit: String(PAGE_SIZE), page: '1' });
       const data = await requestJson(`/api/admin/tags/products?${params}`);
       setTagProductView({ tag, data: normalizePage(data) });
     } catch (error) { setMessage(error.message); }
@@ -943,12 +935,12 @@ function ProductManagement({ setMessage }) {
       {managementTab === 'tags' ? <div className="management-panel">
         {tagProductView ? (
           <>
-            <div className="dialog-header"><h2>{tagProductView.tag.name}：{tagProductView.tag.value}</h2><button type="button" onClick={() => setTagProductView(null)}>返回标签</button></div>
+            <div className="dialog-header"><h2>{tagProductView.tag.name}：{purchaseTagLabel(tagProductView.tag)}</h2><button type="button" onClick={() => setTagProductView(null)}>返回标签</button></div>
             <div className="data-table-wrap">
               <table><thead><tr><th>商品</th><th>商铺</th><th>规格</th><th>更新时间</th></tr></thead><tbody>{tagProductView.data.items.map(product => <tr key={product.id}><td><strong>{product.name}</strong><small>#{product.id}</small></td><td>{product.shopName}</td><td>{product.spec || '-'}</td><td>{formatTime(product.updatedAt)}</td></tr>)}</tbody></table>
               {!tagProductView.data.items.length ? <EmptyState>暂无绑定商品</EmptyState> : null}
             </div>
-            <Pagination total={tagProductView.data.total} page={tagProductView.data.page} pageSize={PAGE_SIZE} onChange={async page => { try { const params = new URLSearchParams({ name: tagProductView.tag.name, value: tagProductView.tag.value, limit: String(PAGE_SIZE), page: String(page) }); const data = await requestJson(`/api/admin/tags/products?${params}`); setTagProductView(current => ({ ...current, data: normalizePage(data) })); } catch (error) { setMessage(error.message); } }} label="商品" />
+            <Pagination total={tagProductView.data.total} page={tagProductView.data.page} pageSize={PAGE_SIZE} onChange={async page => { try { const params = new URLSearchParams({ name: tagProductView.tag.name, value: tagQueryValue(tagProductView.tag), limit: String(PAGE_SIZE), page: String(page) }); const data = await requestJson(`/api/admin/tags/products?${params}`); setTagProductView(current => ({ ...current, data: normalizePage(data) })); } catch (error) { setMessage(error.message); } }} label="商品" />
           </>
         ) : (
           <>
@@ -967,8 +959,8 @@ function ProductManagement({ setMessage }) {
                   <th>标签名</th><th>标签值</th><th>绑定商品数</th><th>操作</th>
                 </tr></thead>
                 <tbody>{tagRows.items.map(tag => <tr key={tagIdentity(tag)}>
-                  <td className="selection-column"><input aria-label={`选择标签 ${tag.name}：${tag.value}`} type="checkbox" checked={selectedTagKeys.includes(tagIdentity(tag))} onChange={(event) => toggleTagSelection(tag, event.target.checked)} /></td>
-                  <td>{tag.name}</td><td>{tag.value}</td><td>{tag.productCount ?? tag.product_count ?? 0}</td>
+                  <td className="selection-column"><input aria-label={`选择标签 ${tag.name}：${purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}`} type="checkbox" checked={selectedTagKeys.includes(tagIdentity(tag))} onChange={(event) => toggleTagSelection(tag, event.target.checked)} /></td>
+                  <td>{tag.name}</td><td>{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</td><td>{tag.productCount ?? tag.product_count ?? 0}</td>
                   <td><div className="row-actions"><IconButton action="view-tag-products" id={tagIdentity(tag)} label="查看商品" icon="eye" onClick={() => openTagProducts(tag)} /><IconButton action="rename-tag" id={tagIdentity(tag)} label="重命名" icon="pencil" onClick={() => renameTag(tag)} /><IconButton action="delete-tag" id={tagIdentity(tag)} label="删除标签" icon="trash-2" onClick={() => removeTag(tag)} /></div></td>
                 </tr>)}</tbody>
               </table>
@@ -1002,7 +994,7 @@ function ProductManagement({ setMessage }) {
                         : product.name}</strong>
                       {product.spec && <small className="product-spec">{product.spec}</small>}
                       {product.latestPrice ? <small className="product-spec">{product.latestCurrency || 'CNY'} {formatMoney(product.latestPrice, '')}</small> : null}
-                      {product.tags?.length ? <div className="tag-chips">{product.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{tag.value}</span>)}</div> : null}
+                      {product.tags?.length ? <div className="tag-chips">{product.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</span>)}</div> : null}
                     </td>
                     <td>{product.shopName ?? product.shop_name ?? `商铺 #${product.shopId ?? product.shop_id ?? ''}`}</td>
                     <td className="standardization-cell">
@@ -1011,7 +1003,7 @@ function ProductManagement({ setMessage }) {
                         <summary>会员判定：{membershipKindLabel(product.membershipFeatures.decision.kind)}</summary>
                         <p>{MEMBERSHIP_REASONS[product.membershipFeatures.decision.reason] ?? '依据当前销售事实判定'}</p>
                         {product.membershipFeatures.decision.kind !== 'rental' && product.membershipFeatures.decision.durationSource ? <p>分类周期：{product.membershipFeatures.decision.durationSource === 'default' ? '默认一个月（非商家承诺）' : '商家明确说明'}</p> : null}
-                        <div className="tag-chips">{product.membershipFeatures.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{tag.value}</span>)}</div>
+                        <div className="tag-chips">{product.membershipFeatures.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</span>)}</div>
                         {(product.membershipFeatures.evidence ?? []).map((fact, index) => <p key={index}>{conflictSource(fact.path)}：「{fact.quote}」</p>)}
                       </details> : product.isAiMembership === true ? <p>会员判定：未分类</p> : null}
                     </td>
@@ -1047,7 +1039,7 @@ function ProductManagement({ setMessage }) {
         </div> : null}
         <div className="data-table-wrap pending-products-table admin-scroll-area">
           {products.items.length ? <table><thead><tr><th><input aria-label="选择本页商品" type="checkbox" disabled={updatingProducts} checked={products.items.length > 0 && products.items.every(product => selectedProductIds.includes(String(product.id)))} onChange={event => setSelectedProductIds(event.target.checked ? [...new Set([...selectedProductIds, ...products.items.map(product => String(product.id))])] : selectedProductIds.filter(id => !products.items.some(product => String(product.id) === id)))} /></th><th>商品 / 规格</th><th>商铺</th><th>待处理原因</th><th>最近更新</th><th>操作</th></tr></thead><tbody>
-            {products.items.map(product => <tr key={product.id}><td><input aria-label={`选择 ${product.name}`} type="checkbox" disabled={updatingProducts} checked={selectedProductIds.includes(String(product.id))} onChange={event => setSelectedProductIds(event.target.checked ? [...new Set([...selectedProductIds, String(product.id)])] : selectedProductIds.filter(id => id !== String(product.id)))} /></td><td className="product-cell"><strong title={product.name}>{product.name}</strong>{product.spec && <small className="product-spec">{product.spec}</small>}{product.evidenceConflict ? <small className="evidence-conflict" role="note">{describeEvidenceConflict(product.evidenceConflict)}</small> : null}{product.latestPrice ? <small className="product-spec">{product.latestCurrency || 'CNY'} {formatMoney(product.latestPrice, '')}</small> : null}{product.tags?.length ? <div className="tag-chips">{product.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{tag.value}</span>)}</div> : null}</td><td>{product.shopName ?? product.shop_name ?? `商铺 #${product.shopId ?? product.shop_id ?? ''}`}</td><td className="product-cell processing-summary">{product.processingSummary ? <><strong>{PROCESSING_DISPOSITIONS[product.processingSummary.processingDisposition] || '等待处理'}</strong><small>{product.processingSummary.reason}</small></> : <small>暂无处理摘要</small>}</td><td className="table-time">{formatTime(product.updatedAt ?? product.updated_at)}</td><td><div className="row-actions">{product.deletedAt ?? product.deleted_at ? <IconButton action="restore-product" id={product.id} label="恢复商品" icon="rotate-ccw" onClick={(_, id) => productAction({ id }, 'restore')} /> : <><IconButton action="choose-standard" id={product.id} label="选择标准商品" icon="link" onClick={() => setPicker({ open: true, productId: product.id })} /><IconButton action="edit-tags" id={product.id} label="编辑标签" icon="pencil" onClick={() => editTags(product)} /><IconButton action="delete-product" id={product.id} label="删除商品" icon="trash-2" onClick={(_, id) => productAction({ id }, 'delete')} /></>}</div></td></tr>)}
+            {products.items.map(product => <tr key={product.id}><td><input aria-label={`选择 ${product.name}`} type="checkbox" disabled={updatingProducts} checked={selectedProductIds.includes(String(product.id))} onChange={event => setSelectedProductIds(event.target.checked ? [...new Set([...selectedProductIds, String(product.id)])] : selectedProductIds.filter(id => id !== String(product.id)))} /></td><td className="product-cell"><strong title={product.name}>{product.name}</strong>{product.spec && <small className="product-spec">{product.spec}</small>}{product.evidenceConflict ? <small className="evidence-conflict" role="note">{describeEvidenceConflict(product.evidenceConflict)}</small> : null}{product.latestPrice ? <small className="product-spec">{product.latestCurrency || 'CNY'} {formatMoney(product.latestPrice, '')}</small> : null}{product.tags?.length ? <div className="tag-chips">{product.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</span>)}</div> : null}</td><td>{product.shopName ?? product.shop_name ?? `商铺 #${product.shopId ?? product.shop_id ?? ''}`}</td><td className="product-cell processing-summary">{product.processingSummary ? <><strong>{PROCESSING_DISPOSITIONS[product.processingSummary.processingDisposition] || '等待处理'}</strong><small>{product.processingSummary.reason}</small></> : <small>暂无处理摘要</small>}</td><td className="table-time">{formatTime(product.updatedAt ?? product.updated_at)}</td><td><div className="row-actions">{product.deletedAt ?? product.deleted_at ? <IconButton action="restore-product" id={product.id} label="恢复商品" icon="rotate-ccw" onClick={(_, id) => productAction({ id }, 'restore')} /> : <><IconButton action="choose-standard" id={product.id} label="选择标准商品" icon="link" onClick={() => setPicker({ open: true, productId: product.id })} /><IconButton action="edit-tags" id={product.id} label="编辑标签" icon="pencil" onClick={() => editTags(product)} /><IconButton action="delete-product" id={product.id} label="删除商品" icon="trash-2" onClick={(_, id) => productAction({ id }, 'delete')} /></>}</div></td></tr>)}
           </tbody></table> : <EmptyState>暂无待处理商品</EmptyState>}
         </div>
         <Pagination total={products.total} page={products.page} pageSize={PAGE_SIZE} onChange={page => setProducts({ ...products, items: [], page })} label="待处理商品" />
@@ -1113,14 +1105,14 @@ function ProductManagement({ setMessage }) {
         <form className="dialog-body" onSubmit={saveTags}>
           <div className="dialog-header"><h2 id="tag-editor-title">编辑商品标签</h2><button type="button" aria-label="关闭" onClick={() => setTagEditor(null)}>×</button></div>
           <p className="admin-message">{tagEditor?.product?.name}</p>
+          {tagEditor?.error && <p role="alert" className="admin-message">{tagEditor.error}</p>}
           <div className="tag-editor-list">
             {(tagEditor?.items || []).map((tag, index) => <div key={index} className="tag-editor-row">
-              <input aria-label={`标签名称 ${index + 1}`} value={tag.name} placeholder="标签名称" maxLength={80} required onChange={event => setTagEditor(current => ({ ...current, items: current.items.map((item, position) => position === index ? { ...item, name: event.target.value } : item) }))} />
-              <input aria-label={`标签值 ${index + 1}`} value={tag.value} placeholder="标签值" maxLength={250} required onChange={event => setTagEditor(current => ({ ...current, items: current.items.map((item, position) => position === index ? { ...item, value: event.target.value } : item) }))} />
-              <button type="button" aria-label={`删除标签 ${index + 1}`} onClick={() => setTagEditor(current => ({ ...current, items: current.items.filter((_, position) => position !== index) }))}>删除</button>
+              <PurchaseTagEditor tag={tag} index={index + 1} onChange={value => setTagEditor(current => ({ ...current, items: current.items.map((item, position) => position === index ? value : item) }))} />
+              <button disabled={Boolean(tagEditor.rename)} type="button" aria-label={`删除标签 ${index + 1}`} onClick={() => setTagEditor(current => ({ ...current, items: current.items.filter((_, position) => position !== index) }))}>删除</button>
             </div>)}
           </div>
-          <button type="button" onClick={() => setTagEditor(current => ({ ...current, items: [...current.items, { name: '', value: '' }] }))}>新增标签</button>
+          <button disabled={Boolean(tagEditor?.rename)} type="button" onClick={() => setTagEditor(current => ({ ...current, items: [...current.items, { name: '', value: '' }] }))}>新增标签</button>
           <div className="dialog-actions"><button type="button" className="reject" onClick={() => setTagEditor(null)}>取消</button><button className="dialog-submit">保存标签</button></div>
         </form>
       </ModalDialog>
@@ -1128,10 +1120,10 @@ function ProductManagement({ setMessage }) {
       <ModalDialog className="management-dialog" open={Boolean(tagMergeOpen)} onClose={() => setTagMergeOpen(null)} aria-labelledby="tag-merge-title">
         <form key={tagMergeOpen ? tagMergeOpen.sources.map(tagIdentity).join('|') : 'closed'} className="dialog-body tag-merge-dialog" onSubmit={submitTagMerge}>
           <div className="dialog-header"><h2 id="tag-merge-title">合并标签值</h2><button type="button" aria-label="关闭" onClick={() => setTagMergeOpen(null)}>×</button></div>
+          {tagMergeOpen?.error && <p role="alert" className="admin-message">{tagMergeOpen.error}</p>}
           <p className="tag-merge-help">选中的标签值会合并到同一个目标标签，重复关系会自动去重，源标签随后删除。</p>
-          <label>源标签<input value={tagMergeOpen?.sources?.map(source => `${source.name}：${source.value}`).join('、') || ''} readOnly /></label>
-          <label>目标标签名<input name="nextName" defaultValue={tagMergeOpen?.sources?.[0]?.name || ''} placeholder="例如：地区" required /></label>
-          <label>目标标签值<input name="nextValue" defaultValue="" placeholder="例如：中国大陆" required /></label>
+          <label>源标签<input value={tagMergeOpen?.sources?.map(source => `${source.name}：${purchaseTagLabel(source) || tagValueKey(source.value)}`).join('、') || ''} readOnly /></label>
+          <PurchaseTagEditor tag={tagMergeOpen?.target || { name: '', value: '' }} onChange={target => setTagMergeOpen(current => ({ ...current, target }))} />
           <div className="dialog-actions"><button type="button" className="reject" onClick={() => setTagMergeOpen(null)}>取消</button><button className="dialog-submit">确认合并</button></div>
         </form>
       </ModalDialog>

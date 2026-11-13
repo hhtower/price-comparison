@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
-import type { DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { up } from '../src/database/migrations/027_assistant_20261031.js';
 import { AssistantRepository } from '../src/assistant/assistant.repository.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
@@ -109,6 +109,50 @@ test('complete reply and needs commit together and duplicate completion is idemp
   assert.deepEqual(stored.turns[0]?.reply, finalReply);
   await assert.rejects(repository.acceptTurn(session.sessionId, session.accessToken, input()), error => Reflect.get(error as object, 'code') === 'ASSISTANT_REVISION_CONFLICT');
   await jobs.complete('assistant_turn', claim.id, claim.claimed_by);
+});
+
+test('obsolete filters keep raw chat history and complete an explicit invalidation without spending a model request', async () => {
+  const session = await repository.createSession();
+  const accepted = await repository.acceptTurn(session.sessionId, session.accessToken, input('Original user message'));
+  const claim = await claimTurn(accepted.snapshot.id);
+  await repository.reserveModelRequest(claim.id.toString(), claim.claimed_by, String(claim.row.claim_token), 'mock');
+  await repository.finishModelRequest(claim.id.toString(), claim.claimed_by, String(claim.row.claim_token), null);
+  await repository.completeTurn({ turnId: claim.id.toString(), workerId: claim.claimed_by,
+    claimToken: String(claim.row.claim_token), expectedRevision: 0, reply: reply() });
+  const obsolete = { ...emptyShoppingNeeds(), warrantyDaysMin: 30 };
+  const oldReply = { ...reply(), needs: obsolete };
+  await db.updateTable('assistant_sessions').set({ needs: jsonb(obsolete) }).where('id', '=', session.sessionId).execute();
+  await db.updateTable('assistant_turns').set({ reply: jsonb(oldReply) }).where('id', '=', claim.id).execute();
+  const restored = validateSessionSnapshot(await repository.readSession(session.sessionId, session.accessToken));
+  assert.equal(restored.needsInvalidated, true);
+  assert.equal(restored.turns[0]?.reply?.needsInvalidated, true);
+  assert.equal(restored.turns[0]?.inputText, 'Original user message');
+  assert.equal(restored.turns[0]?.reply?.text, oldReply.text);
+  const next = await repository.acceptTurn(session.sessionId, session.accessToken, { ...input('继续推荐'), expectedRevision: 1 });
+  const nextClaim = await claimTurn(next.snapshot.id);
+  const service = new AssistantService(repository, {} as CatalogService,
+    async () => { throw new Error('no model calls for invalid filters'); }, 'mock');
+  await service.runTurn(nextClaim, new AbortController().signal);
+  const result = validateSessionSnapshot(await repository.readSession(session.sessionId, session.accessToken));
+  assert.equal(result.revision, 2);
+  assert.equal(result.turns.length, 2);
+  assert.equal(result.turns[1]?.reply?.needsInvalidated, true);
+  assert.equal(result.turns[1]?.reply?.kind, 'question');
+  assert.deepEqual(result.needs, emptyShoppingNeeds());
+  const saved = await db.selectFrom('assistant_turns').selectAll().where('id', '=', nextClaim.id).executeTakeFirstOrThrow();
+  assert.equal(saved.requests_started, 0);
+  const original = await db.selectFrom('assistant_turns').select('reply').where('id', '=', claim.id).executeTakeFirstOrThrow();
+  assert.deepEqual(original.reply, oldReply, 'historical JSON must not be rewritten');
+});
+
+test('the invalidation path cannot bypass model accounting for a valid session', async () => {
+  const session = await repository.createSession();
+  const accepted = await repository.acceptTurn(session.sessionId, session.accessToken, input());
+  const claim = await claimTurn(accepted.snapshot.id);
+  await assert.rejects(repository.completeTurn({ turnId: claim.id.toString(), workerId: claim.claimed_by,
+    claimToken: String(claim.row.claim_token), expectedRevision: 0, reply: { ...reply(), needsInvalidated: true } }));
+  assert.equal((await repository.readSession(session.sessionId, session.accessToken)).revision, 0);
+  await repository.cancelTurn(session.sessionId, claim.id.toString(), session.accessToken);
 });
 
 test('failure while updating needs rolls back the previously written complete reply', async () => {

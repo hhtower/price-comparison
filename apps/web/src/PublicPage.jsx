@@ -10,8 +10,9 @@ import { usePageAnalytics } from './usePageAnalytics.js';
 import { trackUsage } from './analytics.js';
 import { keepPreviousData, QueryClient, QueryClientProvider, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
-import { consumeRapidSearchTerms, normalizePurchaseTag, parseCatalogSearch, purchaseWarrantyLabel, PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
-import { DurationFilterOptions, WarrantyFilter, isValidWarrantyMinimum } from './components/PurchasePeriodFilters.jsx';
+import { normalizePurchaseTag, parseCatalogSearch, purchaseWarrantyLabel, tagValueKey, PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
+import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
+import { DurationFilterOptions } from './components/PurchasePeriodFilters.jsx';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { MEMBERSHIP_GROUPS, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
 import { updatePageMetadata } from './page-metadata.js';
@@ -85,10 +86,9 @@ function CatalogCoverage({ data }) {
 
 function equalTags(left, right) { return left.size === right.size && [...left].every(tag => right.has(tag)); }
 
-function catalogParams(search, platform, selectedTags, warrantyDaysMin, standardProductId = '', newcomer = false, membershipKinds = []) {
+function catalogParams(search, platform, selectedTags, standardProductId = '', newcomer = false, membershipKinds = []) {
   const params = new URLSearchParams({ q: search, platform: platform === '全部' ? '' : platform });
   for (const tag of [...selectedTags].sort()) params.append('tag', tag);
-  if (warrantyDaysMin) params.set('warrantyDaysMin', warrantyDaysMin);
   if (standardProductId) params.set('standardProductId', standardProductId);
   if (newcomer || membershipKinds.length) params.set('newcomer', String(newcomer && !membershipKinds.length));
   for (const kind of membershipKinds) params.append('membershipKind', kind);
@@ -98,23 +98,18 @@ function catalogParams(search, platform, selectedTags, warrantyDaysMin, standard
 function readCatalogLocation(params = new URLSearchParams(window.location.search)) {
   const mode = readBrowsingMode();
   const explicitMode = ['true', 'false'].includes(params.get('newcomer'));
+  let invalidFilters = params.has('warrantyDaysMin');
   const tags = params.getAll('tag').slice(0, 50).flatMap(value => {
     try {
       const tag = JSON.parse(value);
-      return typeof tag?.name === 'string' && tag.name.length <= 80 && typeof tag.value === 'string' && tag.value.length <= 250
-        ? normalizePurchaseTag(tag).map(tagKey) : [];
-    } catch { return []; }
+      const normalized = normalizePurchaseTag(tag);
+      if (!normalized.length) invalidFilters = true;
+      return normalized.map(tagKey);
+    } catch { invalidFilters = true; return []; }
   });
-  const minimum = params.get('warrantyDaysMin') || '';
-  const warranty = isValidWarrantyMinimum(minimum) ? minimum : '';
-  // Old bookmarks allowed multiple warranty types; restore one visible requirement.
-  const warrantyType = tags.find(key => JSON.parse(key).name === 'warranty_scope')
-    || tags.find(key => JSON.parse(key).name === 'warranty');
-  const selectedTags = tags.filter(key => !['warranty', 'warranty_scope'].includes(JSON.parse(key).name)
-    || !warranty && key === warrantyType);
   return { query: (params.get('q') || '').slice(0, 500), platform: normalizeCatalogPlatform(params.get('platform') || '') || '全部',
     sort: ['price', 'updated'].includes(params.get('sort')) ? params.get('sort') : 'default',
-    tags: new Set(selectedTags), warranty, product: params.get('standardProductId') || '', cursor: params.get('cursor') || '',
+    tags: new Set(tags), invalidFilters, product: params.get('standardProductId') || '', cursor: params.get('cursor') || '',
     membershipKinds: MEMBERSHIP_GROUPS.filter(kind => params.getAll('membershipKind').includes(kind)),
     newcomer: explicitMode ? params.get('newcomer') === 'true'
       : params.has('cursor') ? false
@@ -193,35 +188,8 @@ function FilterCount({ params, enabled, detail = false, current }) {
     : result ? detail ? `${result.offerTotal ?? 0} 条报价` : `${result.total ?? 0} 款 · ${result.offerTotal ?? 0} 条报价` : ''}</span>;
 }
 
-const TAG_LABELS = {
-  '3ds': '3DS 支持', access: '访问方式', account_age: '账号年龄', account_lifecycle: '账号类型', account_state: '账号状态', account_type: '账号类型', authentication: '验证方式',
-  card_bin: '卡段', card_network: '卡组织', card_type: '卡类型', category_signal: '适用类别', channel: '渠道', cloud_status: '云端状态',
-  credential_included: '是否含凭据', credential_type: '凭据类型', delivery: '交付方式', delivery_format: '交付格式', duration: '时长', email_provider: '邮箱服务商',
-  email_remaining_duration: '邮箱剩余时长', email_remaining_validity: '邮箱剩余有效期', email_type: '邮箱类型', feature_support: '功能支持', intended_use: '适用场景',
-  inventory_status: '库存状态', mailbox_type: '邮箱类型', minimum_order_quantity: '起订量', number_change: '换号规则', platform: '平台', quantity: '数量', refund: '退款规则',
-  region: '地区', registration_network: '注册网络', registration_year: '注册年份', reset_count: '重置次数', scan_included: '是否含扫码', service_method: '服务方式',
-  service_type: '服务类型', sim_type: 'SIM 类型', sms_verification: '短信验证', storage: '存储空间', token_duration: '令牌时长', token_validity: '令牌有效期',
-  two_factor_auth: '双重验证', two_factor_authentication: '双重验证', usage_restriction: '使用限制', validity: '有效期', warranty: '售后保障', warranty_days: '质保时长', warranty_scope: '质保范围',
-};
-
-const TAG_VALUE_LABELS = {
-  dedicated: '专属', 'first login': '首登', 'long term': '长期', 'redemption link': '兑换链接', 'residential broadband': '家庭宽带',
-  'single use': '单次', unverified: '未验证', verified: '已验证', us: '美国', usa: '美国', philippines: '菲律宾', vietnam: '越南', ios: 'iOS', web: '网页',
-};
-
-const PURCHASE_DISPLAY_VALUES = {
-  region: { eu: '欧洲', global: '全球', random: '随机地区', sea: '东南亚' },
-  intended_use: { rapid: '速刷' },
-  account_lifecycle: { new: '新号', aged: '老号' },
-  account_type: { sub_account: '子号', parent_account: '母号', seat: '席位', personal: '个人', enterprise: '企业' },
-  warranty_scope: { first_login: '仅保首登', activation: '仅保激活', first_code: '仅保首次接码', subscription: '仅保掉订阅' },
-};
-const FILTER_DEFINITIONS = [
-  ...PURCHASE_ATTRIBUTE_DEFINITIONS.map(definition => definition.name === 'warranty_scope'
-    ? { ...definition, values: [...definition.values, { value: 'activation' }, { value: 'first_code' }, { value: 'subscription' }] } : definition),
-  { name: 'account_lifecycle', label: '账号类型', values: Object.keys(PURCHASE_DISPLAY_VALUES.account_lifecycle).map(value => ({ value })) },
-];
-const LIMITED_WARRANTY_SCOPES = ['first_login', 'activation', 'first_code', 'subscription'];
+const TAG_LABELS = Object.fromEntries(Object.entries(PURCHASE_GUIDE_FIELDS).map(([name, field]) => [name, field.label]));
+const FILTER_DEFINITIONS = PURCHASE_ATTRIBUTE_DEFINITIONS;
 
 const PLATFORM_LABELS = {
   anthropic: 'Anthropic', apple: 'Apple', email: '邮箱', google: 'Google',
@@ -229,17 +197,12 @@ const PLATFORM_LABELS = {
   ...Object.fromEntries(CATALOG_PLATFORMS.map(group => [group.id, group.label])), other: '其它',
 };
 
-const TAG_GROUPS = [
-  ...['delivery', 'access', 'account_lifecycle', 'duration', 'warranty', 'sms_verification', 'intended_use']
-    .map(name => {
-      if (name === 'warranty') return { id: 'warranty_conditions', label: '质保要求', names: ['warranty', 'warranty_scope', 'warranty_days'] };
-      const definition = FILTER_DEFINITIONS.find(item => item.name === name);
-      return { id: name, label: definition.label, names: [name] };
-    }),
-  { id: 'other', label: '其他规格', names: [] },
-];
+const TAG_GROUPS = Object.entries(PURCHASE_GUIDE_FIELDS).filter(([name]) => name !== 'supported_client').map(([name, field]) => ({
+  id: name, label: name === 'access_channel' ? '使用入口/支持工具' : field.label,
+  names: name === 'access_channel' ? ['access_channel', 'supported_client'] : [name],
+}));
 
-function tagKey(tag) { return JSON.stringify({ name: tag.name, value: tag.value }); }
+function tagKey(tag) { return `{"name":${JSON.stringify(tag.name)},"value":${tagValueKey(tag.value)}}`; }
 
 function displayTagName(name) {
   const raw = String(name || '').trim();
@@ -249,10 +212,6 @@ function displayTagName(name) {
   return raw.replace(/[_-]+/gu, ' ').replace(/\s+/gu, ' ').trim();
 }
 
-function displayTagValue(value) {
-  const raw = String(value ?? '').replace(/[_-]+/gu, ' ').replace(/\s+/gu, ' ').trim();
-  return TAG_VALUE_LABELS[raw.toLowerCase()] || raw;
-}
 function displayPlatform(value) {
   const raw = String(value || '').trim();
   return PLATFORM_LABELS[raw.toLowerCase()] || raw || '未分类';
@@ -262,41 +221,27 @@ function displayTag(tag) {
 }
 
 function displayPurchaseValue(tag) {
-  return PURCHASE_DISPLAY_VALUES[tag.name]?.[tag.value] ?? displayPurchaseTagValue(tag, value => displayTagValue(value.value));
+  return displayPurchaseTagValue(tag);
 }
 
 function isReadableFilter(tag) {
-  if (['unknown', 'unspecified'].includes(tag.value)) return false;
-  const definition = FILTER_DEFINITIONS.find(item => item.name === tag.name);
-  if (tag.name === 'duration') return /^[1-9][0-9]{0,3} (months?|days)$/u.test(tag.value);
-  if (tag.name === 'warranty_days') return /^[1-9][0-9]{0,4}$/u.test(tag.value);
-  if (definition) return definition.values.some(item => item.value === tag.value);
-  // Merchant prose is available on each quote, but is not a verified filter.
-  return false;
+  return FILTER_DEFINITIONS.some(definition => definition.name === tag.name) && normalizePurchaseTag(tag).length > 0;
 }
 
 function searchIntentTags(query) {
-  const parsed = parseCatalogSearch(query);
-  const tags = parsed.tags.filter((tag) => !(parsed.warrantyDaysMin && (tag.name === 'warranty' || tag.name === 'warranty_scope' || tag.name === 'warranty_days')));
-  if (parsed.warrantyDaysMin) tags.push({ name: 'warranty_days', value: String(parsed.warrantyDaysMin) });
-  return tags;
+  return parseCatalogSearch(query).tags;
 }
 
 function removeSearchIntent(query, tag) {
-  if (tag.name === 'intended_use') return consumeRapidSearchTerms(query).replace(/[ \t]{2,}/gu, ' ').trim();
   const expressions = {
     sms_verification: { verified: /已接码|已接马|verified[ \t]+sms|sms[ \t]+verified/iu, unverified: /未接码|未接马|unverified[ \t]+sms|sms[ \t]+unverified/iu },
-    warranty_days: /(?:质保|保修|warranty)[ \t]*(?:至少|不少于|不低于|>=)?[ \t]*[+-]?[0-9]+(?:[ \t]*-[ \t]*[0-9]+)?[ \t]*(?:天|days?)|[+-]?[0-9]+(?:[ \t]*-[ \t]*[0-9]+)?[ \t]*(?:天|days?)[ \t]*(?:质保|保修|warranty)/iu,
-    warranty: /无质保|不质保|没有质保|有质保|covered[ \t]+warranty|warranty|质保/iu,
-    warranty_scope: /质保首登|首登质保|首登|first[ -]?login(?:[ \t]+only|[ \t]+warranty)?/iu,
-    access: /独享|独用|共享|合租|dedicated|shared/iu,
-    delivery: /成品账号|成品帐号|现成账号|代充|充值|top[ -]?up|topup|兑换码|激活码|redemption/iu,
-    duration: /[0-9]+[ \t]*(?:个月|月|months?|month)|月卡|monthly/iu,
+    subscription_override: /不可覆盖(?:现有)?订阅|不覆盖(?:现有)?订阅/iu,
+    duration: /[0-9]+(?:[.][0-9]+)?\s*(?:分钟|小时|个月|月|年|天|日|周|minutes?|hours?|days?|weeks?|months?|years?)/giu,
   };
   const expression = expressions[tag.name];
   if (!expression) return query;
   const pattern = expression instanceof RegExp ? expression : expression[tag.value] || expression;
-  return query.replace(pattern, ' ').replace(/[ \t]{2,}/gu, ' ').trim();
+  return query.replace(pattern, match => tag.name !== 'duration' || parseCatalogSearch(match).tags.some(candidate => tagValueKey(candidate.value) === tagValueKey(tag.value)) ? ' ' : match).replace(/[ \t]{2,}/gu, ' ').trim();
 }
 
 function formatRelativeTime(value) {
@@ -340,7 +285,7 @@ function groupTags(tags) {
   const groups = TAG_GROUPS.map((group) => ({ ...group, tags: [] }));
   for (const tag of tags) {
     const group = groups.find((candidate) => candidate.names.includes(tag.name)) || groups.find((candidate) => candidate.id === 'other');
-    group.tags.push(tag);
+    group?.tags.push(tag);
   }
   return groups.filter((group) => group.tags.length);
 }
@@ -359,7 +304,7 @@ function useDesktopFilters() {
   return desktop;
 }
 
-function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, draftTags, draftWarrantyDaysMin, draftProduct = '', onWarrantyChange, onToggle, onClear, onApply, onClose, preview, children, extraCount = 0, id = 'catalog-purchase-filters' }) {
+function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, draftTags, draftProduct = '', onToggle, onClear, onApply, onClose, preview, children, extraCount = 0, id = 'catalog-purchase-filters' }) {
   const [expandedGroups, setExpandedGroups] = useState(() => new Set());
   const dialogRef = useRef(null);
   useEffect(() => {
@@ -389,25 +334,18 @@ function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, dra
   if (!open) return null;
   const readableTags = uniqueTags([[...draftTags].map(tag => JSON.parse(tag)), tags]).filter(tag => isReadableFilter(tag) || draftTags.has(tagKey(tag)));
   const groups = groupTags(readableTags);
-  if (draftWarrantyDaysMin && !groups.some(group => group.id === 'warranty_conditions')) groups.push({ id: 'warranty_conditions', label: '质保要求', tags: [] });
-  const warrantyTags = groups.find(group => group.id === 'warranty_conditions')?.tags || [];
-  const warrantyChoices = uniqueTags([[{ name: 'warranty_scope', value: 'period' }],
-    warrantyTags.filter(tag => tag.name === 'warranty_scope' && LIMITED_WARRANTY_SCOPES.includes(tag.value))])
-    .map(tag => ({ name: tag.name, key: tagKey(tag), label: tag.value === 'period' ? '按质保时长' : purchaseWarrantyLabel([tag]) }));
-  const draftCount = draftTags.size + Number(Boolean(draftWarrantyDaysMin)) + Number(Boolean(draftProduct)) + extraCount;
+  const draftCount = draftTags.size + Number(Boolean(draftProduct)) + extraCount;
   return (
     <div className={inline ? 'filter-panel-container' : 'filter-drawer-layer'} hidden={!inline && covered} aria-hidden={covered || undefined} inert={covered || undefined} onMouseDown={(event) => { if (!inline && event.target === event.currentTarget) onClose(); }}>
       <section ref={dialogRef} id={id} className={`filter-drawer ${inline ? 'filter-panel--inline' : ''}`} role={inline ? 'region' : 'dialog'} tabIndex={-1} aria-modal={inline || covered ? undefined : true} aria-label="筛选报价" onKeyDown={inline || covered ? undefined : trapDialogFocus}>
         <div className="filter-drawer-body">
           {children}
           {loading ? <p role="status">正在加载筛选条件…</p> : error ? <div role="alert"><p>{error}</p><button type="button" className="text-button" onClick={onRetry}>重试筛选</button></div> : groups.length ? groups.map((group) => {
-            if (group.id === 'duration' || group.id === 'warranty_conditions') return <fieldset className="filter-group" key={group.id}>
+            if (group.id === 'duration') return <fieldset className="filter-group" key={group.id}>
               <legend>{group.label}</legend>
-              <div className="filter-group-content">{group.id === 'duration'
-                ? <DurationFilterOptions tags={group.tags} selectedTags={draftTags} onToggle={onToggle} />
-                : <WarrantyFilter choices={warrantyChoices} selectedTags={draftTags} value={draftWarrantyDaysMin} onChange={onWarrantyChange} />}</div>
+              <div className="filter-group-content"><DurationFilterOptions tags={group.tags} selectedTags={draftTags} onToggle={onToggle} /></div>
             </fieldset>;
-            const ranked = [...group.tags].sort((a, b) => Number(a.value === 'unknown') - Number(b.value === 'unknown') || Number(b.priority ?? 0) - Number(a.priority ?? 0) || a.value.localeCompare(b.value, 'zh-CN', { numeric: true }));
+            const ranked = [...group.tags].sort((a, b) => Number(a.value === 'unknown') - Number(b.value === 'unknown') || Number(b.priority ?? 0) - Number(a.priority ?? 0) || displayPurchaseValue(a).localeCompare(displayPurchaseValue(b), 'zh-CN', { numeric: true }));
             const expanded = expandedGroups.has(group.id);
             const visible = expanded ? ranked : ranked.filter((tag, index) => index < 6 || draftTags.has(tagKey(tag)));
             return (
@@ -426,7 +364,7 @@ function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, dra
             );
           }) : <p className="filter-empty">暂无明确的可选条件，可尝试搜索商品名称</p>}
         </div>
-        <footer className="filter-drawer-footer"><button type="button" className="text-button" onClick={onClear}>清除全部</button>{preview}<div className="filter-drawer-actions">{inline ? null : <button type="button" className="text-button" aria-label="取消筛选" onClick={onClose}>取消</button>}<button type="button" className="primary-button" disabled={!isValidWarrantyMinimum(draftWarrantyDaysMin)} onClick={onApply}>应用筛选{draftCount ? `（${draftCount}）` : ''}</button></div></footer>
+        <footer className="filter-drawer-footer"><button type="button" className="text-button" onClick={onClear}>清除全部</button>{preview}<div className="filter-drawer-actions">{inline ? null : <button type="button" className="text-button" aria-label="取消筛选" onClick={onClose}>取消</button>}<button type="button" className="primary-button" onClick={onApply}>应用筛选{draftCount ? `（${draftCount}）` : ''}</button></div></footer>
       </section>
     </div>
   );
@@ -447,12 +385,12 @@ function trapDialogFocus(event) {
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
 }
 
-const COMPARISON_FACTS = [['delivery', '交付'], ['region', '地区'], ['access', '使用'], ['account_lifecycle', '账号类型'], ['intended_use', '用途'], ['duration', '使用期限'], ['minimum_quantity', '起购数量'], ['warranty', '售后']];
+const COMPARISON_FACTS = [...TAG_GROUPS.map(group => [group.id, group.label]), ['settlement_quantity', '起购数量']];
 function offerFact(offer, name) {
-  if (name === 'minimum_quantity') return offer.settlementQuantity > 1 ? `${offer.settlementQuantity}件起购` : '';
+  if (name === 'settlement_quantity') return offer.settlementQuantity > 1 ? `${offer.settlementQuantity}件起购` : '';
   if (name === 'warranty') return purchaseWarrantyLabel(offer.tags || []);
   const facts = uniqueTags([offer.tags]).filter(tag => tag.value && !['unknown', 'unspecified'].includes(tag.value)
-    && tag.name === name);
+    && (tag.name === name || name === 'access_channel' && tag.name === 'supported_client'));
   return [...new Set(facts.map(displayPurchaseValue))].join(' · ');
 }
 
@@ -551,16 +489,15 @@ function priceRangeError({ priceMin, priceMax }) {
 }
 
 function readDetailSearch(params, item) {
-  const { query, tags, warranty, newcomer, membershipKinds } = readCatalogLocation(params);
+  const { query, tags, invalidFilters, newcomer, membershipKinds } = readCatalogLocation(params);
   const membership = membershipSearch(query, item.isAiMembership && params.get('searchMode') !== 'literal');
   // Preserve inherited purchase intent as visible filters; new detail searches stay literal.
   const literal = params.get('searchMode') === 'literal' || item.isAiMembership && membershipNegation.test(query);
   const parsed = literal ? { text: query, tags: [] } : parseCatalogSearch(membership.text);
   const explicitNames = new Set([...tags].map(key => JSON.parse(key).name));
-  const inferred = parsed.tags.filter(tag => !explicitNames.has(tag.name)
-    && !(parsed.warrantyDaysMin !== undefined && tag.name === 'warranty_days'));
+  const inferred = parsed.tags.filter(tag => !explicitNames.has(tag.name));
   return { keyword: [parsed.text, params.get('shopQuery')].filter(Boolean).join(' ').slice(0, 500),
-    tags: [...new Set([...tags, ...inferred.map(tagKey)])], warranty: warranty || String(parsed.warrantyDaysMin || ''),
+    tags: [...new Set([...tags, ...inferred.map(tagKey)])], invalidFilters,
     newcomer: item.isAiMembership || params.has('newcomer') ? newcomer : false,
     membershipKinds: item.isAiMembership ? membershipKinds.length ? membershipKinds : membership.kinds : [] };
 }
@@ -568,7 +505,7 @@ function readDetailSearch(params, item) {
 function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCompare, onOpenComparison, desktop, standalone = false, referenceRef }) {
   const fixedMembershipKind = detail.membershipKind;
   const title = membershipName(detail.item, fixedMembershipKind);
-  const initial = { keyword: '', tags: [], warranty: '', shopId: '', shopName: '', priceMin: '', priceMax: '', currency: 'CNY',
+  const initial = { keyword: '', tags: [], shopId: '', shopName: '', priceMin: '', priceMax: '', currency: 'CNY',
     pageSize: PRODUCT_PAGE_SIZE, page: 1, offerSort: 'price', kind: detail.kind, scrollTop: 0 };
   const [queryState, setState] = useState(() => {
     if (!standalone) return { ...initial, ...readDetailSearch(new URLSearchParams(detail.query), detail.item) };
@@ -616,7 +553,6 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     params.delete('tag');
     for (const tag of values.tags) params.append('tag', tag);
     params.delete('warrantyDaysMin');
-    if (values.warranty) params.set('warrantyDaysMin', values.warranty);
     params.delete('shopQuery');
     for (const name of ['priceMin', 'priceMax']) {
       params.delete(name);
@@ -719,10 +655,9 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   }, [filterOpen]);
   function apply(event) {
     event?.preventDefault();
-    if (!isValidWarrantyMinimum(draft.warranty)) { setFilterOpen(true); return; }
     if (priceRangeError(draft)) { setRangeError(priceRangeError(draft)); return; }
     setRangeError('');
-    update({ priceMin: draft.priceMin, priceMax: draft.priceMax, tags: [...draft.tags], warranty: draft.warranty,
+    update({ priceMin: draft.priceMin, priceMax: draft.priceMax, tags: [...draft.tags],
       membershipKinds: draft.membershipKinds, newcomer: draft.membershipKinds.length ? false : state.newcomer });
     setFilterOpen(false);
   }
@@ -734,7 +669,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     setState(values); setKeyword(values.keyword); setDraft({ ...values, tags: new Set(values.tags) }); setRangeError(''); setFilterOpen(false);
   }
   const field = (name, value) => { setDraft(current => ({ ...current, [name]: value })); setRangeError(''); };
-  const selectedCount = state.tags.length + Number(Boolean(state.warranty)) + Number(Boolean(state.priceMin || state.priceMax)) + (fixedMembershipKind ? 0 : state.membershipKinds.length);
+  const selectedCount = state.tags.length + Number(Boolean(state.priceMin || state.priceMax)) + (fixedMembershipKind ? 0 : state.membershipKinds.length);
   function openShop(entry) {
     shopListState.current = { ...state, scrollTop: standalone ? window.scrollY : scrollElement?.scrollTop || 0 };
     navigate({ kind: 'offers', shopId: entry.key, shopName: entry.name });
@@ -751,6 +686,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   return <Container {...(standalone ? {} : { open: true, onClose })} className={standalone ? 'product-page-details' : 'catalog-detail-dialog'} aria-labelledby="catalog-detail-title">
     <Controls {...(standalone ? { className: 'product-detail-controls', id: 'catalog-quotes' } : {})}>
     {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><div className="product-page-title"><div className="product-page-category"><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span></div><h1><PlatformIcon platform={detail.item.platform} /><span>{title}</span></h1></div><span className="official-reference-slot" ref={referenceRef} /></header> : null}
+    {state.invalidFilters && <p role="alert">部分旧筛选条件已失效，请重新选择。</p>}
     <header className="dialog-header"><div>{state.shopId ? <button type="button" className="text-button" onClick={() => navigate(shopListState.current || { shopId: '', shopName: '', kind: 'shops' })}>← 返回商铺列表</button> : null}<h2 id="catalog-detail-title">{standalone ? label : title + ' · ' + label}{state.shopName ? ` · ${state.shopName}` : ''}</h2><p>{loading ? '…' : total} {countUnit}</p></div><div className="detail-header-actions">{comparison.length ? <button type="button" className="text-button" onClick={onOpenComparison}>对比（{comparison.length}）</button> : null}{standalone ? <div className="detail-kind-tabs" role="group" aria-label="报价视图"><button type="button" aria-pressed={!isShops} onClick={() => navigate({ kind: 'offers', shopId: '', shopName: '' })}>全部报价</button><button type="button" aria-pressed={isShops} onClick={() => navigate({ kind: 'shops', shopId: '', shopName: '' })}>按商铺</button></div> : <button type="button" aria-label={`关闭${label}详情`} onClick={onClose}>×</button>}</div></header>
     <div className="detail-query-panel" ref={toolbar} onKeyDown={event => {
       if (event.key === 'Escape' && filterOpen) { event.preventDefault(); event.stopPropagation(); setFilterOpen(false); }
@@ -761,13 +697,13 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
         {detail.item.isAiMembership && !fixedMembershipKind ? <label className="catalog-newcomer-toggle"><input type="checkbox" role="switch" aria-label="新手" checked={state.newcomer && !state.membershipKinds.length}
           onChange={event => update({ newcomer: event.target.checked, membershipKinds: [] })} /><span>新手</span></label> : null}
         <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-expanded={filterOpen} aria-controls="detail-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraft({ ...state, tags: new Set(state.tags) }); setRangeError(''); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
-        <button type="button" className="text-button" onClick={() => navigate({ keyword: '', tags: [], warranty: '', priceMin: '', priceMax: '', offerSort: 'price', membershipKinds: [] })}>重置</button>
+        <button type="button" className="text-button" onClick={() => navigate({ keyword: '', tags: [], priceMin: '', priceMax: '', offerSort: 'price', membershipKinds: [] })}>重置</button>
       </form>
       <div className="detail-filter-popover">
       <FilterPanel id="detail-purchase-filters" open={filterOpen} inline extraCount={Number(Boolean(draft.priceMin || draft.priceMax)) + (fixedMembershipKind ? 0 : draft.membershipKinds.length)} tags={facets.data?.tagFacets || EMPTY_LIST} loading={facets.isFetching && !facets.data} error={facets.isError ? '筛选条件加载失败' : ''} onRetry={() => facets.refetch()}
-        draftTags={draft.tags} draftWarrantyDaysMin={draft.warranty} onWarrantyChange={(warranty, tags) => setDraft(current => ({ ...current, warranty, tags }))}
+        draftTags={draft.tags}
         onToggle={key => setDraft(current => { const tags = new Set(current.tags); if (tags.has(key)) tags.delete(key); else tags.add(key); return { ...current, tags }; })}
-        onClear={() => { setDraft(current => ({ ...current, tags: new Set(), warranty: '', priceMin: '', priceMax: '', membershipKinds: [] })); setRangeError(''); }} onApply={apply} onClose={() => setFilterOpen(false)}>
+        onClear={() => { setDraft(current => ({ ...current, tags: new Set(), priceMin: '', priceMax: '', membershipKinds: [] })); setRangeError(''); }} onApply={apply} onClose={() => setFilterOpen(false)}>
         {detail.item.isAiMembership && !fixedMembershipKind ? <MembershipFilter value={draft.membershipKinds} onChange={membershipKinds => field('membershipKinds', membershipKinds)} /> : null}
         <fieldset className="filter-group"><legend>价格区间</legend><div className="filter-group-content"><div className="detail-price-range" role="group" aria-label="人民币金额区间"><label><span aria-hidden="true">¥</span><input type="number" aria-label="最低价格" placeholder="最低价" min="0" max="999999999999.99" step="0.01" value={draft.priceMin} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMin', event.target.value)} /></label><span>—</span><label><span aria-hidden="true">¥</span><input type="number" aria-label="最高价格" placeholder="最高价" min="0" max="999999999999.99" step="0.01" value={draft.priceMax} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMax', event.target.value)} /></label></div>{rangeError ? <span id="detail-price-error" role="alert" className="report-error detail-query-error">{rangeError}</span> : null}</div></fieldset>
       </FilterPanel>
@@ -888,8 +824,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
   const [draftTags, setDraftTags] = useState(() => new Set());
   const [submittingShop, setSubmittingShop] = useState(false);
   const [selectedTags, setSelectedTags] = useState(initial.tags);
-  const [warrantyDaysMin, setWarrantyDaysMin] = useState(initial.warranty);
-  const [draftWarrantyDaysMin, setDraftWarrantyDaysMin] = useState('');
+  const [invalidFilters, setInvalidFilters] = useState(initial.invalidFilters);
   const [offerDetails, setOfferDetails] = useState(null);
   const openOfferDetails = useCallback((offer, item) => setOfferDetails({ offer, item }), []);
   const [reportOffer, setReportOffer] = useState(null);
@@ -963,7 +898,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
     : matchedProducts.length > 0 && matchedProducts.every(item => item.isAiMembership === false);
   const effectiveKinds = selectedNonAi ? EMPTY_LIST : membershipKinds.length ? membershipKinds : searchMembership.kinds;
   const effectiveNewcomer = newcomer && !effectiveKinds.length;
-  const request = catalogParams(searchMembership.text, platform, selectedTags, warrantyDaysMin, selectedProduct, effectiveNewcomer, effectiveKinds).toString();
+  const request = catalogParams(searchMembership.text, platform, selectedTags, selectedProduct, effectiveNewcomer, effectiveKinds).toString();
   const membershipReady = (!hasMembershipWords && !membershipKinds.length || !productsQuery.isPending) && (!selectedProduct || !productQuery.isPending);
   useEffect(() => {
     if (!productId) return;
@@ -979,7 +914,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
     if (productQuery.isError) updatePageMetadata('product-error', { id: productId, name: productQuery.error?.status === 404 ? '商品不存在或已下架' : '商品暂时无法加载' }, requestedProductPage || 1, membershipKind);
   }, [productId, productQuery.data, productQuery.isError, productQuery.error, invalidProductPage, invalidFeature, membershipKind, requestedProductPage]);
   const locationReady = useRef(false);
-  const unfilteredCatalog = !search && platform === '全部' && !selectedTags.size && !warrantyDaysMin && !selectedProduct && !newcomer && !membershipKinds.length && sort === 'default';
+  const unfilteredCatalog = !search && platform === '全部' && !selectedTags.size && !selectedProduct && !newcomer && !membershipKinds.length && sort === 'default';
   const startCursor = unfilteredCatalog ? cursor : '';
   useEffect(() => {
     if (productId || !membershipReady || window.location.pathname !== '/') return;
@@ -1008,7 +943,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
       const value = readCatalogLocation();
       setSelectedProduct(value.product); setDraftProduct(value.product);
       setQuery(value.query); setSearch(value.query); setPlatform(value.platform); setSort(value.sort);
-      setSelectedTags(value.tags); setDraftTags(new Set(value.tags)); setWarrantyDaysMin(value.warranty); setDraftWarrantyDaysMin(value.warranty);
+      setSelectedTags(value.tags); setDraftTags(new Set(value.tags)); setInvalidFilters(value.invalidFilters);
       setNewcomer(value.newcomer);
       setMembershipKinds(value.membershipKinds); setDraftMembershipKinds(value.membershipKinds);
       setCursor(value.cursor);
@@ -1064,12 +999,12 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
   const intentTags = aiSearch && membershipNegation.test(query) ? EMPTY_LIST : searchIntentTags(membershipSearch(query, aiSearch).text);
   const hasRecognizedIntent = intentTags.length > 0 || searchMembership.kinds.length > 0;
   const selectedTagList = useMemo(() => allTags.filter(tag => selectedTags.has(tagKey(tag))), [allTags, selectedTags]);
-  const activeTagLabels = useMemo(() => [...selectedTagList.map(displayTag), ...(warrantyDaysMin ? ['质保时长：至少' + warrantyDaysMin + '天'] : [])], [selectedTagList, warrantyDaysMin]);
-  const selectedCount = selectedTags.size + Number(Boolean(warrantyDaysMin)) + Number(Boolean(selectedProduct)) + effectiveKinds.length;
+  const activeTagLabels = useMemo(() => selectedTagList.map(displayTag), [selectedTagList]);
+  const selectedCount = selectedTags.size + Number(Boolean(selectedProduct)) + effectiveKinds.length;
   const draftProductData = products.find(item => item.id === draftProduct) || (draftProduct === selectedProduct ? productQuery.data : undefined);
   const showMembershipFilter = draftProduct ? draftProductData?.isAiMembership : matchedProducts.some(item => item.isAiMembership);
   const draftKinds = draftProductData?.isAiMembership === false ? EMPTY_LIST : draftMembershipKinds;
-  const draftRequest = catalogParams(searchMembership.text, platform, draftTags, draftWarrantyDaysMin, draftProduct, newcomer, draftKinds).toString();
+  const draftRequest = catalogParams(searchMembership.text, platform, draftTags, draftProduct, newcomer, draftKinds).toString();
   // Platform switches return the same `platformFacets`, so only the list blanks behind the skeleton.
   const visibleItems = useMemo(() => catalogQuery.isPlaceholderData || !membershipReady ? EMPTY_LIST
     : data.items.flatMap(item => {
@@ -1079,19 +1014,13 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
       return groups.filter(group => group.kind !== 'unclassified').map(group => ({ item, group, key: `${item.id}:${group.kind}` }));
     }),
   [catalogQuery.isPlaceholderData, data.items, priceRevision, membershipReady]);
-  const clearFilters = () => { if (selectedCount) { setSelectedTags(new Set()); setWarrantyDaysMin(''); setSelectedProduct(''); setMembershipKinds([]); if (searchMembership.kinds.length) changeSearch(searchMembership.text); trackUsage('filter'); } setDraftTags(new Set()); setDraftWarrantyDaysMin(''); setDraftProduct(''); setDraftMembershipKinds([]); };
+  const clearFilters = () => { if (selectedCount) { setSelectedTags(new Set()); setSelectedProduct(''); setMembershipKinds([]); if (searchMembership.kinds.length) changeSearch(searchMembership.text); trackUsage('filter'); } setDraftTags(new Set()); setDraftProduct(''); setDraftMembershipKinds([]); };
   const toggleDraftTag = key => {
     setDraftTags(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
   };
-  const changeDraftWarranty = (value, tags) => {
-    setDraftWarrantyDaysMin(value);
-    setDraftTags(tags);
-  };
   const applyFilters = () => {
-    if (!isValidWarrantyMinimum(draftWarrantyDaysMin)) return;
-    const days = draftWarrantyDaysMin ? String(Number(draftWarrantyDaysMin)) : '';
-    if (!equalTags(selectedTags, draftTags) || warrantyDaysMin !== days || selectedProduct !== draftProduct || membershipKinds.join() !== draftKinds.join()) {
-      setSelectedTags(new Set(draftTags)); setWarrantyDaysMin(days); setSelectedProduct(draftProduct); setMembershipKinds(draftKinds);
+    if (!equalTags(selectedTags, draftTags) || selectedProduct !== draftProduct || membershipKinds.join() !== draftKinds.join()) {
+      setSelectedTags(new Set(draftTags)); setSelectedProduct(draftProduct); setMembershipKinds(draftKinds);
       if (draftKinds.length) setNewcomer(false);
       if (searchMembership.kinds.length) { setQuery(searchMembership.text); setSearch(searchMembership.text); }
       trackUsage('filter');
@@ -1240,7 +1169,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
           <div className="catalog-actions">
             <label className="catalog-newcomer-toggle"><input type="checkbox" role="switch" aria-label="新手" checked={effectiveNewcomer} onChange={event => changeNewcomer(event.target.checked)} /><span>新手</span></label>
             <label className="sort-control"><select value={sort} onChange={changeSort} aria-label="商品排序"><option value="default">默认顺序</option><option value="price">起价最低</option><option value="updated">最近更新</option></select></label>
-            <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-expanded={filterOpen} aria-controls="catalog-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraftTags(new Set(selectedTags)); setDraftWarrantyDaysMin(warrantyDaysMin); setDraftProduct(selectedProduct); setDraftMembershipKinds(effectiveKinds); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
+            <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-expanded={filterOpen} aria-controls="catalog-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraftTags(new Set(selectedTags)); setDraftProduct(selectedProduct); setDraftMembershipKinds(effectiveKinds); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
           </div>
         </div>
       </section>
@@ -1256,8 +1185,9 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
         <div className="dialog-header"><h2 id="platform-picker-title">选择平台</h2><button type="button" aria-label="关闭平台选择" onClick={() => setPlatformPickerOpen(false)}>×</button></div>
         <div className="platform-picker-options" role="group" aria-label="商品平台">{platforms.map(item => <button key={item} type="button" aria-pressed={item === platform} onClick={() => changePlatform(item)}><span>{item === '全部' ? '全部平台' : displayPlatform(item)}</span><span aria-hidden="true">{item === platform ? '✓' : ''}</span></button>)}</div>
       </ModalDialog> : null}
-      <FilterPanel open={filterOpen} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen || disclaimerOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => facetQuery.refetch()} draftTags={draftTags} draftWarrantyDaysMin={draftWarrantyDaysMin} draftProduct={draftProduct} extraCount={draftKinds.length} onWarrantyChange={changeDraftWarranty} onToggle={toggleDraftTag} onClear={() => { setDraftTags(new Set()); setDraftWarrantyDaysMin(''); setDraftProduct(''); setDraftMembershipKinds([]); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
-        preview={filterOpen && membershipReady && isValidWarrantyMinimum(draftWarrantyDaysMin) ? <FilterCount params={draftRequest} enabled current={draftRequest === request && catalogQuery.data && !catalogQuery.isPlaceholderData ? data : undefined} /> : null}>
+      {invalidFilters && <p role="alert">部分旧筛选条件已失效，请重新选择。<button type="button" className="text-button" onClick={() => setInvalidFilters(false)}>知道了</button></p>}
+      <FilterPanel open={filterOpen} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen || disclaimerOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => facetQuery.refetch()} draftTags={draftTags} draftProduct={draftProduct} extraCount={draftKinds.length} onToggle={toggleDraftTag} onClear={() => { setDraftTags(new Set()); setDraftProduct(''); setDraftMembershipKinds([]); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
+        preview={filterOpen && membershipReady ? <FilterCount params={draftRequest} enabled current={draftRequest === request && catalogQuery.data && !catalogQuery.isPlaceholderData ? data : undefined} /> : null}>
         {products.length ? <fieldset className="filter-group"><legend>标准商品</legend><div className="filter-group-content"><select className="catalog-standard-select" aria-label="标准商品" value={draftProduct} onChange={event => {
           const product = products.find(item => item.id === event.target.value);
           setDraftProduct(event.target.value);
@@ -1272,7 +1202,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
             const next = effectiveKinds.filter(value => value !== kind); setMembershipKinds(next); setDraftMembershipKinds(next);
             if (searchMembership.kinds.length) { setQuery(searchMembership.text); setSearch(searchMembership.text); }
           }}>AI会员：{membershipKindLabel(kind)} ×</button>)}
-          {selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}{warrantyDaysMin ? <button type="button" onClick={() => { setWarrantyDaysMin(''); setDraftWarrantyDaysMin(''); trackUsage('filter'); }}>质保至少{warrantyDaysMin}天 ×</button> : null}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
+          {selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
         {error ? <div className="catalog-error" role="alert"><span>{error}</span><button type="button" onClick={() => catalogQuery.refetch()}>重新加载</button></div> : null}
         {loading && !visibleItems.length ? <CatalogSkeleton /> : null}
         <section id="catalog-quotes" className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={effectiveNewcomer} factLimit={desktopFilters ? 2 : 1} /></section>

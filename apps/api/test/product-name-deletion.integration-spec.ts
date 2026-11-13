@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -165,7 +166,7 @@ for (const path of ['single', 'batch', 'crawler'] as const) {
     const tag = await db.transaction().execute(tx => createTagJob(tx, { model: 'mock', productIds: [item.id], parentIdentityJobId: identity.id }));
     await db.updateTable('ai_jobs').set({ status: 'succeeded', phase: 'completed' }).where('id', '=', tag.id).execute();
     await db.updateTable('ai_job_input_members').set({ status: 'classified', output: jsonb({ outcome: 'updated' }) }).where('job_id', '=', tag.id).execute();
-    await db.insertInto('product_tags').values({ product_id: item.id, name: 'duration', value: 'monthly' }).execute();
+    await db.insertInto('product_tags').values(tagRows({ product_id: item.id, name: 'duration', value: 'monthly' })).execute();
     const before = (await products.findById(item.id))!;
     const membership = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', item.id).execute();
     const tags = await products.listTags(item.id);

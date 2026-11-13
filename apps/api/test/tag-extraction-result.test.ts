@@ -4,7 +4,7 @@ import { validateTagExtractionDecision, buildTagExtractionOutcome } from '../src
 
 test('tag extraction retains rejected canonical facts and sanitized citations', () => {
   const decision = validateTagExtractionDecision(1n, [
-    { name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '1个月' }] },
+    { name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1个月' }] },
     { name: 'renewable', value: '有', evidence: [{ path: 'sourceData.note', quote: 'password=hidden' }] },
   ], { spec: '1个月', sourceData: { note: 'password=hidden' } });
   assert.equal(decision.tags.length, 1);
@@ -13,18 +13,19 @@ test('tag extraction retains rejected canonical facts and sanitized citations', 
   assert.ok(decision.rejectedTags[0]?.reasonCode);
 });
 
-test('audit distinguishes unchanged, updates, empty and review while retaining unconfirmed fields', () => {
-  const decision = validateTagExtractionDecision(1n, [{ name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '1个月' }] }], { spec: '1个月' });
-  const before = [{ name: 'duration', value: '1 month' }, { name: 'renewable', value: '有' }];
+test('audit includes removals and full-set replacements', () => {
+  const decision = validateTagExtractionDecision(1n, [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1个月' }] }], { spec: '1个月' });
+  const before = [{ name: 'duration', value: 30 }, { name: 'renewable', value: '有' }];
   const unchanged = buildTagExtractionOutcome(decision, before);
-  assert.equal(unchanged.outcome, 'unchanged');
-  assert.deepEqual(unchanged.retainedUnconfirmed, [before[1]]);
-  const updated = buildTagExtractionOutcome(decision, [{ name: 'duration', value: '1年' }]);
+  assert.equal(unchanged.outcome, 'updated');
+  assert.deepEqual(unchanged.after, [before[0]]);
+  assert.equal('retainedUnconfirmed' in unchanged, false);
+  const updated = buildTagExtractionOutcome(decision, [{ name: 'duration', value: 365 }]);
   assert.equal(updated.outcome, 'updated');
   assert.equal(updated.diff.length, 1);
-  assert.equal(buildTagExtractionOutcome(validateTagExtractionDecision(1n, [], {}), before).outcome, 'empty');
+  assert.equal(buildTagExtractionOutcome(validateTagExtractionDecision(1n, [], {}), before).outcome, 'updated');
   const rejected = validateTagExtractionDecision(1n, [{ name: 'renewable', value: '有', evidence: [{ path: 'spec', quote: '无' }] }], { spec: '无' });
-  assert.equal(buildTagExtractionOutcome(rejected, before).outcome, 'review');
+  assert.equal(buildTagExtractionOutcome(rejected, before).outcome, 'updated');
 });
 
 test('all retained audit strings and arrays are bounded and redacted', () => {
@@ -32,7 +33,7 @@ test('all retained audit strings and arrays are bounded and redacted', () => {
   const audit=buildTagExtractionOutcome({productId:1n,tags:[],rejectedTags:[]},before,{outcome:'skipped',reasonCode:'password=hidden'});
   assert.equal(audit.before.length,256);
   assert.equal(audit.before[0]?.value,'Bearer [redacted]');
-  assert.equal(audit.retainedUnconfirmed[0]?.name,'password=[redacted]');
+  assert.equal(audit.after[0]?.name,'password=[redacted]');
   assert.equal(audit.reasonCode,'password=[redacted]');
   assert.ok(!JSON.stringify(audit).includes('hidden'));
 });

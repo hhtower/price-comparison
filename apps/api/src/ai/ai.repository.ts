@@ -1086,11 +1086,10 @@ export class AiRepository {
           if (!isDeepStrictEqual(product.membership_features, features)) changed = true;
           await tx.updateTable('products').set({ membership_features: jsonb(features as unknown as JsonValue) }).where('id', '=', product.id).execute();
         }
-        if (!featureTask && result.diff.length) {
-          const names = result.diff.map(change => change.name);
-          await tx.deleteFrom('product_tags').where('product_id', '=', member.product_id).where('name', 'in', names).execute();
-          const tags = decision!.tags.filter(tag => names.includes(tag.name));
-          if (tags.length) await tx.insertInto('product_tags').values(tags.map(({ name, value }) => ({ product_id: member.product_id, name, value }))).execute();
+        if (!featureTask && !skip && decision && result.diff.length) {
+          await tx.deleteFrom('product_tags').where('product_id', '=', member.product_id).execute();
+          const tags = decision.tags;
+          if (tags.length) await tx.insertInto('product_tags').values(tags.map(({ name, value }) => ({ product_id: member.product_id, name, value: jsonb(value) }))).execute();
           changed = true;
         }
         if (!featureTask && !skip && decision?.reviewed && decision.textReview && text) {
@@ -1754,7 +1753,7 @@ export class AiRepository {
           classification_decision: stage === 'review' && typeof item?.classificationReviewed === 'boolean' ? item.classificationReviewed : null,
         } : {}),
         proposals: stage === 'extract' && Array.isArray(item?.tags) ? [...item.tags, ...(Array.isArray(item.rejectedTags) ? item.rejectedTags : [])].map((tag, proposalIndex) => redact({
-          proposalIndex, name: sanitizeTagAuditText(tag.name, 100), value: sanitizeTagAuditText(tag.value, 500),
+          proposalIndex, name: sanitizeTagAuditText(tag.name, 100), value: typeof tag.value === 'string' ? sanitizeTagAuditText(tag.value, 500) : tag.value,
           evidence: tag.evidence.slice(0, 8).map(citation => ({
             path: sanitizeTagAuditText(citation.path, 300), quote: sanitizeTagAuditText(citation.quote),
           })),

@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
@@ -84,7 +85,7 @@ async function seed(db: Kysely<DatabaseSchema>, options: { stale?: boolean; pend
   }
   await db.insertInto('standard_product_members').values({ product_id: p.id, standard_product_id: standard.id,
     assignment_source: 'ai', decision_version: jobs[0]! }).execute();
-  await db.insertInto('product_tags').values({ product_id: p.id, name: fact.name, value: fact.value }).execute();
+  await db.insertInto('product_tags').values(tagRows({ product_id: p.id, name: fact.name, value: fact.value })).execute();
   const event = await db.insertInto('product_change_events').values({ product_id: p.id, shop_id: shop.id,
     content_version: p.content_version, fingerprint: old, event_type: 'created',
     payload: jsonb({ sourceName, description, ...legacyPayload }) }).returning('id').executeTakeFirstOrThrow();

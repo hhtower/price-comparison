@@ -11,6 +11,7 @@ import { CATALOG_DISPLAY_SEARCH_LABELS, CATALOG_PRODUCT_ALIASES, sanitizeOfferNa
 import { PriceHistoryRepository } from './price-history.repository.js';
 import { isAiMembership, MEMBERSHIP_GROUPS, MEMBERSHIP_POLICY_VERSION, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { catalogMembershipKind, failedMembershipFeatures } from '../standardization/membership-classification.js';
+import type { PurchaseTag } from '@price-comparison/catalog/purchase-attributes';
 
 export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly identityNames?: readonly string[]; readonly kind: string; readonly mergedIntoId?: string;
   readonly identity?: { family: string; product: string; tier: string }; readonly isAiMembership?: boolean }
@@ -45,7 +46,7 @@ function membershipScope(input: Pick<CatalogQuery, 'newcomer' | 'membershipKinds
   return input.newcomer ? sql<boolean>`(not (${ai}) or ${kind} in ('account', 'top_up'))` : sql<boolean>`true`;
 }
 
-export interface CatalogTag { readonly name: string; readonly value: string }
+export type CatalogTag = Pick<PurchaseTag, 'name' | 'value'>;
 export type CatalogSort = 'default' | 'price' | 'updated';
 export type CatalogOfferSort = 'price' | 'priceDesc' | 'updated';
 export interface CatalogCursor { readonly sortOrder: bigint; readonly standardProductId: bigint; readonly sort?: Exclude<CatalogSort, 'default'>; readonly sortValue?: string }
@@ -63,10 +64,9 @@ export interface CatalogQuery {
   readonly detailPageSize?: number;
   readonly platform?: string;
   readonly search?: string;
-  readonly warrantyDaysMin?: number;
   readonly newcomer?: boolean;
   readonly membershipKinds?: readonly MembershipGroup[];
-  readonly membershipSearch?: { readonly kinds: readonly MembershipKind[]; readonly delivery: boolean; readonly access?: boolean; readonly terms: readonly string[] };
+  readonly membershipSearch?: { readonly kinds: readonly MembershipKind[]; readonly terms: readonly string[] };
   readonly tags: readonly CatalogTag[];
   readonly cursor?: string;
   readonly limit: number;
@@ -143,11 +143,11 @@ export interface CatalogPage {
   readonly platformFacets: readonly string[];
   readonly total: number;
   readonly offerTotal?: number;
-  readonly appliedQuery?: { readonly text: string; readonly tags: readonly CatalogTag[]; readonly warrantyDaysMin?: number; readonly membershipKinds?: readonly MembershipGroup[] };
+  readonly appliedQuery?: { readonly text: string; readonly tags: readonly CatalogTag[]; readonly membershipKinds?: readonly MembershipGroup[] };
   readonly nextCursor?: string;
 }
 
-export type CatalogFacetsQuery = Pick<CatalogQuery, 'platform' | 'search' | 'tags' | 'warrantyDaysMin' | 'newcomer' | 'membershipKinds' | 'membershipSearch'
+export type CatalogFacetsQuery = Pick<CatalogQuery, 'platform' | 'search' | 'tags' | 'newcomer' | 'membershipKinds' | 'membershipSearch'
   | 'standardProductId' | 'shopQuery' | 'shopId' | 'priceMin' | 'priceMax' | 'currency'>;
 export interface CatalogFacets { readonly nextExpiryAt?: string | null; readonly tagFacets: readonly (Pick<CatalogTag, 'name' | 'value'> & { readonly priority: number })[] }
 
@@ -184,6 +184,13 @@ function offerPayload(alias: string): RawBuilder<unknown> {
     'paymentMethod', ${offer}.payment_method, 'settlementQuantity', ${offer}.settlement_quantity,
     'productUrl', ${offer}.product_url, 'spec', ${offer}.product_spec, 'tags', ${offer}.tags,
     'capturedAt', ${offer}.captured_at, 'stale', false, 'inStock', true, 'stockQuantity', ${offer}.stock_quantity)`;
+}
+
+function tagConditions(tags: readonly CatalogTag[]): { name: string; condition: RawBuilder<unknown> }[] {
+  const dimensions = new Map<string, CatalogTag[]>();
+  for (const tag of tags) dimensions.set(tag.name, [...(dimensions.get(tag.name) ?? []), tag]);
+  return [...dimensions].map(([name, values]) => ({ name, condition: sql`(
+    ${sql.join(values.map(tag => sql`r.tags @> ${JSON.stringify([tag])}::jsonb`), sql` or `)})` }));
 }
 
 export function encodeCatalogCursor(cursor: CatalogCursor): string {
@@ -283,8 +290,7 @@ export class CatalogRepository {
     });
     const last = visible.at(-1);
     return { items, nextExpiryAt: null, platformFacets: groupCatalogPlatforms(platformFacets), total: Number(total), offerTotal: Number(result.offer_total),
-      appliedQuery: { text: query.search ?? '', tags: query.tags, ...(query.membershipKinds ? { membershipKinds: query.membershipKinds } : {}),
-        ...(query.warrantyDaysMin ? { warrantyDaysMin: query.warrantyDaysMin } : {}) },
+      appliedQuery: { text: query.search ?? '', tags: query.tags, ...(query.membershipKinds ? { membershipKinds: query.membershipKinds } : {}) },
       ...(hasNext && last ? { nextCursor: encodeCatalogCursor({ sortOrder: BigInt(last.sortOrder), standardProductId: BigInt(last.id),
         ...(query.sort && query.sort !== 'default' ? { sort: query.sort, sortValue: last.sortValue } : {}) }) } : {}) };
   }
@@ -315,8 +321,7 @@ export class CatalogRepository {
         and ${price} >= 0 and ${price} < 'Infinity'::numeric
         ${input.currency ? sql`and r.currency = ${input.currency}` : sql``}
         ${input.priceMax !== undefined ? sql`and ${price} <= ${input.priceMax}::numeric` : sql``}
-        ${input.tags.length ? sql`and r.tags @> ${JSON.stringify(input.tags)}::jsonb` : sql``}
-        ${input.warrantyDaysMin !== undefined ? sql`and r.warranty_days >= ${input.warrantyDaysMin}` : sql``}
+        ${input.tags.length ? sql`and ${sql.join(tagConditions(input.tags).map(tag => tag.condition), sql` and `)}` : sql``}
       order by r.product_id`.execute(this.database);
     return result.rows.map(offer => ({ ...offer, name: sanitizeOfferName(offer.name) }));
   }
@@ -432,25 +437,8 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       (${aiStandard} and ${aiWords.length ? sql.join(aiWords.map(wordCondition), sql` and `) : sql`true`})
       or (not (${aiStandard}) and ${words.length ? sql.join(words.map(wordCondition), sql` and `) : sql`true`}))`);
   } else conditions.push(...words.map(wordCondition));
-  const dimensions = new Map<string, CatalogTag[]>();
-  for (const tag of input.tags) dimensions.set(tag.name, [...(dimensions.get(tag.name) ?? []), tag]);
-  const tagMatches = (tags: CatalogTag[]) => tags.length ? sql`(
-    ${sql.join(tags.map(tag => sql`r.tags @> ${JSON.stringify([{ name: tag.name, value: tag.value.toLowerCase() }])}::jsonb`), sql` or `)})` : sql`true`;
-  const tagConditions = [...dimensions].map(([name, tags]) => {
-    const condition = tagMatches(tags);
-    const aiStandard = sql`r.standard_product_id in (select id from catalog_standards where is_ai_membership)`;
-    // Only inferred shared access is a rental alias; other access requirements still constrain AI offers.
-    if (name === 'access' && input.membershipSearch?.access) {
-      return { name, condition: sql`(case when ${aiStandard}
-        then ${tagMatches(tags.filter(tag => tag.value !== 'shared'))} else ${condition} end)` };
-    }
-    return { name, condition: name === 'delivery' && input.membershipSearch?.delivery
-      ? sql`(${aiStandard} or ${condition})` : condition };
-  });
-  const minimumDays = input.warrantyDaysMin;
-  if (minimumDays !== undefined) tagConditions.push({ name: 'warranty_days', condition: sql`r.warranty_days >= ${minimumDays}` });
-  const filters = tagConditions.length
-    ? sql.join(tagConditions.map(({ condition }) => condition), sql` and `) : sql`true`;
+  const tags = tagConditions(input.tags);
+  const filters = tags.length ? sql.join(tags.map(({ condition }) => condition), sql` and `) : sql`true`;
   const cursor = input.cursor ? decodeCatalogCursor(input.cursor) : undefined;
   const sort = input.sort ?? 'default';
   if (cursor && (cursor.sort ?? 'default') !== sort) throw new DomainValidationError('INVALID_CURSOR', '分页游标与排序方式不一致');
@@ -458,7 +446,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   const afterCursor = !cursor ? sql`true` : sort === 'default'
     ? sql`(sort_order, standard_product_id) > (${cursor.sortOrder}, ${cursor.standardProductId})`
     : sql`(${sortValue}, sort_order, standard_product_id) > (${cursor.sortValue}::numeric, ${cursor.sortOrder}, ${cursor.standardProductId})`;
-  const preparedTotals = !words.length && !tagConditions.length && !input.newcomer && !input.detailKind
+  const preparedTotals = !words.length && !tags.length && !input.newcomer && !input.detailKind
     && !input.membershipKinds?.length && !input.membershipSearch
     && input.priceMin === undefined && input.priceMax === undefined;
   const rankingCtes = sql`${preparedTotals ? sql`prepared_totals as materialized (
@@ -540,18 +528,13 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       from catalog_read_facet_counts f
       where f.facet_tags in (select facet_tags from scoped_skus)`}
     ), facet_tags as materialized (
-      select t->>'name' as name, t->>'value' as value, sum(e.weight)::int as priority
+      select t->>'name' as name, t->'value' as value, sum(e.weight)::int as priority
       from facet_sets e cross join lateral jsonb_array_elements(e.tags) t
-      group by t->>'name', t->>'value'
-    ), known_dimensions as materialized (
-      select distinct name from facet_tags where value <> 'unknown'
+      group by t->>'name', t->'value'
     ), facet_options as (
       select distinct name, value from facet_tags
-      where name <> 'warranty_detail' and (value <> 'unknown'
-        or name = any(${[...dimensions.keys()]}::text[])
-        or name in (select name from known_dimensions))
       union
-      select s->>'name', s->>'value' from jsonb_array_elements(${JSON.stringify(input.tags.map(({ name, value }) => ({ name, value })))}::jsonb) s
+      select s->>'name', s->'value' from jsonb_array_elements(${JSON.stringify(input.tags.map(({ name, value }) => ({ name, value })))}::jsonb) s
     )`;
   if (optionsOnly) {
     // Priority uses prepared-set frequency, not a count of matching offers.
@@ -561,15 +544,15 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
         null::text as next_expiry_at
       from facet_options f left join facet_tags t using (name, value)`;
   }
-  const navigationIds = preparedTotals ? sql`select distinct standard_product_id from prepared_totals` : requestedPlatform || tagConditions.length
+  const navigationIds = preparedTotals ? sql`select distinct standard_product_id from prepared_totals` : requestedPlatform || tags.length
     ? sql`select distinct standard_product_id from eligible_skus`
     : sql`select standard_product_id from product_totals`;
-  return sql<CatalogResult>`with ${eligibleCte}, ${tagConditions.length ? sql`purchase_matches as materialized (
+  return sql<CatalogResult>`with ${eligibleCte}, ${tags.length ? sql`purchase_matches as materialized (
       select r.product_id from catalog_read_offers r where ${filters}
-    ),` : sql``} filtered_skus as ${words.length || requestedPlatform || tagConditions.length || membershipFiltered ? sql`materialized` : sql`not materialized`} (
+    ),` : sql``} filtered_skus as ${words.length || requestedPlatform || tags.length || membershipFiltered ? sql`materialized` : sql`not materialized`} (
       select e.* from eligible_skus e
       where ${platformCondition}
-      ${tagConditions.length ? sql`and e.product_id in (select product_id from purchase_matches)` : sql``}
+      ${tags.length ? sql`and e.product_id in (select product_id from purchase_matches)` : sql``}
     ), ${rankingCtes}, preview_skus as materialized (
       select w.*, ${payloadFields}
       from ranked_shops w join catalog_read_offers r using (product_id)

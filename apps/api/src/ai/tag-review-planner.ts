@@ -21,7 +21,7 @@ export function planTagReviewRequests(request: {
       const tags = subset.proposals.items.find(item => item.id === input.id)?.tags.length ?? 0;
       // A singleton is indivisible and retains the entire configured response budget.
       return total + Math.min(limits.outputReserveTokens, request.membershipFeatures ? 64
-        : 64 + tags * 2 + (readTextEvidence(input) ? TEXT_REVIEW_OUTPUT_TOKENS : 0));
+        : 64 + tags * (24 + Math.ceil(input.id.length / 3)) + (readTextEvidence(input) ? TEXT_REVIEW_OUTPUT_TOKENS : 0));
     }, 0);
     return { request: subset, estimate, oversized: estimate.requestBytes > limits.maxRequestBytes
       || estimate.estimatedTotalTokens > limits.maxContextTokens || estimatedOutputTokens > limits.outputReserveTokens };

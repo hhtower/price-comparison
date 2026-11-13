@@ -23,10 +23,10 @@ test('guide opens the matching glossary group before scrolling to field and grou
   window.history.replaceState({}, '', '/guide#duration');
   const { container } = render(<App />);
   expect(document.getElementById('duration').closest('details')).toHaveAttribute('open');
-  expect(document.getElementById('delivery').closest('details')).not.toHaveAttribute('open');
-  const delivery = document.getElementById('delivery');
+  expect(document.getElementById('region').closest('details')).not.toHaveAttribute('open');
+  const delivery = document.getElementById('region');
   delivery.scrollIntoView = vi.fn();
-  window.history.replaceState({}, '', '/guide#delivery');
+  window.history.replaceState({}, '', '/guide#region');
   window.dispatchEvent(new HashChangeEvent('hashchange'));
   expect(delivery.scrollIntoView).toHaveBeenCalledOnce();
   expect(delivery).toBeVisible();

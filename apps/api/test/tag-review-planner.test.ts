@@ -44,3 +44,13 @@ test('output planning preserves the indivisible singleton and existing input-too
   assert.equal(singleton.length, 1);
   assert.equal(singleton[0]!.oversized, false);
 });
+
+test('keyed decision JSON consumes output budget even without text review', () => {
+  const inputs = [{ id: '1000000000000001', name: '商品' }, { id: '1000000000000002', name: '商品' }];
+  const proposals = { items: inputs.map(input => ({ id: input.id, tags: Array.from({ length: 100 }, (_, index) =>
+    ({ name: 'supported_client', value: `client${index}`, path: 'name', quote: '商品' })) })) };
+  const groups = planTagReviewRequests({ model: 'mock', inputs, proposals }, { ...limits, outputReserveTokens: 4000 });
+  assert.equal(groups.length, 2);
+  assert.ok(groups.every(group => !group.oversized));
+  assert.equal(groups.flatMap(group => group.request.proposals.items.flatMap(item => item.tags)).length, 200);
+});

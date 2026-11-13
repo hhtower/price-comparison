@@ -89,7 +89,7 @@ async function reviewFixture(count = 1, fanout = false) {
     status: 'succeeded', step: 'done', request_budget_used: 1, confirmed_requests: 1,
     reference_snapshot: jsonb(reference), product_ids: jsonb(members.map(member => String(member.input_id))), product_count: BigInt(count),
     validated_decision: jsonb({ items: members.map(member => ({ productId: String(member.input_id), tags: [{
-      name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '1 month' }],
+      name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1 month' }],
     }], rejectedTags: [] })) }),
   }).where('id', '=', f.batch.id).execute();
   for (const member of members) await db.updateTable('ai_job_input_members').set({
@@ -187,14 +187,14 @@ for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request
     return new Response(`data: ${JSON.stringify({
       id: 'budget-response', model: 'glm-5.3',
       choices: [{ delta: { content: JSON.stringify({ items: [{ id: String(f.product.id),
-        ...(stage === 'review' ? { decisions: [true], textReview: null } : { tags: [] }),
+        ...(stage === 'review' ? { decisions: [{ tagId: `${f.product.id}:0`, accepted: true }], textReview: null } : { tags: [] }),
       }] }) }, finish_reason: 'stop' }],
     })}\n\ndata: [DONE]\n\n`);
   });
   const execute = await modelCall.prepare!({ id: f.batch.id, row: { job_type: 'tag_extraction' } }, new AbortController().signal);
   const result = await execute();
   assert.deepEqual(result.tagExtractionItems, [{ productId: f.product.id,
-    tags: stage === 'review' ? [{ proposalIndex: 0, name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '1 month' }] }] : [],
+    tags: stage === 'review' ? [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1 month' }] }] : [],
     rejectedTags: [], ...(stage === 'review' ? { reviewed: true, reviewDecisions: [true], textReview: null } : {}),
   }]);
   assert.ok(body);
@@ -219,7 +219,7 @@ for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request
       shopSource: (frozen.payload as Record<string, unknown>).shopSource,
     }]);
     assert.deepEqual(sentPayload.proposals, { items: [{ id: String(f.product.id), tags: [
-      { name: 'duration', value: '1 month', path: 'spec', quote: '1 month' },
+      { tagId: `${f.product.id}:0`, name: 'duration', value: 30, path: 'spec', quote: '1 month' },
     ] }] });
     assert.deepEqual(prepared.reference_snapshot, f.batch.reference_snapshot);
   } else assert.deepEqual(sentPayload, [expectedInput]);

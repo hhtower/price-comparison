@@ -22,7 +22,7 @@ const offer = { shopId: '10', productId: '11', name: 'Monthly plan', shop: 'Exam
   price: '19.90', listedPrice: '9.95', settlementQuantity: 2, currency: 'CNY',
   priceStatus: 'verified', priceVerifiedAt: '2026-11-04T00:00:00.000Z', priceExpiresAt: '2026-11-05T00:00:00.000Z',
   inventoryExpiresAt: '2026-11-05T00:00:00.000Z', paymentMethod: 'card',
-  productUrl: 'https://shop.example/products/11', spec: '30 days', tags: [{ name: 'duration', value: '30 days' }],
+  productUrl: 'https://shop.example/products/11', spec: '30 days', tags: [{ name: 'duration', value: 30 }],
   capturedAt: '2026-11-04T00:00:00.000Z', stale: false, inStock: true };
 const point = { date: '2026-11-04', price: '19.90', verifiedAt: offer.priceVerifiedAt, productId: '11',
   shop: offer.shop, name: offer.name, spec: offer.spec, quantity: 2, contentVersion: '3', paymentMethod: 'card' };
@@ -227,7 +227,7 @@ test('search uses bounded cursor pagination and excludes internal product identi
 test('offers use public product visibility and full detail pagination with quote filters', async t => {
   const { call, queries } = await harness(t);
   const args = { standardProductId: '1', detailPage: 1, pageSize: 50, currency: 'CNY', priceMin: '10.00',
-    priceMax: '99.99', tags: [{ name: 'duration', value: '30 days' }], warrantyDaysMin: 7, offerSort: 'updated' };
+    priceMax: '99.99', tags: [{ name: 'duration', value: 30 }], offerSort: 'updated' };
   const response = await call('get_product_offers', args);
   assert.equal(response.statusCode, 200);
   const result = response.json().result;
@@ -247,12 +247,47 @@ test('offers use public product visibility and full detail pagination with quote
   assert.equal(queries[0].currency, 'CNY');
   assert.equal(queries[0].priceMin, '10.00');
   assert.equal(queries[0].priceMax, '99.99');
-  assert.deepEqual(queries[0].tags, [{ name: 'duration', value: '30 days' }]);
-  assert.equal(queries[0].warrantyDaysMin, 7);
+  assert.deepEqual(queries[0].tags, [{ name: 'duration', value: 30 }]);
   assert.equal(queries[0].offerSort, 'updated');
   const hidden = await call('get_product_offers', { standardProductId: '999' });
   assert.equal(hidden.json().result.isError, true);
   assert.equal(queries.length, 1, 'unavailable products must not query offers');
+});
+
+test('MCP accepts typed tag values and advertises only current fields', async t => {
+  const { call, queries, rpc } = await harness(t);
+  const tools = (await rpc('tools/list')).json().result.tools;
+  const schema = tools.find((tool: { name: string }) => tool.name === 'search_products').inputSchema;
+  assert.equal('warrantyDaysMin' in schema.properties, false);
+  assert.deepEqual([...schema.properties.tags.items.properties.name.enum].sort(), [
+    'access_channel', 'bulk_purchase', 'duration', 'region', 'sms_verification',
+    'subscription_override', 'supported_client', 'warranty',
+  ]);
+  for (const value of [0.5, 30, { kind: 'range', min: 30, max: 90 }, { kind: 'min', days: 30 },
+    { kind: 'max', days: 90 }, { kind: 'approx', days: 30 }, { kind: 'permanent' }]) {
+    const tags = [{ name: 'duration', value }];
+    assert.equal((await call('search_products', { tags })).json().result.isError, undefined);
+    assert.deepEqual(queries.at(-1)?.tags, tags);
+  }
+  for (const tags of [
+    [{ name: 'bulk_purchase', value: 'supported' }], [{ name: 'bulk_purchase', value: 'required' }],
+    [{ name: 'bulk_purchase', value: 'bundle' }], [{ name: 'warranty', value: '保订阅30天，封号不保' }],
+  ]) assert.equal((await call('get_product_offers', { standardProductId: '1', tags })).json().result.isError, undefined);
+  const count = queries.length;
+  for (const args of [
+    { warrantyDaysMin: 30 },
+    ...[
+      { name: 'delivery', value: 'account' }, { name: 'warranty_days', value: '30' },
+      { name: 'duration', value: '30 days' }, { name: 'duration', value: { kind: 'range', min: 90, max: 30 } },
+      { name: 'duration', value: { kind: 'min', days: 30, unit: 'days' } },
+      { name: 'region', value: 30 }, { name: 'warranty', value: 'covered' }, { name: 'warranty', value: 'none' },
+      { name: 'subscription_override', value: '有' }, { name: 'bulk_purchase', value: 'yes' },
+    ].map(tag => ({ tags: [tag] })),
+  ]) {
+    const response = (await call('search_products', args)).json();
+    assert.ok(response.result?.isError || response.error, JSON.stringify(args));
+  }
+  assert.equal(queries.length, count);
 });
 
 test('price history keeps decimal prices, capture times and purchase quantities', async t => {
@@ -285,9 +320,9 @@ test('MCP history carries feature scope with product and currency through shared
   assert.equal(historyQueries.length, 2);
 });
 
-test('membership filters stay distinct from delivery and reject invalid kinds over MCP', async t => {
+test('membership filters stay distinct from purchase tags and reject invalid kinds over MCP', async t => {
   const { call, queries } = await harness(t);
-  const filters = { membershipKinds: ['short_term'], newcomer: true, tags: [{ name: 'delivery', value: 'account' }] };
+  const filters = { membershipKinds: ['short_term'], newcomer: true, tags: [{ name: 'access_channel', value: 'web' }] };
   for (const [name, args] of [
     ['search_products', filters], ['get_product_offers', { ...filters, standardProductId: '1' }],
   ] as const) {
@@ -330,13 +365,13 @@ test('MCP accepts rental and all query groups for search and offers and rejects 
   assert.equal(queries.length, 4);
 });
 
-test('MCP normalizes rental aliases without losing dedicated access or interpreting uncertainty as rental', async t => {
+test('MCP normalizes rental aliases without generating removed access tags or interpreting uncertainty as rental', async t => {
   const { call, queries } = await harness(t);
   const result = await call('search_products', { q: 'ChatGPT Plus 租号（共享） 独享', newcomer: true });
   assert.equal(result.json().result.isError, undefined);
-  assert.deepEqual(queries.at(-1)?.tags, [{ name: 'access', value: 'dedicated' }, { name: 'access', value: 'shared' }]);
+  assert.deepEqual(queries.at(-1)?.tags, []);
+  assert.ok(queries.at(-1)?.search?.includes('独享'));
   assert.deepEqual(queries.at(-1)?.membershipSearch?.kinds, ['rental']);
-  assert.equal(queries.at(-1)?.membershipSearch?.access, true);
   for (const q of ['ChatGPT Plus 没有共享', 'ChatGPT Plus 共享状态未知', 'ChatGPT Plus 租号(共享)状态未知']) {
     assert.equal((await call('search_products', { q })).json().result.isError, undefined);
     assert.equal(queries.at(-1)?.membershipSearch, undefined, q);

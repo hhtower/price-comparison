@@ -1,7 +1,9 @@
-import type { ShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
+import { validateShoppingNeeds, type ShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
-import { purchaseTagLabel, purchaseWarrantyLabel } from '@price-comparison/catalog/purchase-attributes';
+import { purchaseTagLabel, purchaseWarrantyLabel, tagValueKey, type TagValue } from '@price-comparison/catalog/purchase-attributes';
+import { isCanonicalProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import type { CatalogOffer, PublicCatalogProduct } from '../catalog/catalog.repository.js';
 import { capabilitySupportsPurpose, type CapabilityEvidence } from './assistant-capabilities.js';
@@ -13,22 +15,9 @@ export interface AssistantCandidate {
   capabilityEvidence: CapabilityEvidence[];
 }
 
-function tag(candidate: AssistantCandidate, name: string): string | undefined {
-  const values = new Set(candidate.offer.tags.filter(tag => tag.name === name).map(tag => tag.value));
-  return values.size === 1 ? [...values][0] : undefined;
-}
-
-function warrantyDays(candidate: AssistantCandidate): number | undefined {
-  if (candidate.offer.tags.some(tag => tag.name === 'warranty' && tag.value !== 'covered')) return undefined;
-  const value = tag(candidate, 'warranty_days');
-  return value !== undefined && /^[0-9]+$/u.test(value) && Number.isSafeInteger(Number(value))
-    ? Number(value) : undefined;
-}
-
-function setupSteps(candidate: AssistantCandidate): number | undefined {
-  const value = tag(candidate, 'setup_steps');
-  return value !== undefined && /^[0-9]+$/u.test(value) && Number.isSafeInteger(Number(value))
-    ? Number(value) : undefined;
+function tag(candidate: AssistantCandidate, name: string): TagValue | undefined {
+  const values = candidate.offer.tags.filter(tag => tag.name === name && isCanonicalProductTag(tag)).map(tag => tag.value);
+  return values.length && values.every(value => isDeepStrictEqual(value, values[0])) ? values[0] : undefined;
 }
 
 function isMembershipProduct(product: PublicCatalogProduct): boolean {
@@ -84,19 +73,25 @@ function priceOrder(a: AssistantCandidate, b: AssistantCandidate): number {
   const currency = compareText(a.offer.currency, b.offer.currency);
   const durationA = tag(a, 'duration');
   const durationB = tag(b, 'duration');
-  return currency || (durationA === undefined ? durationB === undefined ? 0 : 1
-    : durationB === undefined ? -1 : compareText(durationA, durationB))
-    || (durationA !== undefined && durationA === durationB
+  const exactA = typeof durationA === 'number' ? durationA : undefined;
+  const exactB = typeof durationB === 'number' ? durationB : undefined;
+  return currency || (exactA === undefined ? exactB === undefined ? 0 : 1
+    : exactB === undefined ? -1 : exactA - exactB)
+    || (exactA !== undefined && exactA === exactB
       ? compareMoney(money(a.offer.price)!, money(b.offer.price)!) : 0);
 }
 
 function purchaseFacets(candidate: AssistantCandidate): Map<string, Set<string>> {
   const facets = new Map<string, Set<string>>();
+  if (candidate.offer.spec.trim()) facets.set('商品规格与购买条件', new Set([
+    candidate.offer.spec.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase(),
+  ]));
   for (const tag of candidate.offer.tags) {
     const field = PURCHASE_GUIDE_FIELDS[tag.name];
-    if (!field) continue;
+    if (!field || !isCanonicalProductTag(tag)) continue;
     const values = facets.get(field.collectionGroup) ?? new Set<string>();
-    values.add(JSON.stringify([tag.name, tag.value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase()]));
+    values.add(JSON.stringify([tag.name, typeof tag.value === 'string'
+      ? tag.value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase() : tagValueKey(tag.value)]));
     facets.set(field.collectionGroup, values);
   }
   return facets;
@@ -106,8 +101,7 @@ function facetDistance(a: Map<string, Set<string>>, b: Map<string, Set<string>>)
   let distance = 0;
   let total = 0;
   for (const group of new Set([...a.keys(), ...b.keys()])) {
-    // Bound each facet's influence: more login tags must not outweigh a different purchase gate.
-    const weight = group === '其他使用条件' ? 4 : ['交付形态', '使用方式'].includes(group) ? 2 : 1;
+    const weight = group === '商品规格与购买条件' ? 4 : 1;
     const left = a.get(group);
     const right = b.get(group);
     const union = new Set([...left ?? [], ...right ?? []]);
@@ -120,6 +114,7 @@ function facetDistance(a: Map<string, Set<string>>, b: Map<string, Set<string>>)
 }
 
 export function selectCandidates(candidates: AssistantCandidate[], needs: ShoppingNeeds, now: Date, limit = 3): AssistantCandidate[] {
+  validateShoppingNeeds(needs);
   if (!Number.isFinite(now.getTime())) return [];
   const eligible = candidates.flatMap(candidate => {
     const { offer, standardProduct } = candidate;
@@ -127,15 +122,21 @@ export function selectCandidates(candidates: AssistantCandidate[], needs: Shoppi
     if (standardProduct.mergedIntoId || price === undefined
       || !/^[A-Z]{3}$/u.test(offer.currency)
       || offer.settlementQuantity !== 1
-      || offer.tags.some(tag => tag.name === 'minimum_quantity' && tag.value !== '1')
+      // Bulk labels carry no payable quantity; required packs must never masquerade as a single item.
+      || offer.tags.some(tag => tag.name === 'bulk_purchase' && tag.value !== 'supported')
       || !matchesMembership(candidate, needs)
       || !matchesRequestedProduct(standardProduct, needs)
-      || !needs.requiredTags.every(required => required.value !== 'unknown' && tag(candidate, required.name) === required.value)
-      || (needs.warrantyDaysMin !== null && (warrantyDays(candidate) ?? -1) < needs.warrantyDaysMin)) return [];
+      || !needs.requiredTags.every(required => {
+        const matches = (item: typeof required) => offer.tags.some(actual => isCanonicalProductTag(actual)
+          && actual.name === item.name && isDeepStrictEqual(actual.value, item.value));
+        return PRODUCT_TAG_RULES[required.name]!.multiple
+          ? needs.requiredTags.filter(item => item.name === required.name).some(matches)
+          : isDeepStrictEqual(tag(candidate, required.name), required.value);
+      })) return [];
     if (needs.budget) {
       const budget = money(needs.budget.amount);
       if (budget === undefined || offer.currency !== needs.budget.currency || price > budget
-        || (needs.budget.basis === 'month' && tag(candidate, 'duration') !== '1 month')) return [];
+        || (needs.budget.basis === 'month' && tag(candidate, 'duration') !== 30)) return [];
     }
     const capabilityEvidence = candidate.capabilityEvidence.filter(evidence =>
       Date.parse(evidence.checkedAt) <= now.getTime() && Date.parse(evidence.reviewAfter) > now.getTime()
@@ -147,19 +148,6 @@ export function selectCandidates(candidates: AssistantCandidate[], needs: Shoppi
     for (const preference of needs.preferences) {
       if (preference === 'lower_price') {
         const order = priceOrder(a, b);
-        if (order) return order;
-      }
-      if (preference === 'longer_warranty') {
-        const daysA = warrantyDays(a);
-        const daysB = warrantyDays(b);
-        const order = (daysB ?? -1) - (daysA ?? -1);
-        if (order) return order;
-      }
-      if (preference === 'simple_setup') {
-        const stepsA = setupSteps(a);
-        const stepsB = setupSteps(b);
-        const order = stepsA === undefined ? stepsB === undefined ? 0 : 1
-          : stepsB === undefined ? -1 : stepsA - stepsB;
         if (order) return order;
       }
     }
@@ -206,23 +194,21 @@ export function candidateEvidence(candidate: AssistantCandidate): Array<{ id: st
     text: text.length <= 240 && !/https?:\/\/|www\./iu.test(text) ? text
       : '该报价含较长条款或外部链接，请在商品详情核实完整内容。',
   });
-  const tags = [...offer.tags].sort((a, b) => compareText(a.name, b.name) || compareText(a.value, b.value));
-  const conflictingWarranty = tags.some(tag => tag.name.startsWith('warranty')
-    && !['warranty_terms', 'warranty_exclusion'].includes(tag.name)
+  const tags = offer.tags.filter(isCanonicalProductTag).sort((a, b) => compareText(a.name, b.name)
+    || compareText(tagValueKey(a.value), tagValueKey(b.value)));
+  const conflictingWarranty = tags.some(tag => tag.name === 'warranty'
     && tags.some(other => other.name === tag.name && other.value !== tag.value));
   const warranty = conflictingWarranty ? '资料存在冲突，请在商品详情核实' : purchaseWarrantyLabel(tags);
   const facts = [
     fact('price', `采集参考价为 ${offer.price ?? '未知'} ${offer.currency}，结算数量为 ${offer.settlementQuantity} 件；实际价格以商家为准。`),
     fact('availability', `采集于 ${offer.capturedAt}；采集时库存：${offer.inStock ? '有货' : '无货'}。同步存在时间差，实际价格与库存请向商家确认。`),
+    ...(offer.spec.trim() ? [fact('spec', `商品规格与购买条件：${offer.spec}`)] : []),
     ...(isMembershipProduct(candidate.standardProduct) && offer.membershipKind ? [fact('membershipKind',
       `会员商品特性：${membershipKindLabel(offer.membershipKind)}。`)] : []),
     ...(warranty ? [fact('warranty', `商家质保说明：${warranty}；具体限制以该报价的售后条款为准。`)] : []),
-    ...tags.filter(tag => !tag.name.startsWith('warranty') || ['warranty_terms', 'warranty_exclusion'].includes(tag.name)).map(tag => {
-      const label = tag.name === 'setup_steps' ? '明确操作步骤数' : PURCHASE_GUIDE_FIELDS[tag.name]?.label ?? tag.name;
-      const value = tag.name === 'delivery' && tag.value === 'top_up' ? '代充：给你已有账号充值，下单前确认账号条件和充值流程。'
-        : tag.name === 'delivery' && tag.value === 'account' ? '成品号：商家提供一个账号，下单前确认登录方式、是否独享及能否改密。'
-        : tag.name === 'warranty_exclusion' && tag.value === 'ban' ? '不保封号' : purchaseTagLabel(tag);
-      return fact(`tag:${tag.name}:${tag.value}`, `${label}：${value}`);
+    ...tags.filter(tag => tag.name !== 'warranty').map(tag => {
+      const label = PURCHASE_GUIDE_FIELDS[tag.name]?.label ?? tag.name;
+      return fact(`tag:${tag.name}:${tagValueKey(tag.value)}`, `${label}：${purchaseTagLabel(tag)}`);
     }),
     ...[...candidate.capabilityEvidence].sort((a, b) => compareText(a.id, b.id))
       .map(evidence => fact(`capability:${evidence.id}`, evidence.statement)),

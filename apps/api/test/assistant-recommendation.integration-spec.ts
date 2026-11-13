@@ -88,9 +88,9 @@ test('real catalog recommendation persists canonical UTC cards from PostgreSQL o
       standard_product_id: standard.id, product_id: source.id, publication_state: 'published',
     }).execute();
     await database.insertInto('product_tags').values([
-      { name: 'access', value: 'dedicated' }, { name: 'duration', value: '1 month' },
-      { name: 'warranty', value: 'covered' }, { name: 'warranty_days', value: '30' },
-    ].map(tag => ({ product_id: source.id, ...tag }))).execute();
+      { name: 'sms_verification', value: 'verified' }, { name: 'duration', value: 30 },
+      { name: 'warranty', value: '保订阅30天，封号不保' },
+    ].map(tag => ({ product_id: source.id, ...tag, value: jsonb(tag.value) }))).execute();
     const current = await database.selectFrom('products').selectAll().where('id', '=', source.id).executeTakeFirstOrThrow();
     await database.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], current, [], 'account') as unknown as JsonValue) })
       .where('id', '=', source.id).execute();

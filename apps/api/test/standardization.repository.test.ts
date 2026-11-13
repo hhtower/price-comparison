@@ -230,7 +230,7 @@ test('assignment, withdrawal and tag edits advance revision and invalidate the c
     const repository=new ProductsRepository(f.db);
     if(action==='assignment') await repository.assignStandardProduct(11n,4n);
     else if(action==='withdrawal') await repository.assignStandardProduct(11n,null);
-    else await repository.replaceTags(11n,action==='clear-tags'?[]:[{name:'duration',value:'annual'}]);
+    else await repository.replaceTags(11n,action==='clear-tags'?[]:[{name:'duration',value:365}]);
     assert.match(f.queries[0]!.sql,/select.*from "products".*for no key update/);
     assert.ok(f.events.includes('cache'));
     assert.ok(f.queries.some(query=>query.sql.startsWith('update "products"')&&query.sql.includes('"standardization_revision" = standardization_revision + 1')),action);

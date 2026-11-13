@@ -184,7 +184,7 @@ const referencePlan = { id: 'plus-month', name: 'ChatGPT Plus - Monthly', kind: 
 const referenceCard = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
   price: '61.68', currency: 'CNY', capturedAt: '2026-11-01T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
   detailPath: '/products/42', reasons: ['商家报价'], caveats: ['下单前核对'], evidenceIds: ['e1'],
-  offer: { name: 'Plus 代充', shop: 'AI源头', spec: '', productUrl: '', tags: [{ name: 'duration', value: '1 month' }, { name: 'region', value: 'us' }] } };
+  offer: { name: 'Plus 代充', shop: 'AI源头', spec: '', productUrl: '', tags: [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }] } };
 async function renderReferenceCards(plans = [referencePlan], cards = [referenceCard]) {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   const fetcher = vi.fn(async () => Response.json({ exchangeDate: '2026-11-01',
@@ -203,7 +203,7 @@ test('cards label merchants and show their own region official price without a l
   const fetcher = await renderReferenceCards([{ ...referencePlan, prices: [referencePrice, india,
     { ...referencePrice, cnyAmount: 1, stale: true }, { ...referencePrice, cnyAmount: null },
   ] }], [referenceCard, { ...referenceCard, productId: '10', offer: { ...referenceCard.offer,
-    tags: [{ name: 'duration', value: '1 month' }, { name: 'region', value: 'in' }] } }]);
+    tags: [{ name: 'duration', value: 30 }, { name: 'region', value: 'in' }] } }]);
   const us = (await screen.findByText('官方内购参考 · 美国 · 每月')).closest('article');
   const indiaCard = screen.getByText('官方内购参考 · 印度 · 每月').closest('article');
   expect(within(us).getByText(/19.99 USD.*约 ¥139.93/)).toBeVisible();
@@ -222,7 +222,7 @@ test('cards label merchants and show their own region official price without a l
 test.each([
   ['different plan', [{ ...referencePlan, name: 'ChatGPT Pro' }], referenceCard],
   ['unavailable country', [referencePlan], { ...referenceCard, offer: { ...referenceCard.offer,
-    tags: [{ name: 'duration', value: '1 month' }, { name: 'region', value: 'in' }] } }],
+    tags: [{ name: 'duration', value: 30 }, { name: 'region', value: 'in' }] } }],
   ['ambiguous SKU', [referencePlan, { ...referencePlan, id: 'other', name: 'ChatGPT Plus - Monthly #2' }], referenceCard],
   ['ambiguous SKU with unknown duration', [referencePlan, { ...referencePlan, id: 'other', name: 'ChatGPT Plus - Monthly #2' }],
     { ...referenceCard, offer: { ...referenceCard.offer, tags: [] } }],
@@ -238,11 +238,11 @@ test.each([
   expect(screen.getByText('¥61.68')).toBeVisible();
 });
 
-test.each([['2 months', 'P1M', '每月'], ['30 days', 'P1M', '每月'], ['1 month', 'P1Y', '每年']])(
+test.each([[60, 'P1M', '每月'], [30, 'P1M', '每月'], [30, 'P1Y', '每年']])(
   'reference falls back to the actual official billing period for %s', async (duration, period, label) => {
   await renderReferenceCards([{ ...referencePlan, period }], [{ ...referenceCard, offer: { ...referenceCard.offer,
     name: 'codex Plus 两个月独享成品plus - gamil邮箱【保45天可用60天两个月】(全网独家iphone/ios pay/google pay渠道)',
-    shop: 'AI批发的杂货店', tags: [{ name: 'duration', value: duration }, { name: 'delivery', value: 'account' }, { name: 'access', value: 'dedicated' }] } }]);
+    shop: 'AI批发的杂货店', tags: [{ name: 'duration', value: duration }, { name: 'bulk_purchase', value: 'supported' }, { name: 'sms_verification', value: 'verified' }] } }]);
   expect(await screen.findByText(`官方内购参考 · 美国 · ${label}`)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
   const dialog = screen.getByRole('dialog');
@@ -258,7 +258,7 @@ test('reference prefers the matching period over a cheaper different period', as
   expect(screen.getByText(/19.99 USD.*约 ¥139.93/)).toBeVisible();
 });
 
-test.each([['12 months', 'P1Y', '每年'], ['1 year', 'P1Y', '每年'], ['1 week', 'P1W', '每周']])(
+test.each([[360, 'P12M', '每12个月'], [365, 'P1Y', '每年'], [7, 'P1W', '每周']])(
   'reference matches equivalent billing durations: %s', async (duration, period, label) => {
   await renderReferenceCards([{ ...referencePlan, period, name: 'Plus' }],
     [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'duration', value: duration }, { name: 'region', value: 'us' }] } }]);
@@ -267,8 +267,8 @@ test.each([['12 months', 'P1Y', '每年'], ['1 year', 'P1Y', '每年'], ['1 week
 
 test.each([
   ['missing', []],
-  ['unknown', [{ name: 'duration', value: 'unknown' }]],
-  ['conflicting', [{ name: 'duration', value: '1 month' }, { name: 'duration', value: '12 months' }]],
+  ['qualified', [{ name: 'duration', value: { kind: 'min', days: 30 } }]],
+  ['conflicting', [{ name: 'duration', value: 30 }, { name: 'duration', value: 360 }]],
 ])('reference uses the cheapest official billing period when quote duration is %s', async (_name, tags) => {
   await renderReferenceCards([referencePlan, { ...referencePlan, id: 'plus-year', period: 'P1Y',
     prices: [{ ...referencePrice, amount: 15, cnyAmount: 105 },
@@ -287,7 +287,7 @@ test('reference defaults to the cheapest price when both region and duration are
     { ...referencePrice, country: 'ph', countryName: '菲律宾', currency: 'PHP', amount: 999, cnyAmount: 104.29 }] },
     { ...referencePlan, id: 'plus-year', period: 'P1Y', prices: [{ ...referencePrice, amount: 200, cnyAmount: 1400 }] }],
   [{ ...referenceCard, offer: { ...referenceCard.offer,
-    tags: [{ name: 'delivery', value: 'top_up' }, { name: 'access', value: 'exclusive' }] } }]);
+    tags: [{ name: 'subscription_override', value: '无' }, { name: 'sms_verification', value: 'verified' }] } }]);
   expect(await screen.findByText('官方内购参考 · 菲律宾 · 每月')).toBeVisible();
   expect(screen.getByText(/999 PHP.*约 ¥104.29/)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
@@ -296,29 +296,31 @@ test('reference defaults to the cheapest price when both region and duration are
   expect(screen.getByRole('dialog')).not.toHaveTextContent(/报价地区未明确|报价周期未明确/);
 });
 
-test.each(['US', '美国', '美区', 'usa'])('reference recognizes explicit region alias %s', async region => {
-  await renderReferenceCards([{ ...referencePlan, prices: [referencePrice,
-    { ...referencePrice, country: 'in', countryName: '印度', cnyAmount: 130 }] }], [{ ...referenceCard, offer: { ...referenceCard.offer,
-    tags: [...referenceCard.offer.tags, { name: '地区', value: region }, { name: 'payment_region', value: 'in' }] } }]);
-  expect(await screen.findByText('官方内购参考 · 美国 · 每月')).toBeVisible();
+test.each(['US', '美国', '美区', 'usa'])('obsolete region aliases invalidate old recommendations but retain conversation text: %s', async region => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const card = { ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: '地区', value: region }] } };
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
+    needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', text: '原来的建议', options: [], cards: [card] } }] })) })} />);
+  expect(await screen.findByText(/原来的建议/)).toHaveTextContent('历史推荐条件已失效');
+  expect(screen.queryByRole('button', { name: '查看报价详情' })).not.toBeInTheDocument();
+  expect(sessionStorage.getItem('shopping-assistant')).toContain(sessionId);
 });
 
 test.each([
   ['missing region', []],
-  ['unknown region', [{ name: 'region', value: 'unknown' }]],
+  ['no inferred region', [{ name: 'supported_client', value: 'codex' }]],
   ['global region', [{ name: 'region', value: 'global' }]],
   ['random region', [{ name: 'region', value: 'random' }]],
   ['broad region', [{ name: 'region', value: 'eu' }]],
   ['conflicting regions', [{ name: 'region', value: 'us' }, { name: 'region', value: 'in' }]],
-  ['partially unknown region', [{ name: 'region', value: 'us' }, { name: 'region', value: 'unknown' }]],
-  ['other region fields', ['payment_region', 'registration_region', 'recommended_ip_region', 'region_options']
-    .map(name => ({ name, value: 'us' }))],
+  ['multiple regions', [{ name: 'region', value: 'us' }, { name: 'region', value: 'jp' }]],
+  ['network advice only', [{ name: 'access_channel', value: 'web' }]],
 ])('reference defaults to the cheapest valid price for %s', async (_name, tags) => {
   await renderReferenceCards([{ ...referencePlan, prices: [referencePrice,
     { ...referencePrice, country: 'in', countryName: '印度', currency: 'INR', amount: 1599, cnyAmount: 130 },
     { ...referencePrice, cnyAmount: 1, stale: true }, { ...referencePrice, cnyAmount: null },
   ] }], [{ ...referenceCard, offer: { ...referenceCard.offer,
-    tags: [{ name: 'duration', value: '1 month' }, ...tags] } }]);
+    tags: [{ name: 'duration', value: 30 }, ...tags] } }]);
   expect(await screen.findByText('官方内购参考 · 印度 · 每月')).toBeVisible();
   expect(screen.getByText(/1599 INR.*约 ¥130/)).toBeVisible();
   expect(screen.queryByRole('link', { name: /官方内购参考/ })).not.toBeInTheDocument();
@@ -350,8 +352,8 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
     price: String(49 + index), currency: 'CNY', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
     detailPath: '/products/42', reasons: ['商家提供代充'], caveats: ['请核对售后范围'], evidenceIds: ['e1'],
     offer: { name: `Plus 代充方案${index + 1}`, shop: `测试店铺${index + 1}`, spec: '一个月',
-      productUrl: `https://shop.invalid/items/${id}`, tags: [{ name: 'delivery', value: 'top_up' },
-        { name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'subscription' }] },
+      productUrl: `https://shop.invalid/items/${id}`, tags: [{ name: 'subscription_override', value: '无' },
+        { name: 'warranty', value: '保订阅30天，封号不保' }] },
   }));
   const result = { ...reply, kind: 'recommendation', text: '优先有质保、代充的报价', options: [], cards };
   render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
@@ -374,86 +376,51 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
   }
 });
 
-test('quote cards show compact facts and grouped purchase notes without repeating warranty prose', async () => {
-  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
-  const warranty = '商家质保说明：保订阅30天；具体限制以该报价的售后条款为准。';
-  const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
-    price: '64.90', currency: 'CNY', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
-    detailPath: '/products/42', reasons: [warranty], caveats: [warranty, '不保事项：不保封号'], evidenceIds: ['e1'],
-    offer: { name: 'Plus 优惠代充', shop: '测试商家', spec: '', productUrl: '', tags: [
-      { name: 'delivery', value: 'top_up' }, { name: 'duration', value: '1 month' },
-      { name: 'warranty', value: 'covered' }, { name: 'warranty_window', value: '30 days' },
-      { name: 'warranty_scope', value: 'subscription' }, { name: 'warranty_exclusion', value: 'ban' },
-      { name: 'usage_restriction', value: '需半价资格号' },
-      { name: 'warranty_terms', value: '掉订阅按剩余天数退款' },
-    ] } };
-  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
-    needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
-  const article = (await screen.findByRole('heading', { name: 'ChatGPT Plus' })).closest('article');
-  expect(within(article).getByText('店铺：测试商家')).toBeVisible();
-  expect(within(article).getByText('¥64.9')).toBeVisible();
-  expect(within(article).getByText('代充 · 1个月')).toBeVisible();
-  expect(within(article).queryByRole('group', { name: '商品标签' })).not.toBeInTheDocument();
-  expect(article).not.toHaveTextContent('CNY');
-  expect(article).not.toHaveTextContent('另 5 个标签');
+test('quote cards preserve complete warranty and bulk conditions for ordinary products', async () => {
+  const warranty = '需半价资格号，保订阅30天，掉订阅按剩余天数退款，封号不保';
+  await renderReferenceCards([], [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [
+    { name: 'duration', value: 30 }, { name: 'warranty', value: warranty }, { name: 'bulk_purchase', value: 'supported' },
+  ] } }]);
+  const article = screen.getByRole('heading', { name: referenceCard.title }).closest('article');
+  expect(article).toHaveTextContent('1个月');
   fireEvent.click(within(article).getByText('购买须知'));
   const notes = article.querySelector('.assistant-purchase-notes');
-  expect(notes).toHaveTextContent('质保：保订阅30天');
-  expect(notes).toHaveTextContent('购买条件：需半价资格号');
-  expect(notes).toHaveTextContent('注意事项：不保封号');
-  expect(within(notes).getAllByText(/不保封号/)).toHaveLength(1);
-  expect(notes).not.toHaveTextContent('商家质保说明');
-  expect(notes).not.toHaveTextContent('采集于');
-  expect(notes).not.toHaveTextContent('具体限制以');
+  expect(notes).toHaveTextContent('售后保障：' + warranty);
+  expect(notes).toHaveTextContent('购买条件：支持批量购买');
+  expect(notes).not.toHaveTextContent('件起购');
   fireEvent.click(within(article).getByRole('button', { name: '查看报价详情' }));
-  const details = screen.getByRole('dialog');
-  expect(details).toHaveTextContent('掉订阅按剩余天数退款');
-  expect(details).not.toHaveTextContent('商家质保说明');
-  expect(within(details).getAllByText('不保封号')).toHaveLength(1);
+  expect(within(screen.getByRole('dialog')).getAllByText(warranty)).toHaveLength(1);
 });
 
-test.each([
-  [[{ name: 'warranty', value: 'none' }], ''],
-  [[{ name: 'warranty', value: 'unknown' }], ''],
-  [[{ name: 'warranty', value: 'covered' }], ''],
-  [[{ name: 'warranty_scope', value: 'subscription' }], '保订阅'],
-  [[{ name: 'warranty_days', value: '30' }], '质保30天'],
-  [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_window', value: '24 hours' }], '仅保首登'],
-  [[{ name: 'warranty_days', value: '30' }, { name: 'warranty_days', value: '60' }], '资料冲突，需核实'],
-])('compact warranty omits empty states and retains explicit promises and conflicts: %s', async (tags, expected) => {
+test.each(['购买后1小时内仅保首登', '保订阅30天，封号不保', '激活后24小时内仅保首次接码'])('shows complete warranty promise: %s', async value => {
+  await renderReferenceCards([], [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'warranty', value }] } }]);
+  fireEvent.click(screen.getByText('购买须知'));
+  expect(screen.getByText(value)).toBeVisible();
+});
+
+test.each(['none', 'unknown', 'covered'])('invalid historical warranty %s preserves the original reply without false promises', async value => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
-  const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
-    price: '49', currency: 'USD', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
-    detailPath: '/products/42', reasons: ['商家报价'], caveats: ['下单前核对'], evidenceIds: ['e1'],
-    offer: { name: '方案', shop: '店铺', spec: '', productUrl: '', tags } };
-  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
-    needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
-  await screen.findByRole('heading', { name: 'ChatGPT Plus' });
-  if (expected) {
-    fireEvent.click(screen.getByText('购买须知'));
-    expect(screen.getByText(expected)).toBeVisible();
-  } else {
-    expect(screen.queryByText('质保：')).not.toBeInTheDocument();
-    expect(screen.queryByText(/无质保|有质保|未说明|未注明/)).not.toBeInTheDocument();
-  }
-  expect(screen.getByText('$49')).toBeVisible();
+  const card = { ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'warranty', value }] } };
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(),
+    turns: [{ ...done, reply: { ...reply, text: '历史选择依据', kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
+  expect(await screen.findByText(/历史选择依据/)).toHaveTextContent('历史推荐条件已失效');
+  expect(screen.queryByText(/无售后|有质保|质保未说明/)).not.toBeInTheDocument();
 });
 
 test('quote details reuse cleaned merchant titles and facts, with the update time beside the price', async () => {
-  const delivery = '购买内容：成品号：商家提供一个账号，下单前确认登录方式、是否独享及能否改密。';
+  const delivery = '批量购买：支持批量购买';
   const extra = '售后条款：二次验证不换号';
-  const card = { ...referenceCard, reasons: [delivery, '使用期限：2个月', '质保天数：质保45天'],
+  const card = { ...referenceCard, reasons: [delivery, '使用期限：2个月', '售后保障：保订阅45天，封号按剩余质保时间退款'],
     caveats: ['报价、库存与完整售后条款请在商品详情核对。', extra],
     offer: { ...referenceCard.offer, name: '【现货秒发】Plus 两个月独享成品号', productUrl: 'https://shop.invalid/buy', tags: [
-      { name: 'delivery', value: 'account' }, { name: 'duration', value: '2 months' },
-      { name: 'warranty_days', value: '45' }, { name: 'warranty_window', value: '45 days' },
-      { name: 'warranty_terms', value: '封号按剩余质保时间退款' },
+      { name: 'bulk_purchase', value: 'supported' }, { name: 'duration', value: 60 },
+      { name: 'warranty', value: '保订阅45天，封号按剩余质保时间退款' },
     ] } };
   await renderReferenceCards([], [card]);
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
   const dialog = screen.getByRole('dialog', { name: 'Plus 两个月独享成品号' });
   expect(dialog).not.toHaveTextContent(/现货|秒发|购买内容：成品号|使用期限：2个月|质保天数：|保障窗口45天|下单前核对|采集于/);
-  expect(within(dialog).getAllByText('质保45天')).toHaveLength(1);
+  expect(within(dialog).getAllByText('保订阅45天，封号按剩余质保时间退款')).toHaveLength(1);
   expect(within(dialog).getAllByText('2个月')).toHaveLength(1);
   expect(dialog).toHaveTextContent(extra);
   expect(dialog).toHaveTextContent('封号按剩余质保时间退款');
@@ -481,25 +448,25 @@ test.each(['售后保障：有质保', '售后保障：无质保', '售后保障
 });
 
 test.each([
-  [[{ name: 'payment_platform', value: 'ios' }], 'iOS'],
-  [[{ name: 'payment_platform', value: 'android' }], '安卓'],
-  [[{ name: 'payment_platform', value: 'web' }, { name: 'payment_platform', value: 'ios' }], '网页 / iOS'],
-  [[{ name: 'device_platform', value: 'ios' }, { name: 'payment_method', value: 'apple_pay' }], null],
-])('purchase notes show recharge channels separately from devices and payment methods: %s', async (tags, expected) => {
+  [[{ name: 'access_channel', value: 'web' }], '网页'],
+  [[{ name: 'supported_client', value: 'codex' }], '支持Codex'],
+  [[{ name: 'access_channel', value: 'web' }, { name: 'supported_client', value: 'sub2api' }], '网页 / 支持Sub2API'],
+  [[], null],
+])('purchase notes group access channels and supported tools: %s', async (tags, expected) => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   const card = { standardProductId: '42', productId: '9', shopId: '7', title: 'ChatGPT Plus',
     price: '49', currency: 'CNY', capturedAt: '2026-10-31T00:00:00Z', priceExpiresAt: '2099-11-01T00:00:00Z',
     detailPath: '/products/42', reasons: ['商家报价'], caveats: ['下单前核对'], evidenceIds: ['e1'],
-    offer: { name: '方案', shop: '店铺', spec: '', productUrl: '', tags: [{ name: 'delivery', value: 'top_up' }, ...tags] } };
+    offer: { name: '方案', shop: '店铺', spec: '', productUrl: '', tags: [{ name: 'subscription_override', value: '无' }, ...tags] } };
   render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
     needs: emptyShoppingNeeds(), turns: [{ ...done, reply: { ...reply, kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
   fireEvent.click(await screen.findByText('购买须知'));
   if (expected) {
-    const channel = screen.getByText('充值渠道：').closest('div');
-    expect(channel).toHaveTextContent(`充值渠道：${expected}`);
+    const channel = screen.getByText('使用入口/支持工具：').closest('div');
+    expect(channel).toHaveTextContent(`使用入口/支持工具：${expected}`);
     expect(channel).toBeVisible();
   } else {
-    expect(screen.queryByText('充值渠道：')).not.toBeInTheDocument();
+    expect(screen.queryByText('使用入口/支持工具：')).not.toBeInTheDocument();
   }
   expect(screen.queryByText('质保：')).not.toBeInTheDocument();
   expect(screen.queryByText('未说明')).not.toBeInTheDocument();
@@ -1249,4 +1216,25 @@ test('repeated clicks on retry cannot submit concurrent requests', async () => {
   await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalledTimes(1));
   expect(api.sendTurn).toHaveBeenCalledTimes(1);
   await act(async () => finish({ ...done, id: '2' }));
+});
+
+test('expired session conditions produce a visible notice while keeping messages and credentials', async () => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const api = mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needsInvalidated: true,
+    needs: emptyShoppingNeeds(), turns: [{ ...done, inputText: '以前的购买需求', reply: { ...reply, text: '原来的推荐说明', needsInvalidated: true } }] })) });
+  render(<AssistantPage api={api} />);
+  expect(await screen.findByText(/聊天记录已保留/)).toHaveTextContent('旧筛选条件已失效');
+  expect(screen.getByText('以前的购买需求')).toBeInTheDocument();
+  expect(screen.getByText('原来的推荐说明')).toBeInTheDocument();
+  expect(screen.getByText(/本条历史推荐的筛选条件已失效/)).toBeInTheDocument();
+  expect(api.deleteSession).not.toHaveBeenCalled();
+  expect(sessionStorage.getItem('shopping-assistant')).toContain(sessionId);
+});
+
+test.each([[360, '每12个月'], [365, '每年']])('official references distinguish %s days from calendar-like month conversion', async (duration, label) => {
+  await renderReferenceCards([
+    { ...referencePlan, id: 'twelve-months', name: 'Plus', period: 'P12M' },
+    { ...referencePlan, id: 'one-year', name: 'Plus', period: 'P1Y', prices: [{ ...referencePrice, amount: 10, cnyAmount: 70 }] },
+  ], [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'duration', value: duration }, { name: 'region', value: 'us' }] } }]);
+  expect(await screen.findByText(`官方内购参考 · 美国 · ${label}`)).toBeVisible();
 });

@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -29,6 +30,8 @@ describe('admin lists over real PostgreSQL', () => {
   const ids: Record<string, bigint> = {};
 
   before(async () => {
+    assert.ok(process.env.TEST_REDIS_URL, 'Dedicated TEST_REDIS_URL required');
+    process.env.REDIS_URL = process.env.TEST_REDIS_URL;
     process.env.ADMIN_PASSWORD = ADMIN_PASSWORD;
     if (process.env.TEST_DATABASE_URL) process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
     else {
@@ -113,10 +116,10 @@ describe('admin lists over real PostgreSQL', () => {
     assert.equal(products.items[0].name, 'Alpha Red');
     assert.equal(products.items[0].shopId, ids.shopAlpha!.toString());
     assert.equal(typeof products.items[0].sourceData, 'object');
-    assert.deepEqual(Object.keys(products.items[0]).sort(), ['deletedAt', 'evidenceConflict', 'externalId', 'id', 'imageUrl', 'latestCurrency', 'latestPrice', 'membershipFeatures', 'name', 'normalizedKey', 'shopId', 'shopName', 'sourceCategory', 'sourceData', 'spec', 'standardProductName', 'standardizationOutcome', 'tags', 'updatedAt', 'url']);
+    assert.deepEqual(Object.keys(products.items[0]).sort(), ['deletedAt', 'evidenceConflict', 'externalId', 'id', 'imageUrl', 'isAiMembership', 'latestCurrency', 'latestPrice', 'membershipFeatures', 'name', 'normalizedKey', 'shopId', 'shopName', 'sourceCategory', 'sourceData', 'spec', 'standardProductName', 'standardizationOutcome', 'tags', 'updatedAt', 'url']);
     assert.equal(products.items[0].shopName, 'Alpha Shop');
     assert.equal(products.items[0].standardProductName, 'Alpha Standard');
-    assert.deepEqual(products.items[0].tags, [{ name: 'brand', value: 'Acme' }, { name: 'color', value: 'Red' }]);
+    assert.deepEqual(products.items[0].tags, [{ name: 'access_channel', value: 'api' }, { name: 'region', value: 'us' }]);
     assert.equal(products.items[0].latestPrice, '12.50');
 
     const pageOne = await get(`shops?${new URLSearchParams({ status: 'active', limit: '1', page: '1' })}`);
@@ -146,13 +149,13 @@ describe('admin lists over real PostgreSQL', () => {
     const query = new URLSearchParams({ productId: ids.productAlpha!.toString(), limit: '1' });
     const first = await get(`tags?${query}`);
     assert.deepEqual(first.items, [
-      { id: ids.tagBrand!.toString(), productId: ids.productAlpha!.toString(), name: 'brand', value: 'Acme', productCount: '1' },
+      { id: ids.tagBrand!.toString(), productId: ids.productAlpha!.toString(), name: 'access_channel', value: 'api', productCount: '1' },
     ]);
     assert.ok(first.nextCursor);
 
     const second = await get(`tags?${new URLSearchParams({ ...Object.fromEntries(query), cursor: first.nextCursor! })}`);
     assert.deepEqual(second.items, [
-      { id: ids.tagColor!.toString(), productId: ids.productAlpha!.toString(), name: 'color', value: 'Red', productCount: '1' },
+      { id: ids.tagColor!.toString(), productId: ids.productAlpha!.toString(), name: 'region', value: 'us', productCount: '1' },
     ]);
     assert.equal(second.nextCursor, undefined);
   });
@@ -162,7 +165,7 @@ describe('admin lists over real PostgreSQL', () => {
     assert.equal(tags.page, 1);
     assert.equal(tags.pageSize, 1);
     assert.equal(tags.total, 3);
-    const members = await get(`tags/products?${new URLSearchParams({ name: 'color', value: 'Red', limit: '10', page: '1' })}`);
+    const members = await get(`tags/products?${new URLSearchParams({ name: 'region', value: 'us', limit: '10', page: '1' })}`);
     assert.equal(members.items.length, 1);
     assert.equal(members.items[0].id, ids.productAlpha!.toString());
     assert.equal(members.items[0].name, 'Alpha Red');
@@ -271,11 +274,11 @@ describe('admin lists over real PostgreSQL', () => {
   test('tag merge deduplicates relationships and advances affected product revisions', async () => {
     const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
     const before = await database.selectFrom('products').select('standardization_revision').where('id', '=', ids.productAlpha!).executeTakeFirstOrThrow();
-    const merged = await mutate('POST', '/tags/merge', { name: 'color', value: 'Red', nextName: 'brand', nextValue: 'Acme' }, 201);
+    const merged = await mutate('POST', '/tags/merge', { name: 'region', value: 'us', nextName: 'access_channel', nextValue: 'api' }, 201);
     assert.deepEqual(merged.payload.skipped, [ids.productAlpha!.toString()]);
     assert.deepEqual(merged.payload.success, []);
     const tags = await database.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', ids.productAlpha!).orderBy('name').execute();
-    assert.deepEqual(tags, [{ name: 'brand', value: 'Acme' }]);
+    assert.deepEqual(tags, [{ name: 'access_channel', value: 'api' }]);
     const after = await database.selectFrom('products').select('standardization_revision').where('id', '=', ids.productAlpha!).executeTakeFirstOrThrow();
     assert.equal(after.standardization_revision, before.standardization_revision + 1n);
   });
@@ -923,6 +926,21 @@ describe('admin lists over real PostgreSQL', () => {
     }
   });
 
+  test('tag management accepts numeric and qualified durations and rejects retired values', async () => {
+    const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
+    const product = await database.insertInto('products').values({
+      shop_id: ids.shopAlpha!, external_id: 'typed-tag-editor', name: 'Typed tag editor', normalized_key: 'typed-tag-editor', url: '',
+    }).returning('id').executeTakeFirstOrThrow();
+    const productIds = [String(product.id)];
+    await mutate('POST', '/products/tags/bind', { productIds, name: 'duration', value: '30' }, 400);
+    await mutate('POST', '/products/tags/bind', { productIds, name: 'delivery', value: 'account' }, 400);
+    await mutate('POST', '/products/tags/bind', { productIds, name: 'duration', value: 30 }, 201);
+    await mutate('PATCH', '/tags', { name: 'duration', value: 30, nextValue: 365 });
+    await mutate('PATCH', '/tags', { name: 'duration', value: 365, nextValue: { kind: 'min', days: 365 } });
+    const tags = await database.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', product.id).execute();
+    assert.deepEqual(tags, [{ name: 'duration', value: { kind: 'min', days: 365 } }]);
+  });
+
   async function seed(): Promise<void> {
     const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
     await sql`truncate table shops, product_standardization_decisions restart identity cascade`.execute(database);
@@ -953,11 +971,11 @@ describe('admin lists over real PostgreSQL', () => {
     await database.insertInto('standard_product_members').values({ standard_product_id: ids.standardAlpha, product_id: ids.productAlpha }).execute();
     await database.insertInto('standard_product_members').values({ standard_product_id: ids.standardBackup, product_id: ids.productBeta }).execute();
 
-    const tags = await database.insertInto('product_tags').values([
-      { product_id: ids.productAlpha, name: 'color', value: 'Red' },
-      { product_id: ids.productAlpha, name: 'brand', value: 'Acme' },
-      { product_id: products[1]!.id, name: 'color', value: 'Blue' },
-    ]).returning(['id', 'name']).execute();
+    const tags = await database.insertInto('product_tags').values(tagRows([
+      { product_id: ids.productAlpha, name: 'region', value: 'us' },
+      { product_id: ids.productAlpha, name: 'access_channel', value: 'api' },
+      { product_id: products[1]!.id, name: 'region', value: 'ph' },
+    ])).returning(['id', 'name']).execute();
     ids.tagColor = tags[0]!.id;
     ids.tagBrand = tags[1]!.id;
 

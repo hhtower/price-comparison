@@ -12,8 +12,8 @@ vi.mock('react-virtuoso', async importOriginal => {
   return { ...original, Virtuoso: props => <original.Virtuoso {...props} endReached={undefined} /> };
 });
 
-const tags = [{ name: 'access', value: 'dedicated' }, { name: 'duration', value: '1 month' }];
-const offers = Array.from({ length: 15 }, (_, i) => ({ productId: String(i + 1), shopId: String(i % 2 + 1), shop: i % 2 ? '乙店' : '甲店', name: `报价${i + 1}`, spec: '完整规格：独享、月付、含售后', price: String(i + 10), currency: 'CNY', productUrl: `https://example.com/${i + 1}`, tags, capturedAt: '2026-10-02T00:00:00Z' }));
+const tags = [{ name: 'sms_verification', value: 'verified' }, { name: 'duration', value: 30 }];
+const offers = Array.from({ length: 15 }, (_, i) => ({ productId: String(i + 1), shopId: String(i % 2 + 1), shop: i % 2 ? '乙店' : '甲店', name: `报价${i + 1}`, spec: '完整规格：已接码、月付、含售后', price: String(i + 10), currency: 'CNY', productUrl: `https://example.com/${i + 1}`, tags, capturedAt: '2026-10-02T00:00:00Z' }));
 const item = { id: '42', name: 'ChatGPT Plus', platform: 'openai', shopCount: 2, productCount: 15, offers: offers.slice(0, 4) };
 let requests;
 beforeEach(() => {
@@ -87,7 +87,7 @@ test('detail search and sort apply directly while filter drafts stay isolated', 
   expect(dialog.queryByRole('spinbutton', { name: '最低价格' })).not.toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
   fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '1.111' } });
-  fireEvent.click(await dialog.findByRole('checkbox', { name: /独享/ }));
+  fireEvent.click(await dialog.findByRole('checkbox', { name: /已接码/ }));
   fireEvent.change(dialog.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '甲店' } });
   await waitFor(() => expect(requests.some(url => url.searchParams.get('q') === '甲店' && url.searchParams.has('detailKind'))).toBe(true));
   fireEvent.change(dialog.getByRole('combobox', { name: '报价排序' }), { target: { value: 'updated' } });
@@ -127,20 +127,20 @@ test('homepage Enter searches immediately without a second debounced request and
 });
 
 test('modal reset clears applied filters, invalid drafts, pagination and a pending search in one click', async () => {
-  window.history.replaceState({}, '', '/?' + new URLSearchParams({ q: 'Plus', tag: JSON.stringify(tags[0]), warrantyDaysMin: '30' }));
+  window.history.replaceState({}, '', '/?' + new URLSearchParams({ q: 'Plus', tag: JSON.stringify(tags[0]) }));
   mount();
   fireEvent.click(await screen.findByRole('button', { name: '15 条报价' }));
   const dialog = within(screen.getByRole('dialog'));
   await dialog.findByText('报价12');
   fireEvent.change(dialog.getByRole('combobox', { name: '报价排序' }), { target: { value: 'updated' } });
-  fireEvent.click(dialog.getByRole('button', { name: '筛选（2）' }));
+  fireEvent.click(dialog.getByRole('button', { name: '筛选（1）' }));
   fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   await waitFor(() => expect(dialog.getByRole('button', { name: '加载更多报价' })).toBeEnabled());
   fireEvent.click(await dialog.findByRole('button', { name: '加载更多报价' }));
   await dialog.findByText('报价15');
   fireEvent.change(dialog.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '不存在' } });
-  fireEvent.click(dialog.getByRole('button', { name: '筛选（3）' }));
+  fireEvent.click(dialog.getByRole('button', { name: '筛选（2）' }));
   fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '1.111' } });
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   expect(dialog.getByRole('alert')).toBeInTheDocument();
@@ -159,7 +159,7 @@ test('modal reset clears applied filters, invalid drafts, pagination and a pendi
   expect(params.has('warrantyDaysMin')).toBe(false);
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
   expect(dialog.getByRole('spinbutton', { name: '最低价格' })).toHaveValue(null);
-  expect(await dialog.findByRole('checkbox', { name: /独享/ })).not.toBeChecked();
+  expect(await dialog.findByRole('checkbox', { name: /已接码/ })).not.toBeChecked();
   expect(dialog.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Plus');
 });
@@ -183,10 +183,10 @@ test('restores URL filters, preserves them across platform clicks and follows br
   expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Plus');
   expect(screen.getByRole('combobox', { name: '商品排序' })).toHaveValue('price');
   fireEvent.click(screen.getByRole('button', { name: 'ChatGPT / Codex', exact: true }));
-  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('独享');
+  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('已接码');
   fireEvent.click(screen.getByRole('button', { name: 'Gemini / Google', exact: true }));
   await waitFor(() => expect(new URLSearchParams(window.location.search).get('platform')).toBe('google'));
-  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('独享');
+  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('已接码');
   act(() => { window.history.replaceState(null, '', '/?q=Gemini'); window.dispatchEvent(new PopStateEvent('popstate')); });
   expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Gemini');
   expect(screen.queryByLabelText('已选筛选条件')).not.toBeInTheDocument();
@@ -195,7 +195,7 @@ test('restores URL filters, preserves them across platform clicks and follows br
 test('previews draft filter result count before applying it', async () => {
   mount();
   fireEvent.click(await screen.findByRole('button', { name: '筛选', exact: true }));
-  fireEvent.click(await screen.findByRole('checkbox', { name: /独享/ }));
+  fireEvent.click(await screen.findByRole('checkbox', { name: /已接码/ }));
   expect(await screen.findByText('1 款 · 7 条报价')).toBeInTheDocument();
   expect(screen.queryByLabelText('已选筛选条件')).not.toBeInTheDocument();
 });
@@ -205,19 +205,19 @@ test('filters the complete quote query but resets conditions and pagination when
   fireEvent.click(await screen.findByRole('button', { name: '15 条报价' }));
   const dialog = within(screen.getByRole('dialog', { name: /ChatGPT Plus/ }));
   await dialog.findByText('报价12');
-  fireEvent.change(dialog.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '甲店 独享' } });
+  fireEvent.change(dialog.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '甲店 已接码' } });
   fireEvent.submit(dialog.getByRole('form', { name: '详情查询' }));
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
   fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
   fireEvent.change(dialog.getByRole('spinbutton', { name: '最高价格' }), { target: { value: '20' } });
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
-  await waitFor(() => expect(requests.some(url => !url.searchParams.has('shopQuery') && url.searchParams.get('priceMin') === '10' && url.searchParams.get('priceMax') === '20' && url.searchParams.get('q') === '甲店 独享')).toBe(true));
+  await waitFor(() => expect(requests.some(url => !url.searchParams.has('shopQuery') && url.searchParams.get('priceMin') === '10' && url.searchParams.get('priceMax') === '20' && url.searchParams.get('q') === '甲店 已接码')).toBe(true));
   fireEvent.change(dialog.getByRole('combobox', { name: '报价排序' }), { target: { value: 'updated' } });
 
   await waitFor(() => expect(requests.at(-1).searchParams.get('offerSort')).toBe('updated'));
   fireEvent.click(dialog.getByRole('button', { name: '筛选（1）' }));
-  await waitFor(() => expect(requests.some(url => url.pathname.endsWith('/facets') && url.searchParams.get('q') === '甲店 独享' && url.searchParams.get('priceMin') === '10' && url.searchParams.get('priceMax') === '20')).toBe(true));
-  fireEvent.click(await dialog.findByRole('checkbox', { name: /独享/ }));
+  await waitFor(() => expect(requests.some(url => url.pathname.endsWith('/facets') && url.searchParams.get('q') === '甲店 已接码' && url.searchParams.get('priceMin') === '10' && url.searchParams.get('priceMax') === '20')).toBe(true));
+  fireEvent.click(await dialog.findByRole('checkbox', { name: /已接码/ }));
   expect(dialog.getAllByRole('textbox')).toHaveLength(1);
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   await waitFor(() => expect(dialog.getByRole('button', { name: '筛选（2）' })).toBeInTheDocument());
@@ -279,7 +279,7 @@ test('expands the quote preview and compares up to three offers', async () => {
   expect(choices[3]).toBeDisabled();
   await user.click(screen.getByRole('button', { name: '对比（3）' }));
   const comparison = within(screen.getByRole('dialog', { name: '报价对比' }));
-  expect(comparison.getByRole('table')).toHaveTextContent('独享');
+  expect(comparison.getByRole('table')).toHaveTextContent('已接码');
   expect(comparison.getByRole('table')).toHaveTextContent('1个月');
   expect(comparison.getByRole('rowheader', { name: '价格', exact: true })).toBeInTheDocument();
   expect(comparison.queryByRole('rowheader', { name: '来源标价' })).not.toBeInTheDocument();
@@ -299,7 +299,7 @@ test('shop search uses shop names and Escape dismisses only the condition popove
   await waitFor(() => expect(requests.some(url => url.searchParams.get('detailKind') === 'shops' && url.searchParams.get('q') === '甲店' && url.searchParams.get('searchMode') === 'literal' && !url.searchParams.has('shopQuery'))).toBe(true));
   const trigger = dialog.getByRole('button', { name: '筛选', exact: true });
   await user.click(trigger);
-  await dialog.findByRole('checkbox', { name: /独享/ });
+  await dialog.findByRole('checkbox', { name: /已接码/ });
   await user.keyboard('{Escape}');
   expect(dialog.queryByRole('region', { name: '筛选报价' })).not.toBeInTheDocument();
   expect(detail).toBeInTheDocument();
@@ -307,14 +307,17 @@ test('shop search uses shop names and Escape dismisses only the condition popove
 });
 
 test.each(['offers', 'shops'])('opening %s inherits list filters and restores them when reopened', async kind => {
-  window.history.replaceState(null, '', '/?' + new URLSearchParams({ q: 'Plus 已接码', platform: 'openai', tag: JSON.stringify(tags[0]), warrantyDaysMin: '30' }));
-  const matching = { ...offers[0], name: 'Plus 匹配报价', shop: '匹配店', tags: [...tags, { name: 'sms_verification', value: 'verified' }, { name: 'warranty_days', value: '30' }] };
+  const manual = { name: 'region', value: 'us' };
+  const initialParams = new URLSearchParams({ q: 'Plus 已接码', platform: 'openai', tag: JSON.stringify(manual) });
+  initialParams.append('tag', JSON.stringify({ name: 'warranty', value: '保订阅30天' }));
+  window.history.replaceState(null, '', '/?' + initialParams);
+  const matching = { ...offers[0], name: 'Plus 匹配报价', shop: '匹配店', tags: [...tags, { name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: '保订阅30天' }] };
   const excluded = { ...offers[1], name: 'Plus 未匹配报价', shop: '未匹配店', tags: [] };
   vi.stubGlobal('fetch', vi.fn(async input => {
     const url = new URL(input, 'http://localhost');
     if (url.pathname !== '/api/catalog') return new Response(null, { status: 204 });
     requests.push(url);
-    const filtered = url.searchParams.getAll('tag').includes(JSON.stringify(tags[0])) && url.searchParams.get('warrantyDaysMin') === '30';
+    const filtered = url.searchParams.getAll('tag').includes(JSON.stringify(manual)) && url.searchParams.getAll('tag').includes(JSON.stringify({ name: 'warranty', value: '保订阅30天' }));
     const selected = filtered ? [matching] : [matching, excluded];
     const entries = url.searchParams.get('detailKind') === 'shops'
       ? selected.map(offer => ({ key: offer.shopId, name: offer.shop, count: 1, offer })) : selected;
@@ -332,8 +335,9 @@ test.each(['offers', 'shops'])('opening %s inherits list filters and restores th
   await waitFor(() => {
     const params = requests.filter(url => url.searchParams.has('detailKind')).at(-1).searchParams;
     expect(params.get('q')).toBe('plus');
-    expect(params.getAll('tag')).toEqual([JSON.stringify(tags[0]), '{"name":"sms_verification","value":"verified"}']);
-    expect(params.get('warrantyDaysMin')).toBe('30');
+    expect(params.getAll('tag')).toEqual(expect.arrayContaining([JSON.stringify(manual), '{"name":"sms_verification","value":"verified"}']));
+    expect(params.getAll('tag')).toHaveLength(3);
+    expect(params.getAll('tag')).toContain(JSON.stringify({ name: 'warranty', value: '保订阅30天' }));
     expect(params.get('platform')).toBe('openai');
     expect(params.get('standardProductId')).toBe('42');
     expect(params.get('currency')).toBe('CNY');
@@ -344,8 +348,8 @@ test.each(['offers', 'shops'])('opening %s inherits list filters and restores th
   expect(await dialog.findByText(kind === 'shops' ? '未匹配店' : 'Plus 未匹配报价')).toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: kind === 'shops' ? '关闭商铺详情' : '关闭报价详情' }));
   expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Plus 已接码');
-  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('独享');
-  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('至少30天');
+  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('美区');
+  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('保订阅30天');
   fireEvent.click(screen.getByRole('button', { name: trigger }));
   const reopened = within(screen.getByRole('dialog'));
   expect(await reopened.findByText(kind === 'shops' ? '匹配店' : 'Plus 匹配报价')).toBeInTheDocument();

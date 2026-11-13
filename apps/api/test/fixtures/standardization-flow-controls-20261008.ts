@@ -1,5 +1,6 @@
 import type { StandardizationFlowControl } from '../../src/standardization/flow-evaluation.js';
 import type { CandidateDocument } from '../../src/standardization/candidate-index.js';
+import { tagValueKey, type TagValue } from '@price-comparison/catalog/purchase-attributes';
 
 const free = { family: 'openai', product: 'chatgpt', tier: 'free' };
 const plus = { family: 'openai', product: 'chatgpt', tier: 'plus' };
@@ -13,7 +14,7 @@ const canva = { family: 'canva', product: 'canva', tier: 'pro' };
 const tavily = { family: 'tavily', product: 'search', tier: 'standard' };
 const apple = { family: 'apple', product: 'apple_id', tier: 'standard' };
 const cite = (path: string, quote: string) => ({ path, quote });
-const tag = (name: string, value: string, quote: string) => ({
+const tag = (name: string, value: TagValue, quote: string) => ({
   name, value, evidence: [cite('sourceData.evidence', quote)],
 });
 
@@ -36,8 +37,8 @@ export const standardizationFlowControls: readonly StandardizationFlowControl[] 
   {
     id: 'team-json-software', name: 'Team 5X 成品JSON', body: '已开通Team 5X账号，成品JSON交付，仅支持Sub2API。',
     soldObject: 'Activated Team 5X account credentials limited to Sub2API', expectedIdentity: team5x, proposalIdentity: team5x,
-    expectedDisposition: 'release', expectedTags: { delivery_format: 'json', supported_client: 'sub2api', usage_restriction: '仅支持sub2api' },
-    proposalTags: [tag('delivery_format', 'json', 'JSON'), tag('supported_client', 'sub2api', 'Sub2API'), tag('usage_restriction', '仅支持sub2api', '仅支持Sub2API')],
+    expectedDisposition: 'release', expectedTags: { supported_client: 'sub2api' },
+    proposalTags: [tag('supported_client', 'sub2api', 'Sub2API'), tag('access_channel', 'web', 'JSON')],
   },
   {
     id: 'team-rt-credentials', name: 'G Team 子号Token', body: '实时验活的ChatGPT Team子号，含RT凭证。CPA JSON和sub2api导入JSON。',
@@ -77,8 +78,8 @@ export const standardizationFlowControls: readonly StandardizationFlowControl[] 
   {
     id: 'team-ban-not-capability', name: 'Team 5X成品账号', body: '交付Team 5X账号，禁止反代。',
     soldObject: 'Team 5X account with a prohibition, not supported proxy use', expectedIdentity: team5x, proposalIdentity: team5x,
-    expectedDisposition: 'release', expectedTags: { usage_restriction: '禁止反代' },
-    proposalTags: [tag('usage_restriction', '禁止反代', '禁止反代'), tag('access_channel', 'reverse_proxy', '反代')],
+    expectedDisposition: 'release',
+    proposalTags: [tag('access_channel', 'reverse_proxy', '反代')],
   },
   {
     id: 'registered-gmail-free', name: 'Gmail注册 Free 已接码',
@@ -162,18 +163,18 @@ export const standardizationFlowControls: readonly StandardizationFlowControl[] 
     soldObject: 'ChatGPT Free token, no mailbox credentials', expectedIdentity: free, proposalIdentity: free, expectedDisposition: 'release',
   },
   {
-    id: 'rt-wrong-credentials', name: 'ChatGPT Free RT',
-    body: '实际只提供RT，不带邮箱密码。提供登录JSON文件。',
-    soldObject: 'ChatGPT Free token/JSON, no mailbox credentials', expectedIdentity: free, proposalIdentity: free,
-    expectedDisposition: 'release', expectedTags: { delivery_format: 'json' },
-    proposalTags: [tag('delivery_format', 'credentials', '邮箱密码'), tag('delivery_format', 'json', 'JSON')],
+    id: 'rt-wrong-client', name: 'ChatGPT Free RT',
+    body: '实际只提供RT，不带邮箱密码。提供登录JSON文件，仅支持Sub2API，禁止Codex。',
+    soldObject: 'ChatGPT Free token/JSON supporting Sub2API but not Codex', expectedIdentity: free, proposalIdentity: free,
+    expectedDisposition: 'release', expectedTags: { supported_client: 'sub2api' },
+    proposalTags: [tag('supported_client', 'codex', 'Codex'), tag('supported_client', 'sub2api', 'Sub2API')],
   },
   {
     id: 'import-not-warranty', name: 'ChatGPT Plus 账号',
     body: '首次登录请在1小时内导入。',
     soldObject: 'ChatGPT Plus account, import instruction is not a warranty',
     expectedIdentity: plus, proposalIdentity: plus, expectedDisposition: 'release',
-    proposalTags: [tag('warranty_days', '30', '1小时内导入')],
+    proposalTags: [tag('warranty', '质保30天', '1小时内导入'), tag('duration', 1 / 24, '1小时内导入')],
   },
   {
     id: 'us-region', name: 'ChatGPT Plus 美国区账号', body: '交付美国区账号。',
@@ -186,14 +187,25 @@ export const standardizationFlowControls: readonly StandardizationFlowControl[] 
     expectedDisposition: 'release', proposalTags: [tag('region', 'us', '随机区')],
   },
   {
-    id: 'actual-10-usd', name: 'ChatGPT Plus 账号', body: '账户余额10美元。',
-    soldObject: 'ChatGPT Plus account with 10 USD balance', expectedIdentity: plus, proposalIdentity: plus,
-    expectedDisposition: 'release', proposalTags: [tag('balance', '10 usd', '10美元')], expectedTags: { balance: '10 usd' },
+    id: 'actual-one-month', name: 'ChatGPT Plus 账号', body: '账户余额10美元。订阅使用期1个月。',
+    soldObject: 'ChatGPT Plus account with one month of use and incidental balance', expectedIdentity: plus, proposalIdentity: plus,
+    expectedDisposition: 'release', proposalTags: [tag('duration', 30, '1个月')], expectedTags: { duration: tagValueKey(30) },
   },
   {
-    id: 'wrong-100-usd', name: 'ChatGPT Plus 账号', body: '账户余额10美元。',
-    soldObject: 'ChatGPT Plus account with 10 USD, not 100 USD', expectedIdentity: plus, proposalIdentity: plus,
-    expectedDisposition: 'release', proposalTags: [tag('balance', '100 usd', '10美元')],
+    id: 'wrong-one-year', name: 'ChatGPT Plus 账号', body: '账户余额10美元。订阅使用期1个月。',
+    soldObject: 'ChatGPT Plus account with one month of use, not one year', expectedIdentity: plus, proposalIdentity: plus,
+    expectedDisposition: 'release', proposalTags: [tag('duration', 365, '1个月')],
+  },
+  {
+    id: 'qualified-duration', name: 'ChatGPT Plus 账号', body: '订阅至少使用1个月。',
+    soldObject: 'ChatGPT Plus account with a stated minimum use period', expectedIdentity: plus, proposalIdentity: plus,
+    expectedDisposition: 'release', proposalTags: [tag('duration', { kind: 'min', days: 30 }, '至少使用1个月')],
+    expectedTags: { duration: tagValueKey({ kind: 'min', days: 30 }) },
+  },
+  {
+    id: 'qualified-duration-wrong-exact', name: 'ChatGPT Plus 账号', body: '订阅至少使用1个月。',
+    soldObject: 'A minimum use period incorrectly proposed as an exact term', expectedIdentity: plus, proposalIdentity: plus,
+    expectedDisposition: 'release', proposalTags: [tag('duration', 30, '至少使用1个月')],
   },
   {
     id: 'first-login-conflict', name: '即梦高级会员 首登质保2h', body: '首登质保1h。',

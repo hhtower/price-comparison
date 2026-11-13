@@ -10,10 +10,10 @@ vi.mock('react-virtuoso', () => ({ Virtuoso: ({ data, itemContent, totalListHeig
   return <>{data.map((item, index) => <React.Fragment key={item.key || item.id}>{itemContent(index, item)}</React.Fragment>)}</>;
 } }));
 const product = { id: '42', name: 'Codex 手机接码', platform: 'openai', kind: '手机接码' };
-const quote = { productId: '9', shop: '示例店', name: '接码服务', spec: '月付 · 独享 · 质保30天', price: '12.50', listedPrice: '9.00', currency: 'CNY',
+const quote = { productId: '9', shop: '示例店', name: '接码服务', spec: '月付 · 已接码 · 质保30天', price: '12.50', listedPrice: '9.00', currency: 'CNY',
   priceStatus: 'verified', priceVerifiedAt: new Date().toISOString(), priceExpiresAt: new Date(Date.now() + 3600000).toISOString(),
   inventoryExpiresAt: new Date(Date.now() + 3600000).toISOString(), paymentMethod: '支付宝', productUrl: 'https://example.com/buy', tags: [], capturedAt: new Date().toISOString() };
-function mockApi({ status = 200, merged = false, expires = false, inventoryExpiresAt = quote.inventoryExpiresAt, priceStatus = quote.priceStatus, tags = [], settlementQuantity, paymentMethod = quote.paymentMethod, price = quote.price, listedPrice = quote.listedPrice, facets = [{ name: 'delivery', value: 'top_up' }], products = [product, { id: '43', name: 'Claude Max 20x', platform: 'anthropic', kind: '账号与订阅' }] } = {}) {
+function mockApi({ status = 200, merged = false, expires = false, inventoryExpiresAt = quote.inventoryExpiresAt, priceStatus = quote.priceStatus, tags = [], settlementQuantity, paymentMethod = quote.paymentMethod, price = quote.price, listedPrice = quote.listedPrice, facets = [{ name: 'bulk_purchase', value: 'supported' }], products = [product, { id: '43', name: 'Claude Max 20x', platform: 'anthropic', kind: '账号与订阅' }] } = {}) {
   let reads = 0;
   const calls = [];
   vi.stubGlobal('fetch', vi.fn(async input => {
@@ -98,12 +98,12 @@ test.each(['/', '/products/42'])('shows database minimum quantity once in cards 
   window.history.replaceState({}, '', path);
   mockApi({ settlementQuantity: 5, price: '2.002', tags: [
     { name: 'minimum_quantity', value: '10' }, { name: 'minimum_quantity', value: '5' },
-    { name: 'delivery', value: 'top_up' },
+    { name: 'bulk_purchase', value: 'supported' },
   ] });
   await renderWithOffers();
   const facts = await screen.findByRole('group', { name: '商品标签' });
   expect(within(facts).getAllByText('5件起购')).toHaveLength(1);
-  expect(facts).toHaveTextContent('代充');
+  expect(facts).toHaveTextContent('支持批量购买');
   expect(screen.queryByText(/10件起购|1件起购|¥10\.01/)).not.toBeInTheDocument();
   const tile = facts.closest('.shop-tile');
   expect(within(tile).getByText('¥2', { exact: true })).toBeInTheDocument();
@@ -157,11 +157,11 @@ test.each([{ tags: [] }, { tags: [{ name: 'access', value: 'unknown' }] }])('res
 });
 
 test('keeps visible offer facts accessible beside an empty tag row', async () => {
-  mockApi({ tags: [{ name: 'delivery', value: 'top_up' }] });
+  mockApi({ tags: [{ name: 'bulk_purchase', value: 'supported' }] });
   await renderWithOffers();
   await screen.findByRole('button', { name: product.name });
   const facts = screen.getByRole('group', { name: '商品标签' });
-  expect(facts).toHaveTextContent('代充');
+  expect(facts).toHaveTextContent('支持批量购买');
   expect(facts).toHaveAttribute('tabindex', '0');
   expect(facts).not.toHaveAttribute('aria-hidden');
   expect(document.querySelectorAll('.offer-facts')).toHaveLength(2);
@@ -184,7 +184,7 @@ test('keeps inline filters below the sticky toolbar without scrolling an already
     expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
     if (adjustment) expect(scrollBy).toHaveBeenCalledExactlyOnceWith(0, adjustment);
     else expect(scrollBy).not.toHaveBeenCalled();
-    await within(panel).findByRole('checkbox', { name: /代充/ });
+    await within(panel).findByRole('checkbox', { name: /支持批量购买/ });
     fireEvent.keyDown(window, { key: 'Escape' });
   }
 });
@@ -196,7 +196,7 @@ test('keeps main search and delivery filters independent of the standard product
   await waitFor(() => expect(calls.some(url => url.pathname === '/api/catalog' && url.searchParams.get('q') === 'Plus')).toBe(true));
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   const panel = within(screen.getByRole('region', { name: '筛选报价' }));
-  fireEvent.click(await panel.findByRole('checkbox', { name: /代充/ }));
+  fireEvent.click(await panel.findByRole('checkbox', { name: /支持批量购买/ }));
   expect(panel.queryByRole('searchbox')).not.toBeInTheDocument();
   expect(panel.queryByRole('group', { name: '商品平台' })).not.toBeInTheDocument();
   expect(panel.queryByRole('radio')).not.toBeInTheDocument();
@@ -204,9 +204,9 @@ test('keeps main search and delivery filters independent of the standard product
   expect(panel.getByRole('combobox', { name: '标准商品' })).toHaveValue('');
   fireEvent.click(panel.getByRole('button', { name: '应用筛选（1）' }));
   await waitFor(() => expect(calls.some(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20'
-    && url.searchParams.get('q') === 'Plus' && url.searchParams.getAll('tag').includes('{"name":"delivery","value":"top_up"}'))).toBe(true));
+    && url.searchParams.get('q') === 'Plus' && url.searchParams.getAll('tag').includes('{"name":"bulk_purchase","value":"supported"}'))).toBe(true));
   expect(new URLSearchParams(window.location.search).has('standardProductId')).toBe(false);
-  fireEvent.click(within(screen.getByLabelText('已选筛选条件')).getByRole('button', { name: /代充/ }));
+  fireEvent.click(within(screen.getByLabelText('已选筛选条件')).getByRole('button', { name: /支持批量购买/ }));
   expect(screen.queryByLabelText('已选筛选条件')).not.toBeInTheDocument();
 });
 
@@ -216,11 +216,11 @@ test('keeps old product links in the selector and discards unapplied edits', asy
   await screen.findByRole('button', { name: 'Codex 手机接码 ×' });
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
   const panel = within(screen.getByRole('region', { name: '筛选报价' }));
-  fireEvent.click(await panel.findByRole('checkbox', { name: /代充/ }));
+  fireEvent.click(await panel.findByRole('checkbox', { name: /支持批量购买/ }));
   fireEvent.keyDown(window, { key: 'Escape' });
   expect(new URLSearchParams(window.location.search).get('standardProductId')).toBe('42');
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
-  expect(screen.getByRole('checkbox', { name: /代充/ })).not.toBeChecked();
+  expect(screen.getByRole('checkbox', { name: /支持批量购买/ })).not.toBeChecked();
   expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
   expect(calls.filter(url => url.pathname === '/api/catalog/products')).toHaveLength(1);
   expect(screen.getByRole('combobox', { name: '标准商品' })).toHaveValue('42');
@@ -240,47 +240,30 @@ test.each(['search', 'platform'])('clears a legacy product restriction when chan
     && (mode === 'search' ? url.searchParams.get('q') === 'Claude' : url.searchParams.get('platform') === 'anthropic'))).toBe(true));
 });
 
-test.each([
-  ['credentials', '有', ['账密', '含2FA']],
-  ['cdk', '无', ['卡密', '无2FA']],
-  ['json', 'unknown', ['JSON']],
-  ['refresh_token', 'unspecified', ['刷新令牌']],
-  ['token', '有', ['令牌', '含2FA']],
-  ['cookie', '无', ['Cookie', '无2FA']],
-  ['link', '有', ['兑换链接', '含2FA']],
-  ['sms_link', '有', ['接码链接', '含2FA']],
-  ['email_api', '有', ['邮箱接口', '含2FA']],
-  ['pdf', '无', ['PDF', '无2FA']],
-])('shows compact delivery %s and 2FA %s badges', async (format, twoFactor, expected) => {
-  mockApi({ tags: [{ name: 'delivery_format', value: format }, { name: '2fa', value: twoFactor }] });
-  await renderWithOffers(); await screen.findByRole('button', { name: product.name });
-  const facts = screen.getByLabelText('商品标签');
-  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(expected);
-  expect(facts).not.toHaveTextContent(/交付资料：|双重验证：/);
+test.each(['delivery_format', '2fa', 'rental', 'access', 'delivery', 'payment_region', 'usage_restriction', 'minimum_quantity'])('retired %s never becomes a purchase badge', async name => {
+  mockApi({ tags: [{ name, value: '有' }] }); await renderWithOffers(); await screen.findByRole('button', { name: product.name });
+  expect(screen.queryByLabelText('商品标签')).not.toBeInTheDocument();
+  fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
+  expect(screen.getByRole('dialog', { name: quote.name })).toHaveTextContent(quote.spec);
 });
 
-test('shows distinct badges with warranty in the same strip and no prefix', async () => {
-  mockApi({ tags: [
-    { name: 'delivery', value: 'account' }, { name: 'access', value: 'dedicated' },
-    { name: 'intended_use', value: 'rapid' }, { name: 'intended_use', value: 'rapid' },
-    { name: 'duration', value: '1 month' }, { name: 'intended_use', value: 'rapid' },
-    { name: 'account_type', value: '黑号' }, { name: 'warranty', value: 'covered' },
-    { name: 'warranty_scope', value: 'period' }, { name: 'warranty_days', value: '30' },
-  ] }); await renderWithOffers();
-  await screen.findByRole('button', { name: product.name });
+test('all seven dimensions remain available with one combined usage group and complete warranty', async () => {
+  const warranty = '购买后1小时内仅保首登，封号不保';
+  mockApi({ tags: [{ name: 'sms_verification', value: 'verified' }, { name: 'region', value: 'us' }, { name: 'duration', value: 30 },
+    { name: 'access_channel', value: 'web' }, { name: 'supported_client', value: 'codex' }, { name: 'subscription_override', value: '无' },
+    { name: 'bulk_purchase', value: 'supported' }, { name: 'warranty', value: warranty }] });
+  await renderWithOffers(); await screen.findByRole('button', { name: product.name });
   const facts = screen.getByLabelText('商品标签');
-  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['质保30天', '独享']);
-  expect(within(facts).getByRole('button', { name: '查看全部商品条件，另有 4 项' })).toHaveTextContent('+4');
-  expect(within(facts).queryByText('速刷')).not.toBeInTheDocument();
-  expect(within(facts).queryByText('日抛')).not.toBeInTheDocument();
-  expect(facts).not.toHaveTextContent(/售后：|商家标注|未说明/);
-  fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
-  expect(within(screen.getByRole('dialog', { name: quote.name })).getAllByText('速刷')).toHaveLength(1);
+  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual([warranty, '不可覆盖订阅']);
+  fireEvent.click(within(facts).getByRole('button', { name: '查看全部商品条件，另有 6 项' }));
+  const dialog = screen.getByRole('dialog', { name: quote.name });
+  expect(dialog.querySelectorAll('.offer-tag-details-groups section')).toHaveLength(7);
+  for (const text of [warranty, '已接码', '美区', '1个月', '网页', '支持Codex', '不可覆盖订阅', '支持批量购买']) expect(dialog).toHaveTextContent(text);
 });
 
 test.each(['personal', 'enterprise'])('shows duration in cards and comparison while keeping %s account types compact', async accountType => {
   mockApi({ tags: [
-    { name: 'duration', value: '1 month' },
+    { name: 'duration', value: 30 },
     { name: 'account_type', value: accountType },
   ] }); await renderWithOffers();
   await screen.findByRole('button', { name: product.name });
@@ -292,45 +275,41 @@ test.each(['personal', 'enterprise'])('shows duration in cards and comparison wh
   expect(within(row).getByRole('cell')).toHaveTextContent('1个月');
 });
 
-test('detail badges distinguish usage duration from warranty duration', async () => {
+test('detail badges distinguish use duration from a complete warranty promise', async () => {
   window.history.replaceState({}, '', '/products/42');
-  mockApi({ tags: [
-    { name: 'duration', value: '30 days' }, { name: 'account_type', value: 'seat' },
-    { name: 'account_type', value: 'personal' }, { name: 'warranty_days', value: '7' },
-  ] }); await renderWithOffers();
-  await screen.findByText('¥12.5');
-  const facts = screen.getByLabelText('商品标签');
-  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['质保7天', '席位']);
-  fireEvent.click(within(facts).getByRole('button', { name: '查看全部商品条件，另有 1 项' }));
-  expect(screen.getByRole('dialog', { name: quote.name })).toHaveTextContent('30天');
+  mockApi({ tags: [{ name: 'duration', value: 30 }, { name: 'warranty', value: '购买后7天内保订阅，封号不保' }] });
+  await renderWithOffers(); await screen.findByText('¥12.5');
+  expect(screen.getByLabelText('商品标签')).toHaveTextContent('购买后7天内保订阅，封号不保1个月');
+  fireEvent.click(screen.getByRole('button', { name: '商品说明', exact: true }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('1个月');
 });
 
 test.each(['/', '/products/42'])('shows both dedicated and shared access explicitly on %s', async path => {
   window.history.replaceState({}, '', path);
-  mockApi({ tags: [{ name: 'access', value: 'dedicated' }] });
+  mockApi({ tags: [{ name: 'sms_verification', value: 'verified' }] });
   const view = await renderWithOffers();
   await screen.findAllByText('¥12.5');
-  expect(within(screen.getByLabelText('商品标签')).getByText('独享')).toBeInTheDocument();
+  expect(within(screen.getByLabelText('商品标签')).getByText('已接码')).toBeInTheDocument();
   view.unmount();
-  mockApi({ tags: [{ name: 'access', value: 'shared' }] });
+  mockApi({ tags: [{ name: 'sms_verification', value: 'unverified' }] });
   await renderWithOffers();
   await screen.findAllByText('¥12.5');
-  expect(within(screen.getByLabelText('商品标签')).getByText('共享')).toBeInTheDocument();
+  expect(within(screen.getByLabelText('商品标签')).getByText('未接码')).toBeInTheDocument();
 });
 
 test.each([
-  ['ph', '菲律宾'], ['us', '美国'], ['in', '印度'], ['tr', '土耳其'],
+  ['ph', '菲区'], ['us', '美区'], ['in', '印度'], ['tr', '土区'],
   ['eu', '欧洲'], ['global', '全球'], ['random', '随机地区'], ['sea', '东南亚'],
   ['美区', '美区'], ['unknown', null],
 ])('retains %s region in details while prioritizing warranty and access', async (region, label) => {
   mockApi({ tags: [
-    { name: 'delivery', value: 'top_up' }, { name: 'region', value: region },
-    { name: 'region', value: region }, { name: 'duration', value: '1 month' },
-    { name: 'access', value: 'dedicated' }, { name: 'warranty_days', value: '30' },
+    { name: 'bulk_purchase', value: 'supported' }, { name: 'region', value: region },
+    { name: 'region', value: region }, { name: 'duration', value: 30 },
+    { name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: '质保30天' },
   ] }); await renderWithOffers();
   await screen.findByRole('button', { name: product.name });
   expect([...screen.getByLabelText('商品标签').querySelectorAll('span')].map(tag => tag.textContent))
-    .toEqual(['质保30天', '独享']);
+    .toEqual(['质保30天', '已接码']);
   expect(within(screen.getByLabelText('商品标签')).getByRole('button', { name: `查看全部商品条件，另有 ${label ? 3 : 2} 项` })).toHaveTextContent(`+${label ? 3 : 2}`);
   fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
   const details = screen.getByRole('dialog', { name: quote.name });
@@ -340,114 +319,66 @@ test.each([
 
 test('shows the same region in detail badges and quote comparison', async () => {
   window.history.replaceState({}, '', '/products/42');
-  mockApi({ tags: [{ name: 'delivery', value: 'top_up' }, { name: 'region', value: 'ph' }] });
+  mockApi({ tags: [{ name: 'bulk_purchase', value: 'supported' }, { name: 'region', value: 'ph' }] });
   await renderWithOffers();
   await screen.findByText('¥12.5');
-  expect(within(screen.getByLabelText('商品标签')).getByText('菲律宾')).toBeInTheDocument();
+  expect(within(screen.getByLabelText('商品标签')).getByText('菲区')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('checkbox', { name: /对比报价/ }));
   fireEvent.click(screen.getAllByRole('button', { name: '对比（1）' })[0]);
   const comparison = within(screen.getByRole('dialog', { name: '报价对比' }));
   const row = comparison.getByRole('rowheader', { name: '地区', exact: true }).closest('tr');
-  expect(within(row).getByRole('cell')).toHaveTextContent('菲律宾');
+  expect(within(row).getByRole('cell')).toHaveTextContent('菲区');
 });
 
 test.each([
-  ['empty', [], null],
-  ['unknown', [{ name: 'warranty', value: 'unknown' }, { name: 'warranty_scope', value: 'unspecified' }], null],
-  ['first login', [{ name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_days', value: '1' }], '仅保首登'],
-  ['activation', [{ name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'activation' }], '仅保激活'],
-  ['subscription days', [{ name: 'warranty_scope', value: 'subscription' }, { name: 'warranty_window', value: '30 days' }, { name: 'warranty_exclusion', value: 'ban' }], '保订阅30天'],
-  ['period months', [{ name: 'warranty_scope', value: 'period' }, { name: 'warranty_window', value: '1 month' }], '质保1个月'],
-  ['subscription unknown term', [{ name: 'warranty_scope', value: 'subscription' }], '保订阅'],
-  ['period unknown term', [{ name: 'warranty_scope', value: 'period' }], null],
-  ['covered unknown term', [{ name: 'warranty', value: 'covered' }], null],
-  ['none', [{ name: 'warranty', value: 'none' }], null],
-])('renders %s warranty without unknown placeholders in cards and comparison', async (_name, tags, warranty) => {
-  mockApi({ tags }); await renderWithOffers();
-  await screen.findByRole('button', { name: product.name });
-  if (warranty) expect(within(screen.getByLabelText('商品标签')).getByText(warranty)).toBeInTheDocument();
+  [[], null], [[{ name: 'warranty', value: 'unknown' }], null], [[{ name: 'warranty', value: 'none' }], null], [[{ name: 'warranty', value: 'covered' }], null],
+  [[{ name: 'warranty', value: '购买后1小时内仅保首登' }], '购买后1小时内仅保首登'],
+  [[{ name: 'warranty', value: '激活后24小时内仅保首次接码' }], '激活后24小时内仅保首次接码'],
+  [[{ name: 'warranty', value: '保订阅30天，封号不保' }], '保订阅30天，封号不保'],
+])('warranty %j stays complete in cards and comparison', async (tags, warranty) => {
+  mockApi({ tags }); await renderWithOffers(); await screen.findByRole('button', { name: product.name });
+  if (warranty) expect(screen.getByLabelText('商品标签')).toHaveTextContent(warranty);
   else expect(screen.queryByLabelText('商品标签')).not.toBeInTheDocument();
-  expect(screen.queryByText(/^售后：/)).not.toBeInTheDocument();
-  for (const tile of document.querySelectorAll('.shop-tile')) expect(tile).not.toHaveTextContent(/未说明/);
   fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
   fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[1]);
   fireEvent.click(screen.getByRole('button', { name: '对比（2）' }));
   const comparison = within(screen.getByRole('dialog', { name: '报价对比' }));
-  if (warranty) {
-    const row = comparison.getByRole('rowheader', { name: '售后', exact: true }).closest('tr');
-    expect(within(row).getAllByRole('cell').map(cell => cell.textContent)).toEqual([warranty, '—']);
-  } else expect(comparison.queryByRole('rowheader', { name: '售后' })).not.toBeInTheDocument();
+  if (warranty) expect(within(comparison.getByRole('rowheader', { name: '售后保障' }).closest('tr')).getAllByRole('cell').map(cell => cell.textContent)).toEqual([warranty, '—']);
+  else expect(comparison.queryByRole('rowheader', { name: '售后保障' })).not.toBeInTheDocument();
 });
 
-test('offers one canonical rapid purchase condition and hides unknown facets', async () => {
-  const facets = [
-    { name: 'account_lifecycle', value: 'disposable' }, { name: 'intended_use', value: 'rapid' },
-    { name: 'warranty_scope', value: 'activation' }, { name: 'warranty_scope', value: 'first_login' },
-    { name: 'warranty', value: 'unknown' }, { name: 'warranty_scope', value: 'unspecified' },
-  ];
-  const calls = mockApi({ facets }); await renderWithOffers();
-  await screen.findByRole('button', { name: product.name });
-  fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  const panel = within(screen.getByRole('region', { name: '筛选报价' }));
-  fireEvent.click(await panel.findByRole('checkbox', { name: /速刷/ }));
-  expect(panel.queryByRole('checkbox', { name: /日抛/ })).not.toBeInTheDocument();
-  expect(panel.getAllByRole('checkbox', { name: /速刷/ })).toHaveLength(1);
-  fireEvent.click(panel.getByRole('radio', { name: '仅保激活' }));
-  expect(panel.getByText('速刷')).toBeInTheDocument();
-  expect(panel.getByRole('radio', { name: '仅保首登' })).toBeInTheDocument();
-  expect(panel.queryByText(/未说明|商家标注/)).not.toBeInTheDocument();
-  fireEvent.click(panel.getByRole('button', { name: '应用筛选（2）' }));
-  await waitFor(() => expect(calls.some(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20'
-    && url.searchParams.getAll('tag').includes('{"name":"intended_use","value":"rapid"}')
-    && url.searchParams.getAll('tag').includes('{"name":"warranty_scope","value":"activation"}'))).toBe(true));
+test('retired rapid and warranty-scope facets never appear as selectable conditions', async () => {
+  mockApi({ facets: [{ name: 'intended_use', value: 'rapid' }, { name: 'warranty_scope', value: 'first_login' }, { name: 'region', value: 'us' }] });
+  await renderWithOffers(); fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
+  expect(await screen.findByRole('checkbox', { name: '地区：美区' })).toBeInTheDocument();
+  expect(screen.queryByRole('checkbox', { name: /速刷|首登/ })).not.toBeInTheDocument();
 });
 
-test('preserves the canonical rapid filter in comparison without creating an account type', async () => {
+test('retired bookmark conditions are explicitly invalidated while comparison remains available', async () => {
   window.history.replaceState({}, '', '/?' + new URLSearchParams({ tag: '{"name":"intended_use","value":"rapid"}' }));
-  const calls = mockApi({ tags: [{ name: 'intended_use', value: 'rapid' }] });
-  await renderWithOffers();
-  await screen.findByRole('button', { name: product.name });
-  expect(within(screen.getByLabelText('已选筛选条件')).getByRole('button', { name: /速刷/ })).toBeInTheDocument();
-  expect(calls.some(url => url.searchParams.getAll('tag').includes('{"name":"intended_use","value":"rapid"}'))).toBe(true);
-  fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
-  fireEvent.click(screen.getByRole('button', { name: '对比（1）' }));
-  const comparison = within(screen.getByRole('dialog', { name: '报价对比' }));
-  expect(comparison.getByRole('cell', { name: '速刷', exact: true })).toBeInTheDocument();
-  expect(comparison.queryByRole('rowheader', { name: '账号类型' })).not.toBeInTheDocument();
+  const calls = mockApi(); await renderWithOffers(); await screen.findByRole('button', { name: product.name });
+  expect(screen.getByRole('alert')).toHaveTextContent('旧筛选条件已失效');
+  expect(calls.every(url => !url.searchParams.getAll('tag').length)).toBe(true);
+  fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]); fireEvent.click(screen.getByRole('button', { name: '对比（1）' }));
+  expect(screen.getByRole('dialog', { name: '报价对比' })).toHaveTextContent('¥12.5');
 });
 
-test('removing the rapid intent clears every daily synonym while keeping product search text', async () => {
+test('rapid words stay literal search text instead of producing retired intent chips', async () => {
   window.history.replaceState({}, '', '/?' + new URLSearchParams({ q: 'Claude 日抛 速刷' }));
-  mockApi(); await renderWithOffers();
-  const intents = await screen.findByLabelText('已识别购买条件');
-  expect(within(intents).getAllByRole('button', { name: '移除速刷' })).toHaveLength(1);
-  fireEvent.click(within(intents).getByRole('button', { name: '移除速刷' }));
-  expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Claude');
+  mockApi(); await renderWithOffers(); await screen.findByRole('button', { name: product.name });
+  expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Claude 日抛 速刷');
   expect(screen.queryByLabelText('已识别购买条件')).not.toBeInTheDocument();
 });
 
-test.each([
-  ['first_login', '仅保首登'], ['activation', '仅保激活'], ['first_code', '仅保首次接码'], ['subscription', '保订阅'],
-])('keeps %s and full-period minimum days mutually exclusive in detail filters', async (scope, label) => {
+test.each(['购买后1小时内仅保首登', '激活后24小时内仅保首次接码', '保订阅30天，封号不保'])('detail filters submit complete warranty %s without derived days', async value => {
   window.history.replaceState({}, '', '/products/42');
-  const calls = mockApi({ facets: [{ name: 'warranty_days', value: '30' }, { name: 'warranty_scope', value: scope }] });
-  await renderWithOffers();
-  await screen.findByText('¥12.5');
+  const calls = mockApi({ facets: [{ name: 'warranty', value }] }); await renderWithOffers(); await screen.findByText('¥12.5');
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  const option = await screen.findByRole('radio', { name: label });
-  const warrantyGroup = screen.getByRole('group', { name: '质保要求', exact: true });
-  expect(warrantyGroup).toContainElement(option);
-  expect(within(warrantyGroup).queryByRole('group', { name: '最低质保天数' })).not.toBeInTheDocument();
-  fireEvent.click(option);
-  fireEvent.click(screen.getByRole('radio', { name: '按质保时长' }));
-  fireEvent.click(screen.getByRole('radio', { name: '至少30天' }));
-  expect(option).not.toBeChecked();
-  fireEvent.click(option);
+  fireEvent.click(await screen.findByRole('checkbox', { name: '售后保障：' + value }));
   expect(screen.queryByRole('group', { name: '最低质保天数' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /应用筛选/ }));
-  await waitFor(() => expect(calls.some(url => url.searchParams.has('detailKind')
-    && !url.searchParams.has('warrantyDaysMin')
-    && url.searchParams.getAll('tag').includes(JSON.stringify({ name: 'warranty_scope', value: scope })))).toBe(true));
+  await waitFor(() => expect(calls.some(url => url.searchParams.has('detailKind') && url.searchParams.getAll('tag').includes(JSON.stringify({ name: 'warranty', value })))).toBe(true));
+  expect(calls.every(url => !url.searchParams.has('warrantyDaysMin'))).toBe(true);
 });
 
 test('homepage shows compact settlement and listed prices with verification time in a hint and one click merchant links', async () => {
@@ -691,14 +622,14 @@ test('a failed visibility refresh preserves the last observed minimum', async ()
 
 test.each(['/', '/products/42'])('opens SKU details without requests and keeps nested report and comparison layers on %s', async path => {
   window.history.replaceState({}, '', path);
-  const calls = mockApi({ tags: [{ name: 'delivery', value: 'top_up' }, { name: 'access', value: 'shared' }, { name: 'duration', value: '30 days' }, { name: 'usage_restriction', value: '禁止改密' }] });
+  const calls = mockApi({ tags: [{ name: 'bulk_purchase', value: 'supported' }, { name: 'sms_verification', value: 'unverified' }, { name: 'duration', value: 30 }, { name: 'warranty', value: '禁止改密，保订阅30天' }] });
   await renderWithOffers(); await screen.findAllByText('¥12.5');
   expect(screen.queryByRole('button', { name: '举报此报价' })).not.toBeInTheDocument();
   const trigger = screen.getAllByRole('button', { name: '商品说明', exact: true })[0]; trigger.focus();
   const before = calls.length; fireEvent.click(trigger);
   let details = screen.getByRole('dialog', { name: quote.name });
   expect(details).toHaveTextContent(quote.spec);
-  expect(details).toHaveTextContent('禁止改密'); expect(details).toHaveTextContent('30天');
+  expect(details).toHaveTextContent('禁止改密'); expect(details).toHaveTextContent('1个月');
   expect(calls).toHaveLength(before);
   fireEvent.click(within(details).getByRole('button', { name: '举报此报价' }));
   const report = screen.getByRole('dialog', { name: '举报此报价' });
@@ -716,7 +647,7 @@ test.each(['/', '/products/42'])('opens SKU details without requests and keeps n
 });
 
 test('aggregate details reuse the selected SKU and closing its explanation preserves the parent dialog', async () => {
-  mockApi({ tags: [{ name: 'usage_restriction', value: '禁止改密' }] }); await renderWithOffers();
+  mockApi({ tags: [{ name: 'warranty', value: '禁止改密，保订阅30天' }] }); await renderWithOffers();
   fireEvent.click(await screen.findByRole('button', { name: '25 条报价' }));
   const parent = await screen.findByRole('dialog', { name: /报价/ });
   const trigger = (await within(parent).findAllByRole('button', { name: '商品说明', exact: true }))[0]; trigger.focus(); fireEvent.click(trigger);
@@ -727,7 +658,7 @@ test('aggregate details reuse the selected SKU and closing its explanation prese
 });
 
 test('switching merchant products never carries conditions from the previous SKU', async () => {
-  mockApi({ tags: [{ name: 'usage_restriction', value: '禁止改密' }] }); await renderWithOffers();
+  mockApi({ tags: [{ name: 'warranty', value: '禁止改密，保订阅30天' }] }); await renderWithOffers();
   await screen.findByRole('button', { name: product.name });
   const triggers = screen.getAllByRole('button', { name: '商品说明', exact: true });
   fireEvent.click(triggers[0]); expect(screen.getByRole('dialog', { name: quote.name })).toHaveTextContent('禁止改密');
@@ -735,110 +666,64 @@ test('switching merchant products never carries conditions from the previous SKU
   expect(screen.getByRole('dialog', { name: quote.name })).not.toHaveTextContent('禁止改密');
 });
 
-test.each(['/', '/products/42'])('prioritizes explicit restrictions and warranty in the two visible tags on %s', async path => {
+test.each(['/', '/products/42'])('prioritizes complete warranty and actual minimum purchase on %s', async path => {
   window.history.replaceState({}, '', path);
-  mockApi({ settlementQuantity: 5, tags: [
-    { name: 'usage_restriction', value: '禁止改密' }, { name: 'delivery_mode', value: 'automatic' },
-    { name: 'login_method', value: 'email_code' }, { name: 'delivery', value: 'top_up' },
-    { name: 'access', value: 'shared' }, { name: 'warranty', value: 'covered' },
-    { name: 'warranty_scope', value: 'period' }, { name: 'warranty_days', value: '30' },
-  ] });
+  mockApi({ settlementQuantity: 5, tags: [{ name: 'warranty', value: '禁止改密，保订阅30天，封号不保' }, { name: 'bulk_purchase', value: 'required' }, { name: 'sms_verification', value: 'unverified' }] });
   await renderWithOffers(); await screen.findAllByText('¥12.5');
   const facts = screen.getByLabelText('商品标签');
-  expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual(['禁止改密', '质保30天']);
-  expect(within(facts).getByRole('button', { name: '查看全部商品条件，另有 5 项' })).toHaveTextContent('+5');
+  expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual(['禁止改密，保订阅30天，封号不保', '5件起购']);
+  fireEvent.click(within(facts).getByRole('button', { name: '查看全部商品条件，另有 2 项' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('需批量购买');
+});
+
+test.each(['none', 'unknown', 'covered'])('obsolete warranty %s does not create unknown or negative badges', async value => {
+  mockApi({ tags: [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value }] });
+  await renderWithOffers(); await screen.findByRole('button', { name: product.name });
+  expect(screen.getByLabelText('商品标签')).toHaveTextContent(/^已接码$/);
+});
+
+test.each([false, true])('summary priorities do not depend on incoming tag order: %s', async reversed => {
+  const tags = [{ name: 'region', value: 'us' }, { name: 'access_channel', value: 'web' }, { name: 'duration', value: 30 }, { name: 'subscription_override', value: '无' }];
+  mockApi({ tags: reversed ? tags.reverse() : tags }); await renderWithOffers(); await screen.findByRole('button', { name: product.name });
+  expect([...screen.getByLabelText('商品标签').querySelectorAll('span')].map(element => element.textContent)).toEqual(['不可覆盖订阅', '美区']);
+});
+
+test('identical display values in different fields retain their identities and overflow count', async () => {
+  mockApi({ tags: [{ name: 'access_channel', value: 'web' }, { name: 'supported_client', value: 'web' }, { name: 'region', value: 'us' }, { name: 'region', value: 'us' }] });
+  await renderWithOffers(); await screen.findByRole('button', { name: product.name });
+  fireEvent.click(within(screen.getByLabelText('商品标签')).getByRole('button', { name: '查看全部商品条件，另有 1 项' }));
+  const details = screen.getByRole('dialog');
+  expect(details.querySelector('[data-field="access_channel"]')).toHaveTextContent('网页');
+  expect(details.querySelector('[data-field="supported_client"]')).toHaveTextContent('支持web');
+});
+
+test.each([[365, '1年'], [360, '12个月'], [0.5, '12小时']])('numeric duration %s is consistent in cards and details', async (value, label) => {
+  mockApi({ tags: [{ name: 'duration', value }] }); await renderWithOffers(); await screen.findByRole('button', { name: product.name });
+  expect(screen.getByLabelText('商品标签')).toHaveTextContent(label);
   fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
-  const details = screen.getByRole('dialog', { name: quote.name });
-  for (const text of ['5件起购', '禁止改密', '自动发货', '邮箱验证码登录']) expect(details).toHaveTextContent(text);
+  expect(screen.getByRole('dialog')).toHaveTextContent(label);
 });
 
-test.each([
-  [[{ name: 'warranty', value: 'none' }], ['禁止改密', '独享']],
-  [[{ name: 'warranty_scope', value: 'first_login' }, { name: 'warranty_window', value: '24 hours' }], ['禁止改密', '仅保首登']],
-  [[{ name: 'warranty', value: 'unknown' }], ['禁止改密', '独享']],
-])('keeps warranty limits and unknown handling when prioritizing %j', async (warrantyTags, expected) => {
-  mockApi({ tags: [
-    { name: 'usage_restriction', value: '禁止改密' }, { name: 'delivery_mode', value: 'automatic' },
-    { name: 'delivery', value: 'top_up' }, { name: 'access', value: 'dedicated' }, ...warrantyTags,
-  ] });
+test('cards and dialogs share access and tool labels without inferring exclusive support', async () => {
+  mockApi({ tags: [{ name: 'access_channel', value: 'web' }, { name: 'supported_client', value: 'codex' }, { name: 'supported_client', value: 'sub2api' }] });
   await renderWithOffers(); await screen.findByRole('button', { name: product.name });
-  expect([...screen.getByLabelText('商品标签').querySelectorAll('span')].map(element => element.textContent)).toEqual(expected);
+  expect(screen.getByLabelText('商品标签')).toHaveTextContent('网页支持Codex');
+  fireEvent.click(within(screen.getByLabelText('商品标签')).getByRole('button', { name: '查看全部商品条件，另有 1 项' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('支持Sub2API');
+  expect(screen.getByRole('dialog')).not.toHaveTextContent('仅支持');
 });
 
-test.each([false, true])('retains restrictions before account role and lifecycle when core tags are absent (reversed: %s)', async reversed => {
-  const tags = [
-    { name: 'delivery_mode', value: 'automatic' }, { name: 'login_method', value: 'email_code' },
-    { name: 'account_lifecycle', value: 'aged' }, { name: 'account_type', value: 'sub_account' },
-    { name: 'usage_restriction', value: '禁止改密' },
-  ];
-  mockApi({ tags: reversed ? tags.reverse() : tags });
-  await renderWithOffers(); await screen.findByRole('button', { name: product.name });
-  const facts = screen.getByLabelText('商品标签');
-  expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual(['禁止改密', '子号']);
-  expect(within(facts).getByRole('button', { name: '查看全部商品条件，另有 3 项' })).toHaveTextContent('+3');
-});
-
-test('equal boolean values retain distinct field identities, two-item budget and overflow', async () => {
-  mockApi({ tags: [
-    { name: 'single_use', value: '有' }, { name: 'renewable', value: '有' },
-    { name: 'sms_required', value: '有' }, { name: 'single_use', value: '有' },
-    { name: 'renewal_timing', value: 'after_expiry' }, { name: 'account_age', value: '1 year' },
-  ] }); await renderWithOffers(); await screen.findByRole('button', { name: product.name });
-  const facts = screen.getByLabelText('商品标签');
-  expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual(['一次性使用', '可续费']);
-  expect(within(facts).getByRole('button', { name: '查看全部商品条件，另有 3 项' })).toHaveTextContent('+3');
-  fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
-  const details = screen.getByRole('dialog', { name: quote.name });
-  expect(details).toHaveTextContent('需接码');
-  expect(details).toHaveTextContent('号龄1年');
-  expect(details).toHaveTextContent('到期后续费');
-});
-test('canonical year duration is readable in summaries and details', async () => {
-  mockApi({ tags: [{ name: 'delivery', value: 'top_up' }, { name: 'duration', value: '1 year' }, { name: 'sms_required', value: '有' }] });
-  await renderWithOffers(); await screen.findByRole('button', { name: product.name });
-  const facts = screen.getByLabelText('商品标签');
-  expect(facts).toHaveTextContent('代充需接码+1');
-  fireEvent.click(within(facts).getByRole('button', { name: '查看全部商品条件，另有 1 项' }));
-  expect(screen.getByRole('dialog', { name: quote.name })).toHaveTextContent('1年');
-});
-
-test('cards and dialogs share localized delivery and login values', async () => {
-  mockApi({ tags: [{ name: 'delivery_mode', value: 'automatic' }, { name: 'delivery_format', value: 'credentials' }, { name: 'login_method', value: 'email_code' }] });
-  await renderWithOffers(); await screen.findByRole('button', { name: product.name });
-  const facts = screen.getByLabelText('商品标签');
-  expect(facts).toHaveTextContent('自动发货');
-  expect(facts).toHaveTextContent('账密');
-  expect(facts).not.toHaveTextContent('邮箱验证码登录');
-  expect(within(facts).getByRole('button', { name: '查看全部商品条件，另有 1 项' })).toHaveTextContent('+1');
-  fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
-  const dialog = screen.getByRole('dialog', { name: quote.name });
-  expect(dialog).toHaveTextContent('自动发货');
-  expect(dialog).toHaveTextContent('账密');
-  expect(dialog).toHaveTextContent('邮箱验证码登录');
-  expect(dialog).not.toHaveTextContent(/automatic|credentials|email.code/);
-  expect(dialog.querySelector('.offer-tag-details-groups')).not.toHaveTextContent('：');
-  expect(facts).not.toHaveTextContent('：');
-});
-
-test('keeps resource, region and period labels distinct after shortening', async () => {
-  mockApi({ tags: [
-    { name: 'region_options', value: 'us' }, { name: 'registration_region', value: 'us' },
-    { name: 'token_validity_min', value: '3 months' }, { name: 'duration_approx', value: '3 months' },
-    { name: 'memory', value: '8 gb' }, { name: 'storage', value: '8 gb' },
-    { name: 'single_use', value: '无' }, { name: 'renewable', value: '无' },
-  ] });
+test('duration qualifiers remain visible with current product regions', async () => {
+  mockApi({ tags: [{ name: 'region', value: 'us' }, { name: 'duration', value: { kind: 'approx', days: 90 } }] });
   await renderWithOffers(); await screen.findByRole('button', { name: product.name });
   fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
-  const dialog = screen.getByRole('dialog', { name: quote.name });
-  for (const label of ['可选美国', '注册地美国', '令牌至少3个月', '约3个月', '内存 8GB', '存储 8GB', '可多次使用', '不可续费']) {
-    expect(within(dialog).getByText(label, { exact: true })).toBeInTheDocument();
-  }
+  const dialog = screen.getByRole('dialog'); expect(dialog).toHaveTextContent('美区'); expect(dialog).toHaveTextContent('约3个月');
 });
 
 test('summarizes additional tags with only their count', async () => {
   mockApi({ tags: [
-    { name: 'delivery', value: 'account' }, { name: 'delivery_mode', value: 'automatic' },
-    { name: 'access', value: 'dedicated' }, { name: 'duration', value: '30 days' },
+    { name: 'bulk_purchase', value: 'required' }, { name: 'access_channel', value: 'web' },
+    { name: 'sms_verification', value: 'verified' }, { name: 'duration', value: 30 },
   ] });
   await renderWithOffers(); await screen.findByRole('button', { name: product.name });
   const facts = screen.getByLabelText('商品标签');
@@ -847,8 +732,8 @@ test('summarizes additional tags with only their count', async () => {
   expect(facts).not.toHaveTextContent(/条件，请查看商品说明/);
   fireEvent.click(more);
   const details = screen.getByRole('dialog', { name: quote.name });
-  expect(details).toHaveTextContent('自动发货');
-  expect(details).toHaveTextContent('30天');
+  expect(details).toHaveTextContent('网页');
+  expect(details).toHaveTextContent('1个月');
 });
 
 test.each(['/', '/products/42'])('resizing switches the one/two-condition budget and keeps the overflow count accurate on %s', async path => {
@@ -857,17 +742,17 @@ test.each(['/', '/products/42'])('resizing switches the one/two-condition budget
   const media = { matches: false, addEventListener: vi.fn((_event, listener) => listeners.add(listener)), removeEventListener: vi.fn((_event, listener) => listeners.delete(listener)) };
   vi.stubGlobal('matchMedia', vi.fn(() => media));
   mockApi({ tags: [
-    { name: 'usage_restriction', value: '禁止改密' }, { name: 'warranty_days', value: '30' },
-    { name: 'access', value: 'shared' }, { name: 'delivery', value: 'top_up' },
+    { name: 'warranty', value: '禁止改密，保订阅30天' }, { name: 'subscription_override', value: '无' },
+    { name: 'sms_verification', value: 'unverified' }, { name: 'bulk_purchase', value: 'supported' },
   ] });
   await renderWithOffers();
   const facts = await screen.findByRole('group', { name: '商品标签' });
-  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['禁止改密']);
+  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['禁止改密，保订阅30天']);
   fireEvent.click(within(facts).getByRole('button', { name: '查看全部商品条件，另有 3 项' }));
   const details = screen.getByRole('dialog', { name: quote.name });
-  for (const text of ['禁止改密', '质保30天', '共享', '代充']) expect(details).toHaveTextContent(text);
+  for (const text of ['禁止改密，保订阅30天', '不可覆盖订阅', '未接码', '支持批量购买']) expect(details).toHaveTextContent(text);
   fireEvent.click(within(details).getByRole('button', { name: '关闭商品说明' }));
   await act(async () => { media.matches = true; listeners.forEach(listener => listener({ matches: true })); });
-  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['禁止改密', '质保30天']);
+  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['禁止改密，保订阅30天', '不可覆盖订阅']);
   expect(within(facts).getByRole('button', { name: '查看全部商品条件，另有 2 项' })).toHaveTextContent('+2');
 });

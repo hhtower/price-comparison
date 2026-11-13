@@ -7,10 +7,10 @@ import { validateTagExtractionDecision } from '../src/ai/tag-extraction-result.j
 
 test('synthetic diagnostic references are distinct and supported by cited evidence', async () => {
   const fixture = JSON.parse(await readFile(new URL('./fixtures/tag-extraction-quality-expanded-20261016.json', import.meta.url), 'utf8'));
-  assert.equal(fixture.samples.length, 42);
-  assert.equal(new Set(fixture.samples.map((sample: any) => sample.id)).size, 42);
+  assert.equal(fixture.samples.length, 51);
+  assert.equal(new Set(fixture.samples.map((sample: any) => sample.id)).size, 51);
   const inputs = fixture.samples.map((sample: any) => JSON.stringify({ ...sample.input, id: undefined }));
-  assert.equal(new Set(inputs).size, 42);
+  assert.equal(new Set(inputs).size, 51);
   parseTagExtractionResponse(JSON.stringify({ items: fixture.samples.map((sample: any) => ({ id: sample.id, tags: sample.expected })) }));
   for (const sample of fixture.samples) {
     assert.equal(sample.provenance.kind, 'synthetic-control');
@@ -23,7 +23,7 @@ test('synthetic diagnostic references are distinct and supported by cited eviden
     }
   }
   const groups = new Set(fixture.samples.flatMap((sample: any) => sample.expected.map((tag: any) => PURCHASE_GUIDE_FIELDS[tag.name].collectionGroup)));
-  assert.equal(groups.size, 8);
+  assert.equal(groups.size, 7);
   assert.ok(fixture.samples.filter((sample: any) => !sample.expected.length).length >= 6);
   assert.match(fixture.annotationScope, /synthetic/);
 });

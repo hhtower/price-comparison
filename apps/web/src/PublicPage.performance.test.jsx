@@ -19,7 +19,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const quote = id => ({ productId: String(id), shopId: String(id), shop: '商铺' + id, name: '报价' + id, price: 10, priceStatus: 'verified', priceExpiresAt: '2099-01-01T00:00:00Z', currency: 'CNY', tags: [] });
 const product = id => ({ id: String(id), name: '商品' + id, platform: 'openai', shopCount: 4, productCount: 8, offers: [0, 1, 2, 3].map(n => quote(id * 4 + n)) });
 const response = items => Response.json({ items, platformFacets: ['openai'] });
-const facetsResponse = () => Response.json({ tagFacets: [{ name: 'access', value: 'dedicated', priority: 1 }] });
+const facetsResponse = () => Response.json({ tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 1 }] });
 
 test('filter options and the standard selector load metadata without fetching another quote page', async () => {
   const requests = [];
@@ -29,7 +29,7 @@ test('filter options and the standard selector load metadata without fetching an
     if (url.pathname === '/api/catalog/coverage') return Response.json({ shopCount: 10, productCount: 100 });
     requests.push(url);
     return url.pathname === '/api/catalog/facets'
-      ? Response.json({ tagFacets: [{ name: 'access', value: 'dedicated' }] })
+      ? Response.json({ tagFacets: [{ name: 'sms_verification', value: 'verified' }] })
       : response([product(0)]);
   }));
   render(<PublicPage />);
@@ -37,7 +37,7 @@ test('filter options and the standard selector load metadata without fetching an
   expect(requests).toHaveLength(1);
   expect(requests[0].pathname).toBe('/api/catalog');
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  await screen.findByRole('checkbox', { name: /独享/ });
+  await screen.findByRole('checkbox', { name: /已接码/ });
   expect(requests).toHaveLength(3);
   expect(requests.filter(url => url.pathname === '/api/catalog/products')).toHaveLength(1);
   expect(requests.filter(url => url.pathname === '/api/catalog')).toHaveLength(1);
@@ -51,15 +51,15 @@ test('filter options and the standard selector load metadata without fetching an
 });
 
 test('keeps three common duration shortcuts before expanding all choices', async () => {
-  const tagFacets = [...Array.from({ length: 8 }, (_, i) => ({ name: 'duration', value: String(i + 1) + ' days', priority: 1 })),
-    { name: 'duration', value: '30 days', priority: 100 }];
+  const tagFacets = [...Array.from({ length: 8 }, (_, i) => ({ name: 'duration', value: i + 1, priority: 1 })),
+    { name: 'duration', value: 31, priority: 100 }];
   vi.stubGlobal('fetch', vi.fn(async input => String(input).includes('/catalog/facets')
     ? Response.json({ tagFacets }) : response([product(0)])));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /^商品0$/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  expect(await screen.findByRole('checkbox', { name: /30/ })).toBeInTheDocument();
-  const group = screen.getByRole('checkbox', { name: /30/ }).closest('fieldset');
+  expect(await screen.findByRole('checkbox', { name: /31天/ })).toBeInTheDocument();
+  const group = screen.getByRole('checkbox', { name: /31天/ }).closest('fieldset');
   expect(within(group).getAllByRole('checkbox')).toHaveLength(3);
   fireEvent.click(screen.getByRole('button', { name: '更多期限（按天）' }));
   expect(within(group).getAllByRole('checkbox')).toHaveLength(9);
@@ -84,7 +84,7 @@ test('selecting the active platform and applying unchanged filters keep the exis
   fireEvent.click(screen.getByRole('button', { name: '全部', exact: true }));
   expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/catalog?'))).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  await screen.findByRole('checkbox', { name: /独享/ });
+  await screen.findByRole('checkbox', { name: /已接码/ });
   fireEvent.click(screen.getByRole('button', { name: '应用筛选', exact: true }));
   expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/catalog?'))).toHaveLength(1);
   expect(screen.getByRole('heading', { name: /^商品0$/ })).toBeInTheDocument();
@@ -97,7 +97,7 @@ test('reopening filters reuses prepared options until refresh', async () => {
   await screen.findByRole('heading', { name: /^商品0$/ });
   for (let i = 0; i < 2; i++) {
     fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-    await screen.findByRole('checkbox', { name: /独享/ });
+    await screen.findByRole('checkbox', { name: /已接码/ });
     fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   }
   const facetCalls = () => fetchMock.mock.calls.filter(([url]) => new URL(url, 'http://localhost').pathname === '/api/catalog/facets');
@@ -105,25 +105,25 @@ test('reopening filters reuses prepared options until refresh', async () => {
   fireEvent.click(screen.getByRole('button', { name: '刷新价格' }));
   await screen.findByRole('heading', { name: /^商品0$/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  await screen.findByRole('checkbox', { name: /独享/ });
+  await screen.findByRole('checkbox', { name: /已接码/ });
   expect(facetCalls()).toHaveLength(2);
 });
 
 test('facet reuse expires so reopening filters can show updated conditions', async () => {
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
-  let facets = [{ name: 'access', value: 'dedicated', priority: 1 }];
+  let facets = [{ name: 'sms_verification', value: 'verified', priority: 1 }];
   const fetchMock = vi.fn(async url => String(url).includes('/catalog/facets') ? Response.json({ tagFacets: facets }) : response([product(0)]));
   vi.stubGlobal('fetch', fetchMock);
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /^商品0$/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  await screen.findByRole('checkbox', { name: /独享/ });
+  await screen.findByRole('checkbox', { name: /已接码/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   clock.mockReturnValue(6001);
-  facets = [{ name: 'duration', value: '30 days', priority: 2 }];
+  facets = [{ name: 'duration', value: 31, priority: 2 }];
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  expect(await screen.findByRole('checkbox', { name: /30天/ })).toBeInTheDocument();
-  expect(screen.queryByRole('checkbox', { name: /独享/ })).not.toBeInTheDocument();
+  expect(await screen.findByRole('checkbox', { name: /31天/ })).toBeInTheDocument();
+  expect(screen.queryByRole('checkbox', { name: /已接码/ })).not.toBeInTheDocument();
 });
 
 test('detail batches append quotes and reuse loaded batches when reopened', async () => {

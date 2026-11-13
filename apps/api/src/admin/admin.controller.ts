@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, Get, Inject, Param, Patch, Post, Query, UseGuards, ValidationPipe } from '@nestjs/common';
-import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsBoolean, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { Allow, ArrayMaxSize, ArrayNotEmpty, IsArray, IsBoolean, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { parsePositiveBigint } from '../common/pagination.js';
 import { DomainValidationError } from '../common/errors.js';
+import { readTagQueryValue, validateProductTags } from '../products/product-tags.js';
+import type { TagValue } from '@price-comparison/catalog/purchase-attributes';
 import { AdminRepository } from './admin.repository.js';
 import type { AdminAiJobRow, AdminProductRow, AdminRunHistoryRow, AdminShopRow, AdminStandardProductRow, AdminTagRow } from './admin.repository.js';
 import type { AiJobListFilter, PlatformListFilter, ProductListFilter, RunHistoryListFilter, ShopListFilter, StandardProductListFilter, TagListFilter } from './admin.repository.js';
@@ -89,7 +91,7 @@ interface TagResponse {
   readonly id: string;
   readonly productId: string;
   readonly name: string;
-  readonly value: string;
+  readonly value: TagValue;
   readonly productCount: string;
 }
 
@@ -139,8 +141,8 @@ class PlatformBatchStatusDto {
 }
 class StandardProductMergeDto { @IsString() targetId!: string; @IsArray() @ArrayNotEmpty() @IsString({ each: true }) sourceIds!: string[]; @IsOptional() @IsBoolean() confirmEvidenceConflict?: boolean }
 class StandardProductBindDto { @IsArray() @ArrayNotEmpty() @IsString({ each: true }) productIds!: string[]; @IsString() standardProductId!: string; @IsOptional() @IsBoolean() confirmOwnershipChange?: boolean; @IsOptional() @IsBoolean() confirmEvidenceConflict?: boolean }
-class TagBindDto { @IsArray() @ArrayNotEmpty() @IsString({ each: true }) productIds!: string[]; @IsString() name!: string; @IsString() value!: string }
-class TagMutationDto { @IsString() name!: string; @IsString() value!: string; @IsOptional() @IsString() nextName?: string; @IsOptional() @IsString() nextValue?: string }
+class TagBindDto { @IsArray() @ArrayNotEmpty() @IsString({ each: true }) productIds!: string[]; @IsString() name!: string; @Allow() value!: TagValue }
+class TagMutationDto { @IsString() name!: string; @Allow() value!: TagValue; @IsOptional() @IsString() nextName?: string; @IsOptional() @Allow() nextValue?: TagValue }
 class StandardProductPatchDto {
   @IsOptional() @IsString() @MaxLength(20) sortOrder?: string;
   @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) @MaxLength(80, { each: true }) aliases?: string[];
@@ -234,7 +236,7 @@ export class AdminController {
 
   @Post('products/tags/bind')
   async bindTags(@Body(new ValidationPipe({ expectedType: TagBindDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) body: TagBindDto) {
-    return this.service.bindTags((body.productIds ?? []).map(id => parseId(id, 'productIds')), body.name.trim(), body.value.trim());
+    return this.service.bindTags((body.productIds ?? []).map(id => parseId(id, 'productIds')), body.name.trim(), validateProductTags([{ name: body.name.trim(), value: body.value }])[0]!.value);
   }
 
   @Post('products/standard-products/bind')
@@ -243,11 +245,11 @@ export class AdminController {
   }
 
   @Delete('tags')
-  async deleteTag(@Query() query: TagMutationDto) { if (!(await this.service.deleteTag(query.name, query.value))) throw new DomainValidationError('TAG_NOT_FOUND', '标签不存在'); }
+  async deleteTag(@Query() query: TagMutationDto) { if (!(await this.service.deleteTag(query.name, readTagQueryValue(query.name, String(query.value))))) throw new DomainValidationError('TAG_NOT_FOUND', '标签不存在'); }
   @Patch('tags')
-  async renameTag(@Body() body: TagMutationDto) { if (!(await this.service.renameTag(body.name, body.value, body.nextName?.trim() ?? body.name, body.nextValue?.trim() ?? body.value))) throw new DomainValidationError('TAG_NOT_FOUND', '标签不存在'); return { ok: true }; }
+  async renameTag(@Body(new ValidationPipe({ expectedType: TagMutationDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) body: TagMutationDto) { if (!(await this.service.renameTag(body.name, body.value, body.nextName?.trim() ?? body.name, body.nextValue ?? body.value))) throw new DomainValidationError('TAG_NOT_FOUND', '标签不存在'); return { ok: true }; }
   @Post('tags/merge')
-  async mergeTags(@Body() body: TagMutationDto) { return this.service.mergeTags(body.name, body.value, body.nextName?.trim() ?? '', body.nextValue?.trim() ?? ''); }
+  async mergeTags(@Body(new ValidationPipe({ expectedType: TagMutationDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) body: TagMutationDto) { return this.service.mergeTags(body.name, body.value, body.nextName?.trim() ?? '', body.nextValue ?? ''); }
 
   @Get('tags')
   async listTags(@Query(new ValidationPipe({ expectedType: ListTagsQueryDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) query: ListTagsQueryDto): Promise<PageResponse<TagResponse>> {
@@ -256,7 +258,7 @@ export class AdminController {
       ...(query.productId === undefined ? {} : { productId: parseId(query.productId, 'productId') }),
       ...(query.keyword === undefined ? {} : { keyword: query.keyword }),
       ...(query.name === undefined ? {} : { name: query.name }),
-      ...(query.value === undefined ? {} : { value: query.value }),
+      ...(query.value === undefined ? {} : { value: readTagQueryValue(query.name ?? '', query.value) }),
     };
     const page = await this.service.listTags(filter);
     return pageOf(page.items.map(toTagResponse), page);
@@ -265,7 +267,7 @@ export class AdminController {
   @Get('tags/products')
   async listTagProducts(@Query(new ValidationPipe({ expectedType: ListTagsQueryDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) query: ListTagsQueryDto) {
     if (!query.name || !query.value) throw new DomainValidationError('TAG_IDENTITY_REQUIRED', '标签名和值不能为空');
-    const page = await this.service.listTagProducts(query.name, query.value, pageRequest(query));
+    const page = await this.service.listTagProducts(query.name, readTagQueryValue(query.name, query.value), pageRequest(query));
     return pageOf(page.items.map(toProductResponse), page);
   }
 

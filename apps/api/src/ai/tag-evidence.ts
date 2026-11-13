@@ -1,5 +1,5 @@
-import { normalizeProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
-import type { PurchaseTag } from '@price-comparison/catalog/purchase-attributes';
+import { hasWarrantyCoverage, normalizeProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
+import { durationToDays, tagValueKey, type TagValue, type PurchaseTag } from '@price-comparison/catalog/purchase-attributes';
 import { canonicalizeMatchText } from '../standardization/fingerprint.js';
 import { specificationParts } from '../products/product-spec.js';
 
@@ -10,9 +10,6 @@ const prerequisite = /自备|自行|自助修改|请.*修改|需.*(?:提供|准�
 const openQualifier = new RegExp(`(?:${negative.source}|${prerequisite.source}|${uncertain.source}|需要|必须|要求|\\bmust\\b)$`, 'iu');
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 const contains = (text: string, value: string) => new RegExp(`(?<![a-z0-9])${escape(value)}(?![a-z0-9])`, 'u').test(text);
-const periods = /(?<![\d.])\d+(?:\.\d+)?\s*(?:分钟|小时|天|周|个月|月|年|minutes?|hours?|days?|weeks?|months?|years?)(?![a-z])/gu;
-const number = String.raw`(?<![\d.\-])\d+(?:\.\d+)?\s*(?:k|w|万)?`;
-
 function clauses(text: string): string[] {
   return specificationParts(text).flatMap(part => part.split(/[;；。!！?？,\n，]/u)).flatMap(clause => {
     const parts = clause.split('|').map(value => value.trim()).filter(Boolean);
@@ -32,7 +29,7 @@ function normalized(name: string, value: string): PurchaseTag[] {
 /** Keep the original payload for audit; promoted offers are not current-item facts. */
 export function currentProductTagEvidence(text: string, primaryText: string): string {
   let promoted = false;
-  const topUp = tagEvidenceFacts({ name: 'delivery', value: 'top_up' }, canonicalizeMatchText(primaryText)).has('top_up');
+  const topUp = /代充|充值|top[- ]?up|recharge/iu.test(primaryText) && !negative.test(primaryText);
   const heading = String.raw`(?:推荐|关联|其他|其它)(?:商品|产品)|另售|另购|(?:广告|推广)[:：]`;
   const linkedTopUp = String.raw`(?<![a-z0-9])(?:[a-z][a-z0-9 _-]{0,40})?(?:代充|充值)(?:链接|入口)`;
   const offer = topUp ? heading : `${heading}|${linkedTopUp}`;
@@ -68,261 +65,114 @@ export function scopeEvidenceLines(text: string): string {
   }).join('\n');
 }
 
-/** Extract only warranty assertions; import deadlines and subscription terms are not coverage. */
-export function warrantyEvidenceFacts(text: string): PurchaseTag[] {
-  if (/仅限自用|非人为|人为.*(?:不保|除外)|修改[^，。；]*不保|如果|若|条件|only if|unless/u.test(text)) return [];
-  const facts: PurchaseTag[] = [];
-  const add = (name: string, value: string) => facts.push({ name, value });
-  const assertions = clauses(text).flatMap(clause => {
-    if (uncertain.test(clause) || prerequisite.test(clause) || /人为|不改|必须|条件|only if/u.test(clause)) return [clause];
-    // An explicit new coverage assertion ends an unrelated denial, but never drops governing conditions.
-    return clause.split(/\|\s*(?=提供[^|]*(?:质保|保修|售后|warranty|guarantee))/u);
-  });
-  for (const clause of assertions) {
-    const named = /^(warranty[a-z_]*)\s*:\s*(.+)$/u.exec(clause);
-    if (named) {
-      facts.push(...normalized(named[1]!, named[2]!));
-      continue;
-    }
-    if (/封号不保|ban.*(?:not covered|excluded)/u.test(clause)) {
-      add('warranty_exclusion', 'ban');
-      continue;
-    }
-    if (!/质保|保修|售后|warranty|guarantee|掉订阅包赔|subscription coverage/u.test(clause)) continue;
-    if (uncertain.test(clause) || prerequisite.test(clause) || /人为|不改|必须|条件|only if/u.test(clause)) continue;
-    if (negative.test(clause)) {
-      add('warranty', 'none');
-      continue;
-    }
-    add('warranty', 'covered');
-    const coverage = clause.replace(/首次登录(?:后|时|起)|from first login/gu, '');
-    const scope = /首登|首次登[录陆]|first[- ]login/u.test(coverage) ? 'first_login'
-      : /首码|首次来码|first code/u.test(coverage) ? 'first_code'
-      : /仅.*激活|activation only/u.test(coverage) ? 'activation'
-      : /掉订阅|订阅质保|质保订阅|subscription coverage/u.test(coverage) ? 'subscription' : undefined;
-    const times = [...clause.matchAll(periods)].flatMap(match => normalized('warranty_window', match[0]));
-    if (scope || times.length || /全程|全周期|周期质保|full[- ](?:period|coverage)/u.test(clause)) add('warranty_scope', scope ?? 'period');
-    for (const time of times) {
-      if (!scope && time.value.endsWith(' days')) add('warranty_days', time.value.split(' ')[0]!);
-      else add('warranty_window', time.value);
-      if (!scope && time.value === '1 month') add('warranty_detail', time.value);
-    }
-    for (const [trigger, pattern] of [
-      ['purchase', /购买(?:后|时|起)|下单(?:后|起)|from purchase/u],
-      ['delivery', /(?:交付|发货)(?:后|时|起)|from delivery/u],
-      ['activation', /激活(?:后|时|起)|from activation/u],
-      ['first_login', /首次登录(?:后|时|起)|from first login/u],
-    ] as const) if (pattern.test(clause)) add('warranty_trigger', trigger);
-  }
-  return facts;
-}
+export const tagEvidenceValue = (value: TagValue): string => typeof value === 'string' ? value : tagValueKey(value);
+const unit = String.raw`分钟|小时|天|日|周|星期|个月|月|年|minutes?|hours?|days?|weeks?|months?|years?`;
+const amount = String.raw`\d+(?:\.\d+)?|一|二|两|三|半`;
+const quantity = (value: string) => ({ 一: 1, 二: 2, 两: 2, 三: 3, 半: 0.5 } as Record<string, number>)[value] ?? Number(value);
 
-function regionFacts(tag: PurchaseTag, text: string): Set<string> {
-  const name = tag.name;
+function durationFacts(text: string): Set<string> {
   const facts = new Set<string>();
   for (const clause of clauses(text)) {
-    if (negative.test(clause) || /部分|可能|不保证|\bmaybe\b/u.test(clause)) continue;
-    const ip = /\bip\b|建议|推荐|recommended/u.test(clause);
-    const registration = /注册|registration/u.test(clause);
-    const payment = /支付|付款|payment/u.test(clause);
-    if (name === 'recommended_ip_region' ? !ip : name === 'registration_region' ? !registration
-      : name === 'payment_region' ? !payment : ip || registration || payment) continue;
-    if (name !== 'region_options' && /或|\bor\b|可选/u.test(clause)) {
-      if (/随机|random/u.test(clause)) facts.add('random');
-      continue;
-    }
-    const clean = clause.replace(/(?:注册|支付|付款)(?:地区|国家|地)?|建议|推荐|使用|登录|账号|账户|可选|发货|交付|提供|地区|国家|\b(?:ip|region|registration|payment|recommended|use|account)\b/gu, ' ');
-    for (const value of [clause, ...clean.split(/[:：/、|]|\bor\b|或/u), ...(clean.match(/[\p{Script=Han}]+/gu) ?? [])]) {
-      for (const fact of normalized('region', value.trim())) if (fact.name === 'region') facts.add(fact.value);
-    }
-  }
-  return facts;
-}
-
-const countUnits: Record<string, string> = {
-  quantity: '个|份|accounts?|items?',
-  minimum_quantity: '个|份|accounts?|items?',
-  usage_count: '次|times|uses',
-  usage_count_max: '次|times|uses',
-  seats: '个?\\s*席位|人|seats?|users?',
-  shared_users: '人|people|users?',
-  multi_open: '开|instances?',
-  credits: '积分|点数|点|credits?|points?',
-  credits_daily: '积分|点数|点|credits?|points?',
-  credits_monthly: '积分|点数|点|credits?|points?',
-  binding_limit: '个|次|bindings?',
-  included_sms_count: '条|次|messages?',
-  reset_count: '次|resets?',
-  followers: '粉丝|followers',
-  cpu_cores: '核|cores?',
-  token_count: 'tokens?',
-  request_limit_hourly: '次|requests?',
-  request_limit_daily: '次|requests?',
-};
-const countLabels: Record<string, RegExp> = {
-  quantity: /数量|交付|发货|个账号|\bquantity\b/u,
-  seats: /席位|seats?/u, shared_users: /共享|合租|shared|people|users?/u,
-  binding_limit: /绑定|binding/u, included_sms_count: /短信|sms/u, reset_count: /重置|reset/u,
-  credits_daily: /每日|每天|daily/u, credits_monthly: /每月|monthly/u,
-  request_limit_hourly: /每小时|hourly/u, request_limit_daily: /每日|每天|daily/u,
-};
-
-function numericFacts(tag: PurchaseTag, text: string): Set<string> {
-  const facts = new Set<string>();
-  if (/或|\bor\b/u.test(text)) return facts;
-  for (const clause of clauses(text)) {
-    const qualified = tag.name === 'minimum_quantity' ? clause.replace(/至少|\bat least\b/gu, '')
-      : tag.name === 'usage_count_max' ? clause.replace(/最多|最高|\b(?:up to|at most)\b/gu, '') : clause;
-    if (negative.test(clause) || uncertain.test(qualified) || prerequisite.test(clause)
-      || /库存|售价|价格|stock|price/u.test(clause) || /\d\s*[-~～至到]\s*\d/u.test(clause)) continue;
-    if (/^(?:amount|balance)(?:_daily|_monthly)?$/u.test(tag.name)) {
-      if (tag.name.startsWith('balance') && !/余额|balance/u.test(clause)) continue;
-      if (tag.name.endsWith('_daily') && !/每日|每天|daily/u.test(clause)) continue;
-      if (tag.name.endsWith('_monthly') && !/每月|monthly/u.test(clause)) continue;
-      if (!tag.name.includes('_') && /每日|每天|每月|daily|monthly/u.test(clause)) continue;
-      for (const match of clause.matchAll(/[$¥€£]\s*\d+(?:\.\d+)?|(?<![\d.])\d+(?:\.\d+)?\s*(?:美元|美金|刀|人民币|欧元|英镑|日元|港币|台币|元|usd|cny|eur|gbp|jpy|hkd|twd|dollars?)(?![a-z])/gu)) {
-        for (const fact of normalized(tag.name.startsWith('balance') ? 'balance' : 'amount', match[0])) facts.add(fact.value);
+    if (/质保|保修|售后|首登|首次登[录陆]|首码|号龄|年龄|token|令牌|兑换|激活截止|兑换截止|导入截止|(?:分钟|小时|天)内(?:完成)?导入|有效代码|warranty|guarantee|redeem|account age|code validity/u.test(clause)
+      || /不支持|没有|不含|未说明|建议|推荐|如果|若|或|\bor\b/u.test(clause)) continue;
+    if (/永久|终身|\b(?:permanent|lifetime)\b/u.test(clause)) { facts.add(tagValueKey({ kind: 'permanent' })); continue; }
+    const range = new RegExp(`(${amount})\\s*(${unit})?\\s*[-~～至到]\\s*(${amount})\\s*(${unit})(?![a-z])`, 'u').exec(clause);
+    try {
+      if (range) {
+        const min = durationToDays(quantity(range[1]!), range[2] ?? range[4]!);
+        const max = durationToDays(quantity(range[3]!), range[4]!);
+        if (min < max) facts.add(tagValueKey({ kind: 'range', min, max }));
+        continue;
       }
-      continue;
-    }
-    const unit = countUnits[tag.name];
-    if (unit) {
-      const minimum = /起购|起拍|至少|最低购买数量|minimum/u.test(clause);
-      if (tag.name === 'minimum_quantity' && /并非|不是|不要求/u.test(clause)) continue;
-      if ((tag.name === 'minimum_quantity') !== minimum) continue;
-      if (countLabels[tag.name] && !countLabels[tag.name]!.test(clause) && !contains(clause, tag.name)) continue;
-      if (!/_daily|_monthly|_hourly/u.test(tag.name) && /每日|每天|每月|每小时|daily|monthly|hourly/u.test(clause)) continue;
-      const matches = [...clause.matchAll(new RegExp(`${number}\\s*(?:${unit})(?![a-z])`, 'gu'))];
-      if (contains(clause, tag.name) || (countLabels[tag.name]?.test(clause) && !matches.length)) {
-        // A named scalar SKU value supplies the unit; prose still needs an explicit unit.
-        const scalar = /[:： ](\d+(?:\.\d+)?)$/u.exec(clause);
-        if (scalar) facts.add(String(Number(scalar[1])));
+      const matches = [...clause.matchAll(new RegExp(`(?<![\\d.\\-])(${amount})\\s*(${unit})(?![a-z])`, 'gu'))];
+      if (!matches.length) {
+        if (/月卡|包月|\bmonthly\b/u.test(clause)) facts.add('30');
+        if (/季卡|季度|\bquarterly\b/u.test(clause)) facts.add('90');
+        if (/年卡|包年|\b(?:annual|yearly)\b/u.test(clause)) facts.add('365');
       }
       for (const match of matches) {
-        const amount = /^(\d+(?:\.\d+)?)\s*(k|w|万)?/u.exec(match[0])!;
-        facts.add(String(Number(amount[1]) * (amount[2] === 'k' ? 1000 : /^(?:w|万)$/u.test(amount[2] ?? '') ? 10000 : 1)));
+        const days = durationToDays(quantity(match[1]!), match[2]!);
+        const kind = /至少|以上|不低于|\bat least\b/u.test(clause) ? 'min'
+          : /最多|最高|以内|以下|不超过|\b(?:up to|at most)\b/u.test(clause) ? 'max'
+          : /约|左右|大概|\b(?:about|approx(?:imately)?)\b/u.test(clause) ? 'approx' : undefined;
+        facts.add(tagValueKey(kind ? { kind, days } : days));
       }
-      continue;
-    }
-    if (['storage', 'memory', 'data_quota', 'bandwidth'].includes(tag.name)) {
-      const label = ({ storage: /存储|容量|storage/u, memory: /内存|memory/u,
-        data_quota: /流量|data_quota/u, bandwidth: /带宽|bandwidth/u } as Record<string, RegExp>)[tag.name]!;
-      if (!label.test(clause)) continue;
-      const unit = tag.name === 'bandwidth' ? 'mbps|gbps' : 'mb|gb|tb';
-      for (const match of clause.matchAll(new RegExp(`${number}\\s*(?:${unit})(?![a-z])`, 'gu'))) {
-        facts.add(match[0].replace(/\s+/gu, '').replace(/([0-9])([a-z])/u, '$1 $2'));
-      }
-    }
+    } catch { /* An out-of-range period cannot support a duration tag. */ }
   }
   return facts;
 }
 
-/** Policy vocabulary is shared with ingestion; values alone do not prove numeric or scoped claims. */
+const coverage = /质保|保修|售后|保订阅|订阅.*保|仅保|首登|首码|包赔|包换|包退|warranty|guarantee|coverage/u;
+const warrantyCondition = /不保|不赔|不退|不换|除外|仅限|非人为|人为|修改|需[^。；\n]*(?:提供|提交|准备)|凭|必须|务必|前提|条件|退款|退换|补发|赔付|封号|失效|联系客服|购买后|发货后|激活后|from purchase|excluded|unless|only if/u;
+// Select whole statements so unfamiliar clauses before or after the promise cannot disappear.
+const warrantyStatements = (text: string) => sentences(text)
+  .map(sentence => sentence.replace(/^(?:本|当前)(?:商品|产品|账号)/u, '').trim())
+  .filter(sentence => coverage.test(sentence) || warrantyCondition.test(sentence));
+
+/** Preserve the whole promise, including qualifiers elsewhere in its current-item source. */
+function warrantySupported(value: string, text: string): boolean {
+  const wanted = canonicalizeMatchText(value);
+  const parts = warrantyStatements(text);
+  return hasWarrantyCoverage(wanted) && hasWarrantyCoverage(text)
+    && !/无条件|所有问题|任何问题|unconditional|all (?:issues|problems)/u.test(wanted)
+    && parts.length > 0 && parts.every(part => wanted.includes(part))
+    && text.replace(/\s/gu, '').includes(wanted.replace(/\s/gu, ''));
+}
+
+/** Current vocabulary only; unsupported/ambiguous source claims yield no facts. */
 export function tagEvidenceFacts(tag: PurchaseTag, text: string): Set<string> {
-  // Canonical spec labels own their values; adjacent attributes cannot supply units or qualifiers.
-  const attributes = specificationParts(text);
-  if (attributes.length > 1) return new Set(attributes.flatMap(attribute => [...tagEvidenceFacts(tag, attribute)]));
-  text = scopeEvidenceLines(text);
-  if (tag.name === 'usage_restriction') return new Set(sentences(text).flatMap(sentence =>
-    /必须|前提|条件/u.test(sentence) ? [sentence] : clauses(sentence))
-    .filter(clause => !uncertain.test(clause) && /仅|只|禁止|请勿|不得|不支持|不能|不可|无法|必须|must not|only|prohibited|not supported/u.test(clause)
-      && clause === canonicalizeMatchText(tag.value)).map(() => tag.value));
-  if (tag.name === 'supported_client') return new Set(clauses(text)
-    .filter(clause => !negative.test(clause) && !uncertain.test(clause) && !prerequisite.test(clause)
-      && !/禁止|请勿|不得/u.test(clause) && /支持|可用|使用|导入|格式|compatible|supports?|use/u.test(clause) && contains(clause, tag.value))
-    .map(() => tag.value));
-  const named = /^(.+?)\s*[:：]\s*(.+)$/u.exec(text);
-  if (named) {
-    const namedName = named[1]!;
-    const namedText = named[2]!;
-    if (!negative.test(namedText) && !uncertain.test(namedText) && !prerequisite.test(namedText)) {
-      const direct = normalizeProductTag({ name: namedName, value: namedText })
-        ?.filter(fact => fact.name === tag.name).map(fact => fact.value) ?? [];
-      if (direct.length) return new Set(direct);
-    }
-  }
-  if (tag.name.startsWith('warranty')) return new Set(warrantyEvidenceFacts(text).filter(fact => fact.name === tag.name).map(fact => fact.value));
-  if (/region/u.test(tag.name)) return regionFacts(tag, text);
-  if (Object.hasOwn(countUnits, tag.name) || /^(?:amount|balance)(?:_daily|_monthly)?$/u.test(tag.name)
-    || ['storage', 'memory', 'data_quota', 'bandwidth'].includes(tag.name)) return numericFacts(tag, text);
+  text = scopeEvidenceLines(text.split('\n').map(canonicalizeMatchText).join('\n'))
+    .replace(/(支持|接入方式[:：]|访问方式[:：])\s*\n/gu, '$1 ');
+  if (tag.name === 'duration') return durationFacts(text);
+  if (typeof tag.value !== 'string' || !Object.hasOwn(PRODUCT_TAG_RULES, tag.name)) return new Set();
+  const value = tag.value;
+  if (tag.name === 'warranty') return new Set(warrantySupported(value, text) ? [value] : []);
   const facts = new Set<string>();
-  if (['renewable', 'renewal_timing'].includes(tag.name)) {
-    for (const sentence of sentences(text)) {
-      if (uncertain.test(sentence) || prerequisite.test(sentence)) continue;
-      for (const value of [sentence, ...clauses(sentence)]) {
-        for (const fact of normalized('renewable', value)) if (fact.name === tag.name) facts.add(fact.value);
-      }
-      const timing = /^(?:订阅)?到期后(?:才)?(?:可|可以|支持)?续费$/u.test(sentence) ? 'after_expiry'
-        : /^随时(?:可|可以|支持)续费$/u.test(sentence) ? 'any_time' : undefined;
-      if (timing) facts.add(tag.name === 'renewable' ? '有' : timing);
-    }
-    return facts;
-  }
-  const conditionalClauses = new Set(sentences(text).filter(sentence => /如果|若|\b(?:if|unless)\b/u.test(sentence)).flatMap(clauses));
   for (const clause of clauses(text)) {
-    if (conditionalClauses.has(clause)) continue;
+    if (/部分|可能|不保证|建议|推荐|如果|若|前提|仅限|才能|才可|\b(?:maybe|recommended|if|unless)\b/u.test(clause)) continue;
+    if (tag.name === 'sms_verification') {
+      if (/需要|必须|要求|需.*提供|买家|用户|无需|不需要|并非|不是|没有/u.test(clause)) continue;
+      if (/未接码|未接马|未完成短信验证|尚未完成短信验证|\bunverified\b/u.test(clause)) facts.add('unverified');
+      else if (/已接码|已接马|已完成短信验证|\bverified\b/u.test(clause)) facts.add('verified');
+      continue;
+    }
     if (tag.name === 'subscription_override') {
-      if (uncertain.test(clause) || prerequisite.test(clause)) continue;
-      for (const fact of normalized(tag.name, clause)) if (fact.name === tag.name) facts.add(fact.value);
+      if (/(?:不可|不能|无法|不支持|不允许)覆盖(?:现有|已有)?订阅|cannot (?:cover|override) (?:existing )?subscription/u.test(clause)) facts.add('无');
       continue;
     }
-    if (tag.name === 'registration_year' && !/注册|registration_year|registration year/u.test(clause)) continue;
-    const requirement = ({ sms_required: /短信|接码|sms|手机号/u, kyc_required: /实名|kyc|cyber|赛博认证/u,
-      vpn_required: /vpn/u, card_binding_required: /绑卡|绑定(?:银行|信用|支付)卡/u } as Record<string, RegExp>)[tag.name];
-    if (requirement) {
-      if (uncertain.test(clause) || /并非|不是/u.test(clause) || !requirement.test(clause)) continue;
-      const absent = new RegExp(`(?:无需|不需要)\\s*(?:先|绑定|自行|完成)*(?:${requirement.source})|(?:${requirement.source})(?:\\s+verification)?\\s+(?:is\\s+)?not required`, 'gu');
-      if (absent.test(clause)) facts.add('无');
-      const required = new RegExp(`(?<![不无])(?:需要|需|必须|要)\\s*(?:先|绑定|自行|完成)*(?:${requirement.source})|(?:${requirement.source})(?:\\s+verification)?\\s+(?:is\\s+)?required`, 'u');
-      if (required.test(clause.replace(absent, ' '))) facts.add('有');
-      continue;
-    }
-    if (uncertain.test(clause) || negative.test(clause) || prerequisite.test(clause) || /或|\bor\b/u.test(clause)) continue;
-    if (['login_method', 'account_type', 'token_validity', 'account_age'].includes(tag.name)
-      && /并非|不是|不使用|不采用|不允许|尚未|未启用|未使用|未采用|关闭|禁用|停用|不出售|不销售|不售卖|未提供|未说明|非车位|非席位|赠送|比较|示例/u.test(clause)) continue;
-    if (tag.name === 'login_method' && /(?:使用|采用)?密码登录/u.test(clause) && !/邮箱密码/u.test(clause)) facts.add('password');
-    if (tag.name === 'account_type' && /车位|席位/u.test(clause)) facts.add('seat');
-    const periodLabel = tag.name === 'token_validity' ? /(?:token|令牌)(?:有效期|有效期限|validity)[\s:：为是]*(.+)$/u
-      : tag.name === 'account_age' ? /(?:账号)?(?:号龄|年龄)[\s:：为是]*(.+)$/u : undefined;
-    const period = periodLabel?.exec(clause)?.[1];
-    if (period) for (const fact of normalized('duration', period)) if (fact.name === 'duration') facts.add(fact.value);
-    const rule = PRODUCT_TAG_RULES[tag.name];
-    if (rule?.values?.includes('有')) continue;
-    // ponytail: free text requires an exact bounded value; add reviewed synonyms only when needed.
-    if (rule && !rule.pattern && !rule.values) {
-      if (contains(clause, tag.value)) facts.add(tag.value);
-      continue;
-    }
-    const candidates = [clause, ...(clause.match(/[a-z0-9]+(?:[-_.][a-z0-9]+)*|[\p{Script=Han}]+/gu) ?? []),
-      ...(tag.name === 'email_provider' ? clause.match(/[\p{Script=Han}]+邮箱/gu) ?? [] : [])];
-    const policyName = ({ delivery_mode: 'delivery', account_lifecycle: 'account_type',
-      renewal_timing: 'renewable' } as Record<string, string>)[tag.name] ?? tag.name;
-    for (const value of candidates) {
-      for (const fact of normalized(policyName, value)) if (fact.name === tag.name) facts.add(fact.value);
-      if (['delivery', 'delivery_format', 'access_channel', 'login_method', 'account_type'].includes(tag.name)) {
-        for (const fact of normalized('access', value)) if (fact.name === tag.name) facts.add(fact.value);
+    if (negative.test(clause) || /未提供|未说明|不要求|不是|并非|赠送|比较|示例/u.test(clause)) continue;
+    if (tag.name === 'region') {
+      if (/建议|推荐|需|必须|要求|注册|\bor\b|或|可选/u.test(clause)) continue;
+      const clean = clause.replace(/(?:本|当前)?(?:商品|产品)|(?:付款|支付)(?:地区|国家)(?:为|是)?|代充|充值|地区|国家|账号|账户|住宅|静态|动态|独享|交付|提供|\b(?:ip|region|account|product)\b/gu, ' ');
+      for (const candidate of [clause, ...clean.split(/[\s:：/、|,，]+/u), ...(clean.match(/[\p{Script=Han}]+/gu) ?? [])]) {
+        for (const fact of normalized('region', candidate.trim())) if (typeof fact.value === 'string') facts.add(fact.value);
       }
+    } else if (tag.name === 'bulk_purchase') {
+      if (/支持批量|可批量|批量下单|bulk (?:ordering|purchase)|supports? bulk/u.test(clause)) facts.add('supported');
+      const minimum = /(\d+)\s*(?:件|个|份|账号)\s*起(?:购|拍)|(?:最低购买数量|至少购买|minimum(?: order)?)\s*[:：]?\s*(\d+)/u.exec(clause);
+      if (minimum && Number(minimum[1] ?? minimum[2]) > 1) facts.add('required');
+      const pack = /(\d+)\s*(?:个账号|个|件|份)\s*(?:一包|一组|一套|打包)|(?:pack of|bundle of)\s*(\d+)/u.exec(clause);
+      if (pack && Number(pack[1] ?? pack[2]) > 1) facts.add('bundle');
+    } else if (tag.name === 'supported_client') {
+      if (/支持|可用|使用|导入|compatible|supports?|use/u.test(clause) && contains(clause, value)) facts.add(value);
+    } else if (tag.name === 'access_channel') {
+      for (const [channel, pattern] of [
+        ['web', /网页|浏览器|\bweb\b/u], ['reverse_proxy', /反代|reverse proxy/u], ['mirror', /镜像|\bmirror\b/u],
+        ['imap', /\bimap\b/u], ['pop3', /\bpop3\b/u], ['graph', /\bgraph\b/u], ['api', /\bapi\b/u],
+      ] as const) if (pattern.test(clause)) facts.add(channel);
     }
-    if (tag.name === 'access_channel' && /\bapi\b/u.test(clause)) facts.add('api');
-    if (tag.name === 'device_platform' && /安卓/u.test(clause)) facts.add('android');
   }
   return facts;
 }
 
 export function tagCitationSupports(tag: PurchaseTag, quote: string, source: string): boolean {
-  const includesQuote = (text: string) => canonicalizeMatchText(text).includes(quote);
-  const citedClauses = clauses(scopeEvidenceLines(source).replace(/[:：][^\S\n]*\n\s*/gu, ': '));
-  if (tag.name === 'access_channel' && !citedClauses.some(clause => includesQuote(clause)
-    && tagEvidenceFacts(tag, clause).has(tag.value))) return false;
-  if (['supported_client', 'usage_restriction'].includes(tag.name))
-    return includesQuote(source) && quote.includes(canonicalizeMatchText(tag.value)) && tagEvidenceFacts(tag, source).has(tag.value);
-  const quoted = tagEvidenceFacts(tag, quote).has(tag.value);
-  const quoteName = /region/u.test(tag.name) ? 'region'
-    : /^amount_/u.test(tag.name) ? 'amount' : /^credits_/u.test(tag.name) ? 'credits'
-    : /^request_limit_/u.test(tag.name) ? 'usage_count' : tag.name;
-  const carriesValue = quoted || normalized(quoteName, quote).some(fact => fact.value === tag.value)
-    || (/^\d+(?:\.\d+)?$/u.test(quote) && quote === tag.value.split(' ')[0])
-    || (tag.name.startsWith('warranty') && tagEvidenceFacts(tag, `${quote} 质保`).has(tag.value));
-  return carriesValue && (quoted
-    || citedClauses.some(clause => includesQuote(clause) && tagEvidenceFacts(tag, clause).has(tag.value)));
+  const wanted = tagEvidenceValue(tag.value);
+  if (tag.name === 'warranty') return tagEvidenceFacts(tag, quote).has(wanted) && tagEvidenceFacts(tag, source).has(wanted);
+  // A clipped positive keyword cannot escape its containing negative/qualified clause.
+  const contexts = clauses(scopeEvidenceLines(source).replace(/(支持|接入方式[:：]|访问方式[:：])\s*\n/gu, '$1 '));
+  const compact = (text: string) => canonicalizeMatchText(text).replace(/\s/gu, '');
+  const claim = compact(quote.replace(/[;；。!！?？\s]+$/gu, ''));
+  const quoted = tagEvidenceFacts(tag, quote).has(wanted);
+  return contexts.some(clause => (compact(clause).includes(claim) || claim.includes(compact(clause))) && tagEvidenceFacts(tag, clause).has(wanted)
+    && (quoted || typeof tag.value === 'string' && quote.includes(tag.value)));
 }

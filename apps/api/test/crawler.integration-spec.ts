@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import { publishNextCatalogChange } from '../src/catalog/catalog-projection.js';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
@@ -81,7 +82,7 @@ describe('complete shop snapshot synchronization', () => {
     const product = await database.selectFrom('products').selectAll().where('shop_id', '=', shopId).where('external_id', '=', externalId).executeTakeFirstOrThrow();
     const standard = await database.insertInto('standard_products').values({ name: `standard-${++sequence}`, platform: 'openai', verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
     await database.insertInto('standard_product_members').values({ product_id: product.id, standard_product_id: standard.id, assignment_source: source, publication_state: 'published' }).execute();
-    await database.insertInto('product_tags').values({ product_id: product.id, name: 'duration', value: 'monthly' }).execute();
+    await database.insertInto('product_tags').values(tagRows({ product_id: product.id, name: 'duration', value: 30 })).execute();
     // A human assignment is a new decision revision. Crawler assertions must
     // start from the published state, not the row read before the review.
     return database.selectFrom('products').selectAll().where('id', '=', product.id).executeTakeFirstOrThrow();
@@ -918,7 +919,7 @@ describe('complete shop snapshot synchronization', () => {
     assert.deepEqual(restocked.items.flatMap(item => item.offers.map(offer => offer.productId)), [String(original.id)]);
     assert.equal(restocked.items[0]?.offers[0]?.inStock, true);
     assert.deepEqual(restocked.items[0]?.offers[0]?.tags, initial.items[0]?.offers[0]?.tags);
-    assert.deepEqual(restocked.items[0]?.offers[0]?.tags.filter(tag => tag.name === 'duration'), [{ name: 'duration', value: '1 month' }]);
+    assert.deepEqual(restocked.items[0]?.offers[0]?.tags.filter(tag => tag.name === 'duration'), [{ name: 'duration', value: 30 }]);
     assert.equal((await database.selectFrom('standardization_outbox').select('id').where('product_id', '=', original.id).execute()).length, 1);
   });
   beforeEach(async () => {
@@ -949,7 +950,7 @@ describe('complete shop snapshot synchronization', () => {
       const product = await database.selectFrom('products').select('id').where('shop_id', '=', s.id).executeTakeFirstOrThrow();
       productIds.push(String(product.id));
       await database.insertInto('standard_product_members').values({ product_id: product.id, standard_product_id: standard.id, publication_state: 'published' }).execute();
-      await database.insertInto('product_tags').values({ product_id: product.id, name: 'access', value: index < 4 ? 'dedicated' : 'shared' }).execute();
+      await database.insertInto('product_tags').values(tagRows({ product_id: product.id, name: 'region', value: index < 4 ? 'us' : 'ph' })).execute();
       // Only published products are eligible for settlement verification.
       await refresh(5);
     }
@@ -968,7 +969,7 @@ describe('complete shop snapshot synchronization', () => {
     assert.equal(available.items[0]?.minPrice, '5.00');
     assert.equal(available.items[0]?.shopCount, 2);
     assert.equal(available.items[0]?.productCount, 2);
-    assert.deepEqual((await service.getFacets(query)).tagFacets.filter(tag => tag.name === 'access').map(({ name, value }) => ({ name, value })), [{ name: 'access', value: 'shared' }]);
+    assert.deepEqual((await service.getFacets(query)).tagFacets.filter(tag => tag.name === 'region').map(({ name, value }) => ({ name, value })), [{ name: 'region', value: 'ph' }]);
 
     await refreshes[1]!(2);
     await publishChanges();

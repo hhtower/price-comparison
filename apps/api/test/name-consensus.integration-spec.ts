@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { before, after, test } from 'node:test';
@@ -85,7 +86,7 @@ test('repair changes minority AI members but preserves human decisions and persi
     excluded.push(await product(name, b.id, { published: false }));
     excluded.push(await product(name, quarantined.id));
   }
-  await db.insertInto('product_tags').values({ product_id: changed.id, name: 'duration', value: '1 month' }).execute();
+  await db.insertInto('product_tags').values(tagRows({ product_id: changed.id, name: 'duration', value: '1 month' })).execute();
   await db.insertInto('offers').values({ product_id: changed.id, price: '2.50', stock_available: false, idempotency_key: randomUUID() }).execute();
   const job = await db.insertInto('ai_jobs').values({ model: 'mock', status: 'succeeded', total: 1n }).returning('id').executeTakeFirstOrThrow();
   await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: changed.id, fingerprint: 'historical', payload: jsonb({}), status: 'succeeded' }).execute();

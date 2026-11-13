@@ -121,7 +121,7 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
       assert.equal(selectCandidates(detail.entries.map(offer => ({
         standardProduct: resolved, offer, capabilityEvidence: [],
       })), {
-        purpose: null, platform: platformGroup, budget: null, requiredTags: [], warrantyDaysMin: null, preferences: [],
+        purpose: null, platform: platformGroup, budget: null, requiredTags: [], preferences: [],
       }, now).length, 1);
     }
   });
@@ -171,7 +171,7 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
     assert.deepEqual(await service.getReferenceOffers(query), []);
   });
 
-  test('real catalog offers never combine one price with another SKU warranty', async () => {
+  test('real catalog offers never combine one price with another SKU duration', async () => {
     const { identity, standard, shop, source } = await fixture('offers');
     const covered = await database.insertInto('products').values({
       shop_id: shop.id, external_id: 'covered', name: 'Covered fictional source', spec: '',
@@ -181,9 +181,9 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
       standard_product_id: standard.id, product_id: covered.id, publication_state: 'published',
     }).execute();
     await database.insertInto('product_tags').values([
-      { product_id: source.id, name: 'access', value: 'dedicated' },
-      { product_id: covered.id, name: 'access', value: 'dedicated' },
-      { product_id: covered.id, name: 'warranty_days', value: '30' },
+      { product_id: source.id, name: 'sms_verification', value: jsonb('verified') },
+      { product_id: covered.id, name: 'sms_verification', value: jsonb('verified') },
+      { product_id: covered.id, name: 'duration', value: jsonb(30) },
     ]).execute();
     await database.insertInto('offers').values([
       { product_id: source.id, price: '5.00', settlement_price: '5.00', idempotency_key: 'cheap' },
@@ -198,7 +198,7 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
     assert.equal(detail.entries.length, 2);
     const needs = {
       purpose: null, platform: null, budget: { amount: '10.00', currency: 'CNY', basis: 'purchase' as const },
-      requiredTags: [{ name: 'access', value: 'dedicated' }], warrantyDaysMin: 30, preferences: [],
+      requiredTags: [{ name: 'sms_verification', value: 'verified' }, { name: 'duration', value: 30 }], preferences: [],
     };
     const before = structuredClone(needs);
     assert.deepEqual(selectCandidates(detail.entries.map(offer => ({
@@ -208,5 +208,42 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
     assert.equal(selectCandidates(detail.entries.map(offer => ({
       standardProduct, offer, capabilityEvidence: [],
     })), { ...needs, budget: { ...needs.budget, amount: '20.00' } }, now)[0]?.offer.productId, String(covered.id));
+  });
+
+  test('JSONB tags keep numeric days and same-name OR while settlement evidence prevents false single-item bulk quotes', async () => {
+    for (const [bulk, quantity, verified, eligible] of [
+      ['supported', 1, true, true], ['required', 1, true, false], ['bundle', 1, true, false],
+      ['supported', 10, true, false], ['supported', 10, false, false],
+    ] as const) {
+      const { identity, standard, source } = await fixture(`bulk-${bulk}-${quantity}-${verified}`);
+      await database.insertInto('product_tags').values([
+        { name: 'duration', value: jsonb(30) }, { name: 'region', value: jsonb('jp') },
+        { name: 'access_channel', value: jsonb('api') }, { name: 'supported_client', value: jsonb('sub2api') },
+        { name: 'bulk_purchase', value: jsonb(bulk) }, { name: 'warranty', value: jsonb('保订阅30天，封号不保') },
+      ].map(tag => ({ product_id: source.id, ...tag }))).execute();
+      await database.insertInto('offers').values({
+        product_id: source.id, price: '5.00', settlement_price: '5.00', currency: 'CNY',
+        settlement_quantity: quantity, settlement_total_amount: String(quantity * 5),
+        settlement_verified_at: now, settlement_payment_method: 'alipay',
+        captured_at: now, stock_available: true, is_stale: !verified, idempotency_key: `bulk-${source.id}`,
+      }).execute();
+      const requiredTags = [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }, { name: 'region', value: 'jp' },
+        { name: 'access_channel', value: 'web' }, { name: 'access_channel', value: 'api' },
+        { name: 'supported_client', value: 'codex' }, { name: 'supported_client', value: 'sub2api' }];
+      const offers = await service.getReferenceOffers({ standardProductId: String(standard.id), currency: 'CNY', tags: requiredTags });
+      assert.equal(offers.length, 1);
+      assert.deepEqual(await service.getReferenceOffers({ standardProductId: String(standard.id), currency: 'CNY',
+        tags: [...requiredTags, { name: 'sms_verification', value: 'verified' }] }), [],
+      'a different tag name remains a required constraint');
+      assert.equal(offers[0]!.settlementQuantity, quantity, 'stale quantity must not default to one');
+      assert.ok(offers[0]!.tags.some(tag => tag.name === 'duration' && tag.value === 30));
+      assert.ok(offers[0]!.tags.some(tag => tag.name === 'warranty' && tag.value === '保订阅30天，封号不保'));
+      const standardProduct = await service.resolvePublicProductIdentity(identity);
+      assert.ok(standardProduct);
+      const needs = { purpose: null, platform: null, requiredTags, preferences: [],
+        budget: { amount: '5.00', currency: 'CNY', basis: 'month' as const } };
+      assert.equal(selectCandidates(offers.map(offer => ({ standardProduct, offer, capabilityEvidence: [] })), needs, now).length,
+        eligible ? 1 : 0, `${bulk}/${quantity}/${verified}`);
+    }
   });
 });

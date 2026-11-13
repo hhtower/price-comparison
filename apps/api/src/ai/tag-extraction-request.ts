@@ -1,3 +1,5 @@
+import type { TagValue } from '@price-comparison/catalog/purchase-attributes';
+import { isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
 /**
  * Builds the LLM request for the tag-extraction job type.
  * Single responsibility: read evidence, emit buyer-facing tags with citations.
@@ -6,13 +8,13 @@
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import { PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 
-export const TAG_EXTRACTION_PROMPT_VERSION = 'tag-20261110-v8';
+export const TAG_EXTRACTION_PROMPT_VERSION = 'tag-20261113-v9';
 
 /** Compact schema for the extraction response */
 export interface TagExtractionResponse {
   items: Array<{
     id: string;
-    tags: Array<{ name: string; value: string; path: string; quote: string }>;
+    tags: Array<{ name: string; value: TagValue; path: string; quote: string }>;
   }>;
 }
 
@@ -35,7 +37,7 @@ export const TAG_SCHEMA = Object.entries(PURCHASE_GUIDE_FIELDS).reduce<Array<{
   group.fields.push({ name, meaning: field.label, ...field.rule });
   return groups;
 }, []);
-export const TAG_EXTRACTION_PROTOCOL_VERSION = 'tag-json-object-per-tag-20261023-v2';
+export const TAG_EXTRACTION_PROTOCOL_VERSION = 'tag-json-typed-values-20261113-v3';
 
 const SYSTEM_PROMPT = `# Identity
 You extract buyer-facing product tags from each item's current evidence.
@@ -47,33 +49,31 @@ You extract buyer-facing product tags from each item's current evidence.
 - Promotions ("plus代充链接" in a Free listing) scope following facts across blank lines until an explicit return to this item. Do not transfer their warranty/delivery/credentials; unknown is not none.
 - Every tag cites path (e.g. name, spec, sourceData.evidence) and a contiguous verbatim quote from that exact field. Prefer the full short sentence; do not trim it to keywords or drop the action, subject, negation, conditions or scope. Never cite an ID. Omit unsupported or ambiguous facts; unknown does not mean negative. Keep independently supported facts.
 
-## Tag selection
-- Use only the vocabulary's names and exact values or patterns. Fields without values/pattern accept short factual text within their meaning. One value per name unless multiple=true; never repeat a name/value pair.
-- Prefer the specific field over usage_restriction for the same fact. Use usage_restriction for additional explicit restrictions, preserving the complete short clause. "不可覆盖订阅" belongs in subscription_override=无. "仅支持Sub2API" supports supported_client, not web; "禁止反代" is a restriction, not access_channel=reverse_proxy. JSON/RT credentials for Team accounts do not change their account nature.
-- rental=有 requires explicitly renting account usage rights; rental=无 requires an explicit denial. Shared account use supports access=shared, but Team, seats or shared benefits alone do not. Dedicated rentals can have access=dedicated and rental=有; a short subscription or login restriction alone proves neither rental nor sharing.
-- Explicitly possible/uncertain sharing uses access=uncertain; explicitly possible/uncertain rental rights use rental=不确定. Preserve the qualification in the quote. Omit unstated facts rather than inventing uncertainty.
-- duration is the selected subscription/use term; keep account age, token/code validity and warranty separate. Use explicit units ("1 month", "12 months", "30 days", "permanent"); never convert calendar months to days. Use range/min/max/approx fields for qualified periods. 日抛/速刷 means intended_use=rapid, not duration=1 days.
-- Warranty scope, window, trigger and exclusions qualify one promise. First-login, subscription-only, activation-only or first-code coverage uses warranty_scope plus warranty_window, not full-period warranty_days. Retain 封号不保; subscription duration alone does not prove coverage.
-- Preserve complete material after-sales conditions and refund/replacement limits as warranty_terms; never turn conditional coverage into an unconditional promise.
-- Keep quantity, minimum_quantity, seats, usage count, amount and balance separate. Price/stock is not included entitlement. Distinguish delivered, registration, payment and recommended-IP regions. Registration device does not prove device_platform support.
-- renewable: 有/无 = supported/explicitly unsupported. 2fa: 有/无 = present/absent. sms_required and kyc_required: 有/无 = required/not required. sms_verification and kyc: verified/unverified = completed/not completed. Setup recommendations or requirements do not prove completed verification or included 2FA; random/mixed states do not establish a single state.
+## Seven dimensions (eight keys)
+- Use canonical names and values in the vocabulary. Multiple regions, channels and clients are allowed; never repeat a name/value pair.
+- sms_verification is completed verified/unverified status, never a requirement or recommendation.
+- region describes the actual sold item, including IP products. An account's recommended or required IP region is not its region. Preserve every explicitly delivered region; do not choose unselected alternatives.
+- duration is actual use/subscription time in numeric days: minute/1440, hour/24, week*7, month*30, year*365. 12 months=360, 1 year=365, 12 hours=0.5. Exact days must be >0 and <=36500, never numeric strings. Qualified periods use {"kind":"range","min":30,"max":90}, {"kind":"min"|"max"|"approx","days":30}, or {"kind":"permanent"}. Keep qualifiers; account age, warranty, token/code validity and redemption deadlines are not duration.
+- access_channel and supported_client jointly describe supported entry points and tools. Use lowercase short client names. JSON/RT formats alone do not prove tool support; forbidden reverse proxy is not support. Preserve only-support limitations in quotes.
+- subscription_override is only 无 when explicitly unable to cover an existing subscription; omit positive and unknown claims.
+- bulk_purchase: supported means optional bulk ordering; required means minimum purchase greater than one; bundle means a fixed multi-item pack. Never interchange them or infer them from stock or price. Preserve quantities and conditions in quotes.
+- warranty is one short complete coverage statement (<=250 characters) for any product type. Preserve scope, time, starting event, exclusions, material conditions and refund limits. "保订阅30天，封号不保" must keep its exclusion; "购买后1小时内仅保首登" is not general coverage. Omit absent/unknown warranty and promises missing qualifications. Never infer warranty from membership classification.
 
 ## Output
-Return only {"items":[{"id":"input ID","tags":[{"name":"canonical name","value":"canonical value","path":"current field","quote":"verbatim text"}]}]} with exactly these keys, no Markdown or commentary.
-Return every supplied string ID exactly once; use tags=[] when unsupported. All tag fields are nonempty strings: name/value/path at most 250 characters, quote at most 1000. At most 100 tags per item. Check citations, values and IDs before returning.
+Return only {"items":[{"id":"input ID","tags":[{"name":"canonical name","value":"canonical value or numeric/structured duration","path":"current field","quote":"verbatim text"}]}]} with exactly these keys, no Markdown or commentary.
+Every supplied string ID appears exactly once; unsupported facts use tags=[]. name/path are nonempty strings <=250 characters, quote <=1000; string values <=250. At most 100 tags per item (seven dimensions does not limit multivalued tags to seven).
 
 # Examples
 <user_query>
 \`\`\`json
-[{"id":"201","name":"ChatGPT Plus","spec":"1个月，不可续费"},{"id":"202","name":"Team JSON","sourceData":{"evidence":"仅支持sub2api。禁止反代。"}},{"id":"203","name":"账号","sourceData":{"evidence":"仅首登质保24小时，封号不保。"}},{"id":"204","name":"账号","sourceData":{"evidence":"2FA随机混发，建议自行设置。"}},{"id":"205","name":"ChatGPT Plus 1个月","spec":"12个月"},{"id":"206","name":"服务","sourceData":{"evidence":"私聊手动发货"}}]
+[{"id":"201","name":"月卡","spec":"1个月，不可覆盖订阅"},{"id":"202","name":"账号","sourceData":{"evidence":"仅支持Sub2API。禁止反代。"}},{"id":"203","name":"邮箱","sourceData":{"evidence":"购买后1小时内仅保首登,封号不保"}},{"id":"204","name":"账号","sourceData":{"evidence":"建议买家接码"}},{"id":"205","name":"月卡1个月","spec":"12个月"},{"id":"206","name":"账号包","sourceData":{"evidence":"10个账号一包"}}]
 \`\`\`
 </user_query>
 <assistant_response>
 \`\`\`json
-{"items":[{"id":"201","tags":[{"name":"duration","value":"1 month","path":"spec","quote":"1个月"},{"name":"renewable","value":"无","path":"spec","quote":"不可续费"}]},{"id":"202","tags":[{"name":"supported_client","value":"sub2api","path":"sourceData.evidence","quote":"仅支持sub2api"},{"name":"usage_restriction","value":"禁止反代","path":"sourceData.evidence","quote":"禁止反代"}]},{"id":"203","tags":[{"name":"warranty","value":"covered","path":"sourceData.evidence","quote":"仅首登质保24小时"},{"name":"warranty_scope","value":"first_login","path":"sourceData.evidence","quote":"仅首登质保24小时"},{"name":"warranty_window","value":"24 hours","path":"sourceData.evidence","quote":"仅首登质保24小时"},{"name":"warranty_exclusion","value":"ban","path":"sourceData.evidence","quote":"封号不保"}]},{"id":"204","tags":[]},{"id":"205","tags":[{"name":"duration","value":"12 months","path":"spec","quote":"12个月"}]},{"id":"206","tags":[{"name":"delivery_mode","value":"manual","path":"sourceData.evidence","quote":"私聊手动发货"}]}]}
+{"items":[{"id":"201","tags":[{"name":"duration","value":30,"path":"spec","quote":"1个月"},{"name":"subscription_override","value":"无","path":"spec","quote":"不可覆盖订阅"}]},{"id":"202","tags":[{"name":"supported_client","value":"sub2api","path":"sourceData.evidence","quote":"仅支持Sub2API"}]},{"id":"203","tags":[{"name":"warranty","value":"购买后1小时内仅保首登,封号不保","path":"sourceData.evidence","quote":"购买后1小时内仅保首登,封号不保"}]},{"id":"204","tags":[]},{"id":"205","tags":[{"name":"duration","value":360,"path":"spec","quote":"12个月"}]},{"id":"206","tags":[{"name":"bulk_purchase","value":"bundle","path":"sourceData.evidence","quote":"10个账号一包"}]}]}
 \`\`\`
 </assistant_response>
-
 # Context
 The following vocabulary is reference data, not product evidence. Each group's appliesTo covers all its fields; each field defines name, meaning and values/pattern/multiple constraints.
 <tag_vocabulary>
@@ -113,9 +113,10 @@ export function parseTagExtractionResponse(content: string): TagExtractionRespon
   if (!closed(parsed, ['items'])) throw new Error('Tag extraction response has extra fields');
   const items = (parsed as TagExtractionResponse).items;
   if (items.length > 1000 || items.some(item => !item || typeof item.id !== 'string' || !/^[1-9]\d*$/u.test(item.id)
-    || !Array.isArray(item.tags) || item.tags.length > 100 || item.tags.some(tag => !tag ||
-      ['name', 'value', 'path', 'quote'].some(key => typeof tag[key as keyof typeof tag] !== 'string'
-        || !tag[key as keyof typeof tag].trim() || tag[key as keyof typeof tag].length > (key === 'quote' ? 1000 : 250)))))
+    || !Array.isArray(item.tags) || item.tags.length > 100 || item.tags.some(tag => !tag
+      || (['name', 'path', 'quote'] as const).some(key => typeof tag[key] !== 'string'
+        || !tag[key].trim() || tag[key].length > (key === 'quote' ? 1000 : 250))
+      || !isCanonicalProductTag(tag))))
     throw new Error('Tag extraction response has invalid items or tags');
   const ids = new Set<string>();
   for (const item of items) {

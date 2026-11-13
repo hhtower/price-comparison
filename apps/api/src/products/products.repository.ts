@@ -1,4 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { PurchaseTag } from '@price-comparison/catalog/purchase-attributes';
+import { validateProductTags } from './product-tags.js';
+import { advanceAdminDisplayRevision } from '../admin/membership-tag-edit.js';
 import { sql, type Kysely, type Selectable, type Updateable } from 'kysely';
 import { DATABASE } from '../database/database.providers.js';
 import { recordManualDecisions, suppressManualDecisionTrigger } from '../standardization/decision-history.js';
@@ -54,7 +57,7 @@ export interface FetchChangeSet {
   readonly productIds: ReadonlyMap<string, bigint>;
 }
 
-export interface ProductTag { readonly id: bigint; readonly product_id: bigint; readonly name: string; readonly value: string }
+export interface ProductTag { readonly id: bigint; readonly product_id: bigint; readonly name: string; readonly value: PurchaseTag['value'] }
 
 export function productMapKey(shopId: bigint, externalId: string): string {
   return `${shopId.toString()}:${externalId}`;
@@ -347,15 +350,17 @@ export class ProductsRepository {
     return this.database.selectFrom('product_tags').selectAll().where('product_id', '=', productId).orderBy('name', 'asc').orderBy('value', 'asc').execute();
   }
 
-  async replaceTags(productId: bigint, tags: readonly { name: string; value: string }[]): Promise<readonly ProductTag[]> {
+  async replaceTags(productId: bigint, input: readonly PurchaseTag[]): Promise<readonly ProductTag[]> {
+    const tags = validateProductTags(input);
     return this.database.transaction().execute(async (transaction) => {
       const product = await transaction.selectFrom('products').select('id').where('id', '=', productId).where('deleted_at', 'is', null).forNoKeyUpdate().executeTakeFirst();
       if (!product) throw new DomainNotFoundError('PRODUCT_NOT_FOUND', '商品不存在');
       await transaction.deleteFrom('product_tags').where('product_id', '=', productId).execute();
       if (tags.length) {
-        await transaction.insertInto('product_tags').values(tags.map((tag) => ({ product_id: productId, name: tag.name, value: tag.value }))).onConflict((c) => c.doNothing()).execute();
+        await transaction.insertInto('product_tags').values(tags.map((tag) => ({ product_id: productId, name: tag.name, value: jsonb(tag.value) }))).onConflict((c) => c.doNothing()).execute();
       }
-      await transaction.updateTable('products').set({ standardization_revision: sql`standardization_revision + 1`, updated_at: new Date() }).where('id', '=', productId).execute();
+      await advanceAdminDisplayRevision(transaction, [productId]);
+      await transaction.updateTable('products').set({ updated_at: new Date() }).where('id', '=', productId).execute();
       await bumpCatalogVersion(transaction);
       return transaction.selectFrom('product_tags').selectAll().where('product_id', '=', productId).orderBy('name', 'asc').orderBy('value', 'asc').execute();
     });

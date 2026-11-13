@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, describe, test } from 'node:test';
@@ -111,9 +112,9 @@ describe('global standard product review', () => {
       { product_id: deleted.id, standard_product_id: a.id },
     ]).execute();
     await db.updateTable('products').set({ deleted_at: new Date() }).where('id', '=', deleted.id).execute();
-    await db.insertInto('product_tags').values(Array.from({ length: 1000 }, (_, index) => ({
+    await db.insertInto('product_tags').values(tagRows(Array.from({ length: 1000 }, (_, index) => ({
       product_id: p1.id, name: 'usage_restriction', value: `current restriction ${index}`,
-    }))).execute();
+    })))).execute();
     const storedTags = await db.selectFrom('product_tags').select(sql<number>`count(*)::int`.as('count'))
       .where('product_id', '=', p1.id).executeTakeFirstOrThrow();
     assert.equal(storedTags.count, 1000);

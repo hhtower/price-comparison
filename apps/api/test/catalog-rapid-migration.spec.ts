@@ -5,7 +5,7 @@ import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { createPostgresPool } from '../src/database/database.providers.js';
 import type { DatabaseSchema } from '../src/database/types.js';
-import { migrateToLatest, migrationProvider } from '../scripts/migrate.js';
+import { migrationProvider } from '../scripts/migrate.js';
 
 let database: Kysely<DatabaseSchema>;
 let admin: Pool;
@@ -47,7 +47,8 @@ test('migrates stored daily tags once, deduplicates rapid and rebuilds facts wit
     { product_id: aliases.id, name: 'subscription_duration', value: '日抛' },
   ]).execute();
   const version = await database.selectFrom('catalog_cache_versions').select('version').where('id', '=', 1).executeTakeFirstOrThrow();
-  await migrateToLatest(database);
+  assert.ifError((await new Migrator({ db: database, provider: migrationProvider, migrationTableSchema: schema })
+    .migrateTo('004_rapid_purchase_20261003')).error);
   const tags = await database.selectFrom('product_tags').select(['product_id', 'name', 'value']).orderBy('product_id').orderBy('name').execute();
   assert.deepEqual(tags, [
     { product_id: legacy.id, name: 'duration', value: '1 days' },
@@ -73,6 +74,7 @@ test('migrates stored daily tags once, deduplicates rapid and rebuilds facts wit
   assert.equal(revisions[0].standardization_revision, legacy.standardization_revision + 1n);
   assert.equal(revisions[1].standardization_revision, both.standardization_revision + 1n);
   assert.equal(revisions[4].standardization_revision, aliases.standardization_revision + 1n);
-  await migrateToLatest(database);
+  assert.ifError((await new Migrator({ db: database, provider: migrationProvider, migrationTableSchema: schema })
+    .migrateTo('004_rapid_purchase_20261003')).error);
   assert.deepEqual(await database.selectFrom('products').select(['id', 'standardization_revision']).orderBy('id').execute(), revisions);
 });

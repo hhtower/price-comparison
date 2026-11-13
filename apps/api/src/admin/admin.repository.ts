@@ -1,4 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
+import { tagValueKey, type TagValue } from '@price-comparison/catalog/purchase-attributes';
+import { validateProductTags } from '../products/product-tags.js';
+import { jsonb } from '../database/types.js';
 import { canonicalProductDisplayName, CATALOG_DISPLAY_SEARCH_LABELS } from '@price-comparison/catalog/catalog-display';
 import { advanceAdminDisplayRevision } from './membership-tag-edit.js';
 import { recordManualDecisions } from '../standardization/decision-history.js';
@@ -56,7 +60,7 @@ export interface TagListFilter extends PageRequest {
   readonly productId?: bigint;
   readonly keyword?: string;
   readonly name?: string;
-  readonly value?: string;
+  readonly value?: TagValue;
 }
 
 export interface AiJobListFilter extends Pick<PageRequest, 'page' | 'limit'> {
@@ -127,7 +131,7 @@ export interface AdminTagRow {
   readonly id: bigint;
   readonly product_id: bigint;
   readonly name: string;
-  readonly value: string;
+  readonly value: TagValue;
   readonly product_count?: bigint;
 }
 
@@ -379,11 +383,11 @@ export class AdminRepository {
       const pattern = containsPattern(filter.keyword);
       query = query.where(({ eb, or }) => or([
         eb('product_tags.name', 'ilike', pattern),
-        eb('product_tags.value', 'ilike', pattern),
+        sql<boolean>`product_tags.value #>> '{}' ilike ${pattern}`,
       ]));
     }
     if (filter.name) query = query.where('product_tags.name', '=', filter.name);
-    if (filter.value) query = query.where('product_tags.value', '=', filter.value);
+    if (filter.value) query = query.where('product_tags.value', '=', jsonb(filter.value));
     if (filter.page !== undefined) {
       const rows = await query.select(sql<number>`count(*) over()`.as('_total')).offset((filter.page - 1) * limit).limit(limit).execute();
       return { items: rows.map(({ _total: _total, ...row }) => row), total: Number(rows[0]?._total ?? 0), page: filter.page, pageSize: limit };
@@ -395,7 +399,7 @@ export class AdminRepository {
         eb('product_tags.name', '>', cursor.name),
         and([
           eb('product_tags.name', '=', cursor.name),
-          eb('product_tags.value', '>', cursor.value),
+          eb('product_tags.value', '>', jsonb(cursor.value)),
         ]),
       ]));
     }
@@ -551,7 +555,7 @@ export class AdminRepository {
     });
   }
 
-  async listTagProducts(name: string, value: string, filter: PageRequest = {}): Promise<CursorPage<AdminTagProductRow>> {
+  async listTagProducts(name: string, value: TagValue, filter: PageRequest = {}): Promise<CursorPage<AdminTagProductRow>> {
     const page = normalizePageRequest(filter);
     let query = this.database.selectFrom('products')
       .innerJoin('product_tags', 'product_tags.product_id', 'products.id')
@@ -565,7 +569,7 @@ export class AdminRepository {
         sql<string | null>`(select o.currency from offers o where o.product_id = products.id order by o.captured_at desc, o.id desc limit 1)`.as('latest_currency')])
       .where('products.deleted_at', 'is', null)
       .where('product_tags.name', '=', name)
-      .where('product_tags.value', '=', value)
+      .where('product_tags.value', '=', jsonb(value))
       .orderBy('products.id', 'asc');
     if (page.page !== undefined) {
       const rows = await query.select(sql<number>`count(*) over()`.as('_total')).offset((page.page - 1) * page.limit).limit(page.limit).execute();
@@ -732,13 +736,19 @@ export class AdminRepository {
     return { success, skipped, conflicts };
   }
   async deleteStandardProduct(id: bigint): Promise<boolean> { return this.setStandardProductVisibility(id, true); }
-  async bindTags(productIds: readonly bigint[], name: string, value: string): Promise<AdminBatchResult> {
+  async bindTags(productIds: readonly bigint[], name: string, value: TagValue): Promise<AdminBatchResult> {
+    validateProductTags([{ name, value }]);
     const success: string[] = [], skipped: string[] = [], conflicts: Array<{ id: string; reason: string }> = [];
     await this.database.transaction().execute(async tx => {
       for (const id of [...new Set(productIds.map(String))].map(BigInt).sort((a, b) => a < b ? -1 : 1)) {
         const p = await tx.selectFrom('products').select(['id', 'deleted_at']).where('id', '=', id).forUpdate().executeTakeFirst();
         if (!p || p.deleted_at) { conflicts.push({ id: id.toString(), reason: '原始商品不存在或已删除' }); continue; }
-        const r = await tx.insertInto('product_tags').values({ product_id: id, name, value }).onConflict(c => c.columns(['product_id', 'name', 'value']).doNothing()).executeTakeFirst();
+        try { await assertTagReplacement(tx, id, { name, value }); }
+        catch (error) {
+          if (!(error instanceof DomainValidationError)) throw error;
+          conflicts.push({ id: String(id), reason: '同一商品已有冲突标签' }); continue;
+        }
+        const r = await tx.insertInto('product_tags').values({ product_id: id, name, value: jsonb(value) }).onConflict(c => c.columns(['product_id', 'name', 'value']).doNothing()).executeTakeFirst();
         if (r.numInsertedOrUpdatedRows === 0n) skipped.push(id.toString());
         else success.push(id.toString());
       }
@@ -746,38 +756,43 @@ export class AdminRepository {
     });
     return { success, skipped, conflicts };
   }
-  async deleteTag(name: string, value: string): Promise<boolean> {
+  async deleteTag(name: string, value: TagValue): Promise<boolean> {
     return this.database.transaction().execute(async tx => {
-      const rows = await tx.selectFrom('product_tags').select('product_id').where('name', '=', name).where('value', '=', value).orderBy('product_id').forUpdate().execute();
+      const rows = await lockTagProducts(tx, name, value);
       if (!rows.length) return false;
-      await tx.deleteFrom('product_tags').where('name', '=', name).where('value', '=', value).execute();
+      await tx.deleteFrom('product_tags').where('product_id', 'in', rows.map(row => row.product_id)).where('name', '=', name).where('value', '=', jsonb(value)).execute();
       await advanceAdminDisplayRevision(tx, rows.map(row => row.product_id));
       return true;
     });
   }
-  async renameTag(name: string, value: string, nextName: string, nextValue: string): Promise<boolean> {
-    if (name === nextName && value === nextValue) return true;
+  async renameTag(name: string, value: TagValue, nextName: string, nextValue: TagValue): Promise<boolean> {
+    validateProductTags([{ name: nextName, value: nextValue }]);
+    if (name === nextName && tagValueKey(value) === tagValueKey(nextValue)) return true;
     return this.database.transaction().execute(async tx => {
-      const rows = await tx.selectFrom('product_tags').select('product_id').where('name', '=', name).where('value', '=', value).orderBy('product_id').forUpdate().execute();
+      const rows = await lockTagProducts(tx, name, value);
       if (!rows.length) return false;
       for (const row of rows) {
-        await tx.insertInto('product_tags').values({ product_id: row.product_id, name: nextName, value: nextValue }).onConflict(c => c.columns(['product_id', 'name', 'value']).doNothing()).execute();
+        await assertTagReplacement(tx, row.product_id, { name: nextName, value: nextValue }, { name, value });
+        await tx.insertInto('product_tags').values({ product_id: row.product_id, name: nextName, value: jsonb(nextValue) }).onConflict(c => c.columns(['product_id', 'name', 'value']).doNothing()).execute();
       }
-      await tx.deleteFrom('product_tags').where('name', '=', name).where('value', '=', value).execute();
+      await tx.deleteFrom('product_tags').where('product_id', 'in', rows.map(row => row.product_id)).where('name', '=', name).where('value', '=', jsonb(value)).execute();
       await advanceAdminDisplayRevision(tx, rows.map(row => row.product_id));
       return true;
     });
   }
-  async mergeTags(sourceName: string, sourceValue: string, targetName: string, targetValue: string): Promise<AdminBatchResult> {
-    if (sourceName === targetName && sourceValue === targetValue) return { success: [], skipped: [], conflicts: [] };
+  async mergeTags(sourceName: string, sourceValue: TagValue, targetName: string, targetValue: TagValue): Promise<AdminBatchResult> {
+    validateProductTags([{ name: targetName, value: targetValue }]);
+    if (sourceName === targetName && tagValueKey(sourceValue) === tagValueKey(targetValue)) return { success: [], skipped: [], conflicts: [] };
     const skipped: string[] = [], success: string[] = [];
     await this.database.transaction().execute(async tx => {
-      const rows = await tx.selectFrom('product_tags').select('product_id').where('name', '=', sourceName).where('value', '=', sourceValue).orderBy('product_id').forUpdate().execute();
+      const rows = await lockTagProducts(tx, sourceName, sourceValue);
+      if (!rows.length) return;
       for (const row of rows) {
-        const inserted = await tx.insertInto('product_tags').values({ product_id: row.product_id, name: targetName, value: targetValue }).onConflict(c => c.columns(['product_id', 'name', 'value']).doNothing()).executeTakeFirst();
+        await assertTagReplacement(tx, row.product_id, { name: targetName, value: targetValue }, { name: sourceName, value: sourceValue });
+        const inserted = await tx.insertInto('product_tags').values({ product_id: row.product_id, name: targetName, value: jsonb(targetValue) }).onConflict(c => c.columns(['product_id', 'name', 'value']).doNothing()).executeTakeFirst();
         (inserted.numInsertedOrUpdatedRows === 0n ? skipped : success).push(row.product_id.toString());
       }
-      await tx.deleteFrom('product_tags').where('name', '=', sourceName).where('value', '=', sourceValue).execute();
+      await tx.deleteFrom('product_tags').where('product_id', 'in', rows.map(row => row.product_id)).where('name', '=', sourceName).where('value', '=', jsonb(sourceValue)).execute();
       await advanceAdminDisplayRevision(tx, rows.map(row => row.product_id));
     });
     return { success, skipped, conflicts: [] };
@@ -825,34 +840,53 @@ export class AdminRepository {
   }
 }
 
+async function lockTagProducts(tx: Transaction<DatabaseSchema>, name: string, value: TagValue) {
+  const candidates = await tx.selectFrom('product_tags').select('product_id')
+    .where('name', '=', name).where('value', '=', jsonb(value)).orderBy('product_id').execute();
+  if (!candidates.length) return [];
+  const ids = candidates.map(row => row.product_id);
+  // All tag writers lock products before facts; re-read after the lock instead of acting on a stale set.
+  await tx.selectFrom('products').select('id').where('id', 'in', ids).orderBy('id').forUpdate().execute();
+  return tx.selectFrom('product_tags').select('product_id').where('product_id', 'in', ids)
+    .where('name', '=', name).where('value', '=', jsonb(value)).orderBy('product_id').execute();
+}
+
+async function assertTagReplacement(tx: Transaction<DatabaseSchema>, productId: bigint,
+  target: { name: string; value: TagValue }, removed?: { name: string; value: TagValue }): Promise<void> {
+  const current = await tx.selectFrom('product_tags').select(['name', 'value'])
+    .where('product_id', '=', productId).where('name', '=', target.name).execute();
+  validateProductTags([...current.filter(tag => !removed || tag.name !== removed.name
+    || tagValueKey(tag.value) !== tagValueKey(removed.value)), target]);
+}
+
 function containsPattern(value: string): string {
   return `%${value.replace(/[\\%_]/g, '\\$&')}%`;
 }
 
 interface TagCursorPayload {
-  readonly v: 2;
+  readonly v: 3;
   readonly name: string;
-  readonly value: string;
+  readonly value: TagValue;
   readonly id: string;
 }
 
 function encodeTagCursor(row: Pick<AdminTagRow, 'id' | 'name' | 'value'>): string {
-  const payload: TagCursorPayload = { v: 2, name: row.name, value: row.value, id: row.id.toString() };
+  const payload: TagCursorPayload = { v: 3, name: row.name, value: row.value, id: row.id.toString() };
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
 
-function decodeTagCursor(cursor: string): { name: string; value: string; id: bigint } {
+function decodeTagCursor(cursor: string): { name: string; value: TagValue; id: bigint } {
   try {
     const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Partial<TagCursorPayload>;
     if (
-      payload.v !== 2 ||
+      payload.v !== 3 ||
       typeof payload.name !== 'string' || payload.name.length === 0 ||
-      typeof payload.value !== 'string' || payload.value.length === 0 ||
+      !isCanonicalProductTag({ name: payload.name ?? '', value: payload.value }) ||
       typeof payload.id !== 'string' || !/^[1-9]\d*$/.test(payload.id)
     ) {
       throw new Error('invalid tag cursor payload');
     }
-    return { name: payload.name, value: payload.value, id: BigInt(payload.id) };
+    return { name: payload.name, value: payload.value as TagValue, id: BigInt(payload.id) };
   } catch {
     throw new DomainValidationError('INVALID_CURSOR', '分页游标无效');
   }

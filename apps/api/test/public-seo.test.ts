@@ -515,10 +515,14 @@ test('guide is static and complete before JavaScript, with canonical navigation'
   assert.equal(document.querySelector('h1')!.textContent, '新手选购指南');
   assert.equal(document.querySelector('link[rel="canonical"]')!.getAttribute('href'), 'https://price.yufu.pub/guide');
   assert.equal(document.querySelectorAll('nav[aria-label="按购买需求阅读"] a').length, 2);
-  assert.equal(document.querySelectorAll('details').length, 6);
+  assert.equal(document.querySelectorAll('details').length, 7);
+  assert.equal(document.querySelectorAll('.guide-field-list > div').length, 8);
   assert.equal(document.querySelectorAll('details[open]').length, 0);
   assert.equal(document.getElementById('guide-scenarios')!.tagName, 'H2');
   assert.ok(document.getElementById('duration')!.closest('details')!.querySelector('summary'));
+  assert.equal(document.getElementById('access_channel')!.closest('details'),
+    document.getElementById('supported_client')!.closest('details'));
+  assert.equal(document.getElementById('delivery'), null);
   const { PURCHASE_GUIDE_FIELDS, PURCHASE_GUIDE_CONTENT } = await import('@price-comparison/catalog/purchase-guide-content');
   for (const [name, field] of Object.entries(PURCHASE_GUIDE_FIELDS)) {
     assert.ok(document.getElementById(name)!.textContent!.includes(field.explanation));
@@ -537,14 +541,14 @@ test('guide is static and complete before JavaScript, with canonical navigation'
 
 test('guide escapes shared display text instead of treating it as HTML', async t => {
   const { PURCHASE_GUIDE_FIELDS } = await import('@price-comparison/catalog/purchase-guide-content');
-  const field = PURCHASE_GUIDE_FIELDS.delivery;
+  const field = PURCHASE_GUIDE_FIELDS.warranty;
   const original = field.explanation;
   try {
     field.explanation = '<img src=x onerror=alert(1)> & "条件"';
     const response = await setup(t).inject('/guide');
     const document = new JSDOM(response.body).window.document;
-    assert.equal(document.querySelector('#delivery dd')!.textContent, field.explanation);
-    assert.equal(document.querySelector('#delivery img'), null);
+    assert.equal(document.querySelector('#warranty dd')!.textContent, field.explanation);
+    assert.equal(document.querySelector('#warranty img'), null);
     assert.ok(response.body.includes('&lt;img'));
   } finally { field.explanation = original; }
 });

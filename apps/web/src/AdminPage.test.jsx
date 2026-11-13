@@ -1,5 +1,5 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AdminPage from './AdminPage.jsx';
 
@@ -1150,22 +1150,21 @@ describe('AdminPage', () => {
     render(<AdminPage initialAuthenticated />);
     await user.click(await screen.findByRole('button', { name: '商品管理' }));
     await user.click(await screen.findByRole('button', { name: '标签' }));
-    await user.click(await screen.findByRole('checkbox', { name: '选择标签 region：US' }));
+    await user.click(await screen.findByRole('checkbox', { name: '选择标签 region：美区' }));
     const mergeButton = screen.getByRole('button', { name: '合并标签值' });
     expect(mergeButton).toBeDisabled();
-    await user.click(await screen.findByRole('checkbox', { name: '选择标签 region：CA' }));
+    await user.click(await screen.findByRole('checkbox', { name: '选择标签 region：加区' }));
     await user.click(mergeButton);
     const dialog = screen.getByRole('dialog', { name: '合并标签值' });
-    await user.clear(within(dialog).getByRole('textbox', { name: '目标标签值' }));
-    await user.type(within(dialog).getByRole('textbox', { name: '目标标签值' }), '中国大陆');
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: '标签值 1' }), 'cn');
     await user.click(within(dialog).getByRole('button', { name: '确认合并' }));
     expect(mergeBodies).toEqual([
-      { name: 'region', value: 'US', nextName: 'region', nextValue: '中国大陆' },
-      { name: 'region', value: 'CA', nextName: 'region', nextValue: '中国大陆' },
+      { name: 'region', value: 'US', nextName: 'region', nextValue: 'cn' },
+      { name: 'region', value: 'CA', nextName: 'region', nextValue: 'cn' },
     ]);
   });
 
-  test('edits arbitrary tag names and values without a fixed taxonomy', async () => {
+  test('edits only current tag fields and preserves numeric duration values', async () => {
     const user = userEvent.setup();
     let saved;
     vi.stubGlobal('fetch', vi.fn(async (input, init) => {
@@ -1187,11 +1186,15 @@ describe('AdminPage', () => {
     const editor = screen.getByRole('dialog', { name: '编辑商品标签' });
     await user.click(within(editor).getByRole('button', { name: '删除标签 1' }));
     await user.click(within(editor).getByRole('button', { name: '新增标签' }));
-    await user.type(within(editor).getByLabelText('标签名称 1'), '资格:校验方式');
-    await user.type(within(editor).getByLabelText('标签值 1'), '新用户认证');
+    await user.selectOptions(within(editor).getByLabelText('标签名称 1'), 'duration');
+    fireEvent.change(within(editor).getByLabelText('使用天数 1'), { target: { value: '0' } });
+    await user.click(within(editor).getByRole('button', { name: '保存标签' }));
+    expect(within(editor).getByRole('alert')).toHaveTextContent('期限须为正数天数');
+    expect(saved).toBeUndefined();
+    fireEvent.change(within(editor).getByLabelText('使用天数 1'), { target: { value: '0.5' } });
     await user.click(within(editor).getByRole('button', { name: '保存标签' }));
     expect(await screen.findByText('商品标签已保存')).toBeInTheDocument();
-    expect(saved).toEqual({ items: [{ name: '资格:校验方式', value: '新用户认证' }] });
+    expect(saved).toEqual({ items: [{ name: 'duration', value: 0.5 }] });
   });
 
   test('logs in, reviews submitted shops, and assigns products to standard products', async () => {
@@ -1257,4 +1260,35 @@ describe('AdminPage', () => {
     expect(shopLink.closest('td')).toHaveClass('shop-cell');
     expect(screen.getByText('启用')).toHaveClass('status-pill', 'is-enabled');
   });
+});
+
+test.each([
+  [{ name: 'duration', value: 30 }, '30', 0.5],
+  [{ name: 'duration', value: { kind: 'min', days: 30 } }, '{"kind":"min","days":30}', 0.5],
+  [{ name: 'region', value: 'us' }, 'us', 'jp'],
+])('admin query and rename retain the type of %j without sending row metadata', async (tag, queryValue, nextValue) => {
+  const user = userEvent.setup(); const requests = [];
+  vi.stubGlobal('fetch', vi.fn(async (input, init) => {
+    const url = new URL(input, 'http://localhost');
+    requests.push({ url, method: init?.method, body: init?.body && JSON.parse(init.body) });
+    if (url.pathname === '/api/auth/me') return jsonResponse({ ok: true });
+    if (url.pathname === '/api/admin/shops') return jsonResponse(paged([]));
+    if (url.pathname === '/api/admin/tags') return jsonResponse(init?.method === 'PATCH' ? { ok: true } : paged([{ id: '1', productCount: 1, ...tag }]));
+    if (url.pathname === '/api/admin/tags/products') return jsonResponse(paged([]));
+    return jsonResponse(paged([]));
+  }));
+  render(<AdminPage initialAuthenticated />);
+  await user.click(await screen.findByRole('button', { name: '商品管理' }));
+  await user.click(await screen.findByRole('button', { name: '标签' }));
+  await user.click(await screen.findByRole('button', { name: '查看商品' }));
+  expect(requests.find(request => request.url.pathname === '/api/admin/tags/products').url.searchParams.get('value')).toBe(queryValue);
+  await user.click(screen.getByRole('button', { name: '返回标签' }));
+  await user.click(screen.getByRole('button', { name: '重命名' }));
+  const dialog = within(screen.getByRole('dialog', { name: '编辑商品标签' }));
+  if (tag.name === 'duration') {
+    await user.selectOptions(dialog.getByRole('combobox', { name: '期限限定 1' }), 'exact');
+    fireEvent.change(dialog.getByRole('spinbutton', { name: '使用天数 1' }), { target: { value: '0.5' } });
+  } else await user.selectOptions(dialog.getByRole('combobox', { name: '标签值 1' }), 'jp');
+  await user.click(dialog.getByRole('button', { name: '保存标签' }));
+  expect(requests.find(request => request.method === 'PATCH').body).toEqual({ ...tag, nextName: tag.name, nextValue });
 });

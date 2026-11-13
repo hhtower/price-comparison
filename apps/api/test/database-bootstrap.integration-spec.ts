@@ -81,14 +81,14 @@ test('review-key migration backfills existing reviews and rolls back without cha
   const original = product.rows[0]!;
   const read = () => sql<{ id: bigint; source_data: unknown; text_review: unknown; text_review_key: string }>`
     select id, source_data, text_review, text_review_key from products where id = ${original.id}`.execute(database);
-  await migrateToLatest(database);
+  assert.ifError((await migrator.migrateTo('025_shop_text_review_keys_20261030')).error);
   const upgraded = (await read()).rows[0]!;
   assert.match(upgraded.text_review_key, /^[a-f0-9]{64}$/u);
   assert.deepEqual({ id: upgraded.id, source_data: upgraded.source_data, text_review: upgraded.text_review }, original);
   assert.ifError((await migrator.migrateTo('024_crawler_monitor_indexes_20261027')).error);
   assert.deepEqual((await sql`select id, source_data, text_review from products where id = ${original.id}`
     .execute(database)).rows[0], original);
-  await migrateToLatest(database);
+  assert.ifError((await migrator.migrateTo('025_shop_text_review_keys_20261030')).error);
   assert.deepEqual((await read()).rows[0], upgraded);
 });
 
@@ -101,7 +101,7 @@ test('rating revision changes only for scoring inputs and survives rollback and 
   assert.ifError((await migrator.migrateTo(previous)).error);
   const shop = await database.insertInto('shops').values({ name: 'Revision', platform: 'test', url: 'https://revision.invalid' })
     .returning('id').executeTakeFirstOrThrow();
-  await migrateToLatest(database);
+  assert.ifError((await migrator.migrateTo('028_catalog_rating_versions_20261101')).error);
   const revision = async () => (await sql<{ revision: string }>`select rating_revision::text as revision from shops where id = ${shop.id}`.execute(database)).rows[0]!.revision;
   assert.equal(await revision(), '0');
   await database.updateTable('shops').set({ name: 'Renamed' }).where('id', '=', shop.id).execute();
@@ -112,7 +112,7 @@ test('rating revision changes only for scoring inputs and survives rollback and 
   assert.equal(await revision(), '1');
   assert.ifError((await migrator.migrateTo(previous)).error);
   assert.equal((await database.selectFrom('shops').select('url').where('id', '=', shop.id).executeTakeFirstOrThrow()).url, 'https://changed.invalid');
-  await migrateToLatest(database);
+  assert.ifError((await migrator.migrateTo('028_catalog_rating_versions_20261101')).error);
   assert.equal(await revision(), '0');
 });
 
@@ -122,7 +122,7 @@ test('published results backfill asynchronously and survive migration rollback w
   assert.ifError((await migrator.migrateTo('028_catalog_rating_versions_20261101')).error);
   const shop = await database.insertInto('shops').values({ name: 'Published', platform: 'test', url: 'https://published.invalid' })
     .returning('id').executeTakeFirstOrThrow();
-  await migrateToLatest(database);
+  assert.ifError((await migrator.migrateTo('029_catalog_published_results_20261101')).error);
   assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 0);
   assert.equal(await publishNextCatalogChange(database), true);
   assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 0);
@@ -135,6 +135,6 @@ test('published results backfill asynchronously and survive migration rollback w
   assert.equal((await sql`select * from catalog_read_shop_totals`.execute(database)).rows.length, 0);
   assert.ifError((await migrator.migrateTo('028_catalog_rating_versions_20261101')).error);
   assert.equal((await database.selectFrom('shops').select('name').where('id', '=', shop.id).executeTakeFirstOrThrow()).name, 'Published');
-  await migrateToLatest(database);
+  assert.ifError((await migrator.migrateTo('029_catalog_published_results_20261101')).error);
   assert.equal(await publishNextCatalogChange(database), true);
 });

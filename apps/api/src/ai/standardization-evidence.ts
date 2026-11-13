@@ -1,11 +1,11 @@
 import type { JsonValue } from '../database/types.js';
-import { normalizePurchaseTag } from '@price-comparison/catalog/purchase-attributes';
-import { normalizeProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
+import { tagValueKey } from '@price-comparison/catalog/purchase-attributes';
+import { isCanonicalProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 import { canonicalizeMatchText } from '../standardization/fingerprint.js';
 import { assessProductEvidence, identityEvidenceConflict, normalizeIdentity, type Identity } from '../standardization/identity-policy.js';
 import type { CandidateDocument } from '../standardization/candidate-index.js';
 import { publicationEvidenceConflict } from '../standardization/publication-evidence.js';
-import { currentProductTagEvidence, scopeEvidenceLines, tagCitationSupports, tagEvidenceFacts, warrantyEvidenceFacts } from './tag-evidence.js';
+import { currentProductTagEvidence, scopeEvidenceLines, tagCitationSupports, tagEvidenceFacts, tagEvidenceValue } from './tag-evidence.js';
 import { StandardizationValidationError, type StandardizationDiagnostic, type StandardizationReasonCode, type EvidenceCitation, type ParsedStandardizationResponse, type StandardizationDecision, type StandardizationTag } from './ai.schemas.js';
 
 interface CitationSource { path: string; quote: string; source: string }
@@ -68,139 +68,49 @@ function tagCitationSources(citations: readonly EvidenceCitation[], payload: Jso
   return sources;
 }
 
-function durationFacts(text: string): Set<string> {
-  // Warranty periods are not subscription terms, including a quote cut out of a warranty sentence.
-  const period = String.raw`(?:(?:\d+(?:\.\d+)?|一|二|两|三|半)[\s-]*(?:个?月|年|天|周|months?|years?|days?|weeks?)|monthly|quarterly|annual(?:ly)?|yearly|permanent|lifetime|永久|终身)`;
-  const warranty = String.raw`(?:质保|保修|售后|warranty|guarantee)`;
-  const clean = text.replace(new RegExp(`${warranty}(?:期限|时长|时间|保障|期|为|是|for|of|is|coverage|[\\s:：])*${period}`, 'giu'), ' ')
-    .replace(new RegExp(`${period}\\s*(?:的)?\\s*${warranty}`, 'giu'), ' ')
-    .replace(new RegExp(`(?:token|令牌)(?:有效期|有效期限|validity)[\\s:：为是]*${period}|(?:账号)?(?:号龄|年龄)[\\s:：为是]*${period}`, 'giu'), ' ');
-  const facts = new Set<string>();
-  for (const match of clean.matchAll(/(?<![\d.零一二两三四五六七八九十百千万])([0-9]+(?:\.[0-9]+)?|一|二|两|三|半)[\s-]*(个月|月|年|天|周|months?|years?|days?|weeks?)(?![a-z])/gu)) {
-    const amount = ({ 一: 1, 二: 2, 两: 2, 三: 3, 半: 0.5 } as Record<string, number>)[match[1]!] ?? Number(match[1]);
-    const unit = match[2]!;
-    if (!Number.isFinite(amount) || amount <= 0) continue;
-    facts.add(/年|year/u.test(unit) ? `months:${amount * 12}` : /月|month/u.test(unit) ? `months:${amount}` : /周|week/u.test(unit) ? `days:${amount * 7}` : `days:${amount}`);
-  }
-  if (/月卡|包月|(?<![a-z])monthly(?![a-z])/u.test(clean)) facts.add('months:1');
-  if (/季卡|季度|(?<![a-z])quarterly(?![a-z])/u.test(clean)) facts.add('months:3');
-  if (/年卡|包年|(?<![a-z])(?:annual|annually|yearly)(?![a-z])/u.test(clean)) facts.add('months:12');
-  if (/永久|终身|(?<![a-z])(?:permanent|lifetime)(?![a-z])/u.test(clean)) facts.add('permanent');
-  return facts;
-}
-
-function accessFacts(text: string): Set<string> {
-  const facts = new Set<string>();
-  // Negative wording cannot be cherry-picked as positive support.
-  const clean = text.replace(/(?:不支持|不提供|不能|不可|禁止|非|不|无需)\s*(?:合租|共享|独享|独用)|(?:not|no|without)\s+(?:for\s+)?(?:shared|sharing|private|dedicated|exclusive)/gu, ' ');
-  if (/合租|共享|(?<![a-z])(?:shared|sharing|public)(?![a-z])/u.test(clean)) facts.add('shared');
-  if (/独享|独用|独立账号|(?<![a-z])(?:dedicated|private|exclusive)(?![a-z])/u.test(clean)) facts.add('dedicated');
-  return facts;
-}
-
 function textFacts(value: JsonValue | undefined, primaryText: string): string {
   if (Array.isArray(value)) return value.map(item => textFacts(item, primaryText)).join('; ');
   if (value && typeof value === 'object') {
-    return Object.values(value).map(item => textFacts(item, primaryText)).join(' ');
+    return Object.values(value).map(item => textFacts(item, primaryText)).join('; ');
   }
-  return canonicalizeMatchText(typeof value === 'string' ? currentProductTagEvidence(value, primaryText) : value);
-}
-
-function twoFactorFacts(text: string): Set<string> {
-  if (/部分|可能|建议|推荐|需(?:要)?设置|或|\bor\b|optional|recommended|required|unknown/u.test(text)) return new Set();
-  const exact = normalizeProductTag({ name: '2fa', value: text });
-  if (exact?.length) return new Set(exact.map(tag => tag.value));
-  const negative = /(?:no |without |不带|不支持|无|未设置|未开启)(?:2fa|mfa)|(?:2fa|mfa)[ :：]*(?:not (?:included|enabled|supported)|disabled|无|未开启)/gu;
-  const absent = negative.test(text);
-  const positive = /2fa|mfa/u.test(text.replace(negative, ' '));
-  return new Set([...(absent ? ['无'] : []), ...(positive ? ['有'] : [])]);
-}
-
-function verificationFacts(text: string, name: string): Set<string> {
-  if (/部分|可能|或|\bor\b|partial|maybe|不保证/u.test(text)) return new Set();
-  if (name === 'sms_verification' && /kyc|实名/u.test(text) && !/sms|短信|接码|接马/u.test(text)) return new Set();
-  if (name === 'kyc' && /sms|短信|接码|接马/u.test(text) && !/kyc|实名/u.test(text)) return new Set();
-  const negative = /\b(?:unverified|not verified)\b|(?:并非|不是|没有)已(?:接码|接马|验证|认证|实名)|未(?:接码|接马|验证|认证|实名)|未过kyc|(?:未|尚未|(?:并非|不是|没有)已)完成(?:短信验证|真人验证|实名认证|kyc)/gu;
-  const absent = negative.test(text);
-  const clean = text.replace(negative, ' ');
-  const completion = name === 'kyc' ? /已完成(?:真人验证|实名认证|kyc)/u : /已完成短信验证/u;
-  const completed = clean.split(/[;；。!！?？\n]/u).some(sentence =>
-    !/建议|推荐|如果|若|仅限|前提|条件|才能|才可/u.test(sentence)
-    && sentence.split(/[,，]/u).some(clause => completion.test(clause)
-      && !/并非|不是|没有|无需|不需要|需要|必须|不要求/u.test(clause)));
-  const positive = /\bverified\b|已(?:接码|接马|验证|认证|实名)|已过kyc/u.test(clean) || completed;
-  return new Set([...(absent ? ['unverified'] : []), ...(positive ? ['verified'] : [])]);
+  return typeof value === 'string' ? currentProductTagEvidence(value, primaryText).split('\n').map(canonicalizeMatchText).join('\n')
+    : canonicalizeMatchText(value);
 }
 
 function validateTag(tag: StandardizationTag, payload: JsonValue): void {
+  if (!isCanonicalProductTag(tag)) throw new Error('标签值不符合规范枚举或格式');
+  validateTagCitations(tag.evidence, payload);
   const sources = tagCitationSources(tag.evidence, payload);
-  const canonical = normalizePurchaseTag(tag)[0]!;
-  const facts = canonical.name === 'duration' ? durationFacts : canonical.name === 'access' ? accessFacts : canonical.name === '2fa' ? twoFactorFacts
-    : ['sms_verification', 'kyc'].includes(canonical.name) ? (text: string) => verificationFacts(text, canonical.name) : undefined;
-  if (!facts) {
-    for (const source of sources) {
-      const field = source.path.split(/[.[\]]/u).filter(Boolean).at(-1)!;
-      if (normalizeProductTag({ name: field, value: source.source })?.some(fact => fact.name === canonical.name)) {
-        source.source = `${canonical.name}: ${source.source}`;
-      }
-    }
-    let selected = new Set<string>();
-    if (payload && !Array.isArray(payload) && typeof payload === 'object') {
-      selected = tagEvidenceFacts(canonical, canonicalizeMatchText(payload.spec));
-    }
-    const multiple = PRODUCT_TAG_RULES[canonical.name]?.multiple;
-    if (selected.size && !selected.has(canonical.value)) throw new Error('标签与商品选中规格冲突');
-    if (!sources.some(source => {
-      const context = tagEvidenceFacts(canonical, source.source);
-      return context.has(canonical.value) && (multiple || context.size === 1 || selected.has(canonical.value))
-        && tagCitationSupports(canonical, source.quote, source.source);
-    })) throw new Error('标签证据不支持所声明的属性事实');
-    return;
-  }
-  const expected = facts(canonical.value);
-  if (expected.size !== 1) throw new Error('标签值不是明确的属性事实');
-  const wanted = [...expected][0]!;
+  const wanted = tagEvidenceValue(tag.value);
   let selected = new Set<string>();
   if (payload && !Array.isArray(payload) && typeof payload === 'object') {
-    selected = facts(canonicalizeMatchText(payload.spec));
-    if (!selected.size) selected = facts(canonicalizeMatchText(payload.name));
-    if (selected.size && (selected.size !== 1 || !selected.has(wanted))) throw new Error('标签与商品选中规格或标题冲突');
+    selected = tagEvidenceFacts(tag, canonicalizeMatchText(payload.spec));
+    if (!selected.size && tag.name === 'duration') selected = tagEvidenceFacts(tag, canonicalizeMatchText(payload.name));
+  }
+  if (selected.size && !selected.has(wanted)) throw new Error('标签与商品选中规格或标题冲突');
+  if (tag.name === 'warranty' && !tagEvidenceFacts(tag, textFacts(payload, primaryTagText(payload))).has(wanted)) {
+    throw new Error('售后说明未保留完整保障范围或条件');
   }
   const supported = sources.some(source => {
-    if (canonical.name === 'duration' && /warranty|guarantee|质保|保修/iu.test(source.path)) return false;
-    const context = facts(source.source);
-    return facts(source.quote).has(wanted) && context.has(wanted) && (context.size === 1 || selected.has(wanted));
+    if (tag.name === 'duration' && /warranty|guarantee|质保|保修|token|号龄|account.?age/iu.test(source.path)) return false;
+    const context = tagEvidenceFacts(tag, source.source);
+    return context.has(wanted) && (PRODUCT_TAG_RULES[tag.name]?.multiple || context.size === 1 || selected.has(wanted))
+      && tagCitationSupports(tag, source.quote, source.source);
   });
   if (!supported) throw new Error('标签证据不支持所声明的属性事实');
 }
-
-function validateWarrantyGroup(tags: readonly StandardizationTag[], payload: JsonValue): boolean {
-  const warrantyTags = tags.map(tag => normalizePurchaseTag(tag)[0]!).filter(tag => tag.name.startsWith('warranty'));
-  if (!warrantyTags.length) return false;
-  const sourceText = textFacts(payload, primaryTagText(payload));
-  if (/(?:仅限自用|非人为|人为.*(?:不保|除外)|修改[^，。；]*不保|(?:质保|保修)[^，。；]*(?:才保|条件|前提)|(?:质保|保修)\s*\d[^，。；]*(?:需|必须|保持|修改后))/u.test(sourceText)) {
-    return true;
-  }
-  if (warrantyTags.some(tag => tag.name === 'warranty_days')
-    && !warrantyTags.some(tag => tag.name === 'warranty_scope')
-    && /(?:首登|首次登录|first[_-]?login|订阅质保|subscription coverage)/u.test(sourceText)) {
-    return true;
-  }
-  return false;
-}
-
 function unclassified(item: StandardizationDecision, reason: string, reasonCode: StandardizationReasonCode, diagnostic: StandardizationDiagnostic): StandardizationDecision {
   return { id: item.id, status: 'unclassified', ruleIds: [], evidence: [], reasonCode, reason, diagnostic,
     ...(item.review ? { review: item.review } : {}) };
 }
 
-/** Tag extraction enforces citation, attribute and warranty group rules independently of identity. */
+/** Tag extraction enforces citations and complete attribute claims independently of identity. */
 export function validateStandardizationTags(proposedTags: readonly StandardizationTag[], payload: JsonValue, proposedIdentity?: Identity, initialDiagnostic?: StandardizationDiagnostic): { tags: StandardizationTag[]; rejectedTags: Array<StandardizationTag & { reasonCode: string; reason: string }>; diagnostic?: StandardizationDiagnostic } {
   const tags: StandardizationTag[] = [];
   const rejectedTags: Array<StandardizationTag & { reasonCode: string; reason: string }> = [];
   const validationErrors = new Map<string, unknown>();
   let tagDiagnostic = initialDiagnostic;
-  // Reject foreign subjects before they can create SKU conflicts or invalidate a warranty group.
+  // Reject foreign subjects before they can create SKU conflicts.
   const scopedTags = proposedTags.filter(tag => {
     try { tagCitationSources(tag.evidence, payload); }
     catch (error) {
@@ -212,12 +122,10 @@ export function validateStandardizationTags(proposedTags: readonly Standardizati
     }
     return true;
   });
-  let invalidWarranty = validateWarrantyGroup(scopedTags, payload);
-  if (invalidWarranty) tagDiagnostic = { stage: 'attribute', code: 'warranty_group_invalid', proposedIdentity };
   for (const [index, tag] of scopedTags.entries()) {
     const diagnostic: StandardizationDiagnostic = { stage: 'attribute', code: 'tag_value_conflict', fieldPath: 'tags[' + index + ']', proposedIdentity };
     try {
-      if (!PRODUCT_TAG_RULES[tag.name]?.multiple && scopedTags.some(other => other.name === tag.name && other.value !== tag.value)) {
+      if (!PRODUCT_TAG_RULES[tag.name]?.multiple && scopedTags.some(other => other.name === tag.name && tagValueKey(other.value) !== tagValueKey(tag.value))) {
         throw new StandardizationValidationError('单值标签出现多个互相冲突的值', 'attribute_conflict',
           { ...diagnostic, code: 'tag_single_value_conflict' });
       }
@@ -232,27 +140,9 @@ export function validateStandardizationTags(proposedTags: readonly Standardizati
       rejectedTags.push({ ...tag, reasonCode: error instanceof StandardizationValidationError ? error.diagnostic.code : 'tag_value_conflict', reason: error instanceof Error ? error.message : '标签证据无效' });
       // Optional attributes cannot invalidate an independently verified identity.
       tagDiagnostic ??= error instanceof StandardizationValidationError ? { ...error.diagnostic, proposedIdentity } : diagnostic;
-      invalidWarranty ||= tag.name.startsWith('warranty');
     }
   }
-  if (!invalidWarranty) {
-    for (const tag of tags.filter(tag => tag.name.startsWith('warranty') && tag.value !== 'none')) {
-      const required = tagCitationSources(tag.evidence, payload).flatMap(source => {
-        const facts = warrantyEvidenceFacts(source.source);
-        const qualified = facts.some(fact => fact.name === 'warranty_scope' && fact.value !== 'period');
-        return facts.filter(fact => fact.name === 'warranty_exclusion' || fact.name === 'warranty_trigger'
-          || (qualified && fact.name === 'warranty_window') || (fact.name === 'warranty_scope' && fact.value !== 'period'));
-      });
-      if (required.some(fact => !tags.some(tag => tag.name === fact.name && tag.value === fact.value))) {
-        invalidWarranty = true;
-        tagDiagnostic ??= { stage: 'attribute', code: 'tag_value_conflict', proposedIdentity };
-        break;
-      }
-    }
-  }
-  // Removing a warranty condition must also remove the promise it qualifies.
-  if (invalidWarranty) for (const tag of tags.filter(tag => tag.name.startsWith('warranty'))) rejectedTags.push({ ...tag, reasonCode: 'warranty_group_invalid', reason: '质保条件不完整或冲突，整组待复核' });
-  return { tags: tags.filter(tag => !(invalidWarranty && tag.name.startsWith('warranty'))), rejectedTags, ...(tagDiagnostic ? { diagnostic: tagDiagnostic } : {}) };
+  return { tags, rejectedTags, ...(tagDiagnostic ? { diagnostic: tagDiagnostic } : {}) };
 }
 
 /** Validate every decision against its frozen source before atomically saving any result. */

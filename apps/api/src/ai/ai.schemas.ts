@@ -1,3 +1,4 @@
+import type { TagValue } from '@price-comparison/catalog/purchase-attributes';
 import { buildCanonicalStandardKey } from '../standardization/canonical-key.js';
 import { normalizeIdentity, isValidCatalogIdentity, type Identity } from '../standardization/identity-policy.js';
 import { isSkuOnlyIdentityTier } from '../standardization/canonical-resolution.js';
@@ -59,7 +60,7 @@ export class StandardizationValidationError extends Error {
   }
 }
 export interface EvidenceCitation { path: string; quote: string }
-export interface StandardizationTag { name: string; value: string; evidence: EvidenceCitation[] }
+export interface StandardizationTag { name: string; value: TagValue; evidence: EvidenceCitation[] }
 export interface StandardizationIdentity {
   ref: string;
   family: string;

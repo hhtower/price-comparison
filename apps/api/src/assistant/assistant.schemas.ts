@@ -4,6 +4,7 @@ import {
   type NeedsPatch, type ShoppingNeeds, type Understanding,
 } from '@price-comparison/catalog/assistant-contract';
 import { parseCatalogSearch } from '@price-comparison/catalog/purchase-attributes';
+import { isDeepStrictEqual } from 'node:util';
 
 function invalid(field: string): never {
   throw new Error(`Invalid assistant understanding ${field}`);
@@ -44,7 +45,7 @@ export function parseUnderstanding(value: unknown, userText: string): Understand
     if (!Object.hasOwn(patch, field)) continue;
     const quotes = evidence.filter(entry => entry.field === field).map(entry => entry.quote);
     if (!quotes.length) invalid('missing evidence');
-    if (['budget', 'warrantyDaysMin', 'requiredTags', 'platform', 'membershipKinds'].includes(field)) {
+    if (['budget', 'requiredTags', 'platform', 'membershipKinds'].includes(field)) {
       // shortcut: reject explicit soft-only phrases; semantic correctness still needs the service's conflict check.
       const softOnly = quotes.every(quote =>
         /尽量|最好|优先|如果可以|便宜(?:一?点)?|省心|新手|prefer(?:ably)?|if possible|cheaper/iu.test(quote)
@@ -79,13 +80,10 @@ export function separateProductAttributes(needs: ShoppingNeeds): ShoppingNeeds |
   if (!parsed.tags.length) return needs;
   // An attribute-only phrase must not broaden the request to arbitrary products.
   if (!parsed.text) return null;
-  const tags = [...needs.requiredTags, ...parsed.tags.filter(tag =>
-    !(parsed.warrantyDaysMin !== undefined && tag.name === 'warranty_days'))];
+  const tags = [...needs.requiredTags, ...parsed.tags];
   try {
     return validateShoppingNeeds({ ...needs, product: parsed.text,
-      requiredTags: tags.filter((tag, index) => tags.findIndex(other => other.name === tag.name && other.value === tag.value) === index),
-      warrantyDaysMin: parsed.warrantyDaysMin === undefined ? needs.warrantyDaysMin
-        : Math.max(needs.warrantyDaysMin ?? 0, parsed.warrantyDaysMin),
+      requiredTags: tags.filter((tag, index) => tags.findIndex(other => isDeepStrictEqual(other, tag)) === index),
     });
   } catch { return null; }
 }

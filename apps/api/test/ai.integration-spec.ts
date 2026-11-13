@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
@@ -1142,7 +1143,7 @@ describe('AI identity standardization publication', () => {
   test('late tag extraction cannot overwrite changed evidence or a new manual review', async () => {
     for (const drift of ['evidence', 'fingerprint', 'manual', 'unchanged', 'failed'] as const) {
       const shop = await addShop(); const source = await addProduct(shop.id, `ChatGPT Plus 成品账号 ${drift}`);
-      await database.insertInto('product_tags').values({ product_id: source.id, name: 'usage_restriction', value: '人工保留限制' }).execute();
+      await database.insertInto('product_tags').values(tagRows({ product_id: source.id, name: 'usage_restriction', value: '人工保留限制' })).execute();
       const prepared = await createPreparedJob([source.id], true); const proposed = identity('tag-parent');
       await saveAndPublish(prepared, { identities: [proposed], items: [classified(source.id, proposed.ref)], missingIds: [] });
       assert.deepEqual(await database.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', source.id).execute(),
@@ -1175,15 +1176,15 @@ describe('AI identity standardization publication', () => {
           await database.updateTable('ai_jobs').set({ pipeline_versions: jsonb({ ...(tagJob.pipeline_versions as Record<string, string>), tagPrompt: 'stale-tag-prompt' }) }).where('id', '=', tagJob.id).execute();
           await assert.rejects(prepared.repository.getTagExtractionBatchInputs(batch.id), error => error instanceof DomainConflictError && error.code === 'AI_POLICY_STALE');
           await assert.rejects(prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id,
-            [{ productId: source.id, tags: [{ name: 'delivery', value: 'account', evidence: [{ path: 'name', quote: '成品账号' }] }], rejectedTags: [] }]), error => error instanceof DomainConflictError && error.code === 'AI_POLICY_STALE');
+            [{ productId: source.id, tags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: 'monthly' }] }], rejectedTags: [] }]), error => error instanceof DomainConflictError && error.code === 'AI_POLICY_STALE');
           await database.updateTable('ai_jobs').set({ pipeline_versions: jsonb(tagJob.pipeline_versions!) }).where('id', '=', tagJob.id).execute();
           await assert.rejects(prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id,
-            [{ productId: source.id + 1000000n, tags: [{ name: 'delivery', value: 'account', evidence: [{ path: 'name', quote: '成品账号' }] }], rejectedTags: [] }], {}, { workerId: 'integration', attempt: 1n, token: 'tag-claim' }), /does not match/);
+            [{ productId: source.id + 1000000n, tags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: 'monthly' }] }], rejectedTags: [] }], {}, { workerId: 'integration', attempt: 1n, token: 'tag-claim' }), /does not match/);
         }
-        await prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id, [{ productId: source.id, tags: [{ name: 'delivery', value: 'account', evidence: [{ path: 'name', quote: '成品账号' }] }], rejectedTags: [] }], {}, { workerId: 'integration', attempt: 1n, token: 'tag-claim' });
+        await prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id, [{ productId: source.id, tags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: 'monthly' }] }], rejectedTags: [] }], {}, { workerId: 'integration', attempt: 1n, token: 'tag-claim' });
       }
       assert.deepEqual((await database.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', source.id).orderBy('name').execute()),
-        [...(drift === 'unchanged' ? [{ name: 'delivery', value: 'account' }] : []), { name: 'usage_restriction', value: '人工保留限制' }]);
+        drift === 'unchanged' ? [{ name: 'duration', value: 30 }] : [{ name: 'usage_restriction', value: '人工保留限制' }]);
     }
   });
 

@@ -52,23 +52,19 @@ test('assistant quote snapshots preserve validated membership kinds while accept
   assert.throws(() => validateAssistantReply({ ...reply(), cards: [{ ...card, offer: { ...offer, membershipKind: 'all' } }] }));
 });
 
-test('product attribute separation preserves constraints, deduplicates tags and never broadens an attribute-only request', () => {
-  const needs = { ...emptyShoppingNeeds(), product: 'ChatGPT Plus 代充 1个月 质保至少30天',
-    requiredTags: [{ name: 'delivery', value: 'top_up' }, { name: 'access', value: 'dedicated' }],
-    warrantyDaysMin: 60, budget: { amount: '80', currency: 'CNY', basis: 'purchase' as const } };
+test('product attribute separation uses numeric days and preserves membership words literally', () => {
+  const needs = { ...emptyShoppingNeeds(), product: 'ChatGPT Plus 1个月',
+    requiredTags: [{ name: 'duration', value: 30 }], budget: { amount: '80', currency: 'CNY', basis: 'purchase' as const } };
   const before = structuredClone(needs);
   const result = separateProductAttributes(needs);
   assert.ok(result);
   assert.equal(result.product, 'chatgpt plus');
-  assert.equal(result.warrantyDaysMin, 60);
+  assert.deepEqual(result.requiredTags, needs.requiredTags);
   assert.deepEqual(result.budget, needs.budget);
-  assert.deepEqual(result.requiredTags, [...needs.requiredTags,
-    { name: 'warranty', value: 'covered' }, { name: 'warranty_scope', value: 'period' }, { name: 'duration', value: '1 month' }]);
   assert.deepEqual(needs, before);
-  for (const product of ['代充', 'ChatGPT Plus 代充 成品账号']) {
-    assert.equal(separateProductAttributes({ ...emptyShoppingNeeds(), product }), null);
-  }
-  for (const product of [undefined, 'ChatGPT Plus', 'ChatGPT 商业版', 'ChatGPT Pro 5x']) {
+  assert.equal(separateProductAttributes({ ...emptyShoppingNeeds(), product: '1个月' }), null);
+  assert.equal(separateProductAttributes({ ...needs, requiredTags: [{ name: 'duration', value: 365 }] }), null);
+  for (const product of [undefined, 'ChatGPT Plus', 'ChatGPT Plus 代充', 'ChatGPT 商业版', 'ChatGPT Pro 5x']) {
     const plain = { ...emptyShoppingNeeds(), ...(product ? { product } : {}) };
     assert.deepEqual(separateProductAttributes(plain), plain);
   }
@@ -109,7 +105,7 @@ test('product choice persists across follow-ups and quote details reject unsafe 
   const selected = applyNeedsPatch(emptyShoppingNeeds(), { product: 'ChatGPT Plus' });
   assert.equal(applyNeedsPatch(selected, { preferences: ['lower_price'] }).product, 'ChatGPT Plus');
   const offer = { name: 'Plus 一个月代充', shop: '示例店铺', spec: '一个月',
-    productUrl: 'https://shop.invalid/item/2', tags: [{ name: 'delivery', value: 'top_up' }] };
+    productUrl: 'https://shop.invalid/item/2', tags: [{ name: 'duration', value: 30 }] };
   const detailed = { ...reply(), cards: [{ ...card, offer }] };
   assert.deepEqual(validateAssistantReply(detailed).cards[0]?.offer, offer);
   for (const patch of [{ productUrl: 'javascript:alert(1)' }, { productUrl: '//evil.invalid' },
@@ -123,9 +119,9 @@ test('empty needs have no implicit hard requirements and no shared mutable array
   const first = emptyShoppingNeeds();
   assert.deepEqual(first, {
     purpose: null, platform: null, budget: null, requiredTags: [],
-    warrantyDaysMin: null, preferences: [],
+    preferences: [],
   });
-  first.requiredTags.push({ name: 'access', value: 'dedicated' });
+  first.requiredTags.push({ name: 'sms_verification', value: 'verified' });
   first.preferences.push('lower_price');
   assert.deepEqual(emptyShoppingNeeds().requiredTags, []);
   assert.deepEqual(emptyShoppingNeeds().preferences, []);
@@ -134,14 +130,14 @@ test('empty needs have no implicit hard requirements and no shared mutable array
 test('patch preserves omitted fields, replaces arrays, clears scalars, and never mutates input', () => {
   const current = {
     ...emptyShoppingNeeds(), purpose: 'Read papers', budget,
-    requiredTags: [{ name: 'access', value: 'dedicated' }],
-    preferences: ['simple_setup' as const], warrantyDaysMin: 30,
+    requiredTags: [{ name: 'sms_verification', value: 'verified' }],
+    preferences: ['simple_setup' as const],
   };
   const saved = structuredClone(current);
   const next = applyNeedsPatch(current, { purpose: null, requiredTags: [], preferences: ['lower_price'] });
   assert.deepEqual(next, { ...saved, purpose: null, requiredTags: [], preferences: ['lower_price'] });
   assert.deepEqual(current, saved);
-  assert.deepEqual(applyNeedsPatch(current, { budget: null, warrantyDaysMin: null }).budget, null);
+  assert.deepEqual(applyNeedsPatch(current, { budget: null }).budget, null);
   next.budget!.amount = '1';
   assert.equal(current.budget.amount, '80.00', 'returned state must not alias confirmed needs');
 });
@@ -184,18 +180,47 @@ test('budget amounts retain exact decimal strings and reject malformed or unboun
 });
 
 test('required tags use the canonical policy and reject duplicate or mutually exclusive same-name values', () => {
-  assert.deepEqual(validateNeedsPatch({ requiredTags: [{ name: 'access', value: 'dedicated' }] }),
-    { requiredTags: [{ name: 'access', value: 'dedicated' }] });
+  assert.deepEqual(validateNeedsPatch({ requiredTags: [{ name: 'sms_verification', value: 'verified' }] }),
+    { requiredTags: [{ name: 'sms_verification', value: 'verified' }] });
   for (const requiredTags of [
     [{ name: 'access', value: 'exclusive' }], [{ name: '访问方式', value: '独享' }],
-    [{ name: 'made_up', value: 'yes' }], [{ name: 'access', value: 'dedicated', count: 1 }],
-    [{ name: 'access', value: 'dedicated' }, { name: 'access', value: 'shared' }],
-    [{ name: 'access', value: 'dedicated' }, { name: 'access', value: 'dedicated' }],
+    [{ name: 'made_up', value: 'yes' }], [{ name: 'sms_verification', value: 'verified', count: 1 }],
+    [{ name: 'sms_verification', value: 'verified' }, { name: 'sms_verification', value: 'unverified' }],
+    [{ name: 'sms_verification', value: 'verified' }, { name: 'sms_verification', value: 'verified' }],
   ]) assert.throws(() => validateNeedsPatch({ requiredTags }));
   // Multiple values explicitly supported by the existing policy remain valid.
   assert.equal(validateNeedsPatch({ requiredTags: [
-    { name: 'device_platform', value: 'ios' }, { name: 'device_platform', value: 'android' },
+    { name: 'region', value: 'us' }, { name: 'region', value: 'jp' },
   ] }).requiredTags?.length, 2);
+});
+
+test('required tags and offer snapshots use the same typed canonical validation', () => {
+  for (const value of [0.5, 30, 90, 365, { kind: 'range', min: 30, max: 60 },
+    { kind: 'min', days: 30 }, { kind: 'max', days: 30 }, { kind: 'approx', days: 30 }, { kind: 'permanent' }]) {
+    const tags = [{ name: 'duration', value }];
+    assert.deepEqual(validateNeedsPatch({ requiredTags: tags }).requiredTags, tags);
+    const offer = { name: 'Quote', shop: 'Shop', spec: '', productUrl: '', tags };
+    assert.deepEqual(validateAssistantReply({ ...reply(), cards: [{ ...card, offer }] }).cards[0]?.offer?.tags, tags);
+  }
+  for (const tag of [
+    { name: 'duration', value: '30' }, { name: 'duration', value: '1 month' },
+    { name: 'duration', value: 0 }, { name: 'duration', value: -1 }, { name: 'duration', value: Infinity },
+    { name: 'duration', value: { kind: 'range', min: 60, max: 30 } },
+    { name: 'duration', value: { kind: 'min', days: 30, unit: 'day' } },
+    { name: 'warranty', value: 'covered' }, { name: 'warranty_days', value: '30' },
+    { name: 'subscription_override', value: '有' }, { name: 'delivery', value: 'account' },
+    { name: 'bulk_purchase', value: 'unknown' },
+  ]) {
+    assert.throws(() => validateNeedsPatch({ requiredTags: [tag] }));
+    const offer = { name: 'Quote', shop: 'Shop', spec: '', productUrl: '', tags: [tag] };
+    assert.throws(() => validateAssistantReply({ ...reply(), cards: [{ ...card, offer }] }));
+  }
+  const original = { ...emptyShoppingNeeds(), requiredTags: [{ name: 'duration', value: { kind: 'min' as const, days: 30 } }] };
+  const patched = applyNeedsPatch(original, {});
+  (patched.requiredTags[0]!.value as { days: number }).days = 60;
+  assert.equal(original.requiredTags[0]!.value.days, 30);
+  assert.throws(() => validateNeedsPatch({ warrantyDaysMin: null }));
+  assert.throws(() => validateNeedsPatch({ preferences: ['longer_warranty'] }));
 });
 
 test('each changed field requires a nonempty verbatim quote from the current message', () => {
@@ -243,7 +268,7 @@ test('ambiguous price and warranty preferences cannot silently become hard requi
     ['便宜一点就行', { budget }, 'budget'],
     ['尽量50元以内', { budget: { ...budget, amount: '50' } }, 'budget'],
     ['质保尽量长一点', { warrantyDaysMin: 30 }, 'warrantyDaysMin'],
-    ['最好独享', { requiredTags: [{ name: 'access', value: 'dedicated' }] }, 'requiredTags'],
+    ['最好已接码', { requiredTags: [{ name: 'sms_verification', value: 'verified' }] }, 'requiredTags'],
     ['我是新手', { warrantyDaysMin: 30 }, 'warrantyDaysMin'],
     ['我是新手', { membershipKinds: ['account', 'top_up'] }, 'membershipKinds'],
     ['便宜一点', { newcomer: false }, 'newcomer'],
@@ -254,9 +279,9 @@ test('ambiguous price and warranty preferences cannot silently become hard requi
   }
   const preference = understanding({ preferences: ['lower_price'] }, [{ field: 'preferences', quote: '便宜一点' }]);
   assert.deepEqual(parseUnderstanding(preference, '便宜一点'), preference);
-  for (const text of ['最多50元人民币，本次付款', '不要共享，必须独享']) {
+  for (const text of ['最多50元人民币，本次付款', '不要未接码，必须已接码']) {
     const patch = text.includes('50') ? { budget: { ...budget, amount: '50' } }
-      : { requiredTags: [{ name: 'access', value: 'dedicated' }] };
+      : { requiredTags: [{ name: 'sms_verification', value: 'verified' }] };
     const field = text.includes('50') ? 'budget' : 'requiredTags';
     assert.deepEqual(parseUnderstanding(understanding(patch, [{ field, quote: text }]), text).patch, patch);
   }

@@ -1,4 +1,5 @@
 import { isCanonicalProductTag, PRODUCT_TAG_RULES } from './product-tag-policy.js';
+import { tagValueKey, type PurchaseTag, type TagValue } from './purchase-attributes.js';
 import { MEMBERSHIP_KINDS, MEMBERSHIP_GROUPS, type MembershipKind, type MembershipGroup } from './membership-policy.js';
 
 export const ASSISTANT_LIMITS = Object.freeze({
@@ -32,7 +33,6 @@ export const ASSISTANT_LIMITS = Object.freeze({
   tagsMax: 32,
   tagNameMaxChars: 64,
   tagValueMaxChars: 250,
-  warrantyDaysMax: 36_500,
   amountMaxChars: 15,
   amountIntegerMaxDigits: 12,
   idMaxChars: 19,
@@ -45,12 +45,12 @@ export const ASSISTANT_LIMITS = Object.freeze({
   evidenceEntriesMax: 28,
 });
 
-export const ASSISTANT_PREFERENCES = ['lower_price', 'simple_setup', 'longer_warranty'] as const;
+export const ASSISTANT_PREFERENCES = ['lower_price', 'simple_setup'] as const;
 export const ASSISTANT_INTENTS = ['clarify', 'recommend', 'compare', 'explain'] as const;
 export const ASSISTANT_REPLY_KINDS = ['question', 'recommendation', 'comparison', 'explanation', 'no_match'] as const;
 export const ASSISTANT_TURN_STATUSES = ['queued', 'running', 'succeeded', 'failed', 'cancelled'] as const;
 export const ASSISTANT_TURN_PHASES = ['queued', 'understanding', 'searching', 'explaining', 'succeeded', 'failed', 'cancelled'] as const;
-export const SHOPPING_NEEDS_FIELDS = ['purpose', 'platform', 'product', 'budget', 'requiredTags', 'warrantyDaysMin', 'preferences', 'membershipKinds', 'newcomer'] as const;
+export const SHOPPING_NEEDS_FIELDS = ['purpose', 'platform', 'product', 'budget', 'requiredTags', 'preferences', 'membershipKinds', 'newcomer'] as const;
 
 export type Budget = { amount: string; currency: string; basis: 'purchase' | 'month' };
 export type ShoppingNeeds = {
@@ -58,8 +58,7 @@ export type ShoppingNeeds = {
   platform: string | null;
   product?: string | null;
   budget: Budget | null;
-  requiredTags: Array<{ name: string; value: string }>;
-  warrantyDaysMin: number | null;
+  requiredTags: PurchaseTag[];
   preferences: Array<typeof ASSISTANT_PREFERENCES[number]>;
   membershipKinds?: MembershipGroup[] | null;
   newcomer?: boolean;
@@ -77,6 +76,7 @@ export type AssistantReply = {
   text: string;
   options: string[];
   needs: ShoppingNeeds;
+  needsInvalidated?: boolean;
   cards: Array<{
     standardProductId: string;
     productId: string;
@@ -90,7 +90,7 @@ export type AssistantReply = {
     reasons: string[];
     caveats: string[];
     evidenceIds: string[];
-    offer?: { name: string; shop: string; spec: string; productUrl: string; tags: Array<{ name: string; value: string }>; membershipKind?: MembershipKind | null };
+    offer?: { name: string; shop: string; spec: string; productUrl: string; tags: PurchaseTag[]; membershipKind?: MembershipKind | null };
   }>;
 };
 export type TurnStatus = typeof ASSISTANT_TURN_STATUSES[number];
@@ -111,6 +111,7 @@ export type SessionSnapshot = {
   id: string;
   revision: number;
   needs: ShoppingNeeds;
+  needsInvalidated?: boolean;
   turns: TurnSnapshot[];
 };
 
@@ -199,7 +200,15 @@ export function validateAssistantInput(value: unknown): string {
 }
 
 export function emptyShoppingNeeds(): ShoppingNeeds {
-  return { purpose: null, platform: null, budget: null, requiredTags: [], warrantyDaysMin: null, preferences: [] };
+  return { purpose: null, platform: null, budget: null, requiredTags: [], preferences: [] };
+}
+
+function parseTag(value: unknown): PurchaseTag {
+  const tag = record(value, ['name', 'value']);
+  const parsed = { name: text(tag.name, 'tag name', ASSISTANT_LIMITS.tagNameMaxChars), value: tag.value as TagValue };
+  if (typeof parsed.value === 'string') text(parsed.value, 'tag value', ASSISTANT_LIMITS.tagValueMaxChars);
+  if (!isCanonicalProductTag(parsed)) invalid('requiredTags');
+  return { ...parsed, value: typeof parsed.value === 'object' ? { ...parsed.value } : parsed.value };
 }
 
 export function validateNeedsPatch(value: unknown): NeedsPatch {
@@ -222,9 +231,6 @@ export function validateNeedsPatch(value: unknown): NeedsPatch {
           basis: choice(budget.basis, ['purchase', 'month'], 'basis') };
         break;
       }
-      case 'warrantyDaysMin':
-        patch.warrantyDaysMin = entry === null ? null : integer(entry, field, ASSISTANT_LIMITS.warrantyDaysMax);
-        break;
       case 'preferences':
         patch.preferences = unique(list(entry, ASSISTANT_PREFERENCES.length,
           item => choice(item, ASSISTANT_PREFERENCES, field)));
@@ -240,14 +246,12 @@ export function validateNeedsPatch(value: unknown): NeedsPatch {
       case 'requiredTags': {
         const seen = new Map<string, Set<string>>();
         patch.requiredTags = list(entry, ASSISTANT_LIMITS.tagsMax, item => {
-          const tag = record(item, ['name', 'value']);
-          const parsed = { name: text(tag.name, 'tag name', ASSISTANT_LIMITS.tagNameMaxChars),
-            value: text(tag.value, 'tag value', ASSISTANT_LIMITS.tagValueMaxChars) };
-          if (!isCanonicalProductTag(parsed)) invalid('requiredTags');
+          const parsed = parseTag(item);
+          const key = tagValueKey(parsed.value);
           const values = seen.get(parsed.name);
-          if (values && (values.has(parsed.value) || !PRODUCT_TAG_RULES[parsed.name].multiple)) invalid('conflicting tags');
-          if (values) values.add(parsed.value);
-          else seen.set(parsed.name, new Set([parsed.value]));
+          if (values && (values.has(key) || !PRODUCT_TAG_RULES[parsed.name].multiple)) invalid('conflicting tags');
+          if (values) values.add(key);
+          else seen.set(parsed.name, new Set([key]));
           return parsed;
         });
       }
@@ -263,7 +267,10 @@ export function validateShoppingNeeds(value: unknown): ShoppingNeeds {
 }
 
 export function validateAssistantReply(value: unknown): AssistantReply {
-  const source = record(value, ['kind', 'text', 'options', 'needs', 'cards']);
+  const keys = ['kind', 'text', 'options', 'needs', 'cards'];
+  const source = record(value, [...keys, 'needsInvalidated'], true);
+  if (keys.some(key => !Object.hasOwn(source, key))
+    || (Object.hasOwn(source, 'needsInvalidated') && typeof source.needsInvalidated !== 'boolean')) invalid('fields');
   const kind = choice(source.kind, ASSISTANT_REPLY_KINDS, 'kind');
   const cards = list(source.cards, ASSISTANT_LIMITS.cardsMax, value => {
     const keys = ['standardProductId', 'productId', 'shopId', 'title', 'price', 'currency',
@@ -283,10 +290,7 @@ export function validateAssistantReply(value: unknown): AssistantReply {
       offer = {
         name: text(entry.name, 'offer name', 240), shop: text(entry.shop, 'shop', 240),
         spec: entry.spec === '' ? '' : text(entry.spec, 'spec', 2000, true), productUrl,
-        tags: list(entry.tags, 100, value => {
-          const tag = record(value, ['name', 'value']);
-          return { name: text(tag.name, 'tag name', 64), value: text(tag.value, 'tag value', 2000, true) };
-        }),
+        tags: list(entry.tags, 100, parseTag),
         ...(Object.hasOwn(entry, 'membershipKind') ? { membershipKind: entry.membershipKind === null ? null
           : choice(entry.membershipKind, MEMBERSHIP_KINDS, 'membershipKind') } : {}),
       };
@@ -317,7 +321,8 @@ export function validateAssistantReply(value: unknown): AssistantReply {
     : text(source.text, 'reply text', ASSISTANT_LIMITS.replyMaxChars, true),
     options: unique(list(source.options, ASSISTANT_LIMITS.optionsMax,
       item => clarificationText(item, ASSISTANT_LIMITS.optionMaxChars))),
-    needs: validateShoppingNeeds(source.needs), cards };
+    needs: validateShoppingNeeds(source.needs), cards,
+    ...(Object.hasOwn(source, 'needsInvalidated') ? { needsInvalidated: source.needsInvalidated as boolean } : {}) };
 }
 
 export function isTurnTerminal(status: TurnStatus): boolean {
@@ -347,7 +352,10 @@ export function validateTurnSnapshot(value: unknown): TurnSnapshot {
 }
 
 export function validateSessionSnapshot(value: unknown): SessionSnapshot {
-  const source = record(value, ['id', 'revision', 'needs', 'turns']);
+  const keys = ['id', 'revision', 'needs', 'turns'];
+  const source = record(value, [...keys, 'needsInvalidated'], true);
+  if (keys.some(key => !Object.hasOwn(source, key))
+    || (Object.hasOwn(source, 'needsInvalidated') && typeof source.needsInvalidated !== 'boolean')) invalid('fields');
   const sessionId = uuid(source.id);
   const revision = integer(source.revision, 'revision');
   const turns = list(source.turns, Number.MAX_SAFE_INTEGER, validateTurnSnapshot);
@@ -363,5 +371,6 @@ export function validateSessionSnapshot(value: unknown): SessionSnapshot {
     if (turn.status === 'succeeded') completed++;
   }
   if (revision !== completed) invalid('session revision');
-  return { id: sessionId, revision, needs: validateShoppingNeeds(source.needs), turns };
+  return { id: sessionId, revision, needs: validateShoppingNeeds(source.needs), turns,
+    ...(Object.hasOwn(source, 'needsInvalidated') ? { needsInvalidated: source.needsInvalidated as boolean } : {}) };
 }

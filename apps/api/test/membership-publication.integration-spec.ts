@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
@@ -661,7 +662,7 @@ test('identical crawler evidence with captured shop text preserves published mem
   const before = await db.updateTable('products').set({ membership_features: jsonb(features as unknown as JsonValue) })
     .where('id', '=', f.product.id).returningAll().executeTakeFirstOrThrow();
   const member = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', before.id).executeTakeFirstOrThrow();
-  await db.insertInto('product_tags').values({ product_id: before.id, name: 'delivery', value: 'account' }).execute();
+  await db.insertInto('product_tags').values(tagRows({ product_id: before.id, name: 'delivery', value: 'account' })).execute();
   const input = { shopId: before.shop_id, externalId: before.external_id, name: before.name, spec: before.spec,
     normalizedKey: before.normalized_key, url: before.url, sourceData };
   const change = await db.transaction().execute(async tx => {

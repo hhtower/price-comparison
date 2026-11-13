@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -154,7 +155,7 @@ describe('crawler product batch persistence', () => {
       await db.insertInto('standard_product_members').values({
         standard_product_id: standard.id, product_id: id, assignment_source: 'human', publication_state: 'published',
       }).execute();
-      await db.insertInto('product_tags').values({ product_id: id, name: 'quantity', value: '100' }).execute();
+      await db.insertInto('product_tags').values(tagRows({ product_id: id, name: 'quantity', value: '100' })).execute();
       const state = async () => ({
         product: await db.selectFrom('products')
           .select(['content_version', 'standardization_revision', 'content_changed_at', 'standardization_locked'])

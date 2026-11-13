@@ -12,7 +12,7 @@ const inputs = [
 ];
 
 function setup(content: string, finishReason: string | null = 'stop', auditUnavailable = false, throwingLogger = false,
-  reviewProposals?: Array<{ name: string; value: string; path: string; quote: string }>) {
+  reviewProposals?: Array<{ name: string; value: import('@price-comparison/catalog/purchase-attributes').TagValue; path: string; quote: string }>) {
   const outcomes: Array<{ outcome: unknown; metadata?: AiBatchResultMetadata; claim: unknown }> = [];
   const events: unknown[][] = [];
   let sends = 0, saved: unknown, savedMetadata: AiBatchResultMetadata | undefined, failure: unknown, completed = false;
@@ -84,7 +84,7 @@ function assertProvenance(metadata: AiBatchResultMetadata | undefined, content: 
 }
 
 test('successful tag streams persist response provenance and counts with the decision', { timeout: 5000 }, async () => {
-  const tag = { name: 'duration', value: '1 month', path: 'spec', quote: '1\u4e2a\u6708' };
+  const tag = { name: 'duration', value: 30, path: 'spec', quote: '1\u4e2a\u6708' };
   const content = JSON.stringify({ items: [{ id: '11', tags: [tag] }, { id: '12', tags: [] }] });
   const state = setup(content);
   await state.run();
@@ -92,7 +92,7 @@ test('successful tag streams persist response provenance and counts with the dec
   assert.equal(state.stats().failure, undefined);
   assert.equal(state.stats().sends, 1);
   assert.deepEqual(state.stats().saved, [
-    { productId: 11n, tags: [{ name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '1\u4e2a\u6708' }] }], rejectedTags: [] },
+    { productId: 11n, tags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1\u4e2a\u6708' }] }], rejectedTags: [] },
     { productId: 12n, tags: [], rejectedTags: [] },
   ]);
   const diagnostic = assertProvenance(state.outcomes[0]!.metadata, content);
@@ -115,12 +115,12 @@ test('partial extraction responses retain provenance and fail without inventing 
 
 test('review rejection counts measure affected items while preserving accepted facts', { timeout: 5000 }, async () => {
   const tags = [
-    { name: 'duration', value: '1 month', path: 'spec', quote: '1\u4e2a\u6708' },
+    { name: 'duration', value: 30, path: 'spec', quote: '1\u4e2a\u6708' },
     { name: 'private-response', value: 'yes', path: 'spec', quote: 'private-response' },
     { name: 'another-private-response', value: 'yes', path: 'spec', quote: 'private-response' },
   ];
     const content = JSON.stringify({ items: [
-      { id: '11', decisions: [true, false, false], textReview: null },
+      { id: '11', decisions: [{ tagId: '11:2', accepted: false }, { tagId: '11:0', accepted: true }, { tagId: '11:1', accepted: false }], textReview: null },
       { id: '12', decisions: [], textReview: null },
     ] });
     const state = setup(content, 'stop', false, false, tags);

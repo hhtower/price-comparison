@@ -1,4 +1,5 @@
 import type { ColumnType, Generated } from 'kysely';
+import type { TagValue } from '@price-comparison/catalog/purchase-attributes';
 
 export type JsonValue =
   | null
@@ -160,7 +161,6 @@ export interface CatalogReadOfferTable {
   search_text: string;
   tags: JsonbColumn;
   facet_tags: string;
-  warranty_days: ColumnType<number | null, never, never>;
   listed_price: string;
   currency: string;
   captured_at: Timestamp;
@@ -174,7 +174,7 @@ export interface CatalogReadOfferTable {
 }
 
 export interface CatalogReadOfferPricesTable extends Omit<CatalogReadOfferTable,
-  'product_name' | 'product_url' | 'product_spec' | 'search_text' | 'tags' | 'facet_tags' | 'warranty_days'> {
+  'product_name' | 'product_url' | 'product_spec' | 'search_text' | 'tags' | 'facet_tags'> {
   price: ColumnType<string, never, never>;
   verification_at: ColumnType<Date | null, never, never>;
 }
@@ -183,7 +183,7 @@ export interface ProductTagTable {
   id: Generated<bigint>;
   product_id: bigint;
   name: string;
-  value: string;
+  value: ColumnType<TagValue, JsonbInput, JsonbInput>;
 }
 
 export interface OfferTable {

@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  Allow,
   ArrayNotEmpty,
   IsArray,
   IsBoolean,
@@ -103,7 +104,7 @@ class ProductPatchDto {
   imageUrl?: string;
 }
 
-class ProductTagDto { @IsString() name!: string; @IsString() value!: string }
+class ProductTagDto { @IsString() name!: string; @Allow() value!: unknown }
 class ProductTagsDto { @IsArray() @ValidateNested({ each: true }) @Type(() => ProductTagDto) items!: ProductTagDto[] }
 class StandardProductAssignmentDto { @IsOptional() @IsString() standardProductId?: string | null; @IsOptional() @IsBoolean() confirmEvidenceConflict?: boolean }
 

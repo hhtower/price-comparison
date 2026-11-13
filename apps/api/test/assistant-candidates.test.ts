@@ -7,7 +7,7 @@ import type { CatalogOffer } from '../src/catalog/catalog.repository.js';
 const now = new Date('2026-10-31T12:00:00Z');
 const needs = {
   purpose: 'fictional research', platform: null, budget: null, requiredTags: [],
-  warrantyDaysMin: null, preferences: [],
+  preferences: [],
 };
 const evidence: CapabilityEvidence = {
   id: 'fictional-research', identity: { platform: 'fictional', product: 'widget', tier: 'pro' },
@@ -23,7 +23,7 @@ function fixture(id = '1', offer: Partial<CatalogOffer> = {}): AssistantCandidat
       currency: 'CNY', settlementQuantity: 1, priceStatus: 'verified', inStock: true, stale: false,
       capturedAt: '2026-10-31T11:00:00Z', priceExpiresAt: '2026-10-31T13:00:00Z',
       inventoryExpiresAt: '2026-10-31T13:00:00Z', productUrl: 'https://example.invalid/item', spec: '',
-      tags: [{ name: 'duration', value: '1 month' }], ...offer,
+      tags: [{ name: 'duration', value: 30 }], ...offer,
     },
     capabilityEvidence: [evidence],
   };
@@ -51,42 +51,95 @@ test('reference quotes remain eligible regardless of verification, inventory or 
   }
 });
 
-test('hard tags, warranty and budget must hold on the same offer', () => {
+test('hard tags and budget must hold on the same offer', () => {
   const hard = { ...needs, budget: { amount: '15.00', currency: 'CNY', basis: 'purchase' as const },
-    requiredTags: [{ name: 'access', value: 'dedicated' }], warrantyDaysMin: 30 };
-  const cheap = fixture('1', { tags: [{ name: 'access', value: 'dedicated' }] });
-  const covered = fixture('2', { price: '20.00', tags: [
-    { name: 'access', value: 'dedicated' }, { name: 'warranty_days', value: '30' },
-  ] });
+    requiredTags: [{ name: 'sms_verification', value: 'verified' }, { name: 'duration', value: 30 }] };
+  const cheap = fixture('1', { tags: [{ name: 'sms_verification', value: 'verified' }] });
+  const covered = fixture('2', { price: '20.00', tags: hard.requiredTags });
   assert.deepEqual(selectCandidates([cheap, covered], hard, now), []);
   assert.equal(selectCandidates([fixture('3', { price: '15.00', tags: covered.offer.tags })], hard, now).length, 1);
   assert.deepEqual(selectCandidates([fixture('3', { currency: 'USD', tags: covered.offer.tags })], hard, now), []);
-  assert.deepEqual(selectCandidates([fixture('3', { tags: [
-    ...covered.offer.tags, { name: 'warranty_days', value: 'unknown' },
-  ] })], hard, now), []);
+  assert.deepEqual(selectCandidates([fixture('3', { tags: [...covered.offer.tags, { name: 'duration', value: 365 }] })], hard, now), []);
 });
 
 test('monthly budgets require an explicit single month; annual price is never divided', () => {
   const monthly = { ...needs, budget: { amount: '10.00', currency: 'CNY', basis: 'month' as const } };
-  for (const tags of [[], [{ name: 'duration', value: '1 year' }], [
-    { name: 'duration', value: '1 month' }, { name: 'duration', value: '1 year' },
+  for (const tags of [[], [{ name: 'duration', value: 365 }], [
+    { name: 'duration', value: 30 }, { name: 'duration', value: 365 },
   ]]) assert.deepEqual(selectCandidates([fixture('1', { tags })], monthly, now), []);
   assert.equal(selectCandidates([fixture()], monthly, now).length, 1);
 });
 
-test('preferences are ordered, unknown warranty ranks last and simple setup stays unknown', () => {
+test('duration filters compare numeric days and preserve every qualifier without parsing strings', () => {
+  const monthly = { ...needs, requiredTags: [{ name: 'duration', value: 30 }] };
+  const monthBudget = { ...needs, budget: { amount: '10', currency: 'CNY', basis: 'month' as const } };
+  for (const value of [360, 365, 0.5, '30', '1 month', { kind: 'range', min: 30, max: 60 },
+    { kind: 'min', days: 30 }, { kind: 'max', days: 30 }, { kind: 'approx', days: 30 }, { kind: 'permanent' }] as const) {
+    const candidate = fixture('1', { tags: [{ name: 'duration', value }] });
+    assert.deepEqual(selectCandidates([candidate], monthly, now), []);
+    assert.deepEqual(selectCandidates([candidate], monthBudget, now), []);
+  }
+  for (const value of [0.5, 30, 90, 360, 365, { kind: 'range', min: 30, max: 60 },
+    { kind: 'min', days: 30 }, { kind: 'permanent' }] as const) {
+    const requiredTags = [{ name: 'duration', value }];
+    assert.equal(selectCandidates([fixture('1', { tags: structuredClone(requiredTags) })],
+      { ...needs, requiredTags }, now).length, 1);
+  }
+  assert.deepEqual(selectCandidates([fixture('1', { tags: [{ name: 'duration', value: 365 }] }),
+    fixture('2', { tags: [{ name: 'duration', value: 360 }] })], needs, now).map(candidate => candidate.offer.productId), ['2', '1']);
+});
+
+test('regions use OR within the dimension and AND with other canonical requirements', () => {
+  const request = { ...needs, requiredTags: [
+    { name: 'region', value: 'us' }, { name: 'region', value: 'jp' }, { name: 'duration', value: 30 },
+    { name: 'access_channel', value: 'web' }, { name: 'supported_client', value: 'codex' },
+  ] };
+  const tags = [{ name: 'duration', value: 30 }, { name: 'access_channel', value: 'web' },
+    { name: 'access_channel', value: 'api' }, { name: 'supported_client', value: 'codex' }];
+  assert.equal(selectCandidates([fixture('1', { tags: [...tags, { name: 'region', value: 'jp' }] })], request, now).length, 1);
+  assert.equal(selectCandidates([fixture('1', { tags: [...tags, { name: 'region', value: 'jp' }, { name: 'region', value: 'us' }] })], request, now).length, 1);
+  assert.deepEqual(selectCandidates([fixture('1', { tags: [...tags, { name: 'region', value: 'ph' }] })], request, now), []);
+  assert.deepEqual(selectCandidates([fixture('1', { tags: [{ name: 'region', value: 'us' }] })], request, now), []);
+});
+
+test('conflicting single-valued facts cannot satisfy a hard requirement', () => {
+  for (const tags of [
+    [{ name: 'sms_verification', value: 'verified' }, { name: 'sms_verification', value: 'unverified' }],
+    [{ name: 'warranty', value: '仅保首登' }, { name: 'warranty', value: '保订阅30天，封号不保' }],
+  ]) {
+    assert.deepEqual(selectCandidates([fixture('1', { tags })], { ...needs, requiredTags: [tags[0]!] }, now), []);
+  }
+});
+
+test('entry points and supported clients use same-name OR and different-name AND', () => {
+  const request = { ...needs, requiredTags: [
+    { name: 'access_channel', value: 'web' }, { name: 'access_channel', value: 'api' },
+    { name: 'supported_client', value: 'codex' }, { name: 'supported_client', value: 'sub2api' },
+    { name: 'duration', value: 30 },
+  ] };
+  for (const entry of ['web', 'api']) {
+    for (const client of ['codex', 'sub2api']) {
+      const tags = [{ name: 'access_channel', value: entry }, { name: 'supported_client', value: client },
+        { name: 'duration', value: 30 }];
+      assert.equal(selectCandidates([fixture('1', { tags })], request, now).length, 1, `${entry}/${client}`);
+    }
+  }
+  for (const tags of [
+    [{ name: 'access_channel', value: 'web' }, { name: 'duration', value: 30 }],
+    [{ name: 'supported_client', value: 'codex' }, { name: 'duration', value: 30 }],
+    [{ name: 'access_channel', value: 'mirror' }, { name: 'supported_client', value: 'codex' }, { name: 'duration', value: 30 }],
+    [{ name: 'access_channel', value: 'web' }, { name: 'supported_client', value: 'other' }, { name: 'duration', value: 30 }],
+    [{ name: 'access_channel', value: 'api' }, { name: 'supported_client', value: 'sub2api' }, { name: 'duration', value: 365 }],
+  ]) assert.deepEqual(selectCandidates([fixture('1', { tags })], request, now), [], JSON.stringify(tags));
+});
+
+test('warranty summaries never imply numeric ranking or setup complexity', () => {
   const a = fixture('1', { price: '5.00' });
-  const b = fixture('2', { price: '9.00', tags: [
-    ...a.offer.tags, { name: 'warranty_days', value: '30' }, { name: 'delivery', value: 'account' },
-  ] });
-  const c = fixture('3', { price: '7.00', tags: [
-    ...a.offer.tags, { name: 'warranty_days', value: '60' },
-  ] });
-  const ids = (preferences: Array<'lower_price' | 'longer_warranty' | 'simple_setup'>) =>
-    selectCandidates([b, a, c], { ...needs, preferences }, now).map(c => c.offer.productId);
-  assert.deepEqual(ids(['lower_price', 'longer_warranty']), ['1', '3', '2']);
-  assert.deepEqual(ids(['longer_warranty', 'lower_price']), ['3', '2', '1']);
-  assert.deepEqual(ids(['simple_setup']), ['1', '3', '2']);
+  const b = fixture('2', { price: '9.00', tags: [...a.offer.tags, { name: 'warranty', value: '保订阅30天，封号不保' }] });
+  const c = fixture('3', { price: '7.00', tags: [...a.offer.tags, { name: 'warranty', value: '购买后1小时仅保首登' }] });
+  for (const preferences of [['lower_price'], ['simple_setup']] as const) {
+    assert.deepEqual(selectCandidates([b, a, c], { ...needs, preferences: [...preferences] }, now).map(c => c.offer.productId), ['1', '3', '2']);
+  }
 });
 
 test('sorts ties stably, deduplicates offers and returns at most three candidates', () => {
@@ -97,46 +150,33 @@ test('sorts ties stably, deduplicates offers and returns at most three candidate
   assert.deepEqual(selectCandidates(candidates, { ...needs, platform: 'another' }, now), []);
 });
 
-test('recommendations cover different purchase prerequisites before repeating cheaper conditions', () => {
-  const base = fixture();
-  const offers = ['1', '2', '3', '4', '5'].map((id, index) => ({
-    ...base, offer: { ...base.offer, productId: id, price: `${10 + index}.00`, tags: [...base.offer.tags,
-      { name: 'delivery', value: 'top_up' }, { name: 'warranty', value: 'covered' },
-      ...index < 3 ? [{ name: 'usage_restriction', value: '需资格账号' }, { name: 'region', value: ['us', 'in', 'jp'][index]! }]
-        : index === 3 ? [{ name: 'usage_restriction', value: '普通账号可充值，无需优惠资格' }] : [{ name: 'kyc_required', value: '有' }],
-    ] },
+test('complete source specifications diversify purchase conditions without retired tags', () => {
+  const offers = Array.from({ length: 5 }, (_, index) => fixture(String(index + 1), {
+    price: String(10 + index), spec: index < 3 ? '需资格账号' : index === 3 ? '普通账号可充值' : '需自备组织账号',
+    tags: [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }],
   }));
-  const request = { ...needs, requiredTags: [{ name: 'delivery', value: 'top_up' }], preferences: ['lower_price' as const] };
-  assert.deepEqual(selectCandidates(offers, request, now).map(c => c.offer.productId), ['1', '4', '5']);
-  assert.deepEqual(selectCandidates([...offers].reverse(), request, now).map(c => c.offer.productId), ['1', '4', '5']);
-  const missing = { ...offers[3]!, offer: { ...offers[3]!.offer, tags: [{ name: 'delivery', value: 'top_up' }] } };
-  assert.deepEqual(selectCandidates([missing], request, now)[0]!.offer.tags, missing.offer.tags,
-    'missing restrictions must not become an unrestricted claim');
-  assert.deepEqual(selectCandidates(offers, { ...request, budget: { amount: '12', currency: 'CNY', basis: 'purchase' } }, now)
+  offers.forEach(candidate => { candidate.standardProduct = offers[0]!.standardProduct; });
+  assert.deepEqual(selectCandidates(offers, needs, now).map(c => c.offer.productId), ['1', '4', '5']);
+  assert.deepEqual(selectCandidates([...offers].reverse(), needs, now).map(c => c.offer.productId), ['1', '4', '5']);
+  assert.deepEqual(selectCandidates(offers, { ...needs, budget: { amount: '12', currency: 'CNY', basis: 'purchase' } }, now)
     .map(c => c.offer.productId), ['1', '2', '3']);
-  assert.deepEqual(selectCandidates(offers, { ...request, requiredTags: [...request.requiredTags,
-    { name: 'usage_restriction', value: '需资格账号' }] }, now).map(c => c.offer.productId), ['1', '2', '3']);
 });
 
-test('other products diversify delivery and access and fill remaining slots without duplicates', () => {
-  const base = fixture();
-  const offers = ['1', '2', '3', '4', '5'].map((id, index) => ({ ...base,
-    offer: { ...base.offer, productId: id, price: `${10 + index}.00`, tags: [
-      { name: 'delivery', value: index === 3 ? 'redemption' : 'account' },
-      { name: 'access', value: index === 4 ? 'dedicated' : 'shared' },
-      { name: 'duration', value: '1 month' },
-    ] },
-  }));
-  assert.deepEqual(selectCandidates(offers, { ...needs, preferences: ['lower_price'] }, now).map(c => c.offer.productId), ['1', '4', '5']);
+test('canonical entry points and regions diversify offers and fill remaining slots without duplicates', () => {
+  const offers = Array.from({ length: 5 }, (_, index) => fixture(String(index + 1), { price: String(10 + index), tags: [
+    { name: 'duration', value: 30 }, { name: 'access_channel', value: index === 3 ? 'api' : 'web' },
+    { name: 'region', value: index === 4 ? 'jp' : 'us' },
+  ] }));
+  offers.forEach(candidate => { candidate.standardProduct = offers[0]!.standardProduct; });
+  assert.deepEqual(selectCandidates(offers, needs, now).map(c => c.offer.productId), ['1', '4', '5']);
   assert.deepEqual(selectCandidates([...offers.slice(0, 3), offers[0]!], needs, now).map(c => c.offer.productId), ['1', '2', '3']);
 });
 
 test('a different purchase gate wins over login variants of the same gate', () => {
   const base = fixture();
   const offers = ['password', 'email_code', 'oauth2', 'password'].map((login, index) => ({ ...base,
-    offer: { ...base.offer, productId: String(index + 1), price: String(10 + index), tags: [...base.offer.tags,
-      { name: 'usage_restriction', value: index < 3 ? '仅限符合资格的账号' : '普通账号可充值，无需优惠资格' },
-      { name: 'login_method', value: login },
+    offer: { ...base.offer, productId: String(index + 1), price: String(10 + index), spec: index < 3 ? '仅限符合资格的账号' : '普通账号可充值，无需优惠资格', tags: [...base.offer.tags,
+      { name: 'supported_client', value: login },
     ] },
   }));
   const request = { ...needs, preferences: ['lower_price' as const] };
@@ -149,9 +189,7 @@ test('a different purchase gate wins over login variants of the same gate', () =
 test('a broader reranking pool reaches alternatives behind many duplicates', () => {
   const base = fixture();
   const offers = Array.from({ length: 52 }, (_, index) => ({ ...base, offer: { ...base.offer,
-    productId: String(index + 1), price: String(10 + index), tags: [...base.offer.tags,
-      { name: 'usage_restriction', value: index < 50 ? '需资格账号' : '普通账号可用' },
-      ...index === 51 ? [{ name: 'renewable', value: '有' }] : [],
+    productId: String(index + 1), price: String(10 + index), spec: index < 50 ? '需资格账号' : index === 50 ? '普通账号可用' : '支持续费，请确认条件', tags: [...base.offer.tags,
     ],
   } }));
   const selected = selectCandidates(offers, { ...needs, preferences: ['lower_price'] }, now, 12);
@@ -165,9 +203,8 @@ test('purchase facets remain diverse across products, arbitrary merchant wording
   for (const restriction of ['仅限符合资格的账号', '仅支持首次购买', '需要管理员邀请', '需自备可验证的组织账号']) {
     const base = fixture();
     const offers = Array.from({ length: 16 }, (_, index) => ({ ...base, offer: { ...base.offer,
-      productId: String(index + 1), price: String(10 + index), tags: [...base.offer.tags,
-        { name: 'usage_restriction', value: index < 15 ? restriction : '购买条件不同，请按商家列明条件办理' },
-        { name: 'login_method', value: ['password', 'email_code', 'oauth2'][index % 3]! },
+      productId: String(index + 1), price: String(10 + index), spec: index < 15 ? restriction : '购买条件不同，请按商家列明条件办理', tags: [...base.offer.tags,
+        { name: 'supported_client', value: ['codex', 'sub2api', 'claude code'][index % 3]! },
         { name: 'region', value: ['us', 'jp', 'in'][index % 3]! },
       ],
     } }));
@@ -183,7 +220,7 @@ test('secondary variants cover durations and regions without treating tag order 
   const base = fixture();
   const tags = [...base.offer.tags, { name: 'region', value: 'us' }];
   const variants = [tags, [...tags].reverse(), [...tags, tags[0]!],
-    [{ name: 'duration', value: '1 year' }, { name: 'region', value: 'us' }],
+    [{ name: 'duration', value: 365 }, { name: 'region', value: 'us' }],
     [...base.offer.tags, { name: 'region', value: 'in' }]];
   const offers = variants.map((tags, index) => ({ ...base, offer: { ...base.offer,
     productId: String(index + 1), price: `${10 + index}.00`, tags } }));
@@ -224,9 +261,8 @@ test('AI membership scope stays hard with budgets and preferences and never fill
     ['Gemini Pro', 'google', 'gemini', 'pro'], ['Cursor Pro', 'cursor', 'cursor', 'pro'], ['Grok Super', 'xai', 'grok', 'super']]) {
     const candidates = Array.from({ length: 5 }, (_, index) => ({
       ...fixture(String(index + 1), { price: String(index + 1), membershipKind: index < 2 ? 'short_term' : 'account', tags: [
-        { name: 'duration', value: '1 month' },
-        { name: 'delivery', value: index === 0 ? 'redemption' : index === 4 ? 'account' : 'top_up' },
-        { name: 'warranty_days', value: index === 1 ? '29' : '30' },
+        { name: 'duration', value: 30 },
+        { name: 'warranty', value: '保订阅30天，封号不保' },
       ] }), standardProduct: { id: '1', name, platform, kind: '账号与订阅',
         identity: { family: platform!, product: product!, tier: tier! } },
     }));
@@ -235,8 +271,7 @@ test('AI membership scope stays hard with budgets and preferences and never fill
     assert.deepEqual(selectCandidates([...candidates].reverse(), needs, now).map(c => c.offer.productId), ['3', '4', '5']);
     assert.deepEqual(needs, before, 'defaults are not saved as user requirements');
     assert.equal(selectCandidates(candidates, { ...needs, preferences: ['lower_price'] }, now)[0]?.offer.productId, '3');
-    assert.equal(selectCandidates(candidates, { ...needs, requiredTags: [{ name: 'delivery', value: 'top_up' }] }, now)[0]?.offer.productId, '3');
-    assert.equal(selectCandidates(candidates, { ...needs, warrantyDaysMin: 10 }, now)[0]?.offer.productId, '3');
+    assert.equal(selectCandidates(candidates, { ...needs, requiredTags: [{ name: 'duration', value: 30 }] }, now)[0]?.offer.productId, '3');
     assert.deepEqual(selectCandidates(candidates, { ...needs, budget: { amount: '2', currency: 'CNY', basis: 'purchase' } }, now), []);
     assert.equal(selectCandidates(candidates.slice(0, 2), needs, now).length, 0);
     assert.equal(selectCandidates(candidates, { ...needs, newcomer: false }, now)[0]?.offer.productId, '1');
@@ -244,26 +279,17 @@ test('AI membership scope stays hard with budgets and preferences and never fill
   }
 });
 
-test('newcomer scope trusts classified membership, never guesses from warranty or delivery tags', () => {
+test('newcomer scope trusts classified membership and never guesses from warranty summaries', () => {
   const base = fixture();
   base.standardProduct = { id: '1', name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅',
     identity: { family: 'openai', product: 'chatgpt', tier: 'plus' } };
-  const good = { ...base,
-    offer: { ...base.offer, membershipKind: 'account' as const, productId: '9', price: '99', tags: [
-    ...base.offer.tags, { name: 'delivery', value: 'account' }, { name: 'warranty_days', value: '30' },
-  ] } };
-  for (const tags of [
-    [{ name: 'delivery', value: 'account' }, { name: 'warranty', value: 'covered' }],
-    [...good.offer.tags, { name: 'warranty', value: 'none' }],
-    [...good.offer.tags, { name: 'warranty_days', value: 'unknown' }],
-    [...good.offer.tags, { name: 'delivery', value: 'redemption' }],
-    [{ name: 'warranty_days', value: '90' }],
-  ]) {
-    const other = { ...base, offer: { ...base.offer, tags } };
+  const good = { ...base, offer: { ...base.offer, membershipKind: 'account' as const, productId: '9', price: '99', tags: [] } };
+  for (const value of ['购买后1小时仅保首登', '保订阅30天，封号不保', '保订阅90天']) {
+    const other = { ...base, offer: { ...base.offer, tags: [{ name: 'warranty', value }] } };
     assert.equal(selectCandidates([other, good], needs, now, 1)[0]?.offer.productId, '9');
-    assert.equal(selectCandidates([other], needs, now, 1).length, 0);
+    assert.equal(selectCandidates([other], needs, now).length, 0);
   }
-  assert.equal(selectCandidates([{ ...good, offer: { ...good.offer, tags: [] } }], needs, now).length, 1);
+  assert.equal(selectCandidates([good], needs, now).length, 1);
 });
 
 test('rental candidates require explicit scope and expose the rental label as evidence', () => {
@@ -321,17 +347,15 @@ test('IP, email and non-AI products never get the AI newcomer priority from thei
     const cheap = fixture('1', { price: '1', name: 'ChatGPT Plus 新手推荐' });
     cheap.standardProduct = { id: '1', name, platform, platformGroup, kind };
     const covered = { ...cheap, offer: { ...cheap.offer, productId: '2', price: '99', tags: [
-      ...cheap.offer.tags, { name: 'delivery', value: 'account' }, { name: 'warranty_days', value: '30' },
+      ...cheap.offer.tags, { name: 'warranty', value: '保订阅30天，封号不保' },
     ] } };
     assert.equal(selectCandidates([covered, cheap], needs, now, 1)[0]?.offer.productId, '1', name);
   }
 });
 
-test('delivery evidence explains what a beginner receives without inventing setup guarantees', () => {
-  for (const [delivery, expected] of [['top_up', /已有账号/u], ['account', /提供.*账号/u]] as const) {
-    const facts = candidateEvidence(fixture('1', { tags: [{ name: 'delivery', value: delivery }] }));
-    assert.ok(facts.some(fact => expected.test(fact.text)));
-  }
+test('source specifications preserve purchase conditions without turning them into retired tags', () => {
+  const facts = candidateEvidence(fixture('1', { spec: '代充给已有账号，需资格账号，禁止转售', tags: [] }));
+  assert.ok(facts.some(fact => fact.text.includes('需资格账号，禁止转售')));
 });
 
 test('an explicit platform can browse quotes without inventing purpose evidence', () => {
@@ -352,22 +376,21 @@ test('purpose requires current capability evidence and never silently uses an un
   assert.ok(ASSISTANT_CAPABILITIES.length >= 3);
 });
 
-test('explanation evidence contains only this offer facts with candidate-scoped IDs', () => {
+test('explanation evidence preserves complete warranty terms with candidate-scoped IDs', () => {
   const candidate = fixture('7', { tags: [
-    { name: 'access', value: 'dedicated' }, { name: 'warranty_exclusion', value: 'ban' },
-    { name: 'warranty_days', value: '30' }, { name: 'warranty_terms', value: '仅限首次登录前申请' },
+    { name: 'sms_verification', value: 'verified' },
+    { name: 'warranty', value: '保订阅30天，封号不保；仅限首次登录前申请' },
   ] });
   const facts = candidateEvidence(candidate);
-  assert.ok(facts.some(fact => fact.text.includes('独享')));
-  assert.ok(facts.some(fact => fact.text.includes('不保封号')));
-  assert.ok(facts.some(fact => fact.text.includes('仅限首次登录前申请')));
-  assert.ok(facts.some(fact => fact.text.includes(evidence.statement)));
+  for (const text of ['已接码', '封号不保', '仅限首次登录前申请', evidence.statement]) {
+    assert.ok(facts.some(fact => fact.text.includes(text)), text);
+  }
   assert.equal(new Set(facts.map(fact => fact.id)).size, facts.length);
   assert.ok(facts.every(fact => !candidateEvidence(fixture('8')).some(other => other.id === fact.id)));
   assert.ok(!facts.some(fact => /最低|省心|简单/u.test(fact.text)));
   assert.deepEqual(facts, candidateEvidence({ ...candidate, offer: { ...candidate.offer, tags: [...candidate.offer.tags].reverse() } }));
   assert.ok(facts.every(fact => fact.id.length <= 128 && fact.text.length <= 240 && !fact.text.includes('https://')));
-  const longTerms = candidateEvidence(fixture('9', { tags: [{ name: 'warranty_terms', value: '限制'.repeat(125) }] }));
+  const longTerms = candidateEvidence(fixture('9', { tags: [{ name: 'warranty', value: '保订阅30天，' + '限制'.repeat(120) }] }));
   assert.ok(longTerms.every(fact => fact.text.length <= 240));
   assert.ok(longTerms.some(fact => fact.text.includes('完整')));
 });
@@ -384,21 +407,21 @@ test('capability matching uses bounded terms, checks both time boundaries and re
   assert.deepEqual(selectCandidates([{ ...fixture(), capabilityEvidence: [evidence, stale] }], needs, now)[0]?.capabilityEvidence, [evidence]);
 });
 
-test('explicit bulk minimum and contradictory warranty cannot satisfy single-item hard requirements', () => {
-  assert.deepEqual(selectCandidates([fixture('1', { tags: [{ name: 'minimum_quantity', value: '10' }] })], needs, now), []);
-  const contradictory = fixture('1', { tags: [
-    { name: 'warranty_days', value: '30' }, { name: 'warranty', value: 'none' },
-  ] });
-  assert.deepEqual(selectCandidates([contradictory], { ...needs, warrantyDaysMin: 30 }, now), []);
+test('optional bulk preserves single-item eligibility while required and bundled quantities stay conservative', () => {
+  assert.equal(selectCandidates([fixture('1', { tags: [{ name: 'bulk_purchase', value: 'supported' }] })], needs, now).length, 1);
+  for (const value of ['required', 'bundle']) {
+    for (const settlementQuantity of [1, 10, 0, NaN, Infinity]) {
+      assert.deepEqual(selectCandidates([fixture('1', { settlementQuantity, tags: [{ name: 'bulk_purchase', value }] })], needs, now), []);
+    }
+  }
+  assert.deepEqual(selectCandidates([fixture('1', { settlementQuantity: 10, tags: [{ name: 'bulk_purchase', value: 'supported' }] })], needs, now), []);
 });
 
-test('simple setup compares only explicit operation counts and ranks unknown last', () => {
-  const unknown = fixture('1', { price: '1.00', tags: [{ name: 'delivery', value: 'account' }] });
-  const two = fixture('2', { tags: [{ name: 'setup_steps', value: '2' }] });
-  const zero = fixture('3', { price: '20.00', tags: [{ name: 'setup_steps', value: '0' }] });
-  assert.deepEqual(selectCandidates([unknown, two, zero], { ...needs, preferences: ['simple_setup'] }, now)
-    .map(candidate => candidate.offer.productId), ['3', '2', '1']);
-  assert.ok(candidateEvidence(zero).some(fact => fact.text.includes('0') && fact.text.includes('步骤')));
+test('retired filters and preferences are rejected rather than silently returning no matches', () => {
+  for (const patch of [{ warrantyDaysMin: 30 }, { preferences: ['longer_warranty'] },
+    { requiredTags: [{ name: 'minimum_quantity', value: '1' }] }]) {
+    assert.throws(() => selectCandidates([fixture()], { ...needs, ...patch } as never, now), /Invalid assistant/u);
+  }
 });
 
 test('platform groups use catalog metadata overrides while exact platform requests stay narrow', () => {

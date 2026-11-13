@@ -34,12 +34,12 @@ test('tag prompt examples survive the same citation and business validation as w
     assert.deepEqual(validated.tags, proposed, item.id);
   }
   assert.deepEqual(response.items.map(item => item.tags.map(tag => [tag.name, tag.value])), [
-    [['duration', '1 month'], ['renewable', '无']],
-    [['supported_client', 'sub2api'], ['usage_restriction', '禁止反代']],
-    [['warranty', 'covered'], ['warranty_scope', 'first_login'], ['warranty_window', '24 hours'], ['warranty_exclusion', 'ban']],
+    [['duration', 30], ['subscription_override', '无']],
+    [['supported_client', 'sub2api']],
+    [['warranty', '购买后1小时内仅保首登,封号不保']],
     [],
-    [['duration', '12 months']],
-    [['delivery_mode', 'manual']],
+    [['duration', 360]],
+    [['bulk_purchase', 'bundle']],
   ]);
   assert.notEqual(inputs[4]!.name, inputs[4]!.spec, 'example distinguishes general title from selected SKU');
   assert.equal(response.items[4]!.tags[0]!.path, 'spec');
@@ -65,13 +65,14 @@ test('tag prompt examples survive the same citation and business validation as w
     Object.entries(PURCHASE_GUIDE_FIELDS).map(([name, field]) => ({ name, meaning: field.label, appliesTo: field.appliesTo, ...field.rule }))
       .sort((a, b) => a.name.localeCompare(b.name)));
   assert.ok(prompt.length < 18000, 'retain the full vocabulary and complete warranty conditions within the compact context budget');
-  assert.ok(!prompt.includes(PURCHASE_GUIDE_FIELDS.delivery.explanation));
+  assert.equal(fields.length, 8);
+  assert.ok(prompt.length < 7500);
 });
 
 test('product-scoped prompt expires v5 while retaining the per-tag protocol', () => {
-  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261110-v8');
-  assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261101-v4');
-  assert.equal(TAG_EXTRACTION_PROTOCOL_VERSION, 'tag-json-object-per-tag-20261023-v2');
+  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261113-v9');
+  assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261113-v5');
+  assert.equal(TAG_EXTRACTION_PROTOCOL_VERSION, 'tag-json-typed-values-20261113-v3');
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261015-v5' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261025-v7' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-object-closed-v1' }), false);

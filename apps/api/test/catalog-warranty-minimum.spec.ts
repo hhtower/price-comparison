@@ -2,21 +2,33 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeCatalogQuery } from '../src/catalog/catalog.service.ts';
 
-test('minimum warranty intent does not also require an exact number of warranty days', () => {
-  const query = normalizeCatalogQuery({ q: 'ChatGPT 质保至少30天' });
-  assert.equal(query.warrantyDaysMin, 30);
-  assert.deepEqual(new Set(query.tags.map(tag => tag.name + ':' + tag.value)), new Set(['warranty:covered', 'warranty_scope:period']));
-  assert.equal(query.search, 'chatgpt');
+test('removed warranty minimum inputs fail explicitly, including empty and malformed values', () => {
+  for (const warrantyDaysMin of [30, 0, '', null, undefined, '30']) {
+    assert.throws(() => normalizeCatalogQuery({ warrantyDaysMin } as never), { code: 'INVALID_FILTER' });
+  }
+  for (const name of ['warranty_days', 'access', 'delivery', 'payment_region']) {
+    assert.throws(() => normalizeCatalogQuery({ tags: [{ name, value: '30' }] }), { code: 'INVALID_FILTER' });
+  }
 });
 
-test('an explicit warranty minimum overrides the inferred minimum without retaining its exact-day tag', () => {
-  const query = normalizeCatalogQuery({ q: 'ChatGPT 质保至少30天', warrantyDaysMin: 90 });
-  assert.equal(query.warrantyDaysMin, 90);
-  assert.ok(query.tags.every(tag => tag.name !== 'warranty_days'));
+test('typed duration filters preserve exact, range and qualified days and deduplicate objects', () => {
+  const values = [30, 0.5, { kind: 'range', min: 30, max: 90 }, { kind: 'min', days: 30 }, { kind: 'permanent' }];
+  for (const value of values) {
+    assert.deepEqual(normalizeCatalogQuery({ tags: [
+      { name: 'duration', value }, { name: 'duration', value: structuredClone(value) },
+    ] } as never).tags, [{ name: 'duration', value }]);
+  }
+  for (const value of ['30', '1 month', 0, -1, Infinity, { kind: 'range', min: 90, max: 30 }]) {
+    assert.throws(() => normalizeCatalogQuery({ tags: [{ name: 'duration', value }] } as never), { code: 'INVALID_FILTER' });
+  }
 });
 
-test('explicit exact-day API filters remain supported and are not silently changed to minimums', () => {
-  const query = normalizeCatalogQuery({ tag: [{ name: 'warranty_days', value: '30' }] });
-  assert.deepEqual(query.tags, [{ name: 'warranty_days', value: '30' }]);
-  assert.equal(query.warrantyDaysMin, undefined);
+test('membership query parsing no longer relies on removed tags', () => {
+  for (const [q, kind] of [['成品号', 'account'], ['成品账号', 'account'], ['现成账号', 'account'],
+    ['Ready Account', 'account'], ['代充', 'top_up'], ['top-up', 'top_up'], ['共享', 'rental'], ['shared access', 'rental'],
+    ['短期', 'short_term']]) {
+    const query = normalizeCatalogQuery({ q });
+    assert.deepEqual(query.membershipSearch?.kinds, [kind]);
+    assert.deepEqual(query.tags, []);
+  }
 });

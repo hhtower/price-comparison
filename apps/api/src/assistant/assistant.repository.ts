@@ -1,7 +1,9 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { Inject, Injectable } from '@nestjs/common';
 import { sql, type Kysely, type Selectable } from 'kysely';
-import { ASSISTANT_LIMITS, emptyShoppingNeeds, validateAssistantReply, type AssistantReply, type ShoppingNeeds, type TurnSnapshot, type SessionSnapshot } from '@price-comparison/catalog/assistant-contract';
+import { ASSISTANT_LIMITS, emptyShoppingNeeds, validateAssistantReply, validateShoppingNeeds, type AssistantReply, type TurnSnapshot, type SessionSnapshot } from '@price-comparison/catalog/assistant-contract';
+import { isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
 import { DATABASE } from '../database/database.providers.js';
 import { jsonb, type DatabaseSchema, type AssistantTurnTable, type JsonValue } from '../database/types.js';
 import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
@@ -14,11 +16,29 @@ const conflict = () => new DomainConflictError('ASSISTANT_REVISION_CONFLICT', 'ä
 const encoded = (value: unknown) => jsonb(value as JsonValue);
 type TurnRow = Selectable<AssistantTurnTable>;
 
+export function persistedNeeds(value: unknown) {
+  try { return { needs: validateShoppingNeeds(value) }; }
+  catch { return { needs: emptyShoppingNeeds(), needsInvalidated: true as const }; }
+}
+
+export function persistedReply(value: unknown): AssistantReply {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return validateAssistantReply(value);
+  const source = value as AssistantReply;
+  // Retired filters are invalidated, never translated; historical text and revisions stay intact.
+  return validateAssistantReply({ ...source, ...persistedNeeds(source.needs),
+    cards: Array.isArray(source.cards) ? source.cards.map(card => ({
+      ...card, ...(card.offer && Array.isArray(card.offer.tags) ? {
+        offer: { ...card.offer, tags: card.offer.tags.filter(isCanonicalProductTag) },
+      } : {}),
+    })) : source.cards,
+  });
+}
+
 export function turnSnapshot(row: TurnRow): TurnSnapshot {
   return {
     id: String(row.id), sessionId: row.session_id, clientMessageId: row.client_message_id,
     inputText: row.input_text, expectedRevision: row.expected_revision, eventVersion: row.event_version,
-    status: row.status, phase: row.phase, reply: row.reply === null ? null : validateAssistantReply(row.reply),
+    status: row.status, phase: row.phase, reply: row.reply === null ? null : persistedReply(row.reply),
     errorCode: row.error_code,
   };
 }
@@ -53,7 +73,7 @@ export class AssistantRepository {
       const session = await this.session(id, accessToken, tx).executeTakeFirst();
       if (!session) throw missing();
       const turns = await tx.selectFrom('assistant_turns').selectAll().where('session_id', '=', id).orderBy('id').execute();
-      return { id, revision: session.revision, needs: session.needs as unknown as ShoppingNeeds, turns: turns.map(turnSnapshot) };
+      return { id, revision: session.revision, ...persistedNeeds(session.needs), turns: turns.map(turnSnapshot) };
     });
   }
 
@@ -152,8 +172,8 @@ export class AssistantRepository {
     const history = await this.db.selectFrom('assistant_turns').select(['input_text', 'reply']).where('session_id', '=', row.session_id)
       .where('status', '=', 'succeeded').orderBy('id', 'desc').limit(6).execute();
     return {
-      snapshot: turnSnapshot(row), deadlineAt: row.deadline_at, needs: session.needs as unknown as ShoppingNeeds,
-      history: history.reverse().map(item => ({ text: item.input_text, reply: validateAssistantReply(item.reply) })),
+      snapshot: turnSnapshot(row), deadlineAt: row.deadline_at, ...persistedNeeds(session.needs),
+      history: history.reverse().map(item => ({ text: item.input_text, reply: persistedReply(item.reply) })),
     };
   }
 
@@ -196,10 +216,12 @@ export class AssistantRepository {
       const session = await tx.selectFrom('assistant_sessions').selectAll().where('id', '=', located.session_id).forUpdate().executeTakeFirstOrThrow();
       const row = await tx.selectFrom('assistant_turns').selectAll().where('id', '=', BigInt(input.turnId)).forUpdate().executeTakeFirstOrThrow();
       if (row.status === 'succeeded' && row.claim_token === input.claimToken && row.claimed_by === input.workerId) return turnSnapshot(row);
+      const invalidation = reply.needsInvalidated === true && reply.kind === 'question'
+        && persistedNeeds(session.needs).needsInvalidated && isDeepStrictEqual(reply.needs, emptyShoppingNeeds());
       if (session.expires_at <= new Date() || session.revision !== input.expectedRevision || row.expected_revision !== input.expectedRevision
         || row.status !== 'running' || row.claimed_by !== input.workerId || row.claim_token !== input.claimToken
         || !row.lease_until || row.lease_until <= new Date() || row.deadline_at <= new Date()
-        || row.request_in_flight || row.requests_started < 1) throw conflict();
+        || row.request_in_flight || (row.requests_started < 1 && !invalidation)) throw conflict();
       // Recheck against database time at the commit fence, not the model's start time.
       const saved = await tx.updateTable('assistant_turns').set({
         status: 'succeeded', reply: encoded(reply), finished_at: sql`now()`, error_code: null, event_version: sql`event_version + 1`,

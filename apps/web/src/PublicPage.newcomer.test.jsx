@@ -108,7 +108,7 @@ test('another tab changing the preference does not change the current list mode 
 
 test('newcomer switch preserves explicit filters and history restores the previous mode', async () => {
   localStorage.setItem(storageKey, 'newcomer');
-  const params = new URLSearchParams({ warrantyDaysMin: '90', newcomer: 'true' });
+  const params = new URLSearchParams({ tag: JSON.stringify({ name: 'warranty', value: '保订阅90天' }), newcomer: 'true' });
   params.append('tag', JSON.stringify({ name: 'region', value: 'us' }));
   window.history.replaceState({}, '', '/?' + params);
   const requests = mockCatalog();
@@ -119,8 +119,8 @@ test('newcomer switch preserves explicit filters and history restores the previo
   await waitFor(() => {
     const last = requests.filter(url => url.pathname === '/api/catalog').at(-1);
     expect(last.searchParams.get('newcomer')).not.toBe('true');
-    expect(last.searchParams.get('warrantyDaysMin')).toBe('90');
-    expect(last.searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'region', value: 'us' }]);
+    expect(last.searchParams.has('warrantyDaysMin')).toBe(false);
+    expect(last.searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'region', value: 'us' }, { name: 'warranty', value: '保订阅90天' }]);
   });
   window.history.replaceState({}, '', '/?' + params);
   fireEvent(window, new PopStateEvent('popstate'));
@@ -347,16 +347,17 @@ test.each([
   });
 });
 
-test('AI search type, explicit delivery and warranty constraints coexist without changing delivery semantics', async () => {
-  const params = new URLSearchParams({ q: 'ChatGPT Plus 短期', warrantyDaysMin: '30', tag: JSON.stringify({ name: 'delivery', value: 'top_up' }) });
+test('AI membership search coexists with explicit bulk and warranty constraints', async () => {
+  const params = new URLSearchParams({ q: 'ChatGPT Plus 短期', tag: JSON.stringify({ name: 'bulk_purchase', value: 'supported' }) });
+  params.append('tag', JSON.stringify({ name: 'warranty', value: '保订阅30天' }));
   window.history.replaceState({}, '', '/?' + params);
   const requests = mockMembershipCatalog();
   mount();
   await waitFor(() => {
     const request = requests.filter(url => url.pathname === '/api/catalog').at(-1);
     expect(request?.searchParams.getAll('membershipKind')).toEqual(['short_term']);
-    expect(request.searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'delivery', value: 'top_up' }]);
-    expect(request.searchParams.get('warrantyDaysMin')).toBe('30');
+    expect(request.searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'warranty', value: '保订阅30天' }]);
+    expect(request.searchParams.has('warrantyDaysMin')).toBe(false);
   });
 });
 
@@ -465,7 +466,7 @@ test('standard details render all features and keep per-offer history on the sam
 
 test('detail feature filters keep the route, identity and purchase constraints', async () => {
   const requests = mockMembershipCatalog();
-  window.history.replaceState({}, '', '/products/10?newcomer=true&warrantyDaysMin=30&priceMax=50');
+  window.history.replaceState({}, '', '/products/10?' + new URLSearchParams({ newcomer: 'true', priceMax: '50', tag: JSON.stringify({ name: 'warranty', value: '保订阅30天' }) }));
   render(<VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 300 }}><App /></VirtuosoMockContext.Provider>);
   await screen.findByRole('heading', { name: 'ChatGPT Plus', level: 1 });
   await screen.findByText(/^报价1/);
@@ -482,7 +483,7 @@ test('detail feature filters keep the route, identity and purchase constraints',
   const params = new URLSearchParams(window.location.search);
   expect(params.getAll('membershipKind')).toEqual(['short_term']);
   expect(params.get('newcomer')).toBe('false');
-  expect(params.get('warrantyDaysMin')).toBe('30');
+  expect(params.getAll('tag').map(JSON.parse)).toEqual([{ name: 'warranty', value: '保订阅30天' }]);
   expect(params.get('priceMax')).toBe('50');
   const histories = requests.filter(url => url.pathname.endsWith('/price-history'));
   expect(histories[0].searchParams.get('newcomer')).toBe('true');

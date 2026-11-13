@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
@@ -241,7 +242,7 @@ test('all-pending and historical tag queue coverage use the latest current audit
    }
  }
  await db.deleteFrom('ai_job_input_members').where('job_id', '=', f.job.id).where('product_id', 'in', [ids[21]!, ids[24]!]).execute();
- await db.insertInto('product_tags').values({ product_id: ids[21]!, name: 'warranty', value: 'covered' }).execute();
+ await db.insertInto('product_tags').values(tagRows({ product_id: ids[21]!, name: 'warranty', value: 'covered' })).execute();
  for (const status of ['unfinished', 'attention', 'all']) {
    const queue = await readAiTaskQueue(db, { jobType: 'tag_extraction', scopeShopId: f.products[0]!.shop_id, status, limit: 1 });
    assert.equal(queue.summary.pendingProducts, status === 'unfinished' ? 2 : 14, status);

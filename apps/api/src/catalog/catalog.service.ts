@@ -2,12 +2,13 @@ import { Inject, Injectable } from '@nestjs/common';
 import { CACHE, type Cache } from '../cache/cache.js';
 import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQuery, type CatalogSort, type CatalogTag, type PublicCatalogProduct, type PublicProductIdentity } from './catalog.repository.js';
 import { DomainValidationError } from '../common/errors.js';
-import { normalizePurchaseTag, parseCatalogSearch } from '@price-comparison/catalog/purchase-attributes';
+import { normalizePurchaseTag, parseCatalogSearch, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
+import { isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
 import { normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
 import { MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 
-const membershipWords = /成品号|代充|租号(?:\s*\(\s*(?:共享|合租)\s*\))?|共享|合租|短期/gu;
-const membershipNegation = new RegExp(`(?:不(?:要|需要|想要?|接受|支持|提供|适合|能|是)?|没有|未明确|未说明|无需|禁止|非|是否|可能|或许|不确定)\\s*(?:是|为)?\\s*(?:${membershipWords.source})|(?:${membershipWords.source})\\s*(?:状态)?\\s*(?:不(?:要|支持|提供|可用|确定|保证)|未说明|未知)`, 'u');
+const membershipWords = /成品账号|成品帐号|现成账号|成品号|代充|充值|租号(?:\s*\(\s*(?:共享|合租)\s*\))?|共享|合租|短期|\b(?:ready\s+account|account\s+ready|top[ -]?up|shared(?:\s+access)?)\b/giu;
+const membershipNegation = new RegExp(`(?:不(?:要|需要|想要?|接受|支持|提供|适合|能|是)?|没有|未明确|未说明|无需|禁止|非|是否|可能|或许|不确定)\\s*(?:是|为)?\\s*(?:${membershipWords.source})|(?:${membershipWords.source})\\s*(?:状态)?\\s*(?:不(?:要|支持|提供|可用|确定|保证)|未说明|未知)`, 'iu');
 
 export interface CatalogQueryInput {
   readonly sort?: string;
@@ -29,13 +30,15 @@ export interface CatalogQueryInput {
   readonly tag?: readonly CatalogTag[] | CatalogTag | string | readonly string[];
   readonly cursor?: string;
   readonly limit?: number;
-  readonly warrantyDaysMin?: number;
   readonly newcomer?: unknown;
   readonly membershipKind?: unknown;
   readonly membershipKinds?: unknown;
 }
 
 export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
+  if ('warrantyDaysMin' in input) {
+    throw new DomainValidationError('INVALID_FILTER', '质保天数筛选已移除，请使用售后保障说明');
+  }
   const kinds = input.membershipKinds ?? input.membershipKind;
   const membershipKinds = kinds === undefined ? undefined : Array.isArray(kinds) ? kinds : [kinds];
   if ((input.membershipKinds !== undefined && input.membershipKind !== undefined)
@@ -101,7 +104,7 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
   }
   const negatedMembership = membershipNegation.test(search);
   const parsed = input.searchMode === 'literal' || negatedMembership
-    ? { text: search, tags: [], warrantyDaysMin: undefined } : parseCatalogSearch(search);
+    ? { text: search, tags: [] } : parseCatalogSearch(search);
   const tagsInput = input.tags ?? input.tag;
   const supplied = Array.isArray(tagsInput) ? tagsInput : tagsInput ? [tagsInput] : [];
   if (supplied.length > 50) throw new DomainValidationError('INVALID_FILTER', '筛选条件不能超过50项');
@@ -111,34 +114,29 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
       try { tag = JSON.parse(tag); } catch { throw new DomainValidationError('INVALID_FILTER', '筛选条件格式无效'); }
     }
     if (!tag || typeof tag !== 'object' || !('name' in tag) || !('value' in tag)
-      || typeof tag.name !== 'string' || typeof tag.value !== 'string'
-      || !tag.name.trim() || !tag.value.trim() || tag.name.length > 80 || tag.value.length > 250) {
+      || typeof tag.name !== 'string' || tag.name.length > 80
+      || tag.value === undefined || JSON.stringify(tag.value).length > 500) {
       throw new DomainValidationError('INVALID_FILTER', '筛选条件必须包含有效属性和值');
     }
-    return normalizePurchaseTag({ name: tag.name, value: tag.value });
+    const normalized = normalizePurchaseTag({ name: tag.name.trim(), value: tag.value as CatalogTag['value'] });
+    if (!normalized.length || !normalized.every(isCanonicalProductTag)) {
+      throw new DomainValidationError('INVALID_FILTER', '筛选条件包含已移除的属性或无效值');
+    }
+    return normalized;
   });
   const explicitNames = new Set(explicit.map(tag => tag.name));
   const membershipTerms = input.searchMode === 'literal' || negatedMembership
-    ? [] : [...new Set(search.match(/短期|成品号|租号|共享|合租/gu) ?? [])];
-  const membershipDelivery = !explicitNames.has('delivery') && parsed.tags.some(tag =>
-    tag.name === 'delivery' && ['account', 'top_up'].includes(tag.value));
-  const membershipAccess = !explicitNames.has('access') && membershipTerms.some(term => term === '共享' || term === '合租');
+    ? [] : [...new Set(search.toLowerCase().match(membershipWords) ?? [])];
   const inferredKinds = [...new Set([
-    ...membershipTerms.map(term => term === '短期' ? 'short_term' as const : term === '成品号' ? 'account' as const : 'rental' as const),
-    ...membershipDelivery ? parsed.tags.filter(tag => tag.name === 'delivery'
-      && ['account', 'top_up'].includes(tag.value)).map(tag => tag.value as MembershipKind) : [],
+    ...membershipTerms.map((term): MembershipKind => term === '短期' ? 'short_term'
+      : /成品|现成|account/u.test(term) ? 'account' : /充|^top/u.test(term) ? 'top_up' : 'rental'),
   ])].sort();
-  // The parser preserves exact facts for labels; a minimum query must not also
-  // require equality to its lower bound. Explicit exact-day API tags stay intact.
-  const tags = [...parsed.tags.filter(tag => !explicitNames.has(tag.name)
-    && !(parsed.warrantyDaysMin !== undefined && tag.name === 'warranty_days')), ...explicit]
+  const tags = [...parsed.tags.filter(tag => !explicitNames.has(tag.name)), ...explicit]
     .map(({ name, value }) => ({ name, value }))
-    .sort((a, b) => `${a.name}\u0000${a.value}`.localeCompare(`${b.name}\u0000${b.value}`));
-  const uniqueTags = tags.filter((tag, index) => index === tags.findIndex((candidate) => candidate.name === tag.name && candidate.value === tag.value));
-  const warrantyDaysMin = input.warrantyDaysMin ?? parsed.warrantyDaysMin;
-  if (warrantyDaysMin !== undefined && (!Number.isSafeInteger(warrantyDaysMin) || warrantyDaysMin < 1 || warrantyDaysMin > 36500)) {
-    throw new DomainValidationError('INVALID_WARRANTY_DAYS', '质保天数必须为1至36500的整数');
-  }
+    .sort((a, b) => a.name.localeCompare(b.name) || (typeof a.value === 'number' && typeof b.value === 'number'
+      ? a.value - b.value : tagValueKey(a.value).localeCompare(tagValueKey(b.value))));
+  const uniqueTags = tags.filter((tag, index) => index === tags.findIndex((candidate) =>
+    candidate.name === tag.name && tagValueKey(candidate.value) === tagValueKey(tag.value)));
   const limit = Number.isSafeInteger(input.limit) ? Number(input.limit) : 20;
   return {
     ...(input.sort && input.sort !== 'default' ? { sort: input.sort as CatalogSort } : {}),
@@ -153,11 +151,9 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
     ...(input.platform?.trim() ? { platform: normalizeCatalogPlatform(input.platform) } : {}),
     ...(parsed.text ? { search: parsed.text } : {}),
     tags: uniqueTags,
-    ...(warrantyDaysMin !== undefined ? { warrantyDaysMin } : {}),
     ...(input.newcomer === true || input.newcomer === 'true' ? { newcomer: true } : {}),
     ...(membershipKinds ? { membershipKinds: [...new Set(membershipKinds)].sort() as MembershipGroup[] } : {}),
-    ...(inferredKinds.length ? { membershipSearch: { kinds: inferredKinds, delivery: membershipDelivery,
-      ...(membershipAccess ? { access: true } : {}), terms: membershipTerms } } : {}),
+    ...(inferredKinds.length ? { membershipSearch: { kinds: inferredKinds, terms: membershipTerms } } : {}),
     ...(input.cursor?.trim() ? { cursor: input.cursor.trim() } : {}),
     limit: Math.min(Math.max(limit, 1), 100),
   };
@@ -206,23 +202,18 @@ export class CatalogService {
     });
   }
 
-  async getFacets(input: Pick<CatalogQueryInput, 'platform' | 'q' | 'search' | 'searchMode' | 'tags' | 'tag' | 'warrantyDaysMin' | 'newcomer'
+  async getFacets(input: Pick<CatalogQueryInput, 'platform' | 'q' | 'search' | 'searchMode' | 'tags' | 'tag' | 'newcomer'
     | 'standardProductId' | 'shopQuery' | 'shopId' | 'priceMin' | 'priceMax' | 'currency' | 'offerSort' | 'membershipKind' | 'membershipKinds'>): Promise<CatalogFacets> {
-    const { limit: _limit, offerSort: _offerSort, ...query } = normalizeCatalogQuery({
-      platform: input.platform, q: input.q, search: input.search, searchMode: input.searchMode, tags: input.tags, tag: input.tag, warrantyDaysMin: input.warrantyDaysMin, newcomer: input.newcomer,
-      standardProductId: input.standardProductId, shopQuery: input.shopQuery, shopId: input.shopId,
-      priceMin: input.priceMin, priceMax: input.priceMax, currency: input.currency, offerSort: input.offerSort,
-      membershipKind: input.membershipKind, membershipKinds: input.membershipKinds,
-    });
-    return this.readCached(`catalog:facets:v3:${JSON.stringify(query)}`, () => this.repository.facets(query));
+    const { limit: _limit, offerSort: _offerSort, ...query } = normalizeCatalogQuery(input);
+    return this.readCached(`catalog:facets:v4:${JSON.stringify(query)}`, () => this.repository.facets(query));
   }
 
   async getCatalog(input: CatalogQueryInput): Promise<CatalogPage> {
     const query = normalizeCatalogQuery(input);
-    return this.readCached(`catalog:page:v4:${JSON.stringify(query)}`, () => this.repository.search(query));
+    return this.readCached(`catalog:page:v5:${JSON.stringify(query)}`, () => this.repository.search(query));
   }
 
-  getReferenceOffers(input: Pick<CatalogQueryInput, 'standardProductId' | 'currency' | 'priceMax' | 'tags' | 'warrantyDaysMin' | 'newcomer' | 'membershipKinds'>) {
+  getReferenceOffers(input: Pick<CatalogQueryInput, 'standardProductId' | 'currency' | 'priceMax' | 'tags' | 'newcomer' | 'membershipKinds'>) {
     const query = normalizeCatalogQuery(input);
     if (!query.standardProductId) throw new DomainValidationError('INVALID_STANDARD_PRODUCT', '商品编号无效');
     return this.repository.referenceOffers(query);

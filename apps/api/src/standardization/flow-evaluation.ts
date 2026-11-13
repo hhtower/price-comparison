@@ -1,4 +1,5 @@
 import { buildCandidateSearchQuery, buildExtractionPayload, estimateInputSize, planAdaptiveBatches } from '../ai/adaptive-batching.js';
+import { tagValueKey } from '@price-comparison/catalog/purchase-attributes';
 import { parseStandardizationProtocolResponse, type StandardizationTag } from '../ai/ai.schemas.js';
 import { validateStandardizationEvidence, validateStandardizationTags } from '../ai/standardization-evidence.js';
 import { BoundedCandidateIndex, type CandidateDocument } from './candidate-index.js';
@@ -28,7 +29,7 @@ function tagValues(tags: readonly StandardizationTag[]): FlowTagValues {
   const grouped = new Map<string, Set<string>>();
   for (const tag of tags) {
     const values = grouped.get(tag.name) ?? new Set<string>();
-    values.add(tag.value);
+    values.add(typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value));
     grouped.set(tag.name, values);
   }
   return Object.fromEntries([...grouped].map(([name, values]) => [name, values.size === 1 ? [...values][0]! : [...values].sort()]));

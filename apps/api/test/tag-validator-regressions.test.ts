@@ -90,8 +90,6 @@ for (const [name, value, source, quote = source] of negatives) {
 }
 
 for (const [name, quote, source] of [
-  ['kyc', '已完成实名认证', '账号已完成实名认证。登录时需要使用VPN。'],
-  ['kyc', '已完成实名认证', '账号已完成实名认证，不需要买家再次验证。'],
   ['sms_verification', '已完成短信验证', '账号已完成短信验证。登录时需要使用VPN。'],
   ['sms_verification', '已完成短信验证', '账号已完成短信验证，不需要买家再次验证。'],
 ]) {
@@ -117,23 +115,10 @@ test('new evidence rules preserve selected SKU priority', () => {
   }
 });
 
-test('new period evidence keeps objects separate within a sentence', () => {
+test('period evidence keeps actual use separate from token validity and account age', () => {
   const source = 'Token有效期7天，订阅使用期30天，账号号龄2年。';
-  const result = validateStandardizationTags([
-    { name: 'token_validity', value: '7 days', evidence: [{ path: 'sourceData.evidence', quote: 'Token有效期7天' }] },
-    { name: 'duration', value: '30 days', evidence: [{ path: 'sourceData.evidence', quote: '订阅使用期30天' }] },
-    { name: 'account_age', value: '2 years', evidence: [{ path: 'sourceData.evidence', quote: '账号号龄2年' }] },
-  ], buildExtractionPayload({ name: '商品', sourceData: { evidence: source } }));
-  assert.equal(result.tags.length, 3);
+  const proposed = { name: 'duration', value: 30, evidence: [{ path: 'sourceData.evidence', quote: '订阅使用期30天' }] };
+  const result = validateStandardizationTags([proposed], buildExtractionPayload({ name: '商品', sourceData: { evidence: source } }));
+  assert.deepEqual(result.tags, [proposed]);
   assert.deepEqual(result.rejectedTags, []);
-});
-
-test('validation preserves a partial proposal without inventing the missing seat tag', () => {
-  const sample = fixture.samples.find((sample: any) => sample.id === '1007');
-  const proposed = sample.expected.filter((tag: any) => tag.name !== 'account_type').map(replayTag);
-  assert.ok(proposed.length > 0);
-  assert.ok(sample.expected.some((tag: any) => tag.name === 'account_type'));
-  const result = validateStandardizationTags(proposed, buildExtractionPayload(sample.input));
-  assert.deepEqual(result.rejectedTags, []);
-  assert.deepEqual(result.tags, proposed);
 });

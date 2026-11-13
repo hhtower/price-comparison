@@ -25,7 +25,7 @@ const STORAGE_KEY = 'shopping-assistant';
 const REASONING_EXPANDED_KEY = 'shopping-assistant-reasoning-expanded';
 const ConversationContext = createContext(null);
 const PHASES = { queued: '正在准备查询', understanding: '正在理解需求', searching: '正在查找报价', explaining: '正在整理推荐' };
-const PREFERENCES = { lower_price: '价格优先', simple_setup: '操作简单', longer_warranty: '质保优先' };
+const PREFERENCES = { lower_price: '价格优先', simple_setup: '操作简单' };
 
 function needsLabels(needs) {
   return [
@@ -34,7 +34,7 @@ function needsLabels(needs) {
     needs.platform,
     needs.product,
     ...needs.requiredTags.map(tag => displayPurchaseTagText(tag)),
-    needs.warrantyDaysMin && `质保至少 ${needs.warrantyDaysMin} 天`,
+    (Object.hasOwn(needs, 'warrantyDaysMin') || needs.preferences.some(preference => !PREFERENCES[preference]) || needs.requiredTags.some(tag => !normalizePurchaseTag(tag).length)) && '旧筛选条件已失效，请重新说明需求',
     ...needs.preferences.map(preference => PREFERENCES[preference]),
   ].filter(Boolean);
 }
@@ -58,7 +58,10 @@ function storedCredentials() {
 }
 function turnResult(turn, recentTurns) {
   if (turn.status === 'succeeded') {
-    const reply = validateAssistantReply(turn.reply);
+    let reply;
+    try { reply = validateAssistantReply(turn.reply); } catch {
+      return { content: [{ type: 'text', text: `${typeof turn.reply?.text === 'string' ? turn.reply.text : '历史回复'}\n历史推荐条件已失效，请重新说明需求。` }], metadata: { custom: { turnId: turn.id } } };
+    }
     return { content: [{ type: 'text', text: reply.text }], metadata: { custom: { reply, turnId: turn.id } } };
   }
   const code = turn.errorCode?.toLowerCase();
@@ -121,31 +124,20 @@ function QuoteCard({ card, catalog }) {
   const price = <p className="assistant-price">{formatMoney(card.price, card.currency)}</p>;
   const reference = assistantOfficialPrice(card, catalog);
   const facts = offerConditions(offer);
-  const summary = facts.filter(fact => ['delivery', 'access'].includes(fact.name) || /^duration(?:_|$)/u.test(fact.name))
+  const summary = facts.filter(fact => ['sms_verification', 'region', 'duration'].includes(fact.name))
     .map(fact => displayPurchaseTagText(fact, fact.value)).join(' · ');
-  const warrantyTags = offer.tags.flatMap(normalizePurchaseTag)
-    .filter(tag => !['warranty_terms', 'warranty_exclusion'].includes(tag.name));
-  const conflictingWarranty = warrantyTags.some(tag => tag.name.startsWith('warranty')
-    && warrantyTags.some(other => other.name === tag.name && other.value !== tag.value));
-  const warranty = conflictingWarranty ? '资料冲突，需核实'
-    : purchaseWarrantyLabel(warrantyTags);
-  const channel = facts.filter(fact => fact.name === 'payment_platform').map(fact => fact.value).join(' / ');
-  const conditions = facts.filter(fact => fact.displayGroup === 'requirements' && !['subscription_override', 'payment_platform'].includes(fact.name));
-  const warnings = facts.filter(fact => ['warranty_exclusion', 'subscription_override'].includes(fact.name))
-    .map(fact => displayPurchaseTagText(fact, fact.value));
-  if (facts.some(fact => fact.name === 'warranty_terms')) warnings.push('售后条款见详情');
-  const rows = [['充值渠道', channel], ['质保', warranty], ['购买条件', conditions.map(fact => displayPurchaseTagText(fact, fact.value)).join('；')],
-    ['注意事项', [...new Set(warnings)].join('；')]].filter(([, value]) => value);
+  const warranty = purchaseWarrantyLabel(offer.tags || []);
+  const channel = facts.filter(fact => ['access_channel', 'supported_client'].includes(fact.name)).map(fact => displayPurchaseTagText(fact, fact.value)).join(' / ');
+  const conditions = facts.filter(fact => ['bulk_purchase', 'settlement_quantity', 'subscription_override'].includes(fact.name));
+  const rows = [['使用入口/支持工具', channel], ['售后保障', warranty], ['购买条件', conditions.map(fact => displayPurchaseTagText(fact, fact.value)).join('；')]].filter(([, value]) => value);
   const representedNotes = new Set(facts.flatMap(fact => [fact.value, displayPurchaseTagText(fact, fact.value),
     `${fact.label}：${fact.value}`, `${fact.label}：${displayPurchaseTagText(fact, fact.value)}`]));
   for (const tag of offer.tags.flatMap(normalizePurchaseTag)) {
     const fact = facts.find(fact => fact.name === tag.name);
     if (!fact) continue;
     representedNotes.add(`${fact.label}：${purchaseTagLabel(tag)}`);
-    if (tag.name === 'delivery' && tag.value === 'top_up') representedNotes.add('购买内容：代充：给你已有账号充值，下单前确认账号条件和充值流程。');
-    if (tag.name === 'delivery' && tag.value === 'account') representedNotes.add('购买内容：成品号：商家提供一个账号，下单前确认登录方式、是否独享及能否改密。');
   }
-  if (!conflictingWarranty && purchaseWarrantyLabel(offer.tags)) {
+  if (purchaseWarrantyLabel(offer.tags)) {
     representedNotes.add(`商家质保说明：${purchaseWarrantyLabel(offer.tags)}；具体限制以该报价的售后条款为准。`);
   }
   representedNotes.add('报价、库存与完整售后条款请在商品详情核对。');
@@ -161,7 +153,7 @@ function QuoteCard({ card, catalog }) {
     <div className="assistant-card-heading"><h2>{card.title}</h2>{price}</div>
     <div className="assistant-offer-meta"><span>店铺：{offer.shop}</span>{summary && <span>{summary}</span>}</div>
     {officialPrice}
-    {rows.length > 0 && <details className="assistant-purchase-notes"><summary>购买须知{conditions.some(fact => fact.name === 'usage_restriction') && <small>有使用限制</small>}</summary>
+    {rows.length > 0 && <details className="assistant-purchase-notes"><summary>购买须知</summary>
       <dl>{rows.map(([label, value]) => <div key={label}><dt>{label}：</dt><dd>{value}</dd></div>)}</dl>
     </details>}
     <button type="button" className="assistant-offer-details" aria-haspopup="dialog" onClick={() => { trackUsage('assistant_quote_detail'); setOpen(true); }}>查看报价详情</button>
@@ -205,6 +197,7 @@ function Message() {
     {retryText && last && <div className="assistant-options">
       <button type="button" disabled={blocked} onClick={() => retry(retryText)}>重试</button>
     </div>}
+    {reply?.needsInvalidated && <p role="status">本条历史推荐的筛选条件已失效，请重新说明需求。</p>}
     {reply && <QuoteCards cards={reply.cards} />}
     {reply && last && reply.options.length > 0 && <div className="assistant-options" aria-label="快捷回答">
       {reply.options.map(option => <button type="button" key={option} disabled={blocked} onClick={() => sendOption(option)}>{option}</button>)}
@@ -248,7 +241,8 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
     turns.push(turn);
     session.current = { ...session.current, turns,
       revision: turn.status === 'succeeded' ? Math.max(turn.expectedRevision + 1, session.current.revision) : session.current.revision,
-      needs: turn.reply && turn.expectedRevision + 1 >= session.current.revision ? turn.reply.needs : session.current.needs };
+      needs: turn.reply && turn.expectedRevision + 1 >= session.current.revision ? turn.reply.needs : session.current.needs,
+      needsInvalidated: turn.reply && turn.expectedRevision + 1 >= session.current.revision ? Boolean(turn.reply.needsInvalidated) : session.current.needsInvalidated };
     saveCredentials(credentials);
     pending.current = null;
     active.current = null;
@@ -425,6 +419,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
         onRecognizeFilters={value => { onRecognizeFilters(value); setDraftError(''); }} blocked={blocked}
         clearDisabled={busy || stopping || locked || (!started && !uncertain)} onClear={onNew} onCollapse={onCollapse} />
       {notice}
+      {session.current.needsInvalidated && <p role="status" className="assistant-draft-error">旧筛选条件已失效，请重新说明需求；聊天记录已保留。</p>}
       <ThreadPrimitive.Root className={'assistant-thread' + (!started ? ' assistant-thread-empty' : '')}>
         {!started && <AssistantWelcome disabled={blocked} onStart={sendOption} />}
         <ThreadPrimitive.Viewport className="assistant-viewport" turnAnchor="top" autoScroll>

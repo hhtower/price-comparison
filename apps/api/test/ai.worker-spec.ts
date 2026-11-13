@@ -63,15 +63,15 @@ function modelCall(body: unknown, options: { status?: number; finishReason?: str
   });
 }
 
-test('the extraction stage preserves every candidate for independent semantic review', async () => {
+test('the extraction stage preserves every schema-valid candidate for independent semantic review', async () => {
   const payload = { productId: 11n, name: 'Team 5X成品JSON', spec: '', sourceData: { evidence: '成品JSON交付，仅支持Sub2API。禁止反代。质保30天，封号不保。' } };
   const tags = [
-    { name: 'delivery_format', value: 'json', path: 'sourceData.evidence', quote: 'JSON' },
+    { name: 'duration', value: 30, path: 'sourceData.evidence', quote: '质保30天' },
     { name: 'supported_client', value: 'sub2api', path: 'sourceData.evidence', quote: 'Sub2API' },
-    { name: 'usage_restriction', value: '禁止反代', path: 'sourceData.evidence', quote: '禁止反代' },
+    { name: 'supported_client', value: 'codex', path: 'sourceData.evidence', quote: 'JSON' },
     { name: 'access_channel', value: 'reverse_proxy', path: 'sourceData.evidence', quote: '反代' },
     { name: 'access_channel', value: 'web', path: 'sourceData.evidence', quote: '仅支持Sub2API' },
-    { name: 'warranty_days', value: '30', path: 'sourceData.evidence', quote: '质保30天' },
+    { name: 'warranty', value: '质保30天', path: 'sourceData.evidence', quote: '质保30天' },
   ];
   const call = (items: unknown) => createOpenAiModelCall({ getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', inputs: [payload] }) } as never,
     { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock' }, async (_url, init) => {
@@ -87,6 +87,7 @@ test('the extraction stage preserves every candidate for independent semantic re
   assert.deepEqual(result.tagExtractionItems[0].rejectedTags, []);
   await assert.rejects(call([{ id: '99', tags }])(job, new AbortController().signal));
   await assert.rejects(call([{ id: '11', tags }, { id: '11', tags }])(job, new AbortController().signal));
+  await assert.rejects(call([{ id: '11', tags: [{ name: 'delivery_format', value: 'json', path: 'sourceData.evidence', quote: 'JSON' }] }])(job, new AbortController().signal));
 });
 
 test('tag worker checkpoints complete candidates before semantic review or product publication', async () => {
@@ -100,7 +101,7 @@ test('tag worker checkpoints complete candidates before semantic review or produ
     recordBatchRequestOutcome: async (_id: bigint, outcome: string) => { events.push(outcome); },
     getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', inputs: [
       { productId: 11n, name: '账号', spec: '1个月', sourceData: {} },
-      { productId: 12n, name: '账号', spec: '不可续费', sourceData: {} },
+      { productId: 12n, name: '账号', spec: '不可覆盖订阅', sourceData: {} },
     ] }),
     checkpointTagExtractionBatchDecision: async (_job: bigint, _batch: bigint, items: unknown) => { events.push('checkpoint'); saved = items; },
   };
@@ -110,12 +111,12 @@ test('tag worker checkpoints complete candidates before semantic review or produ
     events.push('send');
     const content = JSON.stringify({ items: [
       { id: '11', tags: [
-        { name: 'duration', value: '1 month', path: 'spec', quote: '1个月' },
-        { name: 'invented', value: 'yes', path: 'spec', quote: '1个月' },
+        { name: 'duration', value: 30, path: 'spec', quote: '1个月' },
+        { name: 'region', value: 'us', path: 'spec', quote: '1个月' },
       ] },
       { id: '12', tags: [
-        { name: 'renewable', value: '无', path: 'spec', quote: '不可续费' },
-        { name: 'renewable', value: 'no', path: 'spec', quote: '不可续费' },
+        { name: 'subscription_override', value: '无', path: 'spec', quote: '不可覆盖订阅' },
+        { name: 'bulk_purchase', value: 'required', path: 'spec', quote: '不可覆盖订阅' },
       ] },
     ] });
     return new Response([content.slice(0, 30), content.slice(30)].map((part, index) =>
@@ -129,7 +130,7 @@ test('tag worker checkpoints complete candidates before semantic review or produ
     assert.equal(state.failed, 0);
     assert.deepEqual(events, ['reserve', 'send', 'checkpoint']);
     assert.deepEqual(saved.map((item: any) => item.tags.map((tag: any) => [tag.name, tag.value])),
-      [[['duration', '1 month'], ['invented', 'yes']], [['renewable', '无'], ['renewable', 'no']]]);
+      [[['duration', 30], ['region', 'us']], [['subscription_override', '无'], ['bulk_purchase', 'required']]]);
     assert.deepEqual(saved.map((item: any) => item.rejectedTags), [[], []]);
   } finally { await worker.stop(); }
 });

@@ -10,7 +10,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -32,7 +31,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -44,7 +42,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -66,7 +63,6 @@
         "platform": "Example",
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -78,7 +74,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -108,7 +103,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -120,7 +114,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -150,7 +143,6 @@
           "basis": "month"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -162,7 +154,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -192,7 +183,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -204,7 +194,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -234,95 +223,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      }
-    },
-    {
-      "id": "no-sharing-canonical-dedicated",
-      "text": "不接受共享，必须独享",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "requiredTags": [
-            {
-              "name": "access",
-              "value": "dedicated"
-            }
-          ]
-        },
-        "evidence": [
-          {
-            "field": "requiredTags",
-            "quote": "不接受共享，必须独享"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "dedicated"
-          }
-        ],
-        "warrantyDaysMin": null,
-        "preferences": []
-      }
-    },
-    {
-      "id": "explicit-shared-selection",
-      "text": "就要共享版",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "requiredTags": [
-            {
-              "name": "access",
-              "value": "shared"
-            }
-          ]
-        },
-        "evidence": [
-          {
-            "field": "requiredTags",
-            "quote": "就要共享版"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "shared"
-          }
-        ],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -338,7 +238,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -366,7 +265,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": [
           "lower_price"
         ]
@@ -380,7 +278,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -404,47 +301,8 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": [
           "simple_setup"
-        ]
-      }
-    },
-    {
-      "id": "longer-warranty-preference-keeps-minimum",
-      "text": "质保尽量长一点",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [],
-        "warrantyDaysMin": 7,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "preferences": [
-            "longer_warranty"
-          ]
-        },
-        "evidence": [
-          {
-            "field": "preferences",
-            "quote": "质保尽量长一点"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [],
-        "warrantyDaysMin": 7,
-        "preferences": [
-          "longer_warranty"
         ]
       }
     },
@@ -456,7 +314,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -481,7 +338,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": [
           "lower_price",
           "simple_setup"
@@ -500,7 +356,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -522,99 +377,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      }
-    },
-    {
-      "id": "shared-is-fine-clears-access",
-      "text": "共享也行",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "dedicated"
-          }
-        ],
-        "warrantyDaysMin": null,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "requiredTags": []
-        },
-        "evidence": [
-          {
-            "field": "requiredTags",
-            "quote": "共享也行"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      }
-    },
-    {
-      "id": "replace-tags-retains-explicit-delivery",
-      "text": "共享也行，但仍要成品账号",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "dedicated"
-          },
-          {
-            "name": "delivery",
-            "value": "account"
-          }
-        ],
-        "warrantyDaysMin": null,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "requiredTags": [
-            {
-              "name": "delivery",
-              "value": "account"
-            }
-          ]
-        },
-        "evidence": [
-          {
-            "field": "requiredTags",
-            "quote": "共享也行，但仍要成品账号"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "delivery",
-            "value": "account"
-          }
-        ],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -630,7 +392,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -656,51 +417,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      }
-    },
-    {
-      "id": "clear-warranty-preserves-access",
-      "text": "取消最低质保天数",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "dedicated"
-          }
-        ],
-        "warrantyDaysMin": 30,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "warrantyDaysMin": null
-        },
-        "evidence": [
-          {
-            "field": "warrantyDaysMin",
-            "quote": "取消最低质保天数"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "dedicated"
-          }
-        ],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -716,7 +432,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": [
           "lower_price"
         ]
@@ -744,52 +459,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      }
-    },
-    {
-      "id": "explain-keeps-confirmed-needs",
-      "text": "解释一下共享和独享",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": {
-          "amount": "80.00",
-          "currency": "CNY",
-          "basis": "purchase"
-        },
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "dedicated"
-          }
-        ],
-        "warrantyDaysMin": null,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "explain",
-        "patch": {},
-        "evidence": [],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": {
-          "amount": "80.00",
-          "currency": "CNY",
-          "basis": "purchase"
-        },
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "dedicated"
-          }
-        ],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -801,7 +470,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -816,7 +484,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -828,7 +495,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -846,142 +512,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      }
-    },
-    {
-      "id": "explicit-warranty-minimum",
-      "text": "至少保30天",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "warrantyDaysMin": 30
-        },
-        "evidence": [
-          {
-            "field": "warrantyDaysMin",
-            "quote": "至少保30天"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [],
-        "warrantyDaysMin": 30,
-        "preferences": []
-      }
-    },
-    {
-      "id": "each-patched-field-has-distinct-evidence",
-      "text": "读论文，必须独享",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "purpose": "读论文",
-          "requiredTags": [
-            {
-              "name": "access",
-              "value": "dedicated"
-            }
-          ]
-        },
-        "evidence": [
-          {
-            "field": "purpose",
-            "quote": "读论文"
-          },
-          {
-            "field": "requiredTags",
-            "quote": "必须独享"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": "读论文",
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "dedicated"
-          }
-        ],
-        "warrantyDaysMin": null,
-        "preferences": []
-      }
-    },
-    {
-      "id": "policy-explicitly-allows-multiple-devices",
-      "text": "必须支持iOS和Android",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [],
-        "warrantyDaysMin": null,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "requiredTags": [
-            {
-              "name": "device_platform",
-              "value": "ios"
-            },
-            {
-              "name": "device_platform",
-              "value": "android"
-            }
-          ]
-        },
-        "evidence": [
-          {
-            "field": "requiredTags",
-            "quote": "必须支持iOS和Android"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "device_platform",
-            "value": "ios"
-          },
-          {
-            "name": "device_platform",
-            "value": "android"
-          }
-        ],
-        "warrantyDaysMin": null,
         "preferences": []
       }
     },
@@ -993,7 +523,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1020,7 +549,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1053,7 +581,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1080,7 +607,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1107,7 +633,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1132,7 +657,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1153,7 +677,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1180,7 +703,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1212,7 +734,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1245,7 +766,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1277,7 +797,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1313,7 +832,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1349,7 +867,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1381,7 +898,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1412,7 +928,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1443,7 +958,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1474,7 +988,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1505,7 +1018,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1532,7 +1044,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1559,7 +1070,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1589,7 +1099,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1618,7 +1127,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1649,7 +1157,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1680,7 +1187,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1707,7 +1213,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1739,7 +1244,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1770,7 +1274,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1790,38 +1293,6 @@
       "expectedError": "parse"
     },
     {
-      "id": "cheap-preference-cannot-remove-tags",
-      "text": "便宜一点",
-      "initialNeeds": {
-        "purpose": null,
-        "platform": null,
-        "budget": null,
-        "requiredTags": [
-          {
-            "name": "access",
-            "value": "dedicated"
-          }
-        ],
-        "warrantyDaysMin": null,
-        "preferences": []
-      },
-      "mockUnderstanding": {
-        "intent": "recommend",
-        "patch": {
-          "requiredTags": []
-        },
-        "evidence": [
-          {
-            "field": "requiredTags",
-            "quote": "便宜一点"
-          }
-        ],
-        "question": null,
-        "options": []
-      },
-      "expectedError": "parse"
-    },
-    {
       "id": "null-tag-array-not-clear",
       "text": "共享也行",
       "initialNeeds": {
@@ -1829,7 +1300,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1856,7 +1326,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1882,7 +1351,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1902,7 +1370,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1922,7 +1389,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1942,7 +1408,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1962,7 +1427,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -1982,7 +1446,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2009,7 +1472,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2032,7 +1494,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2175,7 +1636,6 @@
           "basis": "purchase"
         },
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2204,7 +1664,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2227,7 +1686,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2250,7 +1708,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2273,7 +1730,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2296,7 +1752,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2318,7 +1773,6 @@
         "platform": null,
         "budget": null,
         "requiredTags": [],
-        "warrantyDaysMin": null,
         "preferences": []
       },
       "mockUnderstanding": {
@@ -2331,6 +1785,364 @@
         ]
       },
       "expectedError": "parse"
+    },
+    {
+      "id": "numeric-month",
+      "text": "必须一个月",
+      "initialNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [],
+        "preferences": []
+      },
+      "mockUnderstanding": {
+        "intent": "recommend",
+        "patch": {
+          "requiredTags": [
+            {
+              "name": "duration",
+              "value": 30
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "field": "requiredTags",
+            "quote": "必须一个月"
+          }
+        ],
+        "question": null,
+        "options": []
+      },
+      "expectedNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [
+          {
+            "name": "duration",
+            "value": 30
+          }
+        ],
+        "preferences": []
+      }
+    },
+    {
+      "id": "numeric-fractional-day",
+      "text": "必须12小时",
+      "initialNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [],
+        "preferences": []
+      },
+      "mockUnderstanding": {
+        "intent": "recommend",
+        "patch": {
+          "requiredTags": [
+            {
+              "name": "duration",
+              "value": 0.5
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "field": "requiredTags",
+            "quote": "必须12小时"
+          }
+        ],
+        "question": null,
+        "options": []
+      },
+      "expectedNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [
+          {
+            "name": "duration",
+            "value": 0.5
+          }
+        ],
+        "preferences": []
+      }
+    },
+    {
+      "id": "duration-range",
+      "text": "必须30到60天",
+      "initialNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [],
+        "preferences": []
+      },
+      "mockUnderstanding": {
+        "intent": "recommend",
+        "patch": {
+          "requiredTags": [
+            {
+              "name": "duration",
+              "value": {
+                "kind": "range",
+                "min": 30,
+                "max": 60
+              }
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "field": "requiredTags",
+            "quote": "必须30到60天"
+          }
+        ],
+        "question": null,
+        "options": []
+      },
+      "expectedNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [
+          {
+            "name": "duration",
+            "value": {
+              "kind": "range",
+              "min": 30,
+              "max": 60
+            }
+          }
+        ],
+        "preferences": []
+      }
+    },
+    {
+      "id": "duration-min",
+      "text": "必须至少30天",
+      "initialNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [],
+        "preferences": []
+      },
+      "mockUnderstanding": {
+        "intent": "recommend",
+        "patch": {
+          "requiredTags": [
+            {
+              "name": "duration",
+              "value": {
+                "kind": "min",
+                "days": 30
+              }
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "field": "requiredTags",
+            "quote": "必须至少30天"
+          }
+        ],
+        "question": null,
+        "options": []
+      },
+      "expectedNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [
+          {
+            "name": "duration",
+            "value": {
+              "kind": "min",
+              "days": 30
+            }
+          }
+        ],
+        "preferences": []
+      }
+    },
+    {
+      "id": "multiple-product-regions",
+      "text": "必须美区或日区",
+      "initialNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [],
+        "preferences": []
+      },
+      "mockUnderstanding": {
+        "intent": "recommend",
+        "patch": {
+          "requiredTags": [
+            {
+              "name": "region",
+              "value": "us"
+            },
+            {
+              "name": "region",
+              "value": "jp"
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "field": "requiredTags",
+            "quote": "必须美区或日区"
+          }
+        ],
+        "question": null,
+        "options": []
+      },
+      "expectedNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [
+          {
+            "name": "region",
+            "value": "us"
+          },
+          {
+            "name": "region",
+            "value": "jp"
+          }
+        ],
+        "preferences": []
+      }
+    },
+    {
+      "id": "bulk-supported",
+      "text": "必须支持批量",
+      "initialNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [],
+        "preferences": []
+      },
+      "mockUnderstanding": {
+        "intent": "recommend",
+        "patch": {
+          "requiredTags": [
+            {
+              "name": "bulk_purchase",
+              "value": "supported"
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "field": "requiredTags",
+            "quote": "必须支持批量"
+          }
+        ],
+        "question": null,
+        "options": []
+      },
+      "expectedNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [
+          {
+            "name": "bulk_purchase",
+            "value": "supported"
+          }
+        ],
+        "preferences": []
+      }
+    },
+    {
+      "id": "negative-subscription-override",
+      "text": "必须不可覆盖订阅",
+      "initialNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [],
+        "preferences": []
+      },
+      "mockUnderstanding": {
+        "intent": "recommend",
+        "patch": {
+          "requiredTags": [
+            {
+              "name": "subscription_override",
+              "value": "无"
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "field": "requiredTags",
+            "quote": "必须不可覆盖订阅"
+          }
+        ],
+        "question": null,
+        "options": []
+      },
+      "expectedNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [
+          {
+            "name": "subscription_override",
+            "value": "无"
+          }
+        ],
+        "preferences": []
+      }
+    },
+    {
+      "id": "complete-warranty",
+      "text": "必须保订阅30天，封号不保",
+      "initialNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [],
+        "preferences": []
+      },
+      "mockUnderstanding": {
+        "intent": "recommend",
+        "patch": {
+          "requiredTags": [
+            {
+              "name": "warranty",
+              "value": "保订阅30天，封号不保"
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "field": "requiredTags",
+            "quote": "必须保订阅30天，封号不保"
+          }
+        ],
+        "question": null,
+        "options": []
+      },
+      "expectedNeeds": {
+        "purpose": null,
+        "platform": null,
+        "budget": null,
+        "requiredTags": [
+          {
+            "name": "warranty",
+            "value": "保订阅30天，封号不保"
+          }
+        ],
+        "preferences": []
+      }
     }
   ]
 }

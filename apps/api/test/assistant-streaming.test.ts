@@ -38,7 +38,7 @@ function fixture(fetcher: typeof fetch, env = environment, recommend = false) {
   const offers = Array.from({ length: 5 }, (_, index) => ({ productId: String(index + 1), shopId: '1', shop: 'Fixture',
     name: 'Fixture quote', price: String(10 + index), currency: 'CNY', priceStatus: 'verified', inStock: true, stale: false,
     settlementQuantity: 1, capturedAt, priceExpiresAt: expiresAt, inventoryExpiresAt: expiresAt,
-    tags: [{ name: 'duration', value: '1 month' }], spec: '', productUrl: 'https://example.invalid',
+    tags: [{ name: 'duration', value: 30 }], spec: '', productUrl: 'https://example.invalid',
   }));
   const catalog = { getProducts: async () => ({ items: [product] }), getProduct: async () => product,
     getReferenceOffers: async () => offers,

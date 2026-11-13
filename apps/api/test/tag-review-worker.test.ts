@@ -3,11 +3,11 @@ import test from 'node:test';
 import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import { CONSISTENCY_KEYS, DISCLOSURE_KEYS } from '../src/shops/shop-text-review.js';
 
-const bill = { name: 'official_bill', value: '有', path: 'sourceData.evidence', quote: '可提供付款卡账单' };
-const twoFactor = { name: '2fa', value: '有', path: 'sourceData.evidence', quote: '建议自行设置2FA' };
-const duration = { name: 'duration', value: '30 days', path: 'spec', quote: '1个月' };
+const bill = { name: 'supported_client', value: 'codex', path: 'sourceData.evidence', quote: '支持Codex' };
+const twoFactor = { name: 'region', value: 'us', path: 'sourceData.evidence', quote: '建议使用美区IP' };
+const duration = { name: 'duration', value: 30, path: 'spec', quote: '1个月' };
 const proposals = { items: [{ id: '11', tags: [bill, twoFactor] }, { id: '12', tags: [duration] }] };
-const review = { items: [{ id: '12', decisions: [false], textReview: null }, { id: '11', decisions: [true, false], textReview: null }] };
+const review = { items: [{ id: '12', decisions: [{ tagId: '12:0', accepted: false }], textReview: null }, { id: '11', decisions: [{ tagId: '11:1', accepted: false }, { tagId: '11:0', accepted: true }], textReview: null }] };
 const job = { id: 7n, row: { job_id: 3n, job_type: 'tag_extraction', step: 'request' } };
 
 function setup(content = JSON.stringify(review), finish: string | null = 'stop', timeout = 1000, hang = false, shopText?: unknown, candidates = proposals) {
@@ -15,8 +15,8 @@ function setup(content = JSON.stringify(review), finish: string | null = 'stop',
   const call = createOpenAiModelCall({
     getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', stage: 'review', proposals: candidates,
       inputs: [
-        { productId: 11n, name: '商品甲', spec: '', sourceData: { evidence: '建议自行设置2FA。\n可提供付款卡账单。' },
-          ...(shopText === undefined ? {} : { payload: { name: '商品甲', spec: '', sourceData: { evidence: '建议自行设置2FA。\n可提供付款卡账单。' }, shopText } }) },
+        { productId: 11n, name: '商品甲', spec: '', sourceData: { evidence: '建议使用美区IP。\n支持Codex。' },
+          ...(shopText === undefined ? {} : { payload: { name: '商品甲', spec: '', sourceData: { evidence: '建议使用美区IP。\n支持Codex。' }, shopText } }) },
         { productId: 12n, name: '商品乙', spec: '1个月', sourceData: {} },
       ] }),
   } as never, { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock', AI_TIMEOUT_MS: String(timeout),
@@ -25,7 +25,7 @@ function setup(content = JSON.stringify(review), finish: string | null = 'stop',
     sends++;
     const body = JSON.parse(String(init?.body));
     assert.equal(body.stream, true);
-    assert.deepEqual(JSON.parse(body.messages[1].content).proposals, candidates);
+    assert.deepEqual(JSON.parse(body.messages[1].content).proposals, { items: candidates.items.map(item => ({ ...item, tags: item.tags.map((tag, index) => ({ ...tag, tagId: `${item.id}:${index}` })) })) });
     if (shopText !== undefined) assert.deepEqual(JSON.parse(body.messages[1].content).inputs[0].shopText, shopText);
     if (hang) return new Response(new ReadableStream({
       start(controller) { init?.signal?.addEventListener('abort', () => controller.error(init.signal!.reason), { once: true }); },
@@ -50,9 +50,9 @@ test('one review request judges several products and labels, preserving true can
   assert.equal(result.tagExtractionStage, 'review');
   const byId = new Map(result.tagExtractionItems!.map(item => [item.productId, item]));
   assert.deepEqual(byId.get(11n)!.tags, [{ proposalIndex: 0, name: bill.name, value: bill.value, evidence: [{ path: bill.path, quote: bill.quote }] }]);
-  assert.deepEqual(byId.get(11n)!.rejectedTags.map(tag => [tag.name, tag.reasonCode]), [['2fa', 'review_rejected']]);
+  assert.deepEqual(byId.get(11n)!.rejectedTags.map(tag => [tag.name, tag.reasonCode]), [['region', 'review_rejected']]);
   assert.deepEqual(byId.get(12n)!.tags, []);
-  assert.equal(byId.get(12n)!.rejectedTags[0]!.value, '30 days', 'false must not produce a corrected 1 month tag');
+  assert.equal(byId.get(12n)!.rejectedTags[0]!.value, 30, 'false must not produce a corrected 1 month tag');
   assert.ok(result.tagExtractionItems!.every(item => item.reviewed));
   assert.deepEqual(byId.get(11n)!.reviewDecisions, [true, false]);
   assert.deepEqual(byId.get(12n)!.reviewDecisions, [false]);
@@ -61,13 +61,16 @@ test('one review request judges several products and labels, preserving true can
 
 for (const [name, content] of [
   ['invalid JSON', '{"items":'],
-  ['missing textReview', JSON.stringify({ items: [{ id: '11', decisions: [true, false] }, review.items[0]] })],
-  ['added tags', JSON.stringify({ items: [{ id: '11', decisions: [true, false], tags: [duration] }, review.items[0]] })],
+  ['missing textReview', JSON.stringify({ items: [{ id: '11', decisions: review.items[1]!.decisions }, review.items[0]] })],
+  ['added tags', JSON.stringify({ items: [{ ...review.items[1], tags: [duration] }, review.items[0]] })],
   ['missing products', JSON.stringify({ items: [review.items[0]] })],
-  ['unknown products', JSON.stringify({ items: [{ id: '99', decisions: [true], textReview: null }, review.items[1]] })],
-  ['missing label votes', JSON.stringify({ items: [review.items[0], { id: '11', decisions: [true], textReview: null }] })],
-  ['extra label votes', JSON.stringify({ items: [review.items[0], { id: '11', decisions: [true, false, true] }] })],
-  ['non-boolean votes', JSON.stringify({ items: [review.items[0], { id: '11', decisions: ['yes', false] }] })],
+  ['unknown products', JSON.stringify({ items: [{ id: '99', decisions: [{ tagId: '99:0', accepted: true }], textReview: null }, review.items[1]] })],
+  ['missing label votes', JSON.stringify({ items: [review.items[0], { id: '11', decisions: [{ tagId: '11:0', accepted: true }], textReview: null }] })],
+  ['extra label votes', JSON.stringify({ items: [review.items[0], { ...review.items[1], decisions: [...review.items[1]!.decisions, { tagId: '11:2', accepted: true }] }] })],
+  ['duplicate tag IDs', JSON.stringify({ items: [review.items[0], { id: '11', decisions: [{ tagId: '11:0', accepted: true }, { tagId: '11:0', accepted: false }], textReview: null }] })],
+  ['foreign tag IDs', JSON.stringify({ items: [review.items[0], { id: '11', decisions: [{ tagId: '12:0', accepted: true }, { tagId: '11:1', accepted: false }], textReview: null }] })],
+  ['unknown tag IDs', JSON.stringify({ items: [review.items[0], { id: '11', decisions: [{ tagId: '11:99', accepted: true }, { tagId: '11:1', accepted: false }], textReview: null }] })],
+  ['non-boolean votes', JSON.stringify({ items: [review.items[0], { ...review.items[1], decisions: [{ tagId: '11:0', accepted: 'yes' }, { tagId: '11:1', accepted: false }] }] })],
 ]) {
   test(`a batch with ${name} fails closed without extra calls`, async () => {
     const state = setup(content);
@@ -122,7 +125,8 @@ test('missing, unknown-shaped, uncited and fabricated text reviews reject the en
   for (const textReview of badReviews) {
     const output = { items: [review.items[0], { ...review.items[1], textReview }] };
     const state = setup(JSON.stringify(output), 'stop', 1000, false, text);
-    await assert.rejects(state.call(job, new AbortController().signal), error => Reflect.get(error as object, 'retryClass') === 'invalid_response');
+    await assert.rejects(state.call(job, new AbortController().signal), error => Reflect.get(error as object, 'retryClass') === 'invalid_response'
+      && Reflect.get(error as object, 'responseMetadata').responseDiagnostic.code === 'text_review_invalid');
     assert.equal(state.sends(), 1);
   }
   const absentSource = setup(JSON.stringify({ items: [review.items[0], { ...review.items[1], textReview }] }));

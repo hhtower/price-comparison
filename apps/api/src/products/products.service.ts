@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { DomainNotFoundError, DomainValidationError } from '../common/errors.js';
+import { validateProductTags } from './product-tags.js';
 import {
   ProductsRepository,
   type Product,
@@ -62,10 +63,9 @@ export class ProductsService {
 
   listTags(id: bigint) { return this.products.listTags(id); }
 
-  async replaceTags(id: bigint, tags: readonly { name: string; value: string }[]) {
+  async replaceTags(id: bigint, tags: readonly { name: string; value: unknown }[]) {
     await this.get(id);
-    const normalized = tags.map((tag) => ({ name: required(tag.name, 'name'), value: required(tag.value, 'value') }));
-    return this.products.replaceTags(id, normalized);
+    return this.products.replaceTags(id, validateProductTags(tags));
   }
 
   assignStandardProduct(id: bigint, standardProductId: bigint | null, confirmEvidenceConflict = false): Promise<void> {

@@ -9,20 +9,19 @@ export function offerConditions(offer, formatValue = displayPurchaseTagValue) {
   const facts = new Map();
   for (const raw of offer.tags || []) {
     for (const tag of normalizePurchaseTag(raw)) {
-      if (!tag || ['minimum_quantity', 'warranty'].includes(tag.name) || !PURCHASE_GUIDE_FIELDS[tag.name] || !tag.value || ['unknown', 'unspecified'].includes(tag.value)) continue;
+      if (!tag || tag.name === 'warranty' || !PURCHASE_GUIDE_FIELDS[tag.name] || !tag.value || ['unknown', 'unspecified'].includes(tag.value)) continue;
       const value = formatValue(tag);
       facts.set(`${tag.name}:${value}`, { ...tag, value, ...PURCHASE_GUIDE_FIELDS[tag.name] });
     }
   }
-  if (offer.settlementQuantity > 1) facts.set('minimum_quantity', { name: 'minimum_quantity', value: `${offer.settlementQuantity}件起购`, ...PURCHASE_GUIDE_FIELDS.minimum_quantity, summaryPriority: 0 });
+  if (offer.settlementQuantity > 1) facts.set('settlement_quantity', { name: 'settlement_quantity', value: `${offer.settlementQuantity}件起购`, label: '起购数量', displayGroup: PURCHASE_GUIDE_FIELDS.bulk_purchase.displayGroup, summaryPriority: 0 });
   return [...facts.values()].sort((a, b) => a.summaryPriority - b.summaryPriority);
 }
 
-const OFFER_SUMMARY_PRIORITY = { usage_restriction: -6, warranty: -5, access: -4, delivery: -3, account_type: -2, account_lifecycle: -1 };
+const OFFER_SUMMARY_PRIORITY = { warranty: -3, subscription_override: -2, settlement_quantity: -1 };
 
 export function OfferFacts({ tags, settlementQuantity, formatValue = displayPurchaseTagValue, limit = 2, onOpenDetails }) {
-  const visibleTags = (tags || []).filter(tag => !(tag.name === 'account_type' && ['personal', 'enterprise'].includes(tag.value)));
-  const facts = offerConditions({ tags: visibleTags, settlementQuantity }, formatValue).filter(fact => fact.displayGroup !== 'warranty');
+  const facts = offerConditions({ tags, settlementQuantity }, formatValue);
   const warranty = purchaseWarrantyLabel(tags || []);
   if (warranty) facts.push({ name: 'warranty', value: warranty, summaryPriority: 30 });
   const values = facts.sort((a, b) => (OFFER_SUMMARY_PRIORITY[a.name] ?? a.summaryPriority)
@@ -38,14 +37,7 @@ export function OfferFacts({ tags, settlementQuantity, formatValue = displayPurc
 export default function OfferTagDetails({ offer, item, onClose, onReport, formatValue, children, footer }) {
   const conditions = offerConditions(offer, formatValue);
   const warranty = purchaseWarrantyLabel(offer.tags || []);
-  const facts = conditions.filter(fact => {
-    if (fact.name === 'warranty_scope') return false;
-    if (!['warranty_days', 'warranty_window', 'warranty_detail'].includes(fact.name)) return true;
-    if (!warranty) return false;
-    const term = fact.value.replace(/^质保/u, '');
-    return ![fact.value, `质保${term}`, `保订阅${term}`].includes(warranty)
-      && !(fact.name === 'warranty_detail' && fact.value === '订阅保障' && warranty.startsWith('保订阅'));
-  });
+  const facts = [...conditions];
   if (warranty) facts.push({ name: 'warranty', value: warranty, ...PURCHASE_GUIDE_FIELDS.warranty });
   const displayName = sanitizeOfferName(offer.name || item.name);
   return <ModalDialog open className="offer-tag-details" aria-labelledby="offer-tag-details-title" onClose={onClose}>
@@ -53,7 +45,7 @@ export default function OfferTagDetails({ offer, item, onClose, onReport, format
     <div className="offer-tag-details-body" tabIndex={0} role="region" aria-label="商品条件">
       {children}
       {facts.length ? <div className="offer-tag-details-groups">{PURCHASE_GUIDE_GROUPS.filter(group => facts.some(fact => fact.displayGroup === group.id)).map(group => <section key={group.id}><h3>{group.label}</h3>
-        <ul>{facts.filter(fact => fact.displayGroup === group.id).map(fact => <li key={`${fact.name}:${fact.value}`} data-field={fact.name} aria-label={`${fact.label}：${fact.value}`}>{fact.name === 'warranty_terms' ? fact.value : displayPurchaseTagText(fact, fact.value)}</li>)}</ul>
+        <ul>{facts.filter(fact => fact.displayGroup === group.id).map(fact => <li key={`${fact.name}:${fact.value}`} data-field={fact.name} aria-label={`${fact.label}：${fact.value}`}>{displayPurchaseTagText(fact, fact.value)}</li>)}</ul>
       </section>)}</div> : <p className="offer-tag-details-empty">暂无商品条件信息</p>}
     </div>
     <footer className="offer-tag-details-actions">{onReport && <button type="button" className="text-button" onClick={() => onReport(offer)}>举报此报价</button>}{footer}<button type="button" className="primary-button" onClick={onClose}>确认</button></footer>

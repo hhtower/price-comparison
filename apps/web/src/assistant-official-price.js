@@ -1,4 +1,4 @@
-import { normalizePurchaseTag } from '@price-comparison/catalog/purchase-attributes';
+import { durationToDays, normalizePurchaseTag } from '@price-comparison/catalog/purchase-attributes';
 import { normalizeProductTag } from '@price-comparison/catalog/product-tag-policy';
 import { formatPlanName } from './official-reference.js';
 
@@ -8,12 +8,11 @@ function planDuration(period) {
   const match = /^P([1-9][0-9]*)([DWMY])$/u.exec(period);
   if (!match) return '';
   const [, count, unit] = match;
-  return `${Number(count) * (unit === 'Y' ? 12 : unit === 'W' ? 7 : 1)} ${'MY'.includes(unit) ? 'month' : 'day'}`;
+  try { return durationToDays(Number(count), { D: 'day', W: 'week', M: 'month', Y: 'year' }[unit]); } catch { return null; }
 }
 
 function offerDuration(value) {
-  const match = /^([1-9][0-9]*) (day|week|month|year)s?$/u.exec(value);
-  return match ? planDuration(`P${match[1]}${match[2][0].toUpperCase()}`) : '';
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 export function assistantOfficialPrice(card, catalog) {

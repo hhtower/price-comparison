@@ -152,7 +152,7 @@ test.each(['x', 'cursor'])('old %s bookmarks select the combined Grok / X / Curs
 
 test('keeps platform, sorting and filters together and expands a nonmodal desktop panel', async () => {
   const user = userEvent.setup();
-  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ total: 387, offerTotal: 5876, platformFacets: ['openai'], tagFacets: [{ name: 'access', value: 'dedicated' }], items: [{ id: '1', name: '桌面商品', offers: [] }] })));
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ total: 387, offerTotal: 5876, platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified' }], items: [{ id: '1', name: '桌面商品', offers: [] }] })));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /桌面商品/ });
   const toolbar = within(screen.getByRole('group', { name: '平台与排序' }));
@@ -273,17 +273,17 @@ test('keeps a modal drawer on mobile and preserves draft choices across a breakp
   let onChange;
   const media = { matches: false, addEventListener: vi.fn((_name, listener) => { onChange = listener; }), removeEventListener: vi.fn() };
   vi.stubGlobal('matchMedia', vi.fn(() => media));
-  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ total: 1, tagFacets: [{ name: 'access', value: 'dedicated' }], items: [{ id: '1', name: '手机商品', offers: [] }] })));
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ total: 1, tagFacets: [{ name: 'sms_verification', value: 'verified' }], items: [{ id: '1', name: '手机商品', offers: [] }] })));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /手机商品/ });
   const trigger = screen.getByRole('button', { name: '筛选', exact: true });
   await user.click(trigger);
   expect(screen.getByRole('dialog', { name: '筛选报价' })).toHaveAttribute('aria-modal', 'true');
   expect(document.body.style.overflow).toBe('hidden');
-  await user.click(screen.getByRole('checkbox', { name: /独享/ }));
+  await user.click(screen.getByRole('checkbox', { name: /已接码/ }));
   await act(async () => { media.matches = true; onChange({ matches: true }); });
   expect(screen.getByRole('region', { name: '筛选报价' })).toBeInTheDocument();
-  expect(screen.getByRole('checkbox', { name: /独享/ })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: /已接码/ })).toBeChecked();
   expect(document.body.style.overflow).not.toBe('hidden');
   screen.getByRole('textbox', { name: '搜索商品' }).focus();
   await act(async () => { media.matches = false; onChange({ matches: false }); });
@@ -303,7 +303,7 @@ test('keeps a modal drawer on mobile and preserves draft choices across a breakp
   expect(document.body.style.overflow).not.toBe('hidden');
   expect(trigger).toHaveFocus();
   await user.click(trigger);
-  expect(screen.getByRole('checkbox', { name: /独享/ })).not.toBeChecked();
+  expect(screen.getByRole('checkbox', { name: /已接码/ })).not.toBeChecked();
   expect(screen.queryByRole('radio')).not.toBeInTheDocument();
   await user.keyboard('{Escape}');
 });
@@ -313,11 +313,11 @@ test('keeps focus in quote details across a mobile breakpoint and resumes the dr
   let onChange;
   const media = { matches: true, addEventListener: vi.fn((_name, listener) => { onChange = listener; }), removeEventListener: vi.fn() };
   vi.stubGlobal('matchMedia', vi.fn(() => media));
-  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ tagFacets: [{ name: 'access', value: 'dedicated' }], items: [{ id: '1', name: '弹层商品', productCount: 2, offers: [] }] })));
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ tagFacets: [{ name: 'sms_verification', value: 'verified' }], items: [{ id: '1', name: '弹层商品', productCount: 2, offers: [] }] })));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /弹层商品/ });
   await user.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  await user.click(screen.getByRole('checkbox', { name: /独享/ }));
+  await user.click(screen.getByRole('checkbox', { name: /已接码/ }));
   await user.click(screen.getByRole('button', { name: '2 条报价' }));
   const closeDetails = screen.getByRole('button', { name: '关闭报价详情' });
   closeDetails.focus();
@@ -327,7 +327,7 @@ test('keeps focus in quote details across a mobile breakpoint and resumes the dr
   await user.keyboard('{Escape}');
   const drawer = within(screen.getByRole('dialog', { name: '筛选报价' }));
   expect(screen.getByRole('dialog', { name: '筛选报价' })).toHaveFocus();
-  expect(drawer.getByRole('checkbox', { name: /独享/ })).toBeChecked();
+  expect(drawer.getByRole('checkbox', { name: /已接码/ })).toBeChecked();
   expect(document.body.style.overflow).toBe('hidden');
   await user.keyboard('{Escape}');
   expect(document.body.style.overflow).not.toBe('hidden');
@@ -339,7 +339,7 @@ test('applies desktop draft filters once while preserving keywords, purchase int
   vi.stubGlobal('fetch', vi.fn(async input => {
     if (String(input) === '/api/analytics/collect') return new Response(null, { status: 204 });
     calls.push(new URL(input, 'http://localhost'));
-    return jsonResponse({ platformFacets: ['openai'], tagFacets: [{ name: 'access', value: 'dedicated' }, { name: 'duration', value: '1 month' }, { name: 'duration', value: '12 months' }], items: [{ id: '1', name: '组合条件商品', offers: [] }] });
+    return jsonResponse({ platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified' }, { name: 'duration', value: 30 }, { name: 'duration', value: 360 }], items: [{ id: '1', name: '组合条件商品', offers: [] }] });
   }));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /组合条件商品/ });
@@ -350,16 +350,16 @@ test('applies desktop draft filters once while preserving keywords, purchase int
   const panel = within(screen.getByRole('region', { name: '筛选报价' }));
   const catalogCalls = () => calls.filter(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20');
   const beforeSelection = catalogCalls().length;
-  await user.click(panel.getByRole('checkbox', { name: /独享/ }));
-  await user.click(panel.getByRole('checkbox', { name: '订阅时长：1个月' }));
-  await user.click(panel.getByRole('checkbox', { name: '订阅时长：12个月' }));
+  await user.click(panel.getByRole('checkbox', { name: /已接码/ }));
+  await user.click(panel.getByRole('checkbox', { name: '使用期限：1个月' }));
+  await user.click(panel.getByRole('checkbox', { name: '使用期限：12个月' }));
   expect(catalogCalls()).toHaveLength(beforeSelection);
   await user.click(panel.getByRole('button', { name: '应用筛选（3）' }));
   await waitFor(() => expect(catalogCalls().at(-1).searchParams.getAll('tag')).toHaveLength(3));
   expect(catalogCalls()).toHaveLength(beforeSelection + 1);
   expect(catalogCalls().at(-1).searchParams.get('q')).toBe('ChatGPT Plus 已接码 质保至少30天');
   expect(catalogCalls().at(-1).searchParams.get('platform')).toBe('openai');
-  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('独享');
+  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('已接码');
 });
 
 test('keeps desktop draft choices visible after changing the search and refreshing facets', async () => {
@@ -369,35 +369,35 @@ test('keeps desktop draft choices visible after changing the search and refreshi
     const url = new URL(input, 'http://localhost');
     if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
     calls.push(url);
-    return jsonResponse({ tagFacets: url.searchParams.get('q') ? [] : [{ name: 'access', value: 'dedicated' }], items: [{ id: '1', name: '搜索商品结果', offers: [] }] });
+    return jsonResponse({ tagFacets: url.searchParams.get('q') ? [] : [{ name: 'sms_verification', value: 'verified' }], items: [{ id: '1', name: '搜索商品结果', offers: [] }] });
   }));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /搜索商品结果/ });
   await user.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  await user.click(screen.getByRole('checkbox', { name: /独享/ }));
+  await user.click(screen.getByRole('checkbox', { name: /已接码/ }));
   await user.type(screen.getByRole('textbox', { name: '搜索商品' }), 'Gemini');
   await waitFor(() => expect(calls.some(url => url.searchParams.get('q') === 'Gemini' && url.pathname === '/api/catalog/facets')).toBe(true));
-  expect(await screen.findByRole('checkbox', { name: /独享/ })).toBeChecked();
+  expect(await screen.findByRole('checkbox', { name: /已接码/ })).toBeChecked();
   await user.click(screen.getByRole('button', { name: '应用筛选（1）' }));
-  await waitFor(() => expect(calls.at(-1).searchParams.getAll('tag')).toEqual(['{"name":"access","value":"dedicated"}']));
+  await waitFor(() => expect(calls.at(-1).searchParams.getAll('tag')).toEqual(['{"name":"sms_verification","value":"verified"}']));
   expect(calls.at(-1).searchParams.get('q')).toBe('Gemini');
 });
 
 test('dismisses quote details before the open desktop filter panel on Escape', async () => {
   const user = userEvent.setup();
   const item = { id: '42', name: '报价测试商品', productCount: 2, offers: [] };
-  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ items: [item], tagFacets: [{ name: 'access', value: 'dedicated' }] })));
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ items: [item], tagFacets: [{ name: 'sms_verification', value: 'verified' }] })));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /报价测试商品/ });
   await user.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  await user.click(screen.getByRole('checkbox', { name: /独享/ }));
+  await user.click(screen.getByRole('checkbox', { name: /已接码/ }));
   const details = screen.getByRole('button', { name: '2 条报价' });
   await user.click(details);
   expect(screen.getByRole('dialog', { name: /报价测试商品/ })).toBeInTheDocument();
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   expect(screen.getByRole('region', { name: '筛选报价' })).toBeInTheDocument();
-  expect(screen.getByRole('checkbox', { name: /独享/ })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: /已接码/ })).toBeChecked();
   expect(details).toHaveFocus();
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('region', { name: '筛选报价' })).not.toBeInTheDocument();
@@ -431,7 +431,7 @@ test('loads delivery facets independently, supports retry and keeps them alive w
   expect(await screen.findByText('正在加载筛选条件…')).toHaveAttribute('role', 'status');
   await user.click(screen.getByRole('button', { name: '筛选', exact: true }));
   expect(signal.aborted).toBe(false);
-  await act(async () => resolveFacets(jsonResponse({ tagFacets: [{ name: 'access', value: 'dedicated', priority: 2 }] })));
+  await act(async () => resolveFacets(jsonResponse({ tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 2 }] })));
   expect(screen.queryByRole('region', { name: '筛选报价' })).not.toBeInTheDocument();
   expect(screen.getByRole('heading', { name: /立即展示的商品/ })).toBeInTheDocument();
 });
@@ -442,9 +442,9 @@ test('keeps raw merchant values out of purchase filters and shows readable condi
     { name: 'sms_verification', value: 'can be used twice', priority: 1 },
     { name: 'sms_verification', value: 'verified', priority: 10 },
     { name: 'duration', value: '100刀', priority: 2 },
-    { name: 'duration', value: '30 days', priority: 5 },
+    { name: 'duration', value: 30, priority: 5 },
     { name: 'access', value: '10-open', priority: 1 },
-    { name: 'access', value: 'dedicated', priority: 7 },
+    { name: 'sms_verification', value: 'verified', priority: 7 },
   ] })));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /ChatGPT Plus/ });
@@ -454,13 +454,13 @@ test('keeps raw merchant values out of purchase filters and shows readable condi
   await user.click(screen.getByRole('button', { name: '筛选' }));
   const drawer = within(screen.getByRole('region', { name: '筛选报价' }));
   expect(drawer.getByRole('checkbox', { name: /已接码/ })).toBeInTheDocument();
-  expect(drawer.getByRole('checkbox', { name: /30天/ })).toBeInTheDocument();
+  expect(drawer.getByRole('checkbox', { name: /1个月/ })).toBeInTheDocument();
   expect(drawer.getByText(/1 款 · \d+ 条报价/)).toHaveAttribute('role', 'status');
   expect(drawer.queryByRole('checkbox', { name: /条报价/ })).not.toBeInTheDocument();
   expect(drawer.queryByText(/can be used twice|100刀|10-open/)).not.toBeInTheDocument();
-  await user.click(drawer.getByRole('checkbox', { name: /独享/ }));
+  await user.click(drawer.getByRole('checkbox', { name: /已接码/ }));
   await user.click(drawer.getByRole('button', { name: '应用筛选（1）' }));
-  expect(await screen.findByLabelText('已选筛选条件')).toHaveTextContent('独享');
+  expect(await screen.findByLabelText('已选筛选条件')).toHaveTextContent('已接码');
 });
 
 test('loads paginated quotes with the current purchase filters when a preview card is opened', async () => {
@@ -517,7 +517,7 @@ test('loads paginated quotes with the current purchase filters when a preview ca
 
 test('shows common durations first and keeps selected options visible after collapsing the full group', async () => {
   const user = userEvent.setup();
-  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ total: 0, items: [], tagFacets: Array.from({ length: 20 }, (_, index) => ({ name: 'duration', value: `${index + 1} days`, priority: 20 - index })) })));
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ total: 0, items: [], tagFacets: Array.from({ length: 20 }, (_, index) => ({ name: 'duration', value: index + 1, priority: 20 - index })) })));
   render(<PublicPage />);
   await user.click(screen.getByRole('button', { name: '筛选' }));
   const drawer = within(screen.getByRole('region', { name: '筛选报价' }));
@@ -572,7 +572,7 @@ describe('PublicPage', () => {
     const input = screen.getByRole('textbox', { name: '搜索商品' });
     await user.type(input, 'ChatGPT Plus 已接码 质保至少30天');
     expect(await screen.findByRole('button', { name: '移除已接码' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '移除质保30天' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '移除质保30天' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /移除已接码/ }));
     await waitFor(() => expect(input.value).not.toContain('已接码'));
     await waitFor(() => expect(calls.filter(url => url.pathname === '/api/catalog').at(-1).searchParams.get('q')).toBe('ChatGPT Plus 质保至少30天'));
@@ -588,7 +588,7 @@ describe('PublicPage', () => {
   test('shows readable purchase conditions in the drawer and renders offer facts', async () => {
     const user = userEvent.setup();
     const calls = [];
-    const quote = { productId: '1', shopId: '1', name: 'Plus 报价', shop: '店铺', price: '12.00', currency: 'CNY', productUrl: 'https://example.com/1', capturedAt: '2026-09-25T08:00:00Z', tags: [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: 'covered' }, { name: 'intended_use', value: 'rapid' }] };
+    const quote = { productId: '1', shopId: '1', name: 'Plus 报价', shop: '店铺', price: '12.00', currency: 'CNY', productUrl: 'https://example.com/1', capturedAt: '2026-09-25T08:00:00Z', tags: [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: 'covered' }, { name: 'access_channel', value: 'web' }] };
     vi.stubGlobal('fetch', vi.fn(async input => {
       const url = new URL(input, 'http://localhost');
     if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
@@ -600,7 +600,7 @@ describe('PublicPage', () => {
     await user.click(screen.getByRole('button', { name: 'ChatGPT Plus' }));
     const facts = within(screen.getByLabelText('商品标签'));
     expect(facts.getByText('已接码')).toBeInTheDocument();
-    expect(facts.getByText('速刷')).toBeInTheDocument();
+    expect(facts.getByText('网页')).toBeInTheDocument();
     expect(facts.queryByText(/有质保|未注明/)).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('checkbox', { name: /已接码/ }));
@@ -857,36 +857,34 @@ test('filters one standard product card by all selected tags', async () => {
     const catalog = {
       platformFacets: ['ChatGPT', 'Gemini'],
       tagFacets: [
-        { name: 'delivery', value: 'top_up' },
-        { name: 'warranty_days', value: '25' },
+        { name: 'bulk_purchase', value: 'supported' },
+        { name: 'warranty', value: '保订阅25天' },
       ],
-      items: [{ id: 'chatgpt-plus', name: 'ChatGPT Plus', platform: 'ChatGPT', offers: [{ productId: 1, shopId: 1, name: '原始报价名', productUrl: 'https://example.com/1', shop: '店铺 A', price: 10, inStock: true, tags: [{ name: 'delivery', value: 'top_up' }, { name: 'warranty_days', value: '25' }] }] }],
+      items: [{ id: 'chatgpt-plus', name: 'ChatGPT Plus', platform: 'ChatGPT', offers: [{ productId: 1, shopId: 1, name: '原始报价名', productUrl: 'https://example.com/1', shop: '店铺 A', price: 10, inStock: true, tags: [{ name: 'bulk_purchase', value: 'supported' }, { name: 'warranty', value: '保订阅25天' }] }] }],
     };
     vi.stubGlobal('fetch', vi.fn(async (input) => { if (String(input) === '/api/analytics/collect') return new Response(null, { status: 204 }); calls.push(String(input)); return jsonResponse(catalog); }));
     render(<PublicPage />);
     expect(await screen.findByRole('heading', { name: /ChatGPT Plus/ })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'ChatGPT Plus' }));
-    expect(screen.queryByText('交付方式：代充')).not.toBeInTheDocument();
+    expect(screen.queryByText('批量购买：支持批量购买')).not.toBeInTheDocument();
     expect(screen.queryByText('质保时长：质保25天')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '筛选' }));
-    await user.click(screen.getByRole('checkbox', { name: '交付方式：代充' }));
-    await user.click(screen.getByRole('radio', { name: '按质保时长' }));
-    await user.click(screen.getByRole('radio', { name: '自定义最低质保天数' }));
-    await user.type(screen.getByRole('textbox', { name: '自定义最低质保天数' }), '25');
+    await user.click(screen.getByRole('checkbox', { name: '批量购买：支持批量购买' }));
+    await user.click(screen.getByRole('checkbox', { name: '售后保障：保订阅25天' }));
     await user.click(screen.getByRole('button', { name: '应用筛选（2）' }));
     await waitFor(() => expect(calls.some(path => {
       const selected = new URL(path, 'http://localhost').searchParams.getAll('tag').map(value => JSON.parse(value));
-      return selected.length === 1 && selected.some(tag => tag.name === 'delivery' && tag.value === 'top_up') && new URL(path, 'http://localhost').searchParams.get('warrantyDaysMin') === '25';
+      return selected.length === 2 && selected.some(tag => tag.name === 'bulk_purchase' && tag.value === 'supported') && selected.some(tag => tag.name === 'warranty' && tag.value === '保订阅25天');
     })).toBe(true));
     expect(screen.getByText('原始报价名')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Gemini / Google' }));
     await waitFor(() => expect(new URL(calls.at(-1), 'http://localhost').searchParams.get('platform')).toBe('google'));
     const switched = new URL(calls.at(-1), 'http://localhost').searchParams;
-    expect(switched.getAll('tag').map(JSON.parse)).toEqual([{ name: 'delivery', value: 'top_up' }]);
-    expect(switched.get('warrantyDaysMin')).toBe('25');
+    expect(switched.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'warranty', value: '保订阅25天' }]);
+    expect(switched.has('warrantyDaysMin')).toBe(false);
     await user.click(screen.getByRole('button', { name: '筛选（2）' }));
-    expect(screen.getByRole('checkbox', { name: '交付方式：代充' })).toBeChecked();
-    expect(screen.getByRole('textbox', { name: '自定义最低质保天数' })).toHaveValue('25');
+    expect(screen.getByRole('checkbox', { name: '批量购买：支持批量购买' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: '售后保障：保订阅25天' })).toBeChecked();
   });
 
   test('shows the price disclaimer and lets users report a specific offer', async () => {
@@ -918,8 +916,8 @@ test('filters one standard product card by all selected tags', async () => {
 
 test('retains all SKU tag options and uses the server ranking after filtering', async () => {
   const user = userEvent.setup();
-  const monthly = { name: 'duration', value: '1 month' };
-  const yearly = { name: 'duration', value: '12 months' };
+  const monthly = { name: 'duration', value: 30 };
+  const yearly = { name: 'duration', value: 360 };
   const offer = (id, shop, price, tag) => ({ productId: id, shopId: shop, shop: `店铺${shop}`, name: `报价${id}`, spec: tag.value, price, inStock: true, tags: [tag], productUrl: `https://example.com/${id}` });
   vi.stubGlobal('fetch', vi.fn(async input => {
     const selected = new URL(input, 'http://localhost').searchParams.getAll('tag');
@@ -929,7 +927,7 @@ test('retains all SKU tag options and uses the server ranking after filtering', 
   await screen.findByRole('heading', { name: /Plus/ });
   await user.click(screen.getByRole('button', { name: 'Plus' }));
   await user.click(screen.getByRole('button', { name: '筛选' }));
-  await user.click(screen.getByRole('checkbox', { name: '订阅时长：12个月' }));
+  await user.click(screen.getByRole('checkbox', { name: '使用期限：12个月' }));
   await user.click(screen.getByRole('button', { name: '应用筛选（1）' }));
   await screen.findByText('报价2');
   const tiles = screen.getAllByRole('link', { name: '去商家' }).map(link => link.closest('.shop-tile'));
@@ -939,8 +937,8 @@ test('retains all SKU tag options and uses the server ranking after filtering', 
   expect(tiles[1]).toHaveTextContent('12个月');
   expect(screen.queryByText('报价1')).toBeNull();
   await user.click(screen.getByRole('button', { name: '筛选（1）' }));
-  expect(screen.getByRole('checkbox', { name: '订阅时长：1个月' })).toBeInTheDocument();
-  expect(screen.getByRole('checkbox', { name: '订阅时长：12个月' })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: '使用期限：1个月' })).toBeInTheDocument();
+  expect(screen.getByRole('checkbox', { name: '使用期限：12个月' })).toBeChecked();
 });
 
 test('pages whole products and aborts a superseded catalog request', async () => {

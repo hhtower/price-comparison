@@ -4,6 +4,8 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import type { McpServer as McpServerInstance, CallToolResult } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { MEMBERSHIP_GROUPS } from '@price-comparison/catalog/membership-policy';
+import { isCanonicalProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
+import { MAX_DURATION_DAYS } from '@price-comparison/catalog/purchase-attributes';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { McpAccess } from './mcp-access.js';
 
@@ -16,14 +18,24 @@ const snapshotWarning = 'Prices and stock are captured snapshots, not live guara
 const id = z.string().regex(/^[1-9][0-9]{0,18}$/u).refine(value => BigInt(value) < 2n ** 63n, 'Invalid product ID');
 const currency = z.string().regex(/^[A-Z]{3}$/u);
 const money = z.string().regex(/^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$/u);
+const days = z.number().positive().max(MAX_DURATION_DAYS);
+const tag = z.strictObject({
+  name: z.enum(Object.keys(PRODUCT_TAG_RULES) as [string, ...string[]]),
+  value: z.union([
+    z.string().trim().min(1).max(250),
+    days,
+    z.strictObject({ kind: z.literal('range'), min: days, max: days }),
+    z.strictObject({ kind: z.enum(['min', 'max', 'approx']), days }),
+    z.strictObject({ kind: z.literal('permanent') }),
+  ]),
+}).refine(isCanonicalProductTag, 'Invalid tag field or value');
 const filters = {
   currency: currency.optional(),
   priceMin: money.optional(),
   priceMax: money.optional(),
-  tags: z.array(z.strictObject({ name: z.string().trim().min(1).max(80), value: z.string().trim().min(1).max(250) })).max(50).optional(),
-  warrantyDaysMin: z.number().int().min(1).max(36500).optional(),
+  tags: z.array(tag).max(50).optional(),
   membershipKinds: z.array(z.enum(MEMBERSHIP_GROUPS)).min(1).max(MEMBERSHIP_GROUPS.length).optional()
-    .describe('AI membership query groups, independent of delivery tags; unclassified selects offers without a valid classification. Explicit groups override newcomer scope.'),
+    .describe('AI membership query groups; unclassified selects offers without a valid classification. Explicit groups override newcomer scope.'),
   newcomer: z.boolean().optional()
     .describe('When true, AI memberships must be account or top_up; other products are unaffected. No rental or short-term fallback.'),
 };

@@ -11,7 +11,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const kinds = ['account', 'top_up', 'rental', 'short_term', 'unclassified'];
 const labels = ['成品号', '代充', '租号', '短期', '未分类'];
 const regions = ['us', 'ph', 'jp', 'hk', 'us'];
-const regionLabels = ['美国', '菲律宾', '日本', '中国香港特别行政区', '美国'];
+const regionLabels = ['美区', '菲区', '日区', '港区', '美区'];
 const identity = { id: '42', name: 'ChatGPT GO', platform: 'openai', isAiMembership: true };
 const offers = kinds.flatMap((kind, group) => Array.from({ length: 13 + group }, (_, index) => ({
   productId: `${kind}-${index}`, membershipKind: kind === 'unclassified' ? null : kind,
@@ -161,7 +161,7 @@ test('changing feature clears old quotes, counts, history and facets during load
   await screen.findByText('商家原名0-0', { selector: '.offer-name' });
   await screen.findByText('¥100.25', { selector: 'strong' });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  await screen.findByRole('checkbox', { name: '地区：美国' });
+  await screen.findByRole('checkbox', { name: '地区：美区' });
   let resume;
   control.pause = new Promise(resolve => { resume = resolve; });
   control.failFacets = true;
@@ -172,7 +172,7 @@ test('changing feature clears old quotes, counts, history and facets during load
   expect(screen.getByText('正在加载筛选条件…')).toBeInTheDocument();
   expect(screen.queryByText('商家原名0-0')).not.toBeInTheDocument();
   expect(screen.queryByText('¥100.25')).not.toBeInTheDocument();
-  expect(screen.queryByRole('checkbox', { name: '地区：美国' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('checkbox', { name: '地区：美区' })).not.toBeInTheDocument();
   expect(document.querySelector('.product-page-details .dialog-header p')).toHaveTextContent('… 条报价');
   await act(async () => { resume(); });
   await screen.findByText('筛选条件加载失败');
@@ -183,7 +183,7 @@ test('changing feature clears old quotes, counts, history and facets during load
   assertOnlyFeature(document.querySelector('.product-page-details'), 'short_term');
   control.failFacets = false;
   fireEvent.click(within(filters).getByRole('button', { name: '重试筛选' }));
-  await within(filters).findByRole('checkbox', { name: '地区：中国香港特别行政区' });
+  await within(filters).findByRole('checkbox', { name: '地区：港区' });
   await waitFor(() => expect(within(filters).queryByText('筛选条件加载失败')).not.toBeInTheDocument());
-  expect(within(filters).queryByRole('checkbox', { name: '地区：美国' })).not.toBeInTheDocument();
+  expect(within(filters).queryByRole('checkbox', { name: '地区：美区' })).not.toBeInTheDocument();
 });

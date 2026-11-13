@@ -13,7 +13,7 @@ import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest,
   parseMembershipFeatureResponse, parseMembershipFeatureReviewResponse, type MembershipFeatureResponse,
   type MembershipFeatureReviewResponse } from './membership-feature-request.js';
 import { validateReviewedTagExtractionDecision, type TagExtractionDecision } from './tag-extraction-result.js';
-import { buildTagReviewRequest, parseTagReviewResponse, type TagReviewResponse } from './tag-review-request.js';
+import { alignTagReviewDecisions, buildTagReviewRequest, parseTagReviewResponse, type TagReviewResponse } from './tag-review-request.js';
 import { buildExtractionPayload } from './adaptive-batching.js';
 import { isAttributeJobType, type JsonValue } from '../database/types.js';
 import { buildResponseAudit } from './response-audit.js';
@@ -166,9 +166,8 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
           if (stage === 'review' && !membershipFeatures) {
             for (const proposed of proposals!.items) {
               const reviewed = (parsed as TagReviewResponse).items.find(item => item.id === proposed.id);
-              if (!reviewed || reviewed.decisions.length !== proposed.tags.length) {
-                throw new Error('Tag review must return one binary decision per proposed tag');
-              }
+              if (!reviewed) throw new Error('Tag review is missing a proposed product');
+              alignTagReviewDecisions(reviewed, proposed);
             }
           }
           phase = 'evidence';
@@ -188,11 +187,12 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
             if (stage === 'review') {
               const reviewed = item as TagReviewResponse['items'][number];
               const proposed = proposals!.items.find(candidate => candidate.id === item.id)!;
+              const decisions = alignTagReviewDecisions(reviewed, proposed);
               const original = proposed.tags.map((tag, proposalIndex) => ({ proposalIndex, name: tag.name, value: tag.value, evidence: [{ path: tag.path, quote: tag.quote }] }));
               const decision = validateReviewedTagExtractionDecision(input!.productId,
-                original.filter((_tag, index) => reviewed.decisions[index]),
-                original.filter((_tag, index) => !reviewed.decisions[index]).map(tag =>
-                  ({ ...tag, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' })), payload, reviewed.decisions, reviewed.textReview);
+                original.filter((_tag, index) => decisions[index]),
+                original.filter((_tag, index) => !decisions[index]).map(tag =>
+                  ({ ...tag, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' })), payload, decisions, reviewed.textReview);
               return decision;
             }
             const tags = (item as ReturnType<typeof parseTagExtractionResponse>['items'][number]).tags

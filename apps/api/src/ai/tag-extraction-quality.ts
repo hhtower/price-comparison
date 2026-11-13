@@ -1,4 +1,5 @@
-export interface TagFacts { id: string; tags: Array<{ name: string; value: string }> }
+import { tagValueKey, type TagValue } from '@price-comparison/catalog/purchase-attributes';
+export interface TagFacts { id: string; tags: Array<{ name: string; value: TagValue }> }
 interface Counts { expected: number; predicted: number; tp: number; fp: number; fn: number; precision: number | null; recall: number | null }
 const counts = (expected: Set<string>, predicted: Set<string>): Counts => {
   const tp = [...expected].filter(fact => predicted.has(fact)).length;
@@ -12,14 +13,14 @@ export function evaluateTagFacts(expected: TagFacts[], actual: TagFacts[]) {
     for (const row of rows) {
       if (ids.has(row.id)) throw new Error('Duplicate evaluation product ID');
       ids.add(row.id);
-      for (const tag of row.tags) facts.add(JSON.stringify([row.id, tag.name, tag.value]));
+      for (const tag of row.tags) facts.add(JSON.stringify([row.id, tag.name, tagValueKey(tag.value)]));
     }
     return { ids, facts };
   };
   const gold = index(expected), observed = index(actual);
   const names = new Set([...gold.facts, ...observed.facts].map(fact => JSON.parse(fact)[1] as string));
   const fieldFacts = (facts: Set<string>, name: string) => new Set([...facts].filter(fact => JSON.parse(fact)[1] === name));
-  const fact = (encoded: string) => { const [id, name, value] = JSON.parse(encoded) as [string, string, string]; return { id, name, value }; };
+  const fact = (encoded: string) => { const [id, name, value] = JSON.parse(encoded) as [string, string, string]; return { id, name, value: JSON.parse(value) as TagValue }; };
   return { total: counts(gold.facts, observed.facts),
     falsePositives: [...observed.facts].filter(value => !gold.facts.has(value)).map(fact),
     falseNegatives: [...gold.facts].filter(value => !observed.facts.has(value)).map(fact),

@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -32,6 +33,9 @@ describe('shop, product, and offer repositories', () => {
   let schemaName: string;
 
   before(async () => {
+    assert.ok(process.env.TEST_REDIS_URL, 'Dedicated TEST_REDIS_URL required');
+    process.env.REDIS_URL = process.env.TEST_REDIS_URL;
+    process.env.AUTH_SESSION_KEY_PREFIX = `shop-products-test-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}:`;
     process.env.ADMIN_PASSWORD = ADMIN_PASSWORD;
     if (process.env.TEST_DATABASE_URL) {
       process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
@@ -169,7 +173,7 @@ describe('shop, product, and offer repositories', () => {
     const firstId = ids.get(productMapKey(shop.id, first.externalId))!;
     const standard = await database.insertInto('standard_products').values({ name: 'ChatGPT Plus', platform: 'openai' }).returning('id').executeTakeFirstOrThrow();
     await database.insertInto('standard_product_members').values({ standard_product_id: standard.id, product_id: firstId }).execute();
-    await database.insertInto('product_tags').values({ product_id: firstId, name: 'duration', value: 'monthly' }).execute();
+    await database.insertInto('product_tags').values(tagRows({ product_id: firstId, name: 'duration', value: 30 })).execute();
     const initialFingerprint = productContentFingerprint(first);
     const initial = await database.selectFrom('products').select(['content_fingerprint', 'content_version', 'standardization_revision']).execute();
     assert.deepEqual(initial, [{ content_fingerprint: initialFingerprint, content_version: 1n, standardization_revision: 1n }]);
@@ -223,7 +227,7 @@ describe('shop, product, and offer repositories', () => {
         const ids = await products.upsertBatch([item]);
         const id = ids.get(productMapKey(shop.id, item.externalId))!;
         await database.insertInto('standard_product_members').values({ standard_product_id: standard.id, product_id: id, assignment_source: source }).execute();
-        await database.insertInto('product_tags').values({ product_id: id, name: 'duration', value: 'monthly' }).execute();
+        await database.insertInto('product_tags').values(tagRows({ product_id: id, name: 'duration', value: 30 })).execute();
         const beforeChange = await products.findById(id);
         if (path === 'batch') await products.upsertBatch([{ ...item, description: 'yearly' }]);
         else if (path === 'update') await products.update(id, { description: 'yearly' });
@@ -243,14 +247,14 @@ describe('shop, product, and offer repositories', () => {
     const products = testingModule.get(ProductsRepository);
     const standard = await seedVerifiedStandard();
     await products.assignStandardProduct(productId, standard.id);
-    await products.replaceTags(productId, [{ name: 'duration', value: 'monthly' }]);
+    await products.replaceTags(productId, [{ name: 'duration', value: 30 }]);
     const before = await products.findById(productId);
     const changes = await database.transaction().execute(tx => products.upsertFetchedProducts(tx, [{ shopId, externalId: 'seed', name: 'Seed product', normalizedKey: 'seed-product', url: 'https://seed.invalid/product', price: '9.99', stockAvailable: false }]));
     assert.deepEqual(changes.changedProducts, []);
     assert.deepEqual(changes.quoteOnlyProducts, [productId]);
     assert.equal((await products.findById(productId))!.standardization_revision, before!.standardization_revision);
     assert.equal((await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', productId).execute()).length, 1);
-    assert.deepEqual((await products.listTags(productId)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: 'monthly' }]);
+    assert.deepEqual((await products.listTags(productId)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: 30 }]);
   });
 
   test('all write paths fingerprint canonical spec and invalidate spec-only changes', async () => {
@@ -267,7 +271,7 @@ describe('shop, product, and offer repositories', () => {
       const initial = (await products.findById(id))!;
       assert.equal(initial.spec, '地区: 美区 / 期限: 1个月');
       await products.assignStandardProduct(id, standard.id);
-      await products.replaceTags(id, [{ name: 'duration', value: '1 month' }]);
+      await products.replaceTags(id, [{ name: 'duration', value: 30 }]);
       const before = (await products.findById(id))!;
       const members = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', id).execute();
       const decisions = await db.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', id).execute();
@@ -281,7 +285,7 @@ describe('shop, product, and offer repositories', () => {
       assert.equal(formatted.content_version, before.content_version);
       assert.equal(formatted.standardization_revision, before.standardization_revision);
       assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', id).execute(), members);
-      assert.deepEqual((await products.listTags(id)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: '1 month' }]);
+      assert.deepEqual((await products.listTags(id)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: 30 }]);
       await write('期限: 1年 / 地区: 美区');
       const after = (await products.findById(id))!;
       assert.equal(after.content_version, before.content_version + 1n, path);
@@ -308,7 +312,7 @@ describe('shop, product, and offer repositories', () => {
     const products = testingModule.get(ProductsRepository);
     const standard = await seedVerifiedStandard();
     await products.assignStandardProduct(productId, standard.id);
-    await products.replaceTags(productId, [{ name: 'duration', value: 'monthly' }]);
+    await products.replaceTags(productId, [{ name: 'duration', value: 30 }]);
     await database.updateTable('products').set({ updated_at: new Date('2020-01-01T00:00:00Z') }).where('id', '=', productId).execute();
     const before = (await products.findById(productId))!;
     const changes = await database.transaction().execute(tx => products.upsertFetchedProducts(tx, [{
@@ -325,7 +329,7 @@ describe('shop, product, and offer repositories', () => {
     assert.equal(after.content_version, before.content_version);
     assert.equal(after.standardization_revision, before.standardization_revision);
     assert.equal((await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', productId).execute()).length, 1);
-    assert.deepEqual((await products.listTags(productId)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: 'monthly' }]);
+    assert.deepEqual((await products.listTags(productId)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: 30 }]);
     assert.equal((await database.selectFrom('product_change_events').select('id').where('product_id', '=', productId).execute()).length, 1);
   });
 
@@ -336,7 +340,7 @@ describe('shop, product, and offer repositories', () => {
     const standard = await seedVerifiedStandard();
     await products.assignStandardProduct(productId, standard.id);
     assert.equal((await products.findById(productId))!.standardization_revision, 1n);
-    await products.replaceTags(productId, [{ name: 'duration', value: 'monthly' }]);
+    await products.replaceTags(productId, [{ name: 'duration', value: 30 }]);
     assert.equal((await products.findById(productId))!.standardization_revision, 2n);
     await products.replaceTags(productId, []);
     assert.equal((await products.findById(productId))!.standardization_revision, 3n);
@@ -389,7 +393,7 @@ describe('shop, product, and offer repositories', () => {
     const ids = [...inserted.values()];
     const alreadyDeleted = ids.pop()!;
     await products.softDelete(alreadyDeleted);
-    await products.replaceTags(ids[0]!, [{ name: 'duration', value: 'monthly' }]);
+    await products.replaceTags(ids[0]!, [{ name: 'duration', value: 30 }]);
     const readVersion = async () => (await database.selectFrom('catalog_cache_versions').select('version').where('id', '=', 1).executeTakeFirstOrThrow()).version;
     const before = await readVersion();
     const deleted = await products.softDeleteBatch([...ids, ids[0]!, alreadyDeleted, 9223372036854775807n]);
@@ -404,7 +408,7 @@ describe('shop, product, and offer repositories', () => {
     assert.equal(await readVersion(), before + 1n);
     const restored = await products.restore(ids[0]!);
     assert.equal(restored!.deleted_at, null);
-    assert.deepEqual((await products.listTags(ids[0]!)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: 'monthly' }]);
+    assert.deepEqual((await products.listTags(ids[0]!)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: 30 }]);
   });
 
   test('batch soft deletion rolls back if catalog invalidation fails', async () => {
@@ -477,11 +481,11 @@ describe('shop, product, and offer repositories', () => {
     const database = testingModule.get<Kysely<DatabaseSchema>>(DATABASE);
     const products = testingModule.get(ProductsRepository);
     const standard = await seedVerifiedStandard({ family: 'openai', product: 'chatgpt', tier: 'plus' });
-    await database.insertInto('product_tags').values({ product_id: productId, name: 'duration', value: 'monthly' }).execute();
+    await database.insertInto('product_tags').values(tagRows({ product_id: productId, name: 'duration', value: 30 })).execute();
     for (const [index, target] of [standard.id, null].entries()) {
       await products.assignStandardProduct(productId, target);
       assert.equal((await products.findById(productId))!.standardization_revision, BigInt(index + 1));
-      assert.deepEqual((await products.listTags(productId)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: 'monthly' }]);
+      assert.deepEqual((await products.listTags(productId)).map(({ name, value }) => ({ name, value })), [{ name: 'duration', value: 30 }]);
       assert.equal((await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', productId).execute()).length, target === null ? 0 : 1);
     }
   });

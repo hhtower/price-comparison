@@ -1,3 +1,4 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -120,8 +121,8 @@ test('admin identifies unclassified AI quotes only from a published verified sta
   const read = async () => (await adminController.listProducts({})).items.find(row => row.id === String(item.id))!;
   assert.equal((await read()).isAiMembership, true);
   assert.equal((await read()).membershipFeatures, null);
-  await db.insertInto('product_tags').values({ product_id: item.id, name: 'delivery', value: 'account' }).execute();
-  const tagged = await adminController.listTagProducts({ name: 'delivery', value: 'account' });
+  await db.insertInto('product_tags').values(tagRows({ product_id: item.id, name: 'region', value: 'us' })).execute();
+  const tagged = await adminController.listTagProducts({ name: 'region', value: 'us' });
   assert.equal(tagged.items.find(row => row.id === String(item.id))?.isAiMembership, true);
   await db.updateTable('standard_product_members').set({ publication_state: 'provisional' }).where('product_id', '=', item.id).execute();
   assert.equal((await read()).isAiMembership, false);

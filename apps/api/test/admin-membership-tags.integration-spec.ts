@@ -1,7 +1,8 @@
+import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
@@ -13,7 +14,7 @@ import { suppressManualDecisionTrigger } from '../src/standardization/decision-h
 let db: Kysely<DatabaseSchema>, admin: Pool;
 const schema = `admin_membership_tags_${randomUUID().replaceAll('-', '')}`;
 const identity = { family: 'openai', product: 'chatgpt', tier: 'plus' };
-const facts = [{ name: 'duration', value: '1 month' }, { name: 'delivery', value: 'account' }, { name: 'warranty_days', value: '28' }];
+const facts = [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }, { name: 'sms_verification', value: 'verified' }];
 
 before(async () => {
   assert.ok(process.env.TEST_DATABASE_URL, 'Dedicated TEST_DATABASE_URL required');
@@ -47,10 +48,9 @@ async function fixture(options: { human?: boolean; locked?: boolean; nonAi?: boo
   await db.insertInto('standard_product_members').values({
     product_id: product.id, standard_product_id: standard.id, publication_state: options.stale || options.unclassified ? 'provisional' : 'published', assignment_source: options.human ? 'human' : 'ai',
   }).execute();
-  await db.insertInto('product_tags').values([...facts, { name: 'quality', value: 'reviewed' }].map(tag => ({ product_id: product.id, ...tag }))).execute();
+  await db.insertInto('product_tags').values(tagRows([...facts, { name: 'supported_client', value: 'codex' }].map(tag => ({ product_id: product.id, ...tag })))).execute();
   const current = await db.selectFrom('products').selectAll().where('id', '=', product.id).executeTakeFirstOrThrow();
-  const featureFacts = options.shortTerm ? facts.filter(fact => fact.name !== 'warranty_days') : facts;
-  const features = options.nonAi || options.unclassified ? null : buildMembershipFeatures(featureFacts, current, [], options.shortTerm ? 'short_term' : 'account');
+  const features = options.nonAi || options.unclassified ? null : buildMembershipFeatures([], current, [], options.shortTerm ? 'short_term' : 'account');
   if (features && options.stale) features.fingerprint = 'old';
   await db.updateTable('products').set({
     membership_features: features ? jsonb(features as unknown as JsonValue) : null,
@@ -68,10 +68,10 @@ async function state(id: bigint) {
 }
 
 const edits = {
-  bind: (repo: AdminRepository, id: bigint) => repo.bindTags([id], 'warranty_days', '27'),
-  delete: (repo: AdminRepository) => repo.deleteTag('warranty_days', '28'),
-  rename: (repo: AdminRepository) => repo.renameTag('delivery', 'account', 'delivery', 'top_up'),
-  merge: (repo: AdminRepository) => repo.mergeTags('duration', '1 month', 'delivery', 'account'),
+  bind: (repo: AdminRepository, id: bigint) => repo.bindTags([id], 'bulk_purchase', 'required'),
+  delete: (repo: AdminRepository) => repo.deleteTag('sms_verification', 'verified'),
+  rename: (repo: AdminRepository) => repo.renameTag('region', 'us', 'region', 'ph'),
+  merge: (repo: AdminRepository) => repo.mergeTags('duration', 30, 'region', 'us'),
 };
 for (const [operation, edit] of Object.entries(edits)) {
   test(`${operation} of display labels preserves features, publication, manual ownership and locks`, async () => {
@@ -100,8 +100,9 @@ test('display labels cannot supply missing feature evidence or enqueue classific
   const before = await state(current.id);
   const jobs = await db.selectFrom('ai_jobs').selectAll().orderBy('id').execute();
   const repo = new AdminRepository(db);
-  await repo.bindTags([current.id], '质保天数', '365');
-  await repo.bindTags([current.id], 'membership_kind', 'account');
+  await assert.rejects(repo.bindTags([current.id], '质保天数', '365'));
+  await assert.rejects(repo.bindTags([current.id], 'membership_kind', 'account'));
+  await repo.bindTags([current.id], 'warranty', '保订阅365天');
   const after = await state(current.id);
   assert.equal(after.product.membership_features, null);
   assert.deepEqual(after.member, before.member);
@@ -111,8 +112,7 @@ test('display labels cannot supply missing feature evidence or enqueue classific
 test('adding warranty labels does not change features or split the shared identity', async () => {
   const account = await fixture(), current = await fixture({ shortTerm: true });
   const repo = new AdminRepository(db);
-  await repo.bindTags([current.id], 'warranty_scope', 'subscription');
-  await repo.bindTags([current.id], 'warranty_days', '365');
+  await repo.bindTags([current.id], 'warranty', '保订阅365天，封号不保');
   const after = await state(current.id);
   assert.equal(after.member.standard_product_id, current.standardId);
   assert.equal(after.member.publication_state, 'published');
@@ -126,15 +126,15 @@ test('adding warranty labels does not change features or split the shared identi
 test('unrelated tag edits keep a valid feature snapshot current; no-op binds do not change revision', async () => {
   const current = await fixture();
   const repo = new AdminRepository(db);
-  await repo.bindTags([current.id], 'quality', 'reviewed');
-  await repo.renameTag('quality', 'reviewed', 'quality', 'reviewed');
-  await repo.mergeTags('quality', 'reviewed', 'quality', 'reviewed');
+  await repo.bindTags([current.id], 'supported_client', 'codex');
+  await repo.renameTag('supported_client', 'codex', 'supported_client', 'codex');
+  await repo.mergeTags('supported_client', 'codex', 'supported_client', 'codex');
   assert.equal((await state(current.id)).product.standardization_revision, current.standardization_revision);
   for (const edit of [
-    () => repo.bindTags([current.id], 'color', 'blue'),
-    () => repo.renameTag('color', 'blue', 'color', 'green'),
-    () => repo.mergeTags('color', 'green', 'quality', 'reviewed'),
-    () => repo.deleteTag('quality', 'reviewed'),
+    () => repo.bindTags([current.id], 'access_channel', 'web'),
+    () => repo.renameTag('access_channel', 'web', 'access_channel', 'api'),
+    () => repo.mergeTags('access_channel', 'api', 'supported_client', 'codex'),
+    () => repo.deleteTag('supported_client', 'codex'),
   ]) {
     await edit();
     const after = await state(current.id);
@@ -143,20 +143,17 @@ test('unrelated tag edits keep a valid feature snapshot current; no-op binds do 
   }
 });
 
-test('renaming a display label into a feature-like legacy alias does not alter verified feature facts', async () => {
+test('renaming into a retired alias is rejected without altering verified feature facts', async () => {
   const current = await fixture();
-  await new AdminRepository(db).renameTag('quality', 'reviewed', '订阅时长', '2 months');
-  const after = await state(current.id);
-  assert.equal(after.member.publication_state, 'published');
-  assert.deepEqual(after.product.membership_features, { ...current.membership_features, revision: String(after.product.standardization_revision) });
-  assert.ok((await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', current.id).execute())
-    .some(tag => tag.name === '订阅时长' && tag.value === '2 months'));
+  const before = await state(current.id);
+  await assert.rejects(new AdminRepository(db).renameTag('supported_client', 'codex', '订阅时长', '2 months'));
+  assert.deepEqual(await state(current.id), before);
 });
 
 test('an unrelated edit cannot revive a stale membership snapshot', async () => {
   const current = await fixture({ stale: true });
   const before = await state(current.id);
-  await new AdminRepository(db).bindTags([current.id], 'color', 'red');
+  await new AdminRepository(db).bindTags([current.id], 'access_channel', 'web');
   const after = await state(current.id);
   assert.equal(after.member.publication_state, 'provisional');
   assert.deepEqual(after.member, before.member);
@@ -181,7 +178,7 @@ test('display label edits preserve legacy human publication without inventing a 
     await tx.updateTable('standard_product_members').set({ assignment_source: 'human' }).where('product_id', '=', current.id).execute();
   });
   const repo = new AdminRepository(db);
-  await repo.bindTags([current.id], 'warranty_scope', 'first_login');
+  await repo.bindTags([current.id], 'warranty', '购买后1小时内仅保首登');
   const pending = await repo.listProducts({ pending: true, shopId: current.shop_id });
   assert.equal(pending.items.length, 0);
   const after = await state(current.id);
@@ -203,7 +200,43 @@ test('revision persistence failure rolls back display labels and the snapshot re
       return args.result;
     },
   });
-  await assert.rejects(new AdminRepository(failingDb).bindTags([current.id], 'warranty_days', '27'), /forced revision persistence failure/);
+  await assert.rejects(new AdminRepository(failingDb).bindTags([current.id], 'bulk_purchase', 'required'), /forced revision persistence failure/);
   assert.deepEqual(await state(current.id), before);
   assert.deepEqual(await db.selectFrom('product_tags').selectAll().where('product_id', '=', current.id).orderBy('id').execute(), tags);
+});
+
+test('concurrent binding and renaming cannot create two values for a single-valued dimension', async () => {
+  const current = await fixture();
+  const repo = new AdminRepository(db);
+  const sourceValue = `race-${randomUUID()}`;
+  await repo.bindTags([current.id], 'supported_client', sourceValue);
+  await db.deleteFrom('product_tags').where('product_id', '=', current.id).where('name', '=', 'duration').execute();
+  let release!: () => void, locked!: () => void;
+  const ready = new Promise<void>(resolve => { locked = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let holderPid = 0;
+  const holder = db.transaction().execute(async tx => {
+    holderPid = (await sql<{ pid: number }>`select pg_backend_pid() as pid`.execute(tx)).rows[0]!.pid;
+    await tx.selectFrom('products').select('id').where('id', '=', current.id).forUpdate().execute();
+    locked(); await held;
+  });
+  await ready;
+  const binding = repo.bindTags([current.id], 'duration', 90);
+  const renaming = repo.renameTag('supported_client', sourceValue, 'duration', 60);
+  const outcomes = Promise.allSettled([binding, renaming]);
+  try {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const blocked = (await sql<{ n: number }>`select count(*)::int as n from pg_stat_activity
+        where ${holderPid} = any(pg_blocking_pids(pid))`.execute(db)).rows[0]!.n;
+      if (blocked >= 2) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  } finally { release(); }
+  await holder;
+  for (const result of await outcomes) {
+    if (result.status === 'rejected') assert.equal(result.reason.code, 'TAG_CONFLICT', 'a conflict must not become a database deadlock');
+  }
+  const stored = await db.selectFrom('product_tags').select('value').where('product_id', '=', current.id).where('name', '=', 'duration').execute();
+  assert.equal(stored.length, 1);
+  assert.ok([60, 90].includes(stored[0]!.value as number));
 });

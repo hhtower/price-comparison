@@ -70,7 +70,7 @@ describe('admin pagination bounds database reads and response payloads', () => {
       select ${shopId}, 'audit-' || n, 'Audit ' || n, 'audit-' || n,
         'https://pagination.invalid/' || n from generate_series(1, 200) n`.execute(db);
     await sql`insert into product_tags(product_id, name, value)
-      select id, 'audit-common', 'shared' from products where shop_id = ${shopId}`.execute(db);
+      select id, 'supported_client', to_jsonb('codex'::text) from products where shop_id = ${shopId}`.execute(db);
   });
 
   after(async () => {
@@ -133,7 +133,7 @@ describe('admin pagination bounds database reads and response payloads', () => {
   });
 
   test('tag summaries omit member arrays and existing member pagination retains all products', async () => {
-    const query = { name: 'audit-common', value: 'shared', limit: 1, page: 1 };
+    const query = { name: 'supported_client', value: 'codex', limit: 1, page: 1 };
     const tags = await controller.listTags(query);
     assert.equal(tags.items.length, 1);
     assert.equal(tags.items[0]!.productCount, '200');

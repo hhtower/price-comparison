@@ -35,7 +35,7 @@ test('internal platform groups and identity names do not change the public produ
 
 test('facet endpoint normalizes only filters and never fetches a product page', async () => {
   let actual: unknown;
-  const facets = { tagFacets: [{ name: 'access', value: 'dedicated', priority: 1 }] };
+  const facets = { tagFacets: [{ name: 'access_channel', value: 'web', priority: 1 }] };
   const service = new CatalogService({
     facets: async (query: unknown) => { actual = query; return facets; },
     search: async () => { throw new Error('facets must not load products'); },
@@ -43,10 +43,10 @@ test('facet endpoint normalizes only filters and never fetches a product page', 
   assert.deepEqual(await new CatalogController(service).getFacets({
     platform: ' OpenAI ', q: 'Plus 已接码',
     tag: [JSON.stringify({ name: 'region', value: 'us' }), JSON.stringify({ name: 'sms_verification', value: 'unverified' })],
-    warrantyDaysMin: '30', limit: 'bad', sort: 'bad', cursor: 'bad',
+    limit: 'bad', sort: 'bad', cursor: 'bad',
   }), facets);
   assert.deepEqual(actual, { platform: 'openai', search: 'plus',
-    tags: [{ name: 'region', value: 'us' }, { name: 'sms_verification', value: 'unverified' }], warrantyDaysMin: 30 });
+    tags: [{ name: 'region', value: 'us' }, { name: 'sms_verification', value: 'unverified' }] });
 });
 
 test('facet endpoint rejects invalid filters before querying data', async () => {
@@ -57,7 +57,10 @@ test('facet endpoint rejects invalid filters before querying data', async () => 
   for (const tag of ['not-json', 'null', JSON.stringify({ name: 'region', value: null })]) {
     await assert.rejects(async () => controller.getFacets({ tag }), { code: 'INVALID_FILTER' });
   }
-  await assert.rejects(async () => controller.getFacets({ warrantyDaysMin: '0' }), { code: 'INVALID_WARRANTY_DAYS' });
+  for (const warrantyDaysMin of ['0', '30', '', null, ['30', '90'], undefined]) {
+    await assert.rejects(async () => controller.getFacets({ warrantyDaysMin }), { code: 'INVALID_FILTER' });
+    await assert.rejects(async () => controller.getCatalog({ warrantyDaysMin }), { code: 'INVALID_FILTER' });
+  }
   assert.equal(reads, 0);
 });
 
@@ -69,11 +72,11 @@ test('catalog controller preserves detail pagination and purchase filters from U
   );
   await new CatalogController(service).getCatalog({
     standardProductId: '42', detailKind: 'shops', detailPage: '2', detailPageSize: '3',
-    platform: ' OpenAI ', q: 'Plus', tag: JSON.stringify({ name: 'region', value: 'us' }), warrantyDaysMin: '30',
+    platform: ' OpenAI ', q: 'Plus', tag: JSON.stringify({ name: 'region', value: 'us' }),
   });
   assert.deepEqual(actual, {
     standardProductId: '42', detailKind: 'shops', detailPage: 2, detailPageSize: 3,
-    platform: 'openai', search: 'plus', tags: [{ name: 'region', value: 'us' }], warrantyDaysMin: 30, limit: 20,
+    platform: 'openai', search: 'plus', tags: [{ name: 'region', value: 'us' }], limit: 20,
   });
 });
 
@@ -156,5 +159,6 @@ test('literal detail search preserves purchase words in shop names for lists and
     assert.deepEqual(query.tags, []);
   }
   await controller.getCatalog({ q: '星河代充 独享' });
-  assert.ok(actual[2]!.tags.some(tag => tag.name === 'delivery' && tag.value === 'top_up'));
+  assert.deepEqual(actual[2]!.membershipSearch?.kinds, ['top_up']);
+  assert.deepEqual(actual[2]!.tags, []);
 });
