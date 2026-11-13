@@ -524,11 +524,9 @@ test.each(['/', '/products/42'])('keeps SEO answers, facts and FAQs visible afte
   expect(answer).toBeVisible();
   expect(document.querySelectorAll('.catalog-seo-intro')).toHaveLength(1);
   expect(document.querySelectorAll('.seo-answer')).toHaveLength(1);
-  if (path === '/') {
-    const panel = document.querySelector('.catalog-seo-panel');
-    expect(panel).toContainElement(document.querySelector('.catalog-seo-intro'));
-    expect(panel).toContainElement(document.querySelector('.seo-faq'));
-  }
+  const panel = document.querySelector('.catalog-seo-panel');
+  expect(panel).toContainElement(document.querySelector('.catalog-seo-intro'));
+  expect(panel).toContainElement(document.querySelector('.seo-faq'));
   expect([...answer.textContent].length).toBeLessThanOrEqual(50);
   expect(document.querySelectorAll('main h1')).toHaveLength(1);
   const quotes = document.getElementById('catalog-quotes');
@@ -537,7 +535,7 @@ test.each(['/', '/products/42'])('keeps SEO answers, facts and FAQs visible afte
     expect(quotes.compareDocumentPosition(document.querySelector('main h1')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(answer.closest('.catalog-seo-intro')).toContainElement(document.querySelector('main h1'));
   } else {
-    expect(answer.compareDocumentPosition(quotes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.querySelector('.detail-scroll').compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   }
   for (const fact of document.querySelectorAll('.seo-fact')) {
     expect(within(fact).getByRole('heading', { level: 2 })).toBeVisible();

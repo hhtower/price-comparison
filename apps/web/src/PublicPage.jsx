@@ -702,8 +702,19 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   useEffect(() => {
     if (!filterOpen) return undefined;
     const dismiss = event => { if (!toolbar.current?.contains(event.target)) setFilterOpen(false); };
+    const measure = () => {
+      const panel = toolbar.current;
+      if (panel) panel.style.setProperty('--detail-filter-top', `${panel.getBoundingClientRect().bottom}px`);
+    };
+    measure();
     document.addEventListener('mousedown', dismiss);
-    return () => document.removeEventListener('mousedown', dismiss);
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, { passive: true });
+    return () => {
+      document.removeEventListener('mousedown', dismiss);
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure);
+    };
   }, [filterOpen]);
   function apply(event) {
     event?.preventDefault();
@@ -737,9 +748,8 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   const Container = standalone ? 'section' : ModalDialog;
   const Controls = standalone ? 'div' : React.Fragment;
   return <Container {...(standalone ? {} : { open: true, onClose })} className={standalone ? 'product-page-details' : 'catalog-detail-dialog'} aria-labelledby="catalog-detail-title">
-    {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><h1>{title}</h1><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span><span className="official-reference-slot" ref={referenceRef} /></header> : null}
-    {standalone ? <CatalogSeoIntro product /> : null}
     <Controls {...(standalone ? { className: 'product-detail-controls', id: 'catalog-quotes' } : {})}>
+    {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><div className="product-page-title"><div className="product-page-category"><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span></div><h1>{title}</h1></div><span className="official-reference-slot" ref={referenceRef} /></header> : null}
     <header className="dialog-header"><div>{state.shopId ? <button type="button" className="text-button" onClick={() => navigate(shopListState.current || { shopId: '', shopName: '', kind: 'shops' })}>← 返回商铺列表</button> : null}<h2 id="catalog-detail-title">{standalone ? label : title + ' · ' + label}{state.shopName ? ` · ${state.shopName}` : ''}</h2><p>{loading ? '…' : total} {countUnit}</p></div><div className="detail-header-actions">{comparison.length ? <button type="button" className="text-button" onClick={onOpenComparison}>对比（{comparison.length}）</button> : null}{standalone ? <div className="detail-kind-tabs" role="group" aria-label="报价视图"><button type="button" aria-pressed={!isShops} onClick={() => navigate({ kind: 'offers', shopId: '', shopName: '' })}>全部报价</button><button type="button" aria-pressed={isShops} onClick={() => navigate({ kind: 'shops', shopId: '', shopName: '' })}>按商铺</button></div> : <button type="button" aria-label={`关闭${label}详情`} onClick={onClose}>×</button>}</div></header>
     <div className="detail-query-panel" ref={toolbar} onKeyDown={event => {
       if (event.key === 'Escape' && filterOpen) { event.preventDefault(); event.stopPropagation(); setFilterOpen(false); }
@@ -763,21 +773,14 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
       </div>
     </div>
     </Controls>
-    {standalone ? <PurchaseGuide /> : null}
+    {standalone ? <div className="product-purchase-note"><span>先核对规格与期限，再比较价格；最终以商家结算页为准。</span><PurchaseGuide /></div> : null}
     <div className="detail-scroll" ref={setScrollElement}>
       <PriceHistory key={`${detail.item.id}:${state.currency}`} standardProductId={detail.item.id} currency={state.currency} membershipKinds={state.membershipKinds} newcomer={state.newcomer} />
       {loading ? <p role="status" className="detail-loading">正在加载{label}…</p> : error ? <div role="alert" className="catalog-error"><span>报价加载失败，请重试</span><button type="button" onClick={() => detailQuery.refetch()}>重试</button></div> : !visible.length ? <p className="detail-empty">没有匹配的{label}</p> : standalone || scrollElement ? <Virtuoso key={url} useWindowScroll={standalone} customScrollParent={standalone ? undefined : scrollElement} data={rows} computeItemKey={(_index, row) => isShops ? row[0].key : offerIdentity(row[0])} increaseViewportBy={CATALOG_OVERSCAN} totalListHeightChanged={onHeightChanged} endReached={loadNextPage} itemContent={(index, row) => <div className={isShops ? 'product-shop-row' : 'product-offer-row'}>{row.map((entry, column) => renderEntry(entry, index * columns + column))}</div>} /> : null}
       {detailQuery.isFetchingNextPage ? <p className="catalog-infinite-end" role="status">正在加载更多{label}…</p> : detailQuery.isError && visible.length ? <div className="catalog-error" role="alert"><span>{detailQuery.isFetchNextPageError ? `更多${label}加载失败` : `${label}刷新失败`}</span><button type="button" onClick={() => detailQuery.isFetchNextPageError ? detailQuery.fetchNextPage() : detailQuery.refetch()}>重试加载</button></div> : detailQuery.hasNextPage ? <button type="button" className="text-button product-load-more" disabled={detailQuery.isFetching} onClick={() => detailQuery.fetchNextPage()}>加载更多{label}</button> : visible.length ? <p className="catalog-infinite-end">{state.page > 1 ? '已显示本页起的全部 ' + visible.length : '已显示全部 ' + total} {countUnit}</p> : null}
-      {standalone && !isShops && !state.keyword && !state.tags.length && !state.warranty && !state.shopId
-        && !state.priceMin && !state.priceMax && !state.newcomer && (fixedMembershipKind || !state.membershipKinds.length) && state.offerSort === 'price' && total > 0
-        ? <nav className="catalog-pagination" aria-label="报价分页">
-          {state.page > 1 ? <a rel="prev" href={productPagePath(detail.item.id, state.page - 1, fixedMembershipKind)}>上一页报价</a> : null}
-          <span>第{state.page}页</span>
-          {state.page * PRODUCT_PAGE_SIZE < total ? <a rel="next" href={productPagePath(detail.item.id, state.page + 1, fixedMembershipKind)}>下一页报价</a> : null}
-        </nav> : null}
       {standalone ? <p className="product-trade-note">报价仅供比较参考，下单前请以商家页面的实际价格和交易条件为准。本站不参与交易，交易与售后请联系商家。</p> : null}
     </div>
-    {standalone ? <CatalogSeoFaq product /> : null}
+    {standalone ? <section className="catalog-seo-panel" aria-label="报价与选购说明"><CatalogSeoIntro product /><CatalogSeoFaq product /></section> : null}
   </Container>;
 }
 

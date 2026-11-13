@@ -45,8 +45,13 @@ test('compact product page hides site navigation and appends quotes until all ar
   expect(screen.queryByRole('link', { name: '检测工具' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '提交商铺' })).not.toBeInTheDocument();
   expect(screen.queryByText(/本站展示第三方/)).not.toBeInTheDocument();
-  expect(screen.getByRole('navigation', { name: '报价分页' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: '下一页报价' })).toHaveAttribute('href', '/products/42?page=2');
+  expect(screen.queryByRole('navigation', { name: '报价分页' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: '下一页报价' })).not.toBeInTheDocument();
+  expect(screen.queryByText('第1页')).not.toBeInTheDocument();
+  const controls = document.querySelector('.product-detail-controls');
+  expect(controls).toContainElement(screen.getByRole('heading', { level: 1, name: product.name }));
+  expect(controls).toContainElement(screen.getByRole('textbox', { name: '搜索商铺或报价' }));
+  expect(controls).toContainElement(screen.getByRole('button', { name: '官网正价参考' }));
   expect(calls.some(({ url }) => url.pathname === '/api/catalog/coverage')).toBe(false);
   await act(async () => virtual.endReached());
   await screen.findByText('报价12');
@@ -70,6 +75,26 @@ test('filtering resets continuous results and keeps filters in the URL', async (
   expect(calls.at(-1).url.searchParams.get('detailPage')).toBe('0');
   expect(new URLSearchParams(window.location.search).get('q')).toBe('筛选');
   expect(new URLSearchParams(window.location.search).has('detailPage')).toBe(false);
+});
+
+test('filter popover tracks available viewport space while scrolling and resizing', async () => {
+  mockApi(); render(<App />);
+  await screen.findByText('报价0');
+  const toolbar = screen.getByRole('form', { name: '详情查询' }).parentElement;
+  let bottom = 240;
+  vi.spyOn(toolbar, 'getBoundingClientRect').mockImplementation(() => ({ top: 180, bottom }));
+  fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
+  expect(toolbar.style.getPropertyValue('--detail-filter-top')).toBe('240px');
+  bottom = 200;
+  fireEvent.scroll(window);
+  expect(toolbar.style.getPropertyValue('--detail-filter-top')).toBe('200px');
+  bottom = 220;
+  fireEvent.resize(window);
+  expect(toolbar.style.getPropertyValue('--detail-filter-top')).toBe('220px');
+  fireEvent.keyDown(toolbar, { key: 'Escape' });
+  bottom = 100;
+  fireEvent.resize(window);
+  expect(toolbar.style.getPropertyValue('--detail-filter-top')).toBe('220px');
 });
 
 test('a failed next batch keeps loaded quotes and can retry the same batch', async () => {
@@ -122,8 +147,8 @@ test('crawlable quote page starts at the requested batch and resets pagination o
   expect(screen.queryByText('报价0')).not.toBeInTheDocument();
   expect(calls.find(({ url }) => url.searchParams.has('detailKind')).url.searchParams.get('detailPage')).toBe('1');
   expect(document.querySelector('link[rel="canonical"]').href).toBe('https://price.yufu.pub/products/42?page=2');
-  expect(screen.getByRole('link', { name: '上一页报价' })).toHaveAttribute('href', '/products/42');
-  expect(screen.getByRole('link', { name: '下一页报价' })).toHaveAttribute('href', '/products/42?page=3');
+  expect(screen.queryByRole('link', { name: '上一页报价' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: '下一页报价' })).not.toBeInTheDocument();
   await act(async () => virtual.endReached());
   await screen.findByText('报价24');
   expect(screen.getByText('已显示本页起的全部 13 条报价')).toBeInTheDocument();
@@ -140,7 +165,7 @@ test('canonical first product page ignores saved newcomer mode unless explicitly
   render(<App />);
   await screen.findByText('报价0');
   expect(calls.find(({ url }) => url.searchParams.has('detailKind')).url.searchParams.get('newcomer')).toBe('false');
-  expect(screen.getByRole('link', { name: '下一页报价' })).toHaveAttribute('href', '/products/42?page=2');
+  expect(screen.queryByRole('navigation', { name: '报价分页' })).not.toBeInTheDocument();
 });
 
 test.each(['0', '-1', 'abc', '1.5', '4', '2&page=3'])('invalid or missing quote page %s stays a noindex error after rendering', async page => {

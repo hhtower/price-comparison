@@ -86,7 +86,7 @@ test('route kind overrides malicious query and stays fixed after reset, clear, s
   expectScope(requests);
 });
 
-test.each(['42', '41'])('refresh and merge preserve feature canonical, schema and pagination: %s', async id => {
+test.each(['42', '41'])('refresh and merge preserve feature canonical, schema and bookmarked batch: %s', async id => {
   const requests = mockApi({ merged: true });
   mount('/products/' + id + '/features/rental?page=2&membershipKind=short_term&newcomer=true');
   await screen.findByRole('heading', { name: 'ChatGPT GO · 租号', level: 1 });
@@ -95,8 +95,8 @@ test.each(['42', '41'])('refresh and merge preserve feature canonical, schema an
   expect(document.title).toContain('租号');
   expect(new URL(document.head.querySelector('link[rel="canonical"]').href).pathname).toBe('/products/42/features/rental');
   expect(new URL(document.head.querySelector('link[rel="canonical"]').href).search).toBe('?page=2');
-  expect(screen.getByRole('link', { name: '上一页报价' })).toHaveAttribute('href', '/products/42/features/rental');
-  expect(screen.getByRole('link', { name: '下一页报价' })).toHaveAttribute('href', '/products/42/features/rental?page=3');
+  expect(screen.queryByRole('link', { name: '上一页报价' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: '下一页报价' })).not.toBeInTheDocument();
   expect(document.getElementById('page-structured-data').textContent).toContain('租号');
   expect(requests.some(url => url.searchParams.get('detailPage') === '1')).toBe(true);
   expectScope(requests);
