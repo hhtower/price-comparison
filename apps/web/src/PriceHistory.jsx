@@ -59,7 +59,10 @@ export default function PriceHistory({ standardProductId, productId, currency = 
   const points = query.data?.points || [];
   const individual = Boolean(productId);
   return <section className={`price-history${individual ? ' price-history-individual' : ''}`} aria-label={individual ? '商家报价价格历史' : '商品价格历史'}>
-    <button type="button" className="price-history-toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}>
+    <button type="button" className="price-history-toggle" aria-expanded={open} aria-controls={id} onClick={event => {
+      setOpen(value => !value);
+      if (event.detail > 0) event.currentTarget.blur();
+    }}>
       <span>{individual ? '价格历史' : '近30天价格走势'}</span><span aria-hidden="true">{open ? '收起 −' : '展开 +'}</span>
     </button>
     {open ? <div id={id} className="price-history-content">

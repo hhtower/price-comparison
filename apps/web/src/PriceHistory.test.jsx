@@ -12,6 +12,21 @@ function mount(props = {}) {
 }
 function response(points) { return Response.json({ currency: 'CNY', days: 30, startDate: '2026-09-16', endDate: '2026-10-15', points }); }
 
+test('pointer activation clears the history focus ring while keyboard activation keeps focus', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => response([])));
+  mount();
+  await screen.findByText(/暂无已记录的结算价格/);
+  const toggle = screen.getByRole('button', { name: '近30天价格走势' });
+  toggle.focus();
+  fireEvent.click(toggle, { detail: 1 });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(toggle).not.toHaveFocus();
+  toggle.focus();
+  fireEvent.click(toggle, { detail: 0 });
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(toggle).toHaveFocus();
+});
+
 test('shows the full reporting window and price ticks with only two recent observations', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => response([
     { ...point, date: '2026-10-14', price: '37.39' }, { ...point, date: '2026-10-15', price: '30.82' },
