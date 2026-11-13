@@ -1196,7 +1196,8 @@
 .product-page-details .detail-scroll { max-height: none; overflow: visible; padding-top: 0; }
 .product-offer-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding-bottom: 12px; }
 .product-page-details .detail-scroll > .price-history { border-color: #dce6e2; border-radius: 14px; background: linear-gradient(110deg, #f0f6f3, #fff 55%); }
-.product-page-details .detail-scroll > .price-history .price-history-toggle { padding: 14px 20px 0; color: #36564d; }
+.product-page-details .detail-scroll > .price-history .price-history-toggle { padding: 14px 20px; color: #36564d; }
+.product-page-details .detail-scroll > .price-history .price-history-toggle[aria-expanded="true"] { padding-bottom: 0; }
 .product-page-details .detail-scroll > .price-history .price-history-content { display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: center; column-gap: 24px; padding: 0 20px 10px; }
 .product-page-details .detail-scroll > .price-history .price-history-content > :is(p, [role="alert"]) { grid-column: 1 / -1; padding-bottom: 10px; }
 .product-page-details .detail-scroll > .price-history .price-history-summary { display: grid; gap: 10px; }
@@ -1262,7 +1263,7 @@
   .product-page-details .detail-toolbar button { padding: 7px; }
   .product-offer-row { grid-template-columns: 1fr; gap: 0; padding-bottom: 0; }
   .product-purchase-note { padding: 10px 2px; font-size: 11px; }
-  .product-page-details .detail-scroll > .price-history .price-history-toggle { padding: 12px 14px 0; }
+  .product-page-details .detail-scroll > .price-history .price-history-toggle { padding: 12px 14px; }
   .product-page-details .detail-scroll > .price-history .price-history-content { grid-template-columns: minmax(0, 1fr); padding: 10px 14px 4px; }
   .product-page-details .detail-scroll > .price-history .price-history-summary { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
   .product-page-details .detail-scroll > .price-history .price-history-summary strong { display: inline; margin: 0; font-size: 22px; }
