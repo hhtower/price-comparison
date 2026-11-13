@@ -18,6 +18,7 @@ import { updatePageMetadata } from './page-metadata.js';
 import { PRODUCT_PAGE_SIZE, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
 import { formatMoney } from './money.js';
 import PriceHistory from './PriceHistory.jsx';
+import PlatformIcon from './PlatformIcon.jsx';
 import { CatalogSeoIntro, CatalogSeoFaq } from './CatalogSeoContent.jsx';
 import { displayPurchaseTagText, displayPurchaseTagValue } from './purchase-tag-values.js';
 
@@ -749,7 +750,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   const Controls = standalone ? 'div' : React.Fragment;
   return <Container {...(standalone ? {} : { open: true, onClose })} className={standalone ? 'product-page-details' : 'catalog-detail-dialog'} aria-labelledby="catalog-detail-title">
     <Controls {...(standalone ? { className: 'product-detail-controls', id: 'catalog-quotes' } : {})}>
-    {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><div className="product-page-title"><div className="product-page-category"><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span></div><h1>{title}</h1></div><span className="official-reference-slot" ref={referenceRef} /></header> : null}
+    {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><div className="product-page-title"><div className="product-page-category"><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span></div><h1><PlatformIcon platform={detail.item.platform} /><span>{title}</span></h1></div><span className="official-reference-slot" ref={referenceRef} /></header> : null}
     <header className="dialog-header"><div>{state.shopId ? <button type="button" className="text-button" onClick={() => navigate(shopListState.current || { shopId: '', shopName: '', kind: 'shops' })}>← 返回商铺列表</button> : null}<h2 id="catalog-detail-title">{standalone ? label : title + ' · ' + label}{state.shopName ? ` · ${state.shopName}` : ''}</h2><p>{loading ? '…' : total} {countUnit}</p></div><div className="detail-header-actions">{comparison.length ? <button type="button" className="text-button" onClick={onOpenComparison}>对比（{comparison.length}）</button> : null}{standalone ? <div className="detail-kind-tabs" role="group" aria-label="报价视图"><button type="button" aria-pressed={!isShops} onClick={() => navigate({ kind: 'offers', shopId: '', shopName: '' })}>全部报价</button><button type="button" aria-pressed={isShops} onClick={() => navigate({ kind: 'shops', shopId: '', shopName: '' })}>按商铺</button></div> : <button type="button" aria-label={`关闭${label}详情`} onClick={onClose}>×</button>}</div></header>
     <div className="detail-query-panel" ref={toolbar} onKeyDown={event => {
       if (event.key === 'Escape' && filterOpen) { event.preventDefault(); event.stopPropagation(); setFilterOpen(false); }
@@ -808,7 +809,7 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
         if (!event.target.closest('a, button')) onToggle(`${item.id}:${kind || 'standard'}`);
       }}>
         <div className="product-heading">
-          <h2 id={titleId}><button type="button" aria-label={membershipName(item, kind)} aria-expanded={expanded} aria-controls={offersId} onClick={() => onToggle(`${item.id}:${kind || 'standard'}`)}>{membershipName(item, kind)}</button></h2>
+          <h2 id={titleId}><button type="button" aria-label={membershipName(item, kind)} aria-expanded={expanded} aria-controls={offersId} onClick={() => onToggle(`${item.id}:${kind || 'standard'}`)}><PlatformIcon platform={item.platform} /><span>{membershipName(item, kind)}</span></button></h2>
           <p className="product-counts">
             <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'shops', kind ? [kind] : [])}>{shopCount} 家商铺</button><span aria-hidden="true">·</span>
             <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'offers', kind ? [kind] : [])}>{productCount} 条报价</button><span aria-hidden="true">·</span>

@@ -3,7 +3,9 @@
 .detail-kind-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
 .detail-kind-tabs button { border: 1px solid var(--catalog-line); border-radius: 6px; padding: 7px 10px; background: #fff; color: inherit; font: inherit; cursor: pointer; }
 .detail-kind-tabs button[aria-pressed="true"] { border-color: #438275; background: #edf7f3; color: #245f57; }
-.product-heading h2 button { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; text-decoration: none; cursor: pointer; }
+.product-heading h2 button { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; text-decoration: none; cursor: pointer; }
+.product-heading h2 button > span, .product-page-title h1 > span { min-width: 0; overflow-wrap: anywhere; }
+.product-platform-icon { display: block; flex: 0 0 22px; width: 22px; height: 22px; object-fit: contain; }
 .product-heading h2 button:focus-visible { outline: 2px solid var(--catalog-action); outline-offset: 3px; border-radius: 3px; }
 .compact-catalog .catalog-toolbar {
   grid-column: 1 / -1;
@@ -1167,6 +1169,7 @@
 .product-page-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-height: 44px; }
 .product-detail-controls .product-page-heading { padding-bottom: 16px; margin-bottom: 12px; border-bottom: 1px solid #e7eeeb; }
 .product-page-title { flex: 1; min-width: 0; }
+.product-page-title h1 { display: flex; align-items: center; gap: 8px; }
 .product-page-category { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .product-back-link { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; color: var(--catalog-muted); font-size: 12px; text-decoration: none; white-space: nowrap; }
 .product-detail-controls .product-back-link { align-self: stretch; padding-right: 18px; margin-right: 4px; border-right: 1px solid #e7eeeb; }

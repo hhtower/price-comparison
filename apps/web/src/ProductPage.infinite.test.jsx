@@ -52,6 +52,8 @@ test('compact product page hides site navigation and appends quotes until all ar
   expect(controls).toContainElement(screen.getByRole('heading', { level: 1, name: product.name }));
   expect(controls).toContainElement(screen.getByRole('textbox', { name: '搜索商铺或报价' }));
   expect(controls).toContainElement(screen.getByRole('button', { name: '官网正价参考' }));
+  expect(screen.getByRole('heading', { level: 1, name: product.name }).querySelector('.product-platform-icon')).toHaveAttribute('alt', '');
+  expect(document.querySelector('.shop-offer .product-platform-icon')).toBeNull();
   expect(calls.some(({ url }) => url.pathname === '/api/catalog/coverage')).toBe(false);
   await act(async () => virtual.endReached());
   await screen.findByText('报价12');

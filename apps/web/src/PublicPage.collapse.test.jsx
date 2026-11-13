@@ -35,6 +35,19 @@ function mount(membership = false, latestCapturedAt, inStock = true, stockQuanti
   </VirtuosoMockContext.Provider>);
 }
 
+test('platform icon belongs to the product title and clicking it expands quotes without repeating icons', async () => {
+  mount();
+  const trigger = await screen.findByRole('button', { name: 'ChatGPT Plus' });
+  const icon = trigger.querySelector('.product-platform-icon');
+  expect(icon).toHaveAttribute('alt', '');
+  expect(icon).toHaveAttribute('aria-hidden', 'true');
+  fireEvent.click(icon);
+  expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  const card = trigger.closest('article');
+  expect(card.querySelectorAll('.product-platform-icon')).toHaveLength(1);
+  expect(card.querySelectorAll('.shop-offer')).toHaveLength(4);
+});
+
 test.each([false, true])('expanded quotes show stock status in previews and details (membership: %s)', async membership => {
   mount(membership);
   const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充' : 'ChatGPT Plus' });
