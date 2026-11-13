@@ -13,7 +13,7 @@ test('tag extraction retains rejected canonical facts and sanitized citations', 
   assert.ok(decision.rejectedTags[0]?.reasonCode);
 });
 
-test('audit includes removals and full-set replacements', () => {
+test('complete results replace facts while failed results preserve existing facts', () => {
   const decision = validateTagExtractionDecision(1n, [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1个月' }] }], { spec: '1个月' });
   const before = [{ name: 'duration', value: 30 }, { name: 'renewable', value: '有' }];
   const unchanged = buildTagExtractionOutcome(decision, before);
@@ -23,9 +23,15 @@ test('audit includes removals and full-set replacements', () => {
   const updated = buildTagExtractionOutcome(decision, [{ name: 'duration', value: 365 }]);
   assert.equal(updated.outcome, 'updated');
   assert.equal(updated.diff.length, 1);
-  assert.equal(buildTagExtractionOutcome(validateTagExtractionDecision(1n, [], {}), before).outcome, 'updated');
+  const empty = buildTagExtractionOutcome(validateTagExtractionDecision(1n, [], {}), before);
+  assert.equal(empty.outcome, 'empty');
+  assert.deepEqual(empty.after, []);
+  assert.equal(empty.diff.length, 2);
   const rejected = validateTagExtractionDecision(1n, [{ name: 'renewable', value: '有', evidence: [{ path: 'spec', quote: '无' }] }], { spec: '无' });
-  assert.equal(buildTagExtractionOutcome(rejected, before).outcome, 'updated');
+  const failed = buildTagExtractionOutcome(rejected, before);
+  assert.equal(failed.outcome, 'failed');
+  assert.deepEqual(failed.after, before);
+  assert.deepEqual(failed.diff, []);
 });
 
 test('all retained audit strings and arrays are bounded and redacted', () => {

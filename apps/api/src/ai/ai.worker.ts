@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WorkerRuntime, type WorkerRuntimeOptions, type WorkerRuntimeService, type WorkerLogger } from '../workers/worker-runtime.js';
 import type { AiRepository, AiBatchResultMetadata } from './ai.repository.js';
-import { parseStandardizationProtocolResponse, type ParsedStandardizationResponse } from './ai.schemas.js';
+import { parseStandardizationProtocolResponse, StandardizationValidationError, type ParsedStandardizationResponse } from './ai.schemas.js';
 import { createStreamingCall, type StreamingUsage } from './llm-runtime.js';
 import { classifyRetryClass } from '../jobs/jobs.repository.js';
 import { recordAiTimingSafely, type AiTimingRecorder } from '../observability/ai-metrics.js';
@@ -12,15 +12,17 @@ import { buildTagExtractionRequest, parseTagExtractionResponse } from './tag-ext
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest,
   parseMembershipFeatureResponse, parseMembershipFeatureReviewResponse, type MembershipFeatureResponse,
   type MembershipFeatureReviewResponse } from './membership-feature-request.js';
-import { validateReviewedTagExtractionDecision, type TagExtractionDecision } from './tag-extraction-result.js';
+import { mergeTagExtractionDecision, validateReviewedTagExtractionDecision, type TagExtractionDecision } from './tag-extraction-result.js';
 import { alignTagReviewDecisions, buildTagReviewRequest, parseTagReviewResponse, type TagReviewResponse } from './tag-review-request.js';
+import { buildProductTextReviewRequest, parseProductTextReviewResponse, type ProductTextReviewResponse } from './product-text-review-request.js';
+import { readTextEvidence, validateTextReview } from '../shops/shop-text-review.js';
 import { buildExtractionPayload } from './adaptive-batching.js';
 import { isAttributeJobType, type JsonValue } from '../database/types.js';
 import { buildResponseAudit } from './response-audit.js';
 import { buildStandardizationReviewRequest, parseStandardizationReviewResponse } from './standardization-review-request.js';
 export { buildStandardizationRequest, estimateStandardizationRequest, assertStandardizationRequestFits, readStandardizationRequestLimits } from './standardization-request.js';
 
-export type StandardizationModelResult = ParsedStandardizationResponse & { standardizationStage?: 'generate' | 'review'; tagExtractionItems?: TagExtractionDecision[]; tagExtractionStage?: 'extract' | 'review'; metadata?: AiBatchResultMetadata & {
+export type StandardizationModelResult = ParsedStandardizationResponse & { standardizationStage?: 'generate' | 'review'; tagExtractionItems?: TagExtractionDecision[]; tagExtractionStage?: 'extract' | 'review' | 'repair'; metadata?: AiBatchResultMetadata & {
   usage?: StreamingUsage | null; responseModel?: string | null; responseId?: string | null;
 } };
 export type StandardizationModelCall = ((job: any, signal: AbortSignal) => Promise<StandardizationModelResult>) & {
@@ -139,12 +141,15 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
     // Feature classification shares batched transport and checkpoints with tag extraction.
     if (isAttributeJobType(claimed.row?.job_type)) {
       const membershipFeatures = claimed.row.job_type === 'membership_features';
-      const { jobId, model, inputs, stage = 'extract', proposals } = await repository.getTagExtractionBatchInputs(BigInt(claimed.id));
+      const textReview = claimed.row.job_type === 'text_review';
+      const { jobId, model, inputs, stage = 'extract', proposals, previousDecisions } = await repository.getTagExtractionBatchInputs(BigInt(claimed.id));
       const payloads = inputs.map(i => ({ ...(i.payload && typeof i.payload === 'object' && !Array.isArray(i.payload) ? i.payload : {}),
         id: i.productId.toString(), name: i.name, spec: i.spec as string | null, sourceData: i.sourceData }));
       if (stage === 'review' && !proposals) throw new Error('tag review proposals are missing');
-      const built = stage === 'review' ? (membershipFeatures ? buildMembershipFeatureReviewRequest : buildTagReviewRequest)(payloads, proposals!, model)
-        : membershipFeatures ? buildMembershipFeatureRequest(payloads, model) : buildTagExtractionRequest(payloads, model);
+      const built = textReview ? buildProductTextReviewRequest(payloads, model)
+        : stage === 'review' ? membershipFeatures ? buildMembershipFeatureReviewRequest(payloads, proposals!, model)
+          : buildTagReviewRequest(payloads, proposals!, model, previousDecisions)
+        : membershipFeatures ? buildMembershipFeatureRequest(payloads, model) : buildTagExtractionRequest(payloads, model, previousDecisions);
       assertStandardizationRequestFits(built, limits);
       signal.throwIfAborted();
       const context = { parentJobId: String(jobId), batchId: String(claimed.id), jobType: claimed.row.job_type,
@@ -158,12 +163,13 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
         try {
           if (response.finishReason !== 'stop') throw new Error('AI response has invalid completion reason');
           phase = 'schema';
-          const parsed = stage === 'review' ? (membershipFeatures ? parseMembershipFeatureReviewResponse : parseTagReviewResponse)(response.content)
+          const parsed = textReview ? parseProductTextReviewResponse(response.content)
+            : stage === 'review' ? (membershipFeatures ? parseMembershipFeatureReviewResponse : parseTagReviewResponse)(response.content)
             : membershipFeatures ? parseMembershipFeatureResponse(response.content) : parseTagExtractionResponse(response.content);
           if (parsed.items.length !== inputs.length || new Set(parsed.items.map(item => item.id)).size !== parsed.items.length
             || parsed.items.some(item => !inputs.some(input => String(input.productId) === item.id)))
             throw new Error('Tag extraction response IDs do not match inputs');
-          if (stage === 'review' && !membershipFeatures) {
+          if (stage === 'review' && !membershipFeatures && !textReview) {
             for (const proposed of proposals!.items) {
               const reviewed = (parsed as TagReviewResponse).items.find(item => item.id === proposed.id);
               if (!reviewed) throw new Error('Tag review is missing a proposed product');
@@ -173,6 +179,15 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
           phase = 'evidence';
           const items: TagExtractionDecision[] = parsed.items.map(item => {
             const input = inputs.find(i => i.productId.toString() === item.id);
+            if (textReview) {
+              try {
+                const reviewed = validateTextReview((item as ProductTextReviewResponse['items'][number]).textReview, readTextEvidence(input!.payload));
+                return { productId: input!.productId, tags: [], rejectedTags: [], textReview: reviewed };
+              } catch {
+                throw new StandardizationValidationError('Product text review evidence is invalid', 'evidence_invalid',
+                  { stage: 'attribute', code: 'text_review_invalid', fieldPath: 'items.textReview' });
+              }
+            }
             if (membershipFeatures) {
               if (stage === 'review') {
                 const proposed = proposals!.items.find(candidate => candidate.id === item.id)!;
@@ -188,15 +203,16 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
               const reviewed = item as TagReviewResponse['items'][number];
               const proposed = proposals!.items.find(candidate => candidate.id === item.id)!;
               const decisions = alignTagReviewDecisions(reviewed, proposed);
-              const original = proposed.tags.map((tag, proposalIndex) => ({ proposalIndex, name: tag.name, value: tag.value, evidence: [{ path: tag.path, quote: tag.quote }] }));
+              const original = proposed.tags.map((tag, proposalIndex) => ({ proposalIndex, name: tag.name, value: tag.value, evidence: [] }));
               const decision = validateReviewedTagExtractionDecision(input!.productId,
                 original.filter((_tag, index) => decisions[index]),
                 original.filter((_tag, index) => !decisions[index]).map(tag =>
-                  ({ ...tag, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' })), payload, decisions, reviewed.textReview);
-              return decision;
+                  ({ ...tag, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' })), payload, decisions, reviewed.complete);
+              const previous = previousDecisions?.find(item => item.productId === input!.productId);
+              return previous ? mergeTagExtractionDecision(previous, decision) : decision;
             }
             const tags = (item as ReturnType<typeof parseTagExtractionResponse>['items'][number]).tags
-              .map(t => ({ name: t.name, value: t.value, evidence: [{ path: t.path, quote: t.quote }] }));
+              .map((t, proposalIndex) => ({ name: t.name, value: t.value, evidence: [], proposalIndex }));
             return { productId: input!.productId, tags, rejectedTags: [] };
           });
           const metadata = { ...buildResponseAudit(response, inputs.length, phase), retryClass: null };

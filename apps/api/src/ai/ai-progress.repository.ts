@@ -11,6 +11,7 @@ export interface ProgressSnapshot {
   results: { classified: number; unclassified: number; unclassifiedReasons: Record<string, number>; standardProducts: number };
   missing: { scheduledInputs: number; reprocessedInputs: number };
   tagResults?: Record<string, number>;
+  textReviewResults?: Record<string, number>;
   tagAcceptance?: { acceptedTags: number; rejectedTags: number; partialProducts: number };
   featureAcceptance?: { acceptedProducts: number; rejectedProducts: number };
   tagStages?: { extractionCompleted: number; reviewQueued: number; reviewRunning: number; reviewCompleted: number; publicationQueued: number };
@@ -63,7 +64,7 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
         count(*) filter(where status='queued')::int member_queued,
         count(*) filter(where status='processing')::int member_running,
         count(*) filter(where j.job_type='membership_features' and status not in ('queued','processing')
-          and output->>'outcome' in ('updated','unchanged','empty','review')
+          and output->>'outcome' in ('updated','unchanged','empty','review','partial_success')
           and output->'classificationReviewed' = 'true'::jsonb
           and output #>> '{classification,reason}' = 'llm_reviewed'
           and output #>> '{classification,kind}' = any(${[...MEMBERSHIP_KINDS]}::text[]))::int feature_accepted,
@@ -74,11 +75,11 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
         coalesce(sum(jsonb_array_length(coalesce(output->'rejectedTags','[]'::jsonb)))
           filter(where j.job_type in ('tag_extraction','membership_features') and status not in ('queued','processing')),0)::int tag_rejected,
         count(*) filter(where j.job_type in ('tag_extraction','membership_features') and status not in ('queued','processing')
-          and output->>'outcome' in ('updated','review')
+          and (output->>'outcome' = 'partial_success' or (output->>'outcome' in ('updated','review')
           and jsonb_array_length(coalesce(output->'acceptedTags','[]'::jsonb))>0
-          and jsonb_array_length(coalesce(output->'rejectedTags','[]'::jsonb))>0)::int tag_partial,
+          and jsonb_array_length(coalesce(output->'rejectedTags','[]'::jsonb))>0)))::int tag_partial,
         (select coalesce(jsonb_object_agg(outcome,n),'{}'::jsonb) from (
-          select case when output->>'outcome' in ('updated','unchanged','empty','review','skipped','failed','cancelled') then output->>'outcome' else 'unrecorded' end outcome,count(*)::int n
+          select case when output->>'outcome' in ('updated','unchanged','empty','review','partial_success','skipped','failed','cancelled') then output->>'outcome' else 'unrecorded' end outcome,count(*)::int n
           from ai_job_input_members where job_id=j.id and status not in ('queued','processing') group by 1
         ) outcomes) tag_counts
       from ai_job_input_members where job_id=j.id
@@ -128,19 +129,21 @@ export function progressSnapshotFromRow(row: Record<string, unknown>): ProgressS
   const num = (value: unknown) => Number(value ?? 0);
   const reasons = row.reason_counts && typeof row.reason_counts === 'object' && !Array.isArray(row.reason_counts)
     ? Object.fromEntries(Object.entries(row.reason_counts as Record<string, unknown>).map(([key, value]) => [key, num(value)])) : {};
-  const tag = isAttributeJobType(String(row.job_type));
-  const tagResults = Object.fromEntries(['updated','unchanged','empty','review','skipped','failed','cancelled','unrecorded'].map(key => [key, num((row.tag_counts as Record<string, unknown> | undefined)?.[key])]));
+  const attribute = isAttributeJobType(String(row.job_type));
+  const tag = row.job_type === 'tag_extraction' || row.job_type === 'membership_features';
+  const tagResults = Object.fromEntries(['updated','unchanged','empty','review','partial_success','skipped','failed','cancelled','unrecorded'].map(key => [key, num((row.tag_counts as Record<string, unknown> | undefined)?.[key])]));
   const terminal = Object.values(tagResults).reduce((a,b)=>a+b,0);
   return {
     ...(tag ? { tagResults, tagAcceptance: { acceptedTags: num(row.tag_accepted), rejectedTags: num(row.tag_rejected), partialProducts: num(row.tag_partial) } } : {}),
+    ...(row.job_type === 'text_review' ? { textReviewResults: tagResults } : {}),
     ...(row.job_type === 'membership_features' ? { featureAcceptance: {
       acceptedProducts: num(row.feature_accepted), rejectedProducts: num(row.feature_rejected),
     } } : {}),
     ...(tag ? { tagStages: { extractionCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
-    ...(!tag ? { standardizationStages: { generationCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
+    ...(!attribute ? { standardizationStages: { generationCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
     jobId: str(row.job_id), jobType: String(row.job_type ?? ''), version: str(row.version), phase: String(row.phase ?? 'standardizing'), status: String(row.status),
-    total: str(tag ? row.member_total : row.total), queued: str(tag ? row.member_queued : row.queued), running: str(tag ? row.member_running : row.running), processed: str(tag ? terminal : row.processed), succeeded: str(tag ? terminal - tagResults.failed! - tagResults.cancelled! - tagResults.unrecorded! : row.succeeded), failed: str(tag ? tagResults.failed : row.failed),
-    rawProductCount: num(tag ? row.member_total : row.total), uniqueInputCount: num(row.unique_input_count),
+    total: str(attribute ? row.member_total : row.total), queued: str(attribute ? row.member_queued : row.queued), running: str(attribute ? row.member_running : row.running), processed: str(attribute ? terminal : row.processed), succeeded: str(attribute ? terminal - tagResults.failed! - tagResults.cancelled! - tagResults.unrecorded! - tagResults.partial_success! : row.succeeded), failed: str(attribute ? tagResults.failed : row.failed),
+    rawProductCount: num(attribute ? row.member_total : row.total), uniqueInputCount: num(row.unique_input_count),
     requests: { totalBatches: num(row.batch_total), queuedBatches: num(row.batch_queued), runningBatches: num(row.batch_running), succeededBatches: num(row.batch_succeeded), failedBatches: num(row.batch_failed), cancelledBatches: num(row.batch_cancelled), confirmed: num(row.confirmed_requests), unknown: num(row.unknown_requests), budgetUsed: num(row.request_budget_used), budgetLimit: num(row.request_budget_limit) },
     publication: { totalUnits: num(row.unit_total), queuedUnits: num(row.unit_queued), runningUnits: num(row.unit_running), succeededUnits: num(row.unit_succeeded), blockedUnits: num(row.unit_blocked), failedUnits: num(row.unit_failed), cancelledUnits: num(row.unit_cancelled), publishedMembers: num(row.published_members), pendingMembers: num(row.pending_members) },
     results: { classified: num(row.classified), unclassified: num(row.unclassified), unclassifiedReasons: reasons, standardProducts: num(row.standard_products) },

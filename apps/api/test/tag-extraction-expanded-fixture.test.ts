@@ -5,13 +5,16 @@ import { parseTagExtractionResponse } from '../src/ai/tag-extraction-request.js'
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import { validateTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 
-test('synthetic diagnostic references are distinct and supported by cited evidence', async () => {
+test('synthetic references use the compact tag protocol while retaining cited ground truth', async () => {
   const fixture = JSON.parse(await readFile(new URL('./fixtures/tag-extraction-quality-expanded-20261016.json', import.meta.url), 'utf8'));
   assert.equal(fixture.samples.length, 51);
   assert.equal(new Set(fixture.samples.map((sample: any) => sample.id)).size, 51);
   const inputs = fixture.samples.map((sample: any) => JSON.stringify({ ...sample.input, id: undefined }));
   assert.equal(new Set(inputs).size, 51);
-  parseTagExtractionResponse(JSON.stringify({ items: fixture.samples.map((sample: any) => ({ id: sample.id, tags: sample.expected })) }));
+  const response = { items: fixture.samples.map((sample: any) => ({
+    id: sample.id, tags: sample.expected.map(({ name, value }: any) => ({ name, value })),
+  })) };
+  assert.deepEqual(parseTagExtractionResponse(JSON.stringify(response)), response);
   for (const sample of fixture.samples) {
     assert.equal(sample.provenance.kind, 'synthetic-control');
     const proposed = sample.expected.map(({ name, value, path, quote }: any) =>

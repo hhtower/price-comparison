@@ -12,7 +12,7 @@ const inputs = [
 ];
 
 function setup(content: string, finishReason: string | null = 'stop', auditUnavailable = false, throwingLogger = false,
-  reviewProposals?: Array<{ name: string; value: import('@price-comparison/catalog/purchase-attributes').TagValue; path: string; quote: string }>) {
+  reviewProposals?: Array<{ name: string; value: import('@price-comparison/catalog/purchase-attributes').TagValue }>) {
   const outcomes: Array<{ outcome: unknown; metadata?: AiBatchResultMetadata; claim: unknown }> = [];
   const events: unknown[][] = [];
   let sends = 0, saved: unknown, savedMetadata: AiBatchResultMetadata | undefined, failure: unknown, completed = false;
@@ -84,7 +84,7 @@ function assertProvenance(metadata: AiBatchResultMetadata | undefined, content: 
 }
 
 test('successful tag streams persist response provenance and counts with the decision', { timeout: 5000 }, async () => {
-  const tag = { name: 'duration', value: 30, path: 'spec', quote: '1\u4e2a\u6708' };
+  const tag = { name: 'duration', value: 30 };
   const content = JSON.stringify({ items: [{ id: '11', tags: [tag] }, { id: '12', tags: [] }] });
   const state = setup(content);
   await state.run();
@@ -92,7 +92,7 @@ test('successful tag streams persist response provenance and counts with the dec
   assert.equal(state.stats().failure, undefined);
   assert.equal(state.stats().sends, 1);
   assert.deepEqual(state.stats().saved, [
-    { productId: 11n, tags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1\u4e2a\u6708' }] }], rejectedTags: [] },
+    { productId: 11n, tags: [{ name: 'duration', value: 30, evidence: [], proposalIndex: 0 }], rejectedTags: [] },
     { productId: 12n, tags: [], rejectedTags: [] },
   ]);
   const diagnostic = assertProvenance(state.outcomes[0]!.metadata, content);
@@ -115,13 +115,13 @@ test('partial extraction responses retain provenance and fail without inventing 
 
 test('review rejection counts measure affected items while preserving accepted facts', { timeout: 5000 }, async () => {
   const tags = [
-    { name: 'duration', value: 30, path: 'spec', quote: '1\u4e2a\u6708' },
-    { name: 'private-response', value: 'yes', path: 'spec', quote: 'private-response' },
-    { name: 'another-private-response', value: 'yes', path: 'spec', quote: 'private-response' },
+    { name: 'duration', value: 30 },
+    { name: 'private-response', value: 'yes' },
+    { name: 'another-private-response', value: 'yes' },
   ];
     const content = JSON.stringify({ items: [
-      { id: '11', decisions: [{ tagId: '11:2', accepted: false }, { tagId: '11:0', accepted: true }, { tagId: '11:1', accepted: false }], textReview: null },
-      { id: '12', decisions: [], textReview: null },
+      { id: '11', accepted: [true, false, false], complete: true },
+      { id: '12', accepted: [], complete: true },
     ] });
     const state = setup(content, 'stop', false, false, tags);
     await state.run();
@@ -132,17 +132,19 @@ test('review rejection counts measure affected items while preserving accepted f
     assert.equal(diagnostic.missingItemCount, 0);
     assert.equal(diagnostic.rejectedItemCount, 1, 'two rejected tags on one product count as one affected item');
     assert.equal(diagnostic.code, 'items_rejected');
-    const saved = state.stats().saved as Array<{ tags: unknown[]; rejectedTags: unknown[] }>;
-    assert.equal(saved[0]!.tags.length, 1);
+    const saved = state.stats().saved as Array<{ tags: unknown[]; rejectedTags: Array<{ proposalIndex: number; reasonCode: string }>; reviewDecisions: boolean[] }>;
+    assert.deepEqual(saved[0]!.tags, [{ name: 'duration', value: 30, evidence: [], proposalIndex: 0 }]);
+    assert.deepEqual(saved[0]!.reviewDecisions, [true, false, false]);
     assert.equal(saved[0]!.rejectedTags.length, 2);
+    assert.deepEqual(saved[0]!.rejectedTags.map(tag => [tag.proposalIndex, tag.reasonCode]), [[1, 'review_rejected'], [2, 'review_rejected']]);
 });
 
 for (const [name, content, phase] of [
   ['JSON', '{"private-response":', 'json'],
   ['items type', '{"items":"private-response"}', 'schema'],
   ['root keys', '{"items":[],"private-response":true}', 'schema'],
-  ['tag fields', '{"items":[{"id":"11","tags":[{"name":"duration","value":"1 month","path":"spec","quote":""}]}]}', 'schema'],
-  ['extra tag keys', '{"items":[{"id":"11","tags":[{"name":"duration","value":"1 month","path":"spec","quote":"private-response","extra":true}]}]}', 'schema'],
+  ['tag fields', '{"items":[{"id":"11","tags":[{"name":"duration","value":[]}]}]}', 'schema'],
+  ['extra tag keys', '{"items":[{"id":"11","tags":[{"name":"duration","value":30,"extra":"private-response"}]}]}', 'schema'],
   ['duplicate IDs', '{"items":[{"id":"11","tags":[]},{"id":"11","tags":[]}]}', 'schema'],
   ['unknown IDs', '{"items":[{"id":"99","tags":[]}]}', 'schema'],
   ['unsafe IDs', '{"items":[{"id":"0","tags":[]}]}', 'schema'],

@@ -6,6 +6,39 @@ import { recordAiTiming } from '../src/observability/ai-metrics.js';
 import { MetricsRegistry } from '../src/observability/metrics.js';
 import { extractionProgressDelta, getJobProgress, incrementJobProgress, progressSnapshotFromRow } from '../src/ai/ai-progress.repository.js';
 
+test('partial tag outcomes are processed but never reported as full successes', () => {
+  const snapshot = progressSnapshotFromRow({
+    job_type: 'tag_extraction', member_total: 4,
+    tag_counts: { updated: 1, partial_success: 2, failed: 1 },
+    tag_accepted: 3, tag_rejected: 1, tag_partial: 2,
+  });
+  assert.equal(snapshot.processed, '4');
+  assert.equal(snapshot.succeeded, '1');
+  assert.equal(snapshot.failed, '1');
+  assert.equal(snapshot.tagResults?.partial_success, 2);
+  assert.equal(snapshot.tagAcceptance?.partialProducts, 2);
+});
+
+test('text review uses member progress without inventing tag or identity stages', () => {
+  const snapshot = progressSnapshotFromRow({
+    job_type: 'text_review', total: 999n, processed: 999n,
+    member_total: 4, member_queued: 1, member_running: 1,
+    tag_counts: { updated: 1, failed: 1 }, tag_accepted: 99,
+  });
+  assert.equal(snapshot.total, '4');
+  assert.equal(snapshot.queued, '1');
+  assert.equal(snapshot.running, '1');
+  assert.equal(snapshot.processed, '2');
+  assert.equal(snapshot.succeeded, '1');
+  assert.equal(snapshot.failed, '1');
+  assert.equal(snapshot.tagResults, undefined);
+  assert.equal(snapshot.textReviewResults?.updated, 1);
+  assert.equal(snapshot.textReviewResults?.failed, 1);
+  assert.equal(snapshot.tagAcceptance, undefined);
+  assert.equal(snapshot.tagStages, undefined);
+  assert.equal(snapshot.standardizationStages, undefined);
+});
+
 for (const jobType of ['tag_extraction', 'membership_features']) {
   test(`${jobType} progress uses member outcomes and exposes its actual task type`, () => {
     const snapshot = progressSnapshotFromRow({

@@ -26,7 +26,7 @@ const currentPending = (scopeShopId?: bigint) => sql<bigint>`(select count(disti
     and not exists (select 1 from ai_job_input_members newer join ai_jobs newer_job on newer_job.id = newer.job_id
       where newer.product_id = p.id and newer.job_id > m.job_id and newer.content_version = p.content_version
         and newer.standardization_revision = p.standardization_revision
-        and newer_job.job_type not in ('tag_extraction', 'membership_features')))`;
+        and newer_job.job_type not in ('tag_extraction', 'membership_features', 'text_review')))`;
 
 /** Job history stays available; attention and pending counts project current product state. */
 export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQueueFilter) {
@@ -52,7 +52,7 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
     else 'other_unclassified' end`;
   // Version-expired jobs can never run again; the board only lists jobs on the current pipeline.
   const configCurrent=sql<boolean>`j.prompt_version = ${STANDARDIZATION_PROMPT_VERSION} and j.rule_version = ${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`;
-  const typeScope=sql<boolean>`j.job_type not in ('tag_extraction', 'membership_features') ${input.jobType==='incremental'||input.jobType==='manual_full'||input.jobType==='calibration'?sql`and j.job_type=${input.jobType}`:sql``} ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or exists(select 1 from ai_job_input_members scope_member join products scope_product on scope_product.id=scope_member.product_id where scope_member.job_id=j.id and scope_product.shop_id=${input.scopeShopId}))`}`;
+  const typeScope=sql<boolean>`j.job_type not in ('tag_extraction', 'membership_features', 'text_review') ${input.jobType==='incremental'||input.jobType==='manual_full'||input.jobType==='calibration'?sql`and j.job_type=${input.jobType}`:sql``} ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or exists(select 1 from ai_job_input_members scope_member join products scope_product on scope_product.id=scope_member.product_id where scope_member.job_id=j.id and scope_product.shop_id=${input.scopeShopId}))`}`;
   const statusScope=filter==='unfinished'?unfinished:filter==='attention'?attention:sql<boolean>`true`;
   let query = db.selectFrom('ai_jobs as j').leftJoin('shops as s', 's.id', 'j.scope_shop_id')
     .select(['j.id', 'j.status', 'j.total', 'j.model', 'j.job_type', 'j.source_fetch_run_id', 'j.scope_shop_id',
@@ -112,8 +112,18 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
      and standard.verification_state='verified' and standard.merged_into_id is null
      ${input.jobType==='membership_features'?sql`and is_ai_membership(standard.canonical_family,standard.canonical_product,standard.canonical_tier)`:sql``}
  )`;
+ const capture=sql`(p.source_data->'ratingText')`;
+ const currentSource=(member:'m'|'newer')=>sql<boolean>`${currentTagMemberSource(member)}
+   ${input.jobType==='text_review'?sql`and ${sql.ref(`${member}.payload`)}->'shopText'->>'hash'=${capture}->>'hash'`:sql``}`;
  const eligible=sql<boolean>`p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked
    ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`}
+   ${input.jobType==='text_review'?sql`and case when jsonb_typeof(${capture})='object' then
+     ${capture}-array['unitId','name','description','hash']='{}'::jsonb
+     and jsonb_typeof(${capture}->'unitId')='string' and ${capture}->>'unitId' ~ '[^[:space:]]'
+     and jsonb_typeof(${capture}->'name')='string'
+     and jsonb_typeof(${capture}->'description')='string'
+     and jsonb_typeof(${capture}->'hash')='string' and ${capture}->>'hash' ~ '^[a-f0-9]{64}$'
+     else false end`:sql``}
    and not ${currentManualDecision}
    and not exists(select 1 from standard_product_members a where a.product_id=p.id and a.assignment_source='human')
    and ${publication}`;
@@ -143,16 +153,16 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
    join products p on p.id=m.product_id join shops s on s.id=p.shop_id
   where j.job_type=${input.jobType} and m.content_version=p.content_version
    and m.standardization_revision=p.standardization_revision and m.fingerprint=p.content_fingerprint
-   and ${currentTagMemberSource('m')}
+   and ${currentSource('m')}
    and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
    and ${eligible}
-   and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type=${input.jobType} and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentTagMemberSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${IDENTITY_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`}
+   and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type=${input.jobType} and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${IDENTITY_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`}
  ), current_counts as (
   select job_id,
     count(*) filter(where status in ('queued','processing'))::int current_pending,
-    count(*) filter(where outcome in ('review','failed') or has_rejected)::int current_attention,
+    count(*) filter(where outcome in ('review','partial_success','failed') or has_rejected)::int current_attention,
     count(*) filter(where outcome in ('updated','unchanged','empty','review'))::int covered_products,
-    count(*) filter(where outcome='review' or has_rejected)::int review_products,
+    count(*) filter(where outcome in ('review','partial_success') or has_rejected)::int review_products,
     count(*) filter(where outcome='failed')::int failed_products
   from current_members group by job_id
  ), jobs as (
@@ -178,7 +188,7 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
  (select jsonb_build_object('total',count(*),'unfinished',count(*) filter(where status in ('queued','running','paused','ready')),'queued',count(*) filter(where status='queued'),'running',count(*) filter(where status='running'),'paused',count(*) filter(where status in ('paused','ready')),'attention',count(*) filter(where ${needsAttention}),'pendingProducts',${status==='unfinished'?sql`coalesce(sum(current_pending),0)`:sql`(select count(*) from eligible_products p
    where not exists(select 1 from current_members m where m.product_id=p.id and (
      (m.outcome in ('updated','unchanged','empty','review'))
-     or (m.job_status in ('queued','running','paused','ready') and m.status in ('queued','processing')))))`},'pendingEvents',0,'currentReasons',(select coalesce(jsonb_object_agg(reason,n),'{}'::jsonb) from (select m.reason,count(*)::int n from current_members m where m.job_id in(select id from filtered) and m.status not in ('queued','processing') and (m.output_missing or m.outcome in ('review','failed','skipped','cancelled') or m.has_rejected) group by m.reason) reasons),
+     or (m.job_status in ('queued','running','paused','ready') and m.status in ('queued','processing')))))`},'pendingEvents',0,'currentReasons',(select coalesce(jsonb_object_agg(reason,n),'{}'::jsonb) from (select m.reason,count(*)::int n from current_members m where m.job_id in(select id from filtered) and m.status not in ('queued','processing') and (m.output_missing or m.outcome in ('review','partial_success','failed','skipped','cancelled') or m.has_rejected) group by m.reason) reasons),
  'coveredProducts',coalesce(sum(covered_products),0),
  'reviewProducts',coalesce(sum(review_products),0),
  'failedProducts',coalesce(sum(failed_products),0)) from filtered) summary

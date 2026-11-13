@@ -39,7 +39,7 @@ for (const status of ['all', 'unfinished', 'attention']) {
   });
 }
 
-for (const jobType of ['tag_extraction', 'membership_features']) {
+for (const jobType of ['tag_extraction', 'membership_features', 'text_review']) {
 test(`active ${jobType} summaries count unfinished members with the applicable eligibility guard`, async () => {
   const queries: CompiledQuery[] = [];
   class Driver extends DummyDriver {

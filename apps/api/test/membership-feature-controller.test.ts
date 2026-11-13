@@ -10,25 +10,32 @@ import { Test } from '@nestjs/testing';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { UnauthorizedException, ValidationPipe, VersioningType } from '@nestjs/common';
 
-test('feature creation uses dedicated routes, bounded scope and explicit cost confirmation', async () => {
+const routes = [
+  { name: 'feature', path: 'feature-jobs', preview: 'previewFeatures', create: 'createFeatures',
+    servicePreview: 'previewMembershipFeatureJob', serviceCreate: 'createMembershipFeatureJob' },
+  { name: 'text review', path: 'text-review-jobs', preview: 'previewTextReview', create: 'createTextReview',
+    servicePreview: 'previewProductTextReviewJob', serviceCreate: 'createProductTextReviewJob' },
+] as const;
+
+for (const route of routes) test(`${route.name} creation uses dedicated routes, bounded scope and explicit cost confirmation`, async () => {
   const calls: unknown[] = [];
   const controller = new AiController({
-    previewMembershipFeatureJob: async (input: unknown) => { calls.push(input); return { counts: { eligible: 1 } }; },
-    createMembershipFeatureJob: async (input: unknown) => { calls.push(input); return { id: 12n }; },
+    [route.servicePreview]: async (input: unknown) => { calls.push(input); return { counts: { eligible: 1 } }; },
+    [route.serviceCreate]: async (input: unknown) => { calls.push(input); return { id: 12n }; },
   } as never, {} as never);
   assert.ok(Reflect.getMetadata(GUARDS_METADATA, AiController).includes(AuthGuard));
-  assert.equal(Reflect.getMetadata(PATH_METADATA, controller.previewFeatures), 'feature-jobs/preview');
-  assert.equal(Reflect.getMetadata(PATH_METADATA, controller.createFeatures), 'feature-jobs');
-  const scope = { productIds: ['3'], retryOfJobId: '2' };
-  await controller.previewFeatures(scope);
+  assert.equal(Reflect.getMetadata(PATH_METADATA, controller[route.preview]), `${route.path}/preview`);
+  assert.equal(Reflect.getMetadata(PATH_METADATA, controller[route.create]), route.path);
+  const scope = { productIds: ['3'], scopeShopId: '4', retryOfJobId: '2' };
+  await controller[route.preview](scope);
   const create = { ...scope, requestId: '7310f082-cb6e-4422-8c8d-966788b25905',
     previewDigest: 'a'.repeat(64), acknowledgePossibleCharge: true };
-  await assert.rejects(controller.createFeatures({ ...create, acknowledgePossibleCharge: false }), { code: 'AI_RETRY_ACK_REQUIRED' });
+  await assert.rejects(controller[route.create]({ ...create, acknowledgePossibleCharge: false }), { code: 'AI_RETRY_ACK_REQUIRED' });
   assert.equal(calls.length, 1);
-  assert.deepEqual(await controller.createFeatures(create), { id: '12' });
+  assert.deepEqual(await controller[route.create](create), { id: '12' });
   assert.deepEqual(calls, [
-    { allPending: undefined, productIds: [3n], scopeShopId: undefined, retryOfJobId: 2n },
-    { allPending: undefined, productIds: [3n], scopeShopId: undefined, retryOfJobId: 2n, requestId: create.requestId, previewDigest: create.previewDigest },
+    { allPending: undefined, productIds: [3n], scopeShopId: 4n, retryOfJobId: 2n },
+    { allPending: undefined, productIds: [3n], scopeShopId: 4n, retryOfJobId: 2n, requestId: create.requestId, previewDigest: create.previewDigest },
   ]);
 });
 
@@ -48,27 +55,29 @@ test('feature result and audit routes retain authenticated generic auditing and 
   assert.throws(() => controller.featureAudit('12', '0'), { code: 'INVALID_ID' });
 });
 
-test('feature service uses the configured model even when tag extraction is disabled', () => {
+for (const route of routes) test(`${route.name} service uses the configured model even when tag extraction is disabled`, () => {
   const previous = { ...process.env };
   try {
     Object.assign(process.env, { AI_STANDARDIZATION_ENABLED: 'true', AI_TAG_EXTRACTION_ENABLED: 'false',
       AI_API_KEY: 'test', AI_BASE_URL: 'http://localhost:1234/v1', AI_MODEL: 'local-feature-test' });
     const calls: unknown[] = [];
     const service = new AiService({
-      previewMembershipFeatureJob: (input: unknown) => calls.push(input),
-      createMembershipFeatureJob: (input: unknown) => calls.push(input),
+      [route.servicePreview]: (input: unknown) => calls.push(input),
+      [route.serviceCreate]: (input: unknown) => calls.push(input),
     } as never);
-    service.previewMembershipFeatureJob({ productIds: [3n] });
-    service.createMembershipFeatureJob({ allPending: true, requestId: 'request' });
+    service[route.servicePreview]({ productIds: [3n] });
+    service[route.serviceCreate]({ allPending: true, requestId: 'request' });
     assert.deepEqual(calls, [
       { productIds: [3n], model: 'local-feature-test' },
       { allPending: true, requestId: 'request', model: 'local-feature-test' },
     ]);
     process.env.AI_STANDARDIZATION_ENABLED = 'false';
-    assert.throws(() => service.createMembershipFeatureJob({ allPending: true, requestId: 'request' }), { code: 'AI_STANDARDIZATION_DISABLED' });
+    assert.throws(() => service[route.servicePreview]({ productIds: [3n] }), { code: 'AI_STANDARDIZATION_DISABLED' });
+    assert.throws(() => service[route.serviceCreate]({ allPending: true, requestId: 'request' }), { code: 'AI_STANDARDIZATION_DISABLED' });
     process.env.AI_STANDARDIZATION_ENABLED = 'true';
     delete process.env.AI_API_KEY;
-    assert.throws(() => service.previewMembershipFeatureJob({ productIds: [3n] }), { code: 'AI_CONFIGURATION_INCOMPLETE' });
+    assert.throws(() => service[route.servicePreview]({ productIds: [3n] }), { code: 'AI_CONFIGURATION_INCOMPLETE' });
+    assert.throws(() => service[route.serviceCreate]({ allPending: true, requestId: 'request' }), { code: 'AI_CONFIGURATION_INCOMPLETE' });
     assert.equal(calls.length, 2);
   } finally {
     for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
@@ -76,14 +85,14 @@ test('feature service uses the configured model even when tag extraction is disa
   }
 });
 
-test('feature HTTP endpoints validate scopes and reject model overrides before creating work', async () => {
+for (const route of routes) test(`${route.name} HTTP endpoints validate scopes and reject model overrides before creating work`, async () => {
   const calls: unknown[] = [];
   const module = await Test.createTestingModule({
     controllers: [AiController, AiAdminController],
     providers: [
       { provide: AiService, useValue: {
-        previewMembershipFeatureJob: async (input: unknown) => { calls.push(input); return { counts: { eligible: 1 } }; },
-        createMembershipFeatureJob: async (input: unknown) => { calls.push(input); return { id: 12n }; },
+        [route.servicePreview]: async (input: unknown) => { calls.push(input); return { counts: { eligible: 1 } }; },
+        [route.serviceCreate]: async (input: unknown) => { calls.push(input); return { id: 12n }; },
       } },
       { provide: AiRepository, useValue: {
         listTagJobResults: async () => ({ items: [{ id: '3', classification: { kind: 'account' } }] }),
@@ -102,22 +111,39 @@ test('feature HTTP endpoints validate scopes and reject model overrides before c
     const server = app.getHttpAdapter().getInstance();
     const valid = { productIds: ['3'], requestId: '7310f082-cb6e-4422-8c8d-966788b25905',
       previewDigest: 'a'.repeat(64), acknowledgePossibleCharge: true };
-    assert.equal((await server.inject({ method: 'POST', url: '/v1/ai/feature-jobs', payload: valid })).statusCode, 401);
+    const url = `/v1/ai/${route.path}`;
+    assert.equal((await server.inject({ method: 'POST', url, payload: valid })).statusCode, 401);
+    assert.equal((await server.inject({ method: 'POST', url: `${url}/preview`, payload: { productIds: ['3'] } })).statusCode, 401);
+    for (const payload of [
+      { productIds: ['0'] }, { productIds: ['3', '3'] }, { productIds: [] },
+      { productIds: Array.from({ length: 501 }, (_, index) => String(index + 1)) },
+      { productIds: ['3'], model: 'unapproved-model' }, { allPending: false },
+      { productIds: ['3'], scopeShopId: '0' }, { productIds: ['3'], retryOfJobId: '0' },
+    ]) {
+      const response = await server.inject({ method: 'POST', url: `${url}/preview`, headers: { authorization: 'admin' }, payload });
+      assert.equal(response.statusCode, 400, response.payload);
+    }
     for (const payload of [
       { ...valid, productIds: ['0'] }, { ...valid, productIds: ['3', '3'] },
       { ...valid, model: 'unapproved-model' }, { ...valid, acknowledgePossibleCharge: false },
+      { ...valid, acknowledgePossibleCharge: undefined },
       { ...valid, requestId: 'invalid' }, { ...valid, previewDigest: 'invalid' },
     ]) {
-      const response = await server.inject({ method: 'POST', url: '/v1/ai/feature-jobs', headers: { authorization: 'admin' }, payload });
+      const response = await server.inject({ method: 'POST', url, headers: { authorization: 'admin' }, payload });
       assert.equal(response.statusCode, 400, response.payload);
     }
     assert.equal(calls.length, 0);
-    const preview = await server.inject({ method: 'POST', url: '/v1/ai/feature-jobs/preview', headers: { authorization: 'admin' }, payload: { productIds: ['3'] } });
+    const preview = await server.inject({ method: 'POST', url: `${url}/preview`, headers: { authorization: 'admin' }, payload: { productIds: ['3'] } });
     assert.equal(preview.statusCode, 201);
-    const create = await server.inject({ method: 'POST', url: '/v1/ai/feature-jobs', headers: { authorization: 'admin' }, payload: valid });
+    assert.deepEqual(preview.json(), { counts: { eligible: 1 } });
+    const create = await server.inject({ method: 'POST', url, headers: { authorization: 'admin' }, payload: valid });
     assert.equal(create.statusCode, 201);
     assert.deepEqual(create.json(), { id: '12' });
-    for (const path of ['feature-results', 'feature-results/3']) {
+    assert.deepEqual(calls, [
+      { allPending: undefined, productIds: [3n], scopeShopId: undefined, retryOfJobId: undefined },
+      { allPending: undefined, productIds: [3n], scopeShopId: undefined, retryOfJobId: undefined, requestId: valid.requestId, previewDigest: valid.previewDigest },
+    ]);
+    for (const path of route.name === 'feature' ? ['feature-results', 'feature-results/3'] : []) {
       assert.equal((await server.inject({ url: `/v1/admin/ai/jobs/12/${path}` })).statusCode, 401);
       assert.equal((await server.inject({ url: `/v1/admin/ai/jobs/12/${path}`, headers: { authorization: 'admin' } })).statusCode, 200);
     }

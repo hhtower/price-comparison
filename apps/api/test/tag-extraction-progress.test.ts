@@ -40,7 +40,7 @@ test(`${jobType} progress counts stored acceptance for completed members and its
     const migration = await new Migrator({ db, provider: migrationProvider, migrationTableSchema: schema }).migrateToLatest();
     if (migration.error) throw migration.error;
     const shop = await db.insertInto('shops').values({ platform: 'test', name: 'test', url: 'https://test.invalid', enabled: true }).returning('id').executeTakeFirstOrThrow();
-    const products = await db.insertInto('products').values(Array.from({ length: 9 }, (_, i) => ({
+    const products = await db.insertInto('products').values(Array.from({ length: 11 }, (_, i) => ({
       shop_id: shop.id, external_id: String(i), name: '测试商品', spec: '一个月', source_category: '', source_data: jsonb({}), normalized_key: `progress-${i}`, url: 'https://test.invalid/p',
     }))).returning('id').execute();
     const job = await db.insertInto('ai_jobs').values({ total: 9n, model: 'mock', job_type: jobType, status: 'running' }).returning('id').executeTakeFirstOrThrow();
@@ -59,6 +59,9 @@ test(`${jobType} progress counts stored acceptance for completed members and its
       { status: 'queued', output: { outcome: 'updated', acceptedTags: [duration], rejectedTags: [rejected] } },
       { status: 'processing', output: { outcome: 'review', acceptedTags: [duration], rejectedTags: [rejected] } },
       { status: 'classified', output: { outcome: 'skipped', acceptedTags: [duration], rejectedTags: [rejected] } },
+      { status: 'classified', output: { outcome: 'partial_success', complete: false, successfulCount: 1, failedCount: 0, acceptedTags: [duration], rejectedTags: [],
+        classificationReviewed: true, classification: { kind: 'account', reason: 'llm_reviewed' } } },
+      { status: 'classified', output: { outcome: 'partial_success', complete: true, successfulCount: 1, failedCount: 1, acceptedTags: [duration], rejectedTags: [rejected] } },
     ];
     await db.insertInto('ai_job_input_members').values(cases.map((item, i) => ({
       job_id: job.id, input_id: inputId, product_id: products[i]!.id, status: item.status, output: item.output ? jsonb(item.output) : null,
@@ -87,9 +90,12 @@ test(`${jobType} progress counts stored acceptance for completed members and its
     await db.insertInto('ai_job_progress').values({ job_id: job.id, total: 9n }).execute();
     const p = await getJobProgress(db, job.id);
     assert.equal(p?.jobType, jobType);
-    assert.deepEqual(p?.tagAcceptance, { acceptedTags: 6, rejectedTags: 6, partialProducts: 2 });
-    assert.deepEqual(p?.tagResults, { updated: 2, unchanged: 1, empty: 1, review: 1, skipped: 1, failed: 0, cancelled: 0, unrecorded: 1 });
-    assert.equal(p?.processed, '7'); assert.equal(p?.queued, '1'); assert.equal(p?.running, '1');
+    assert.deepEqual(p?.tagAcceptance, { acceptedTags: 8, rejectedTags: 7, partialProducts: 4 });
+    assert.deepEqual(p?.tagResults, { updated: 2, unchanged: 1, empty: 1, review: 1, partial_success: 2, skipped: 1, failed: 0, cancelled: 0, unrecorded: 1 });
+    assert.equal(p?.processed, '9'); assert.equal(p?.queued, '1'); assert.equal(p?.running, '1');
+    assert.equal(p?.succeeded, '6');
+    assert.deepEqual(p?.featureAcceptance, jobType === 'membership_features'
+      ? { acceptedProducts: 1, rejectedProducts: 0 } : undefined);
     assert.equal(p?.failed, '0'); assert.equal(p?.requests.failedBatches, 1);
     assert.equal(p?.requests.totalBatches, 11);
     assert.deepEqual(p?.tagStages, { extractionCompleted: 2, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1 });

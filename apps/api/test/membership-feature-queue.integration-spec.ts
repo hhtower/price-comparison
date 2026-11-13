@@ -11,6 +11,8 @@ import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-reques
 import { jsonb, type AiJobType, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { recordManualDecisions } from '../src/standardization/decision-history.js';
 import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
+import { captureRatingText } from '../src/platforms/source-evidence.js';
+import { projectShopText } from '../src/shops/shop-text-review.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool;
 const schema = `feature_queue_${randomUUID().replaceAll('-', '')}`;
@@ -50,7 +52,8 @@ async function task(f: Fixture, jobType: AiJobType, outcome?: string, productInd
     scope_shop_id: f.shop.id, prompt_version: STANDARDIZATION_PROMPT_VERSION,
     rule_version: IDENTITY_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')),
   }).returning('id').executeTakeFirstOrThrow();
-  const payload = jsonb({ shopSource: { url: f.shop.url, protocol: f.shop.protocol, platform: f.shop.platform } });
+  const payload = jsonb({ shopSource: { url: f.shop.url, protocol: f.shop.protocol, platform: f.shop.platform },
+    ...(jobType === 'text_review' ? { shopText: projectShopText(product.source_data) } : {}) });
   await db.insertInto('ai_job_inputs').values({
     job_id: job.id, input_id: product.id, fingerprint: product.content_fingerprint, payload,
   }).execute();
@@ -170,11 +173,12 @@ test('feature coverage excludes stale member versions, sources and pipeline conf
   assert.equal(legacy.summary.pendingProducts, 1);
 });
 
-test('identity queues exclude both attribute kinds without letting their newer members hide identity work', async () => {
+test('identity queues exclude all attribute kinds without letting their newer members hide identity work', async () => {
   const f = await fixture();
   const identity = await task(f, 'manual_full');
   await task(f, 'tag_extraction');
   const feature = await task(f, 'membership_features');
+  const text = await task(f, 'text_review');
   for (const jobType of [undefined, 'identity', 'manual_full']) {
     const queue = await readAiTaskQueue(db, { jobType, status: 'unfinished', scopeShopId: f.shop.id });
     assert.deepEqual(queue.items.map(item => item.id), [String(identity)]);
@@ -185,7 +189,34 @@ test('identity queues exclude both attribute kinds without letting their newer m
   assert.deepEqual(features.items.map(item => item.id), [String(feature)]);
   assert.equal(features.items[0]!.remaining, 0);
   assert.equal(features.summary.pendingProducts, 0);
+  const texts = await readAiTaskQueue(db, { jobType: 'text_review', status: 'unfinished', scopeShopId: f.shop.id });
+  assert.deepEqual(texts.items.map(item => item.id), [String(text)]);
+  assert.equal(texts.summary.pendingProducts, 1);
 });
+
+for (const jobType of ['tag_extraction', 'membership_features'] as const) {
+  test(`${jobType} incomplete partial outcomes need attention even without rejected tags`, async () => {
+    const f = await fixture();
+    await assign(f, 0, 'published');
+    const partial = await task(f, jobType, 'partial_success');
+    await db.updateTable('ai_job_input_members').set({
+      output: jsonb({ outcome: 'partial_success', complete: false, successfulCount: 1, failedCount: 0,
+        acceptedTags: [{ name: 'region', value: 'us', evidence: [] }], rejectedTags: [], reasonCode: 'incomplete' }),
+    }).where('job_id', '=', partial).execute();
+    await db.updateTable('ai_jobs').set({ status: 'ready_with_errors' }).where('id', '=', partial).execute();
+    await task(f, 'text_review', 'updated');
+    const queue = await readAiTaskQueue(db, { jobType, status: 'attention', scopeShopId: f.shop.id });
+    assert.deepEqual(queue.items.map(item => item.id), [String(partial)]);
+    assert.equal(queue.items[0]!.status, 'ready_with_errors');
+    assert.equal(queue.items[0]!.unclassified, 1);
+    assert.equal(queue.summary.attention, 1);
+    assert.equal(queue.summary.reviewProducts, 1);
+    assert.equal(queue.summary.failedProducts, 0);
+    assert.equal(queue.summary.coveredProducts, 0);
+    assert.equal(queue.summary.pendingProducts, 1);
+    assert.equal(queue.summary.currentReasons.incomplete, 1);
+  });
+}
 
 test('unfinished feature counts recheck current published AI identity and shop scope', async () => {
   const f = await fixture(3);
@@ -212,4 +243,59 @@ test('unfinished feature counts recheck current published AI identity and shop s
   queue = await readAiTaskQueue(db, scope);
   assert.equal(queue.summary.pendingProducts, 0);
   assert.equal(queue.items.find(item => item.id === String(ids[0]))!.remaining, 0);
+});
+
+test('text review history drops hash-stale coverage and ignores newer tasks for another capture', async () => {
+  const f = await fixture();
+  await assign(f, 0, 'published');
+  const product = f.products[0]!;
+  const original = captureRatingText('listing', product.name, 'Support provided.')!;
+  await db.updateTable('products').set({ source_data: jsonb({ ratingText: original }) }).where('id', '=', product.id).execute();
+  const completed = await task(f, 'text_review', 'updated');
+  const scope = { jobType: 'text_review', status: 'all', scopeShopId: f.shop.id };
+  let queue = await readAiTaskQueue(db, scope);
+  assert.equal(queue.summary.coveredProducts, 1);
+  assert.equal(queue.summary.pendingProducts, 0);
+
+  const changed = captureRatingText('listing', product.name, 'Support  provided.')!;
+  assert.notEqual(changed.hash, original.hash);
+  const current = await db.updateTable('products').set({ source_data: jsonb({ ratingText: changed }) })
+    .where('id', '=', product.id).returningAll().executeTakeFirstOrThrow();
+  assert.equal(current.content_version, product.content_version);
+  assert.equal(current.content_fingerprint, product.content_fingerprint);
+  assert.equal(current.standardization_revision, product.standardization_revision);
+  queue = await readAiTaskQueue(db, scope);
+  assert.equal(queue.summary.coveredProducts, 0);
+  assert.equal(queue.summary.pendingProducts, 1);
+  assert.ok(queue.items.some(item => item.id === String(completed)), 'stale job history remains visible');
+
+  const newer = await task(f, 'text_review');
+  queue = await readAiTaskQueue(db, scope);
+  assert.equal(queue.summary.pendingProducts, 0);
+  assert.equal(queue.items.find(item => item.id === String(newer))!.remaining, 1);
+  await db.updateTable('products').set({ source_data: jsonb({ ratingText: original }) }).where('id', '=', product.id).execute();
+  queue = await readAiTaskQueue(db, scope);
+  assert.equal(queue.summary.coveredProducts, 1, 'a newer hash-stale task cannot hide current successful coverage');
+  assert.equal(queue.summary.pendingProducts, 0);
+  assert.equal(queue.items.find(item => item.id === String(newer))!.remaining, 0);
+  await db.updateTable('shops').set({ url: `${f.shop.url}/changed` }).where('id', '=', f.shop.id).execute();
+  queue = await readAiTaskQueue(db, scope);
+  assert.equal(queue.summary.coveredProducts, 0, 'a matching capture still requires its original shop source');
+  assert.equal(queue.summary.pendingProducts, 1);
+});
+
+test('text review history excludes unavailable captures but accepts explicitly empty captured text', async () => {
+  const f = await fixture();
+  await assign(f, 0, 'published');
+  const scope = { jobType: 'text_review', status: 'all', scopeShopId: f.shop.id };
+  assert.equal((await readAiTaskQueue(db, scope)).summary.pendingProducts, 0, 'a product without captured text is not pending');
+  const empty = captureRatingText('listing', '', '')!;
+  for (const invalid of [null, 'invalid', [], {}, { ...empty, hash: 'invalid' },
+    { ...empty, unitId: ' \t\n' }, { ...empty, name: 1 }, { ...empty, description: null },
+    { ...empty, extra: true }]) {
+    await db.updateTable('products').set({ source_data: jsonb({ ratingText: invalid }) }).where('id', '=', f.products[0]!.id).execute();
+    assert.equal((await readAiTaskQueue(db, scope)).summary.pendingProducts, 0, JSON.stringify(invalid));
+  }
+  await db.updateTable('products').set({ source_data: jsonb({ ratingText: empty }) }).where('id', '=', f.products[0]!.id).execute();
+  assert.equal((await readAiTaskQueue(db, scope)).summary.pendingProducts, 1);
 });

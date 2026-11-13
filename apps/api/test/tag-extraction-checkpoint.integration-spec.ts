@@ -1,13 +1,13 @@
 import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
-import { after, before, test } from 'node:test';
+import { after, afterEach, before, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { createAiWorker, createOpenAiModelCall } from '../src/ai/ai.worker.js';
-import { validateTagExtractionDecision, validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
+import { mergeTagExtractionDecision, validateTagExtractionDecision, validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { CONSISTENCY_KEYS, DISCLOSURE_KEYS, TEXT_REVIEW_VERSION, validateTextReview } from '../src/shops/shop-text-review.js';
 import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
@@ -33,6 +33,10 @@ after(async () => {
   await db?.destroy();
   if (schema) await admin.query(`drop schema "${schema}" cascade`);
   await admin?.end();
+});
+
+afterEach(async () => {
+  await db.updateTable('ai_jobs').set({ status: 'cancelled' }).where('status', 'in', ['queued', 'running', 'paused', 'ready']).execute();
 });
 
 const claim = { workerId: 'checkpoint-worker', attempt: 1n, token: 'request-claim' };
@@ -115,8 +119,8 @@ test('extraction checkpoints and enqueues exactly one review before any member r
   const restored = await new AiRepository(db).getTagExtractionBatchInputs(review.id);
   assert.equal(restored.stage, 'review');
   assert.deepEqual(restored.proposals, { items: [{ id: String(f.inputId), tags: [
-    { name: 'duration', value: 30, path: 'spec', quote: '1\u4e2a\u6708' },
-    { name: 'unknown', value: 'no', path: 'spec', quote: '1\u4e2a\u6708' },
+    { name: 'duration', value: 30 },
+    { name: 'unknown', value: 'no' },
   ] }] });
   const members = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).execute();
   assert.ok(members.every(member => member.output === null));
@@ -130,6 +134,7 @@ test('review is claimable and reservable while a prior extraction still occupies
   const previousConcurrency = process.env.AI_CONCURRENCY;
   process.env.AI_CONCURRENCY = '1';
   const f = await fixture();
+  f.decision.rejectedTags = [];
   try {
     await f.repo.prepareBatch(f.batch.id);
     const blocker = await db.insertInto('ai_job_batches').values({
@@ -148,7 +153,7 @@ test('review is claimable and reservable while a prior extraction still occupies
     const restored = await f.repo.getTagExtractionBatchInputs(claimed[0]!.id);
     assert.equal(restored.stage, 'review');
     assert.equal(restored.proposals?.items[0]?.id, String(f.inputId));
-    const reviewed = { ...f.decision, reviewed: true, textReview: null };
+    const reviewed = { ...f.decision, reviewed: true, complete: true, rejectedTags: [] };
     await f.repo.checkpointTagExtractionBatchDecision(f.job.id, claimed[0]!.id, [reviewed], metadata, reviewClaim, 'review');
     const publication = await jobs.claimAvailable('ai_standardization', 'publisher', 1);
     assert.equal(publication[0]?.id, claimed[0]!.id);
@@ -166,15 +171,22 @@ test('review is claimable and reservable while a prior extraction still occupies
 
 test('explicit checkpoint stages must match the frozen batch marker; only review can queue publication', async () => {
   const f = await fixture();
+  f.decision.rejectedTags = [];
   await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review'), /stage/);
   await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [], metadata, claim, 'extract'), /does not match/);
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'extract');
   const review = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).where('id', '!=', f.batch.id).executeTakeFirstOrThrow();
   const reviewClaim = await claimPublish(review.id, 'review-request-claim');
   await db.updateTable('ai_job_batches').set({ request_budget_used: 1 }).where('id', '=', review.id).execute();
-  const reviewed = { ...f.decision, reviewed: true, textReview: null };
+  const reviewed = { ...f.decision, reviewed: true, complete: true, rejectedTags: [] };
   await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id, [reviewed], metadata, reviewClaim, 'extract'), /stage/);
   await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id, [], metadata, reviewClaim, 'review'), /does not match/);
+  for (const complete of [undefined, null, 'true', 1]) {
+    await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id,
+      [{ ...reviewed, complete } as any], metadata, reviewClaim, 'review'), /boolean completeness/);
+    assert.equal((await batchRow(review.id)).confirmed_requests, 0);
+    assert.equal((await batchRow(review.id)).validated_decision, null);
+  }
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id, [reviewed], metadata, reviewClaim, 'review');
   const publication = await batchRow(review.id);
   assert.equal(publication.step, 'publish');
@@ -186,28 +198,81 @@ test('explicit checkpoint stages must match the frozen batch marker; only review
   assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 2);
 });
 
+test('streamed review rejects coerced votes and completeness before saving any checkpoint', async () => {
+  const f = await fixture();
+  f.decision.rejectedTags = [];
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'extract');
+  const review = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id)
+    .where('id', '!=', f.batch.id).executeTakeFirstOrThrow();
+  const original = await batchRow(review.id);
+  for (const invalid of [
+    { accepted: ['true'], complete: true },
+    { accepted: [true], complete: 'false' },
+    { accepted: [true] },
+    { accepted: [], complete: true },
+  ]) {
+    let sends = 0;
+    const call = createOpenAiModelCall(f.repo, {
+      AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock-key', AI_MODEL: 'mock',
+    }, async () => {
+      sends++;
+      const content = JSON.stringify({ items: [{ id: String(f.inputId), ...invalid }] });
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+    });
+    await assert.rejects(call({ id: review.id, row: { job_id: f.job.id, job_type: 'tag_extraction', step: 'request' } },
+      new AbortController().signal), error => Reflect.get(error as object, 'retryClass') === 'invalid_response');
+    assert.equal(sends, 1);
+    assert.deepEqual(await batchRow(review.id), original);
+    assert.equal((await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow()).output, null);
+    assert.equal((await db.selectFrom('product_tags').select('id').where('product_id', '=', f.inputId).execute()).length, 0);
+  }
+});
+
+test('complete reviewed empty extraction clears old tags without scheduling repair', async () => {
+  const f = await fixture();
+  const before = [{ name: 'duration', value: 360 }, { name: 'region', value: 'us' }];
+  await db.insertInto('product_tags').values(tagRows(before.map(tag => ({ ...tag, product_id: f.inputId })))).execute();
+  const extracted = { productId: f.inputId, tags: [], rejectedTags: [] };
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [extracted], metadata, claim, 'extract');
+  const review = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id)
+    .where('id', '!=', f.batch.id).executeTakeFirstOrThrow();
+  const reviewClaim = await claimPublish(review.id);
+  await db.updateTable('ai_job_batches').set({ request_budget_used: 1 }).where('id', '=', review.id).execute();
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id,
+    [{ ...extracted, reviewed: true, complete: true, reviewDecisions: [] }], metadata, reviewClaim, 'review');
+  await f.repo.publishTagExtractionBatch(review.id, await claimPublish(review.id));
+  assert.deepEqual(await db.selectFrom('product_tags').select('id').where('product_id', '=', f.inputId).execute(), []);
+  const { output } = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
+  assert.equal((output as any).outcome, 'empty');
+  assert.equal((output as any).complete, true);
+  assert.deepEqual((output as any).before, before);
+  assert.deepEqual((output as any).after, []);
+  assert.deepEqual((output as any).diff, before.map(tag => ({ name: tag.name, before: [tag.value], after: [] })));
+  assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 2);
+});
+
 test('publication preserves reviewer rejections instead of semantically accepting them again', async () => {
   const f = await fixture();
   const reviewed = {
     productId: f.inputId, tags: [],
     rejectedTags: [{ ...f.decision.tags[0]!, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' }],
-    reviewed: true, textReview: null,
+    reviewed: true, complete: true,
   };
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
   assert.equal((await db.selectFrom('product_tags').selectAll().where('product_id', '=', f.inputId).execute()).length, 0);
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
-  assert.equal((member.output as any).outcome, 'review');
+  assert.equal((member.output as any).outcome, 'failed');
   assert.deepEqual((member.output as any).rejectedTags, reviewed.rejectedTags);
   assert.deepEqual((member.output as any).review, { mode: 'per_tag_binary' });
 });
 
-test('reviewed client passes literal citation revalidation without inventing a second classification', async () => {
+test('reviewed client passes structural revalidation without inventing citations or a second classification', async () => {
   const f = await fixture(1, '可使用Codex。');
-  const tag = { name: 'supported_client', value: 'codex', evidence: [{ path: 'sourceData.evidence', quote: 'Codex' }] };
-  const legacy = validateTagExtractionDecision(f.inputId, [tag], { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData: { evidence: '可使用Codex。' } });
-  assert.equal(legacy.tags.length, 1);
-  const reviewed = { productId: f.inputId, tags: [tag], rejectedTags: [], reviewed: true, textReview: null };
+  const tag = { name: 'supported_client', value: 'codex', evidence: [] };
+  const validated = validateReviewedTagExtractionDecision(f.inputId, [tag], [], { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData: { evidence: '可使用Codex。' } });
+  assert.equal(validated.tags.length, 1);
+  const reviewed = { productId: f.inputId, tags: [tag], rejectedTags: [], reviewed: true, complete: true };
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).execute(),
@@ -225,7 +290,7 @@ test('accepted warranty replaces the complete tag set and removes retired qualif
   const reviewed = {
     productId: f.inputId,
     tags: [{ name: 'warranty', value: '质保30天', evidence: [{ path: 'sourceData.evidence', quote: '\u8d28\u4fdd30\u5929' }] }],
-    rejectedTags: [], reviewed: true, textReview: null,
+    rejectedTags: [], reviewed: true, complete: true,
   };
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
@@ -233,7 +298,7 @@ test('accepted warranty replaces the complete tag set and removes retired qualif
     [{ name: 'warranty', value: '质保30天' }]);
 });
 
-test('local publication of only false votes clears stored tags without model requests or tag inserts', async () => {
+test('local publication of only false votes preserves stored tags without model requests or tag writes', async () => {
   const f = await fixture(1, '\u8d28\u4fdd30\u5929\u3002\u672c\u5546\u54c1\u65e0\u4efb\u4f55\u552e\u540e\u3002');
   const before = [{ name: 'access', value: 'dedicated' }, { name: 'warranty', value: 'covered' }, { name: 'warranty_days', value: '30' }];
   await db.insertInto('product_tags').values(tagRows(before.map(tag => ({ ...tag, product_id: f.inputId })))).execute();
@@ -241,7 +306,7 @@ test('local publication of only false votes clears stored tags without model req
     productId: f.inputId, tags: [],
     rejectedTags: [{ name: 'warranty', value: 'covered', evidence: [{ path: 'sourceData.evidence', quote: '\u8d28\u4fdd30\u5929' }],
       reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' }],
-    reviewed: true, textReview: null,
+    reviewed: true, complete: true,
   };
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).orderBy('name').execute(), before);
@@ -264,7 +329,7 @@ test('local publication of only false votes clears stored tags without model req
       if coalesce(new.product_id, old.product_id) = ${sql.raw(String(f.inputId))} then raise exception 'false votes must not mutate product tags'; end if;
       return null;
     end $$`.execute(db);
-  await sql`create trigger forbid_rejected_tag_write before insert or update on product_tags for each row execute function forbid_rejected_tag_write()`.execute(db);
+  await sql`create trigger forbid_rejected_tag_write before insert or update or delete on product_tags for each row execute function forbid_rejected_tag_write()`.execute(db);
   try { assert.equal(await worker.runOnce(), 1); await settled.promise; } finally {
     await worker.stop();
     await sql`drop trigger forbid_rejected_tag_write on product_tags`.execute(db);
@@ -273,16 +338,19 @@ test('local publication of only false votes clears stored tags without model req
   assert.deepEqual(failures, []);
   assert.equal(modelCalls, 0);
   assert.equal(reservations, 0);
-  assert.deepEqual(await db.selectFrom('product_tags').selectAll().where('product_id', '=', f.inputId).orderBy('name').execute(), []);
+  assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).orderBy('name').execute(), before);
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   const audit = member.output as any;
   assert.deepEqual(audit.acceptedTags, []);
   assert.deepEqual(audit.rejectedTags, reviewed.rejectedTags);
   assert.deepEqual(audit.review, { mode: 'per_tag_binary' });
   assert.deepEqual(audit.before, before);
-  assert.deepEqual(audit.after, []);
+  assert.deepEqual(audit.after, before);
   assert.equal('retainedUnconfirmed' in audit, false);
-  assert.deepEqual(audit.diff, before.map(tag => ({ name: tag.name, before: [tag.value], after: [] })));
+  assert.deepEqual(audit.diff, []);
+  assert.equal(audit.outcome, 'failed');
+  assert.equal(audit.successfulCount, 0);
+  assert.equal(audit.failedCount, 1);
   const done = await batchRow(f.batch.id);
   assert.equal(done.step, 'done');
   assert.equal(done.request_budget_used, 1);
@@ -329,7 +397,7 @@ test('checkpoint durably confirms the request and saves evidence before any prod
   const publicationClaim = await claimPublish(f.batch.id);
   await new AiRepository(db).publishTagExtractionBatch(f.batch.id, publicationClaim);
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
-  assert.equal((member.output as any).outcome, 'updated');
+  assert.equal((member.output as any).outcome, 'partial_success');
   assert.equal((member.output as any).acceptedTags.length, 1);
   assert.equal((member.output as any).rejectedTags.length, 1);
   const done = await batchRow(f.batch.id);
@@ -402,6 +470,7 @@ test('a failed checkpoint update rolls back its confirmation and leaves no durab
 
 test('extraction and review survive a product SQL failure with no model request during local publication retry', async () => {
   const f = await fixture(2);
+  f.decision.rejectedTags = [];
   await db.updateTable('ai_job_batches').set({ status: 'queued', attempts: 0n, claimed_by: null,
     claim_token: null, lease_until: null, request_budget_used: 0 }).where('id', '=', f.batch.id).execute();
   await sql`create function fail_tag_write() returns trigger language plpgsql as $$
@@ -428,7 +497,7 @@ test('extraction and review survive a product SQL failure with no model request 
       const { stage, proposals } = await f.repo.getTagExtractionBatchInputs(BigInt(claimed.id));
       if (stage === 'review') assert.equal(proposals?.items[0]?.id, String(f.inputId));
       return { items: [], identities: [], missingIds: [], tagExtractionStage: stage,
-        tagExtractionItems: [stage === 'review' ? { ...f.decision, reviewed: true, textReview: null } : f.decision], metadata };
+        tagExtractionItems: [stage === 'review' ? { ...f.decision, reviewed: true, complete: true, rejectedTags: [] } : f.decision], metadata };
     },
   });
   async function run() { settled = Promise.withResolvers<void>(); assert.equal(await worker.runOnce(), 1); await settled.promise; }
@@ -460,7 +529,7 @@ test('extraction and review survive a product SQL failure with no model request 
   }
 });
 
-test('one batched extraction and one per-tag binary review publish only original true proposals for two products', async () => {
+test('streamed extraction and one repair review preserve accepted facts and publish partial results atomically', async () => {
   const evidence = '支持Codex。账号已接码。支持批量下单。美区账号。质保30天。封号不保。修改密码后不保。';
   const f = await fixture(2, evidence);
   const second = f.products[1]!;
@@ -472,61 +541,73 @@ test('one batched extraction and one per-tag binary review publish only original
   await db.updateTable('ai_job_input_members').set({ input_id: second.id, payload: jsonb(secondPayload), fingerprint })
     .where('job_id', '=', f.job.id).where('product_id', '=', second.id).execute();
   const before = [
-    { product_id: f.inputId, name: 'access', value: 'dedicated' },
     { product_id: f.inputId, name: 'duration', value: 360 },
-    { product_id: f.inputId, name: 'warranty', value: 'none' },
+    { product_id: f.inputId, name: 'warranty', value: '旧质保条款' },
     { product_id: second.id, name: 'duration', value: 360 },
-    { product_id: second.id, name: 'warranty_days', value: '60' },
+    { product_id: second.id, name: 'region', value: 'jp' },
   ];
   await db.insertInto('product_tags').values(tagRows(before)).execute();
   await db.updateTable('ai_job_batches').set({ status: 'queued', attempts: 0n, claimed_by: null,
     claim_token: null, lease_until: null, request_budget_used: 0, product_ids: jsonb([String(f.inputId), String(second.id)]) })
     .where('id', '=', f.batch.id).execute();
-  const client = { name: 'supported_client', value: 'codex', path: 'sourceData.evidence', quote: '支持Codex' };
-  const sms = { name: 'sms_verification', value: 'verified', path: 'sourceData.evidence', quote: '账号已接码' };
-  const wrongDuration = { name: 'duration', value: 60, path: 'spec', quote: '1个月' };
-  const warranty = { name: 'warranty', value: '质保30天', path: 'sourceData.evidence', quote: '质保30天' };
-  const fullWarranty = { ...warranty, value: '质保30天。封号不保。修改密码后不保', quote: '质保30天。封号不保。修改密码后不保' };
-  const bulk = { name: 'bulk_purchase', value: 'supported', path: 'sourceData.evidence', quote: '支持批量下单' };
-  const region = { name: 'region', value: 'us', path: 'sourceData.evidence', quote: '美区账号' };
+  const client = { name: 'supported_client', value: 'codex' };
+  const sms = { name: 'sms_verification', value: 'verified' };
+  const duration = { name: 'duration', value: 30 };
+  const warranty = { name: 'warranty', value: '质保30天' };
+  const fullWarranty = { name: 'warranty', value: '质保30天。封号不保。修改密码后不保' };
+  const bulk = { name: 'bulk_purchase', value: 'supported' };
+  const region = { name: 'region', value: 'us' };
   const proposals = { items: [
-    { id: String(f.inputId), tags: [client, sms, wrongDuration, warranty, bulk, region, client,
-      { ...client, quote: 'not present in the original source' }] },
-    { id: String(second.id), tags: [{ ...wrongDuration, value: 30 }, fullWarranty, bulk] },
+    { id: String(f.inputId), tags: [client, sms, { ...duration, value: 60 }, warranty, bulk, region] },
+    { id: String(second.id), tags: [duration, fullWarranty, bulk] },
   ] };
-  const votes = [[true, true, false, false, true, true, false, true], [true, true, false]];
-  const cited = ({ path, quote, ...tag }: (typeof proposals.items)[number]['tags'][number]) => ({ ...tag, evidence: [{ path, quote }] });
-  const indexed = proposals.items.map(item => item.tags.map((tag, proposalIndex) => ({ ...cited(tag), proposalIndex })));
-  const accepted = [[0, 1, 4, 5].map(index => indexed[0]![index]!), indexed[1]!.filter((_, position) => votes[1]![position])];
-  const rejected = indexed.map((tags, index) => tags.filter((_, position) => !votes[index]![position]).map(tag =>
-    ({ ...tag, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' })));
-  rejected[0]!.push({ ...indexed[0]![7]!, reasonCode: 'citation_quote_mismatch', reason: '证据引文不存在于当前商品的指定字段' });
+  const repair = { items: [
+    { id: String(f.inputId), tags: [duration, fullWarranty] },
+    { id: String(second.id), tags: [] },
+  ] };
+  const votes = [[true, true, false, false, true, true], [true, true, false]];
+  const repairVotes = [[true, true], []];
   const responses = [proposals, { items: proposals.items.map((item, index) => ({ id: item.id,
-    decisions: votes[index]!.map((accepted, tagIndex) => ({ tagId: item.id + ':' + tagIndex, accepted })).reverse(), textReview: null })).reverse() }];
+    accepted: votes[index], complete: false })).reverse() }, repair,
+    { items: repair.items.map((item, index) => ({ id: item.id, accepted: repairVotes[index], complete: index === 0 })).reverse() }];
   let sends = 0, settled = Promise.withResolvers<void>();
+  let requestAssertion: unknown;
   const claims: bigint[] = [], failures: string[] = [];
   const jobs = new JobsRepository(db);
   const modelCall = createOpenAiModelCall(f.repo, {
     AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock-key', AI_MODEL: 'mock',
   }, async (_url, init) => {
-    const request = JSON.parse(String(init?.body));
-    assert.equal(request.stream, true);
-    assert.equal(request.model, 'mock');
-    const payload = JSON.parse(request.messages[1].content);
-    if (sends === 0) {
-      assert.deepEqual(payload.map((input: { id: string }) => input.id), proposals.items.map(item => item.id));
-    } else {
-      assert.equal(payload.inputs.length, 2);
-      assert.deepEqual(payload.proposals, { items: proposals.items.map(item => ({ ...item, tags: item.tags.map((tag, index) => ({ ...tag, tagId: item.id + ':' + index })) })) });
-    }
-    const body = responses[sends++];
-    assert.ok(body, 'publication must never issue a third model request');
-    const content = JSON.stringify(body);
-    return new Response([
-      { id: `response-${sends}`, model: 'mock', choices: [{ delta: { content: content.slice(0, 30) } }] },
-      { id: `response-${sends}`, model: 'mock', choices: [{ delta: { content: content.slice(30) }, finish_reason: 'stop' }] },
-      { choices: [], usage: { prompt_tokens: 100 * sends, completion_tokens: 50, total_tokens: 100 * sends + 50 } },
-    ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n');
+    try {
+      const request = JSON.parse(String(init?.body));
+      assert.equal(request.stream, true);
+      assert.equal(request.model, 'mock');
+      const payload = JSON.parse(request.messages[1].content);
+      if (sends === 0) {
+        assert.deepEqual(payload.map((input: { id: string }) => input.id), proposals.items.map(item => item.id));
+      } else {
+        assert.equal(payload.inputs.length, 2);
+        if (sends === 1) assert.deepEqual(payload.proposals, proposals);
+        const previous = payload.previousDecisions?.find((item: { id: string }) => item.id === String(f.inputId));
+        const previousSecond = payload.previousDecisions?.find((item: { id: string }) => item.id === String(second.id));
+        if (sends >= 2) {
+          assert.deepEqual(previous.accepted, [client, sms, bulk, region]);
+          assert.deepEqual(previousSecond.accepted, [duration, fullWarranty]);
+        }
+        if (sends === 2) {
+          assert.equal(previous.complete, false);
+          assert.deepEqual(previous.rejected, [{ ...duration, value: 60 }, warranty]);
+        }
+        if (sends === 3) assert.deepEqual(payload.proposals, repair, 'already accepted tags must not be reviewed again');
+      }
+      const body = responses[sends++];
+      assert.ok(body, 'repair is bounded to one round; publication must never issue a fifth request');
+      const content = JSON.stringify(body);
+      return new Response([
+        { id: 'response-' + sends, model: 'mock', choices: [{ delta: { content: content.slice(0, 30) } }] },
+        { id: 'response-' + sends, model: 'mock', choices: [{ delta: { content: content.slice(30) }, finish_reason: 'stop' }] },
+        { choices: [], usage: { prompt_tokens: 100 * sends, completion_tokens: 50, total_tokens: 100 * sends + 50 } },
+      ].map(chunk => 'data: ' + JSON.stringify(chunk) + '\n\n').join('') + 'data: [DONE]\n\n');
+    } catch (error) { requestAssertion = error; throw error; }
   });
   const worker = createAiWorker({
     claimNext: async (...args) => { const claimed = await jobs.claimNext(...args); if (claimed) claims.push(claimed.id); return claimed; },
@@ -538,6 +619,7 @@ test('one batched extraction and one per-tag binary review publish only original
     settled = Promise.withResolvers<void>();
     assert.equal(await worker.runOnce(), 1);
     await settled.promise;
+    assert.ifError(requestAssertion);
     assert.deepEqual(failures, []);
   }
   async function tags() {
@@ -545,58 +627,149 @@ test('one batched extraction and one per-tag binary review publish only original
       .orderBy('product_id').orderBy('name').execute();
   }
   try {
-    await run();
-    assert.equal(sends, 1);
-    assert.deepEqual(await tags(), before);
-    const extraction = await batchRow(f.batch.id);
-    assert.equal(extraction.step, 'done');
-    assert.equal(extraction.request_budget_used, 1);
-    assert.equal(extraction.confirmed_requests, 1);
-    const review = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).where('id', '!=', f.batch.id).executeTakeFirstOrThrow();
-    await run();
-    assert.equal(sends, 2);
-    assert.deepEqual(await tags(), before);
-    const checkpoint = await batchRow(review.id);
-    assert.equal(checkpoint.step, 'publish');
-    assert.equal(checkpoint.status, 'queued');
-    assert.equal(checkpoint.request_budget_limit, 2);
-    assert.equal(checkpoint.request_budget_used, 1);
-    assert.equal(checkpoint.confirmed_requests, 1);
-    const checkpointItems = (checkpoint.validated_decision as any).items;
-    assert.equal(checkpointItems.length, 2);
-    for (const [index, proposal] of proposals.items.entries()) {
-      assert.deepEqual(checkpointItems.find((item: { productId: string }) => item.productId === proposal.id),
-        { productId: proposal.id, tags: accepted[index], rejectedTags: rejected[index], reviewed: true, textReview: null, reviewDecisions: votes[index] });
+    for (let request = 1; request <= 4; request++) {
+      await run();
+      assert.equal(sends, request);
+      assert.deepEqual(await tags(), before, 'request checkpoints cannot publish product facts');
+      assert.ok((await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).execute())
+        .every(member => member.output === null));
     }
-    assert.deepEqual(checkpoint.response_usage, { promptTokens: 200, completionTokens: 50, totalTokens: 250 });
-    assert.ok((await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).execute())
-      .every(member => member.output === null));
+    const batches = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id).orderBy('batch_index').execute();
+    assert.equal(batches.length, 4);
+    const review = batches[1]!, repairBatch = batches[2]!, finalReview = batches[3]!;
+    assert.equal((repairBatch.reference_snapshot as any).tagStage, 'repair');
+    assert.equal((repairBatch.reference_snapshot as any).repairReviewBatchId, String(review.id));
+    assert.equal((finalReview.reference_snapshot as any).tagRepairRound, 1);
+    assert.equal((finalReview.reference_snapshot as any).extractionBatchId, String(repairBatch.id));
+    for (const batch of batches) {
+      assert.equal(batch.request_budget_used, 1);
+      assert.equal(batch.confirmed_requests, 1);
+    }
+    assert.equal(finalReview.step, 'publish');
+    assert.equal(finalReview.status, 'queued');
+    assert.deepEqual(finalReview.response_usage, { promptTokens: 400, completionTokens: 50, totalTokens: 450 });
+    const saved = finalReview.validated_decision;
     await run();
-    assert.equal(sends, 2);
-    assert.deepEqual(claims, [f.batch.id, review.id, review.id]);
+    assert.equal(sends, 4);
+    assert.deepEqual(claims, [...batches.map(batch => batch.id), finalReview.id]);
+    const expected = [
+      ...[client, sms, bulk, region, duration, fullWarranty].map(tag => ({ product_id: f.inputId, ...tag })),
+      ...[duration, fullWarranty, { name: 'region', value: 'jp' }].map(tag => ({ product_id: second.id, ...tag })),
+    ].sort((a, b) => a.product_id < b.product_id ? -1 : a.product_id > b.product_id ? 1 : a.name.localeCompare(b.name));
+    assert.deepEqual(await tags(), expected, 'incomplete repair preserves old dimensions while retaining accepted facts');
     for (const [index, proposal] of proposals.items.entries()) {
-      const productId = BigInt(proposal.id);
-      const expected = accepted[index]!.map(({ name, value }) => ({ product_id: productId, name, value }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      assert.deepEqual((await tags()).filter(tag => tag.product_id === productId), expected);
-      const member = await db.selectFrom('ai_job_input_members').select('output')
-        .where('job_id', '=', f.job.id).where('product_id', '=', productId).executeTakeFirstOrThrow();
-      assert.deepEqual((member.output as any).acceptedTags, accepted[index]);
-      assert.deepEqual((member.output as any).rejectedTags, rejected[index]);
-      assert.deepEqual((member.output as any).review, { mode: 'per_tag_binary', decisions: votes[index] });
-      const audit = await f.repo.tagProductAudit(f.job.id, productId);
-      assert.deepEqual(audit.batches.map((batch: any) => batch.id), [String(f.batch.id), String(review.id)]);
-      assert.deepEqual(audit.batches[0].proposals, indexed[index]);
+      const audit = await f.repo.tagProductAudit(f.job.id, BigInt(proposal.id));
+      assert.deepEqual(audit.batches.map((batch: any) => batch.id), batches.map(batch => String(batch.id)));
+      assert.deepEqual(audit.batches[0].proposals, proposal.tags.map((tag, proposalIndex) => ({ ...tag, evidence: [], proposalIndex })));
       assert.deepEqual(audit.batches[1].review_decisions, votes[index]);
-      assert.deepEqual(audit.member.output.review.decisions, votes[index]);
+      assert.equal(audit.member.output.outcome, index === 0 ? 'updated' : 'partial_success');
+      assert.equal(audit.member.output.complete, index === 0);
+      assert.equal(audit.member.output.successfulCount, index === 0 ? 6 : 2);
+      assert.equal(audit.member.output.failedCount, index === 0 ? 0 : 1);
+      assert.deepEqual(audit.member.output.attempts.map((attempt: any) => attempt.reviewDecisions), [votes[index], repairVotes[index]]);
+      assert.deepEqual(audit.member.output.attempts.map((attempt: any) => attempt.round), [1, 2]);
+      assert.deepEqual(audit.member.output.review.decisions, index === 0 ? [true, true, true, true, true, true] : [true, true, false]);
     }
-    const published = await tags();
-    assert.ok(!published.some(tag => tag.product_id === f.inputId && tag.name === 'duration'),
-      'false duration is removed rather than corrected or retained');
-    assert.ok(!published.some(tag => tag.name === 'warranty_terms'), 'review cannot add missing supported fields');
-    assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 2);
-    assert.equal((await batchRow(review.id)).step, 'done');
+    assert.equal((await db.selectFrom('ai_jobs').select('status').where('id', '=', f.job.id).executeTakeFirstOrThrow()).status, 'ready_with_errors');
+    assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 4);
+    assert.equal((await batchRow(finalReview.id)).step, 'done');
+    assert.deepEqual((await batchRow(finalReview.id)).validated_decision, saved);
+    assert.equal(await worker.runOnce(), 0, 'partial publication cannot enqueue another repair');
   } finally { await worker.stop(); }
+});
+
+test('mixed initial review publishes resolved inputs immediately and isolates the remaining repair', async () => {
+  const f = await fixture(2);
+  const second = f.products[1]!;
+  const payload = { name: second.name, spec: '2个月，日区', sourceData: {} };
+  const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
+  await db.updateTable('products').set({ spec: payload.spec, content_fingerprint: fingerprint }).where('id', '=', second.id).execute();
+  await db.insertInto('ai_job_inputs').values({ job_id: f.job.id, input_id: second.id, payload: jsonb(payload),
+    fingerprint, content_version: 1n, input_bytes: 100n, estimated_tokens: 100n }).execute();
+  await db.updateTable('ai_job_input_members').set({ input_id: second.id, payload: jsonb(payload), fingerprint })
+    .where('job_id', '=', f.job.id).where('product_id', '=', second.id).execute();
+  await db.updateTable('ai_job_batches').set({ product_ids: jsonb([String(f.inputId), String(second.id)]) }).where('id', '=', f.batch.id).execute();
+  const duration = { name: 'duration', value: 30, evidence: [], proposalIndex: 0 };
+  const secondDuration = { ...duration, value: 60 };
+  const region = { name: 'region', value: 'us', evidence: [], proposalIndex: 1 };
+  await f.repo.prepareBatch(f.batch.id);
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [
+    { productId: f.inputId, tags: [duration], rejectedTags: [] },
+    { productId: second.id, tags: [secondDuration, region], rejectedTags: [] },
+  ], metadata, claim, 'extract');
+  const review = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id)
+    .where('id', '!=', f.batch.id).executeTakeFirstOrThrow();
+  const resolved = validateReviewedTagExtractionDecision(f.inputId, [duration], [], {}, [true], true);
+  const pending = validateReviewedTagExtractionDecision(second.id, [secondDuration], [
+    { ...region, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' },
+  ], payload, [true, false], false);
+  const reviewClaim = await claimPublish(review.id);
+  await db.updateTable('ai_job_batches').set({ request_budget_used: 1 }).where('id', '=', review.id).execute();
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id, [pending, resolved], metadata, reviewClaim, 'review');
+  const children = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id)
+    .where('id', 'not in', [f.batch.id, review.id]).orderBy('batch_index').execute();
+  assert.equal(children.length, 2);
+  const [publication, repair] = children;
+  assert.notEqual(publication!.id, repair!.id);
+  assert.deepEqual(publication!.product_ids, [String(f.inputId)]);
+  assert.equal(publication!.product_count, 1n);
+  assert.equal(publication!.step, 'publish');
+  assert.equal(publication!.status, 'queued');
+  assert.equal(publication!.request_budget_used, 0);
+  assert.equal(publication!.confirmed_requests, 0);
+  assert.deepEqual(publication!.validated_decision, { items: [{ ...resolved, productId: String(f.inputId) }] });
+  assert.equal((publication!.reference_snapshot as any).tagPublishOnly, true);
+  assert.equal((publication!.reference_snapshot as any).tagStage, 'review');
+  assert.equal((publication!.reference_snapshot as any).extractionBatchId, String(f.batch.id));
+  assert.equal((publication!.reference_snapshot as any).repairReviewBatchId, undefined);
+  assert.deepEqual(repair!.product_ids, [String(second.id)]);
+  assert.equal(repair!.product_count, 1n);
+  assert.equal(repair!.step, 'request');
+  assert.equal(repair!.validated_decision, null);
+  assert.equal((repair!.reference_snapshot as any).tagStage, 'repair');
+  assert.equal((repair!.reference_snapshot as any).tagRepairRound, 1);
+  assert.equal((repair!.reference_snapshot as any).repairReviewBatchId, String(review.id));
+  assert.equal((repair!.reference_snapshot as any).tagPublishOnly, undefined);
+
+  await f.repo.publishTagExtractionBatch(publication!.id, await claimPublish(publication!.id));
+  const memberRows = () => db.selectFrom('ai_job_input_members').select(['product_id', 'output'])
+    .where('job_id', '=', f.job.id).orderBy('product_id').execute();
+  const published = await memberRows();
+  assert.equal((published[0]!.output as any).outcome, 'updated');
+  assert.equal(published[1]!.output, null);
+  assert.deepEqual(await db.selectFrom('product_tags').select(['product_id', 'name', 'value'])
+    .where('product_id', 'in', [f.inputId, second.id]).execute(), [{ product_id: f.inputId, name: 'duration', value: 30 }]);
+  const root = () => db.selectFrom('ai_jobs').select(['status', 'finished_at']).where('id', '=', f.job.id).executeTakeFirstOrThrow();
+  assert.deepEqual(await root(), { status: 'running', finished_at: null });
+  assert.equal((await batchRow(repair!.id)).status, 'queued');
+  const context = await f.repo.getTagExtractionBatchInputs(repair!.id);
+  assert.equal(context.stage, 'repair');
+  assert.deepEqual(context.inputs.map(input => input.productId), [second.id]);
+  assert.deepEqual(context.previousDecisions, [pending]);
+  assert.equal(context.proposals, undefined);
+
+  const corrected = { name: 'region', value: 'jp', evidence: [], proposalIndex: 0 };
+  const repairClaim = await claimPublish(repair!.id);
+  await db.updateTable('ai_job_batches').set({ request_budget_used: 1 }).where('id', '=', repair!.id).execute();
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, repair!.id,
+    [{ productId: second.id, tags: [corrected], rejectedTags: [] }], metadata, repairClaim, 'repair');
+  const finalReview = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id)
+    .where('id', 'not in', [f.batch.id, review.id, publication!.id, repair!.id]).executeTakeFirstOrThrow();
+  const finalContext = await f.repo.getTagExtractionBatchInputs(finalReview.id);
+  assert.deepEqual(finalContext.previousDecisions, [pending]);
+  assert.deepEqual(finalContext.proposals, { items: [{ id: String(second.id), tags: [{ name: 'region', value: 'jp' }] }] });
+  const finalClaim = await claimPublish(finalReview.id);
+  await db.updateTable('ai_job_batches').set({ request_budget_used: 1 }).where('id', '=', finalReview.id).execute();
+  const repaired = mergeTagExtractionDecision(pending, validateReviewedTagExtractionDecision(second.id, [corrected], [], payload, [true], true));
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, finalReview.id, [repaired], metadata, finalClaim, 'review');
+  assert.deepEqual(await root(), { status: 'running', finished_at: null });
+  await f.repo.publishTagExtractionBatch(finalReview.id, await claimPublish(finalReview.id));
+  assert.equal((await root()).status, 'succeeded');
+  assert.ok((await root()).finished_at);
+  const completed = await memberRows();
+  assert.deepEqual(completed[0], published[0], 'repair must not republish the already resolved member');
+  assert.equal((completed[1]!.output as any).outcome, 'updated');
+  assert.deepEqual((completed[1]!.output as any).after, [{ name: 'duration', value: 60 }, { name: 'region', value: 'jp' }]);
 });
 
 test('review preparation excludes proposals for frozen inputs whose shop became unavailable', async () => {
@@ -717,13 +890,14 @@ test('audit exposes only its own ordered proposals, raw votes and exact lineage 
   const reviewed = { productId: f.inputId, tags: [{ ...tag, proposalIndex: 0 }], rejectedTags: [
     { ...tag, proposalIndex: 1, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' },
     { ...long, proposalIndex: 2, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' },
-  ], reviewed: true, textReview: null, reviewDecisions: [true, false, false] };
+  ], reviewed: true, complete: true, reviewDecisions: [true, false, false] };
   const reviewClaim = await claimPublish(review.id, 'review-audit-claim');
   await db.updateTable('ai_job_batches').set({ request_budget_used: 1, started_at: new Date('2026-10-25T02:00:00Z'),
-    request_estimate: jsonb({ totalTokens: 654 }) }).where('id', '=', review.id).execute();
+    request_estimate: jsonb({ totalTokens: 654 }),
+    reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1, extractionBatchId: String(f.batch.id) }) }).where('id', '=', review.id).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id,
     [reviewed, { ...other, tags: [], rejectedTags: [{ ...other.tags[0]!, proposalIndex: 0,
-      reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' }], reviewed: true, textReview: null, reviewDecisions: [false] }], metadata, reviewClaim, 'review');
+      reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' }], reviewed: true, complete: true, reviewDecisions: [false] }], metadata, reviewClaim, 'review');
   await sql`create function fail_audit_publication() returns trigger language plpgsql as $$
     begin raise exception 'audit publication unavailable'; end $$`.execute(db);
   await sql`create trigger fail_audit_publication before insert on product_tags for each row execute function fail_audit_publication()`.execute(db);
@@ -778,8 +952,8 @@ test('audit preserves historical extraction tags plus rejected tags in the revie
   const restored = await f.repo.getTagExtractionBatchInputs(review.id);
   const audit = await f.repo.tagProductAudit(f.job.id, f.inputId);
   assert.equal(audit.batches[0].proposals.length, 2);
-  assert.deepEqual(audit.batches[0].proposals.map(({ name, value, evidence, proposalIndex }: any) => ({
-    name, value, path: evidence[0].path, quote: evidence[0].quote, proposalIndex,
+  assert.deepEqual(audit.batches[0].proposals.map(({ name, value, proposalIndex }: any) => ({
+    name, value, proposalIndex,
   })), restored.proposals!.items[0]!.tags.map((tag, proposalIndex) => ({ ...tag, proposalIndex })));
   assert.equal(audit.batches[0].proposals[1].name, 'unknown');
   assert.ok(!Object.hasOwn(audit.batches[0].proposals[1], 'reasonCode'));
@@ -787,8 +961,8 @@ test('audit preserves historical extraction tags plus rejected tags in the revie
 
 test('audit never fabricates historic or malformed review vectors from accepted and rejected tags', async () => {
   const f = await fixture();
-  const reviewed = { ...f.decision, reviewed: true, textReview: null };
-  await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({ tagStage: 'review' }) }).where('id', '=', f.batch.id).execute();
+  const reviewed = { ...f.decision, reviewed: true, complete: true };
+  await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1 }) }).where('id', '=', f.batch.id).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim, 'review');
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
   const historic = await f.repo.tagProductAudit(f.job.id, f.inputId);
@@ -815,15 +989,15 @@ async function textPublicationFixture(count = 1) {
     .where('id', 'in', f.products.map(product => product.id)).execute();
   await db.updateTable('ai_job_inputs').set({ payload: jsonb(payload), fingerprint }).where('job_id', '=', f.job.id).execute();
   await db.updateTable('ai_job_input_members').set({ payload: jsonb(payload), fingerprint }).where('job_id', '=', f.job.id).execute();
-  await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({ tagStage: 'review' }) }).where('id', '=', f.batch.id).execute();
+  await db.updateTable('ai_jobs').set({ job_type: 'text_review' }).where('id', '=', f.job.id).execute();
+  await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({ tagStage: 'extract' }) }).where('id', '=', f.batch.id).execute();
   const review = validateTextReview({
     answers: { ...Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, { value: null, reason: '适用范围不明确', evidence: [] }])),
       L1: { value: true, reason: '标题明确商品', evidence: [{ field: 'name', quote: text.name }] },
       L2: { value: true, reason: '正文明确交付形式', evidence: [{ field: 'description', quote: '交付账号' }] } },
     consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, { value: false, reason: '完整原文未发现冲突', evidence: [] }])),
   }, text)!;
-  const decision = validateReviewedTagExtractionDecision(f.inputId,
-    f.decision.tags.map((tag, proposalIndex) => ({ ...tag, proposalIndex })), [], payload, [true], review);
+  const decision = { productId: f.inputId, tags: [], rejectedTags: [], textReview: review };
   const stored = { version: TEXT_REVIEW_VERSION, contentVersion: String(product.content_version), fingerprint,
     source, textHash: text.hash, review };
   return { ...f, source, text, sourceData, payload, fingerprint, review, decision, stored };
@@ -831,7 +1005,7 @@ async function textPublicationFixture(count = 1) {
 
 test('text publication waits for the shop before locking products held by the crawler', async () => {
   const f = await textPublicationFixture();
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'extract');
   const publishClaim = await claimPublish(f.batch.id);
   await db.connection().execute(async connection => {
     const { pid } = (await sql<{ pid: number }>`select pg_backend_pid() as pid`.execute(connection)).rows[0]!;
@@ -859,13 +1033,16 @@ test('text publication waits for the shop before locking products held by the cr
   assert.deepEqual((await db.selectFrom('products').select('text_review').where('id', '=', f.inputId).executeTakeFirstOrThrow()).text_review, f.stored);
 });
 
-test('text review publication rolls back tags, reviews and audit for all members on SQL failure and retries the saved checkpoint', async () => {
+test('independent text publication preserves tags and rolls back reviews and audit for all members on SQL failure and retries the saved checkpoint', async () => {
   const f = await textPublicationFixture(2);
   const productIds = f.products.map(product => product.id);
   const tagsBefore = productIds.map(product_id => ({ product_id, name: 'duration', value: 360 }));
   await db.insertInto('product_tags').values(tagRows(tagsBefore)).execute();
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'extract');
   const checkpoint = await batchRow(f.batch.id);
+  assert.equal(checkpoint.step, 'publish');
+  assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 1);
+  assert.deepEqual((checkpoint.validated_decision as any).items[0].tags, []);
   assert.deepEqual((checkpoint.validated_decision as any).items[0].textReview, f.review);
   const publishClaim = await claimPublish(f.batch.id);
   const cacheBefore = await db.selectFrom('catalog_cache_versions').selectAll().execute();
@@ -899,7 +1076,7 @@ test('text review publication rolls back tags, reviews and audit for all members
   assert.ok((await db.selectFrom('products').select('text_review').where('id', 'in', productIds).execute())
     .every(product => { assert.deepEqual(product.text_review, f.stored); return true; }));
   assert.deepEqual((await db.selectFrom('product_tags').select('value').where('product_id', 'in', productIds).execute())
-    .map(tag => tag.value), [30, 30]);
+    .map(tag => tag.value), [360, 360]);
   const done = await batchRow(f.batch.id);
   assert.equal(done.step, 'done');
   assert.equal(done.confirmed_requests, 1);
@@ -917,7 +1094,7 @@ for (const changed of ['body', 'url', 'protocol', 'platform'] as const) {
     await db.updateTable('ai_job_input_members').set({ payload: jsonb({ ...f.payload, shopSource: secondSource }) })
       .where('job_id', '=', f.job.id).where('product_id', '=', second.id).execute();
     await db.insertInto('product_tags').values(tagRows({ product_id: second.id, name: 'duration', value: 360 })).execute();
-    await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
+    await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'extract');
     if (changed === 'body') {
       const sourceData = { ratingText: { ...f.text, description: '改为交付兑换码。', hash: 'b'.repeat(64) } };
       const fingerprint = productContentFingerprint({ name: second.name, spec: second.spec, sourceCategory: '', sourceData });
@@ -931,7 +1108,7 @@ for (const changed of ['body', 'url', 'protocol', 'platform'] as const) {
     assert.deepEqual(products[0]!.text_review, f.stored, 'the unchanged member uses its own source, not the other shop source');
     assert.deepEqual(products[1]!.text_review, { ...f.stored, source: secondSource }, 'stale publication cannot replace the old bound review');
     assert.deepEqual(await db.selectFrom('product_tags').select(['product_id', 'value']).where('product_id', 'in', [first.id, second.id])
-      .orderBy('product_id').execute(), [{ product_id: first.id, value: 30 }, { product_id: second.id, value: 360 }]);
+      .orderBy('product_id').execute(), [{ product_id: second.id, value: 360 }]);
     const members = await db.selectFrom('ai_job_input_members').select(['input_id', 'reason_code', 'output']).where('job_id', '=', f.job.id)
       .orderBy('product_id').execute();
     assert.deepEqual(members.map(member => member.input_id), [f.inputId, f.inputId], 'one shared review fans out across different shop sources');
@@ -946,9 +1123,9 @@ test('changing only the text review bumps the catalog version without changing t
   const f = await textPublicationFixture();
   const priorReview = { ...f.review, answers: { ...f.review.answers, L2: { value: null, reason: '旧审核范围不明', evidence: [] } } };
   await db.updateTable('products').set({ text_review: jsonb({ ...f.stored, review: priorReview }) }).where('id', '=', f.inputId).execute();
-  const tags = f.decision.tags.map(({ name, value }) => ({ name, value }));
+  const tags = [{ name: 'duration', value: 360 }];
   await db.insertInto('product_tags').values(tagRows(tags.map(tag => ({ ...tag, product_id: f.inputId })))).execute();
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'extract');
   // Make the row eligible for a bump even when the runner uses production coalescing.
   await db.updateTable('catalog_cache_versions').set({ updated_at: new Date(0) }).where('id', '=', 1).execute();
   const before = await db.selectFrom('catalog_cache_versions').select('version').where('id', '=', 1).executeTakeFirstOrThrow();
@@ -959,7 +1136,7 @@ test('changing only the text review bumps the catalog version without changing t
   assert.deepEqual((await db.selectFrom('products').select('text_review').where('id', '=', f.inputId).executeTakeFirstOrThrow()).text_review, f.stored);
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).execute(), tags);
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
-  assert.equal((member.output as any).outcome, 'unchanged');
+  assert.equal((member.output as any).outcome, 'updated');
   assert.deepEqual((member.output as any).diff, []);
   assert.deepEqual((member.output as any).textReview, f.review);
   await f.repo.publishTagExtractionBatch(f.batch.id, publishClaim);

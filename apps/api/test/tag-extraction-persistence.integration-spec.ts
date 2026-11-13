@@ -106,6 +106,8 @@ test('cancel converts provisional missing while another first-round batch runs a
   await db.insertInto('ai_job_batches').values({job_id:f.job.id,batch_index:1n,product_ids:jsonb([]),product_count:0n,status:'running'}).execute();
   await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[],{},claim);
   assert.equal(((await outputs(f.job.id))[0]!.output as any).reasonCode,'missing_id');
+  const provisional=await db.selectFrom('ai_job_input_members').select(['status','missing_reprocess_count']).where('job_id','=',f.job.id).where('product_id','=',f.inputId).executeTakeFirstOrThrow();
+  assert.deepEqual(provisional,{status:'unclassified',missing_reprocess_count:0});
   await f.repo.cancelJob(f.job.id);
   const result=await outputs(f.job.id);
   assert.equal((result[0]!.output as any).outcome,'cancelled');
@@ -128,17 +130,21 @@ test('reserve uses member input IDs and skips fully protected batches without sp
   assert.equal((await db.selectFrom('ai_job_batches').select('request_budget_used').where('id','=',protectedJob.batch.id).executeTakeFirstOrThrow()).request_budget_used,0);
 });
 
-test('unchanged and empty results do not rewrite tags or bump catalog, mixed rejection remains visible',async()=>{
+test('unchanged partial results preserve tags and catalog version; complete empty results clear tags',async()=>{
   const f=await fixture();
-  await db.insertInto('product_tags').values(tagRows({product_id:f.inputId,name:'duration',value:30})).execute();
+  const stored=await db.insertInto('product_tags').values(tagRows({product_id:f.inputId,name:'duration',value:30})).returningAll().executeTakeFirstOrThrow();
   const decision=validateTagExtractionDecision(f.inputId,[{name:'duration',value:30,evidence:[{path:'spec',quote:'1个月'}]},{name:'renewable',value:'有',evidence:[{path:'spec',quote:'1个月'}]}],f.payload);
   const versionBefore=await db.selectFrom('catalog_cache_versions').selectAll().execute();
   await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[decision],{},claim);
   const output=(await outputs(f.job.id))[0]!.output as any;
-  assert.equal(output.outcome,'review'); assert.equal(output.rejectedTags.length,1); assert.equal(output.diff.length,0);
+  assert.equal(output.outcome,'partial_success'); assert.equal(output.rejectedTags.length,1); assert.equal(output.diff.length,0);
+  assert.equal(output.successfulCount,1); assert.equal(output.failedCount,1); assert.equal(output.complete,true);
+  assert.deepEqual(await db.selectFrom('product_tags').selectAll().where('product_id','=',f.inputId).execute(),[stored]);
   assert.deepEqual(await db.selectFrom('catalog_cache_versions').selectAll().execute(),versionBefore);
   const empty=await fixture(); await db.insertInto('product_tags').values(tagRows({product_id:empty.inputId,name:'duration',value:90})).execute(); await empty.repo.persistTagExtractionBatchDecision(empty.job.id,empty.batch.id,[validateTagExtractionDecision(empty.inputId,[],empty.payload)],{},claim);
-  assert.equal(((await outputs(empty.job.id))[0]!.output as any).outcome,'updated');
+  const cleared=(await outputs(empty.job.id))[0]!.output as any;
+  assert.equal(cleared.outcome,'empty'); assert.equal(cleared.complete,true);
+  assert.deepEqual(cleared.diff,[{name:'duration',before:[90],after:[]}]);
   assert.equal((await db.selectFrom('product_tags').selectAll().where('product_id','=',empty.inputId).execute()).length,0);
 });
 
@@ -153,8 +159,11 @@ test('persistence revalidation keeps vocabulary rejections and duplicates out of
   await f.repo.persistTagExtractionBatchDecision(f.job.id, f.batch.id, [decision], {}, claim);
   for (const row of await outputs(f.job.id)) {
     const output = row.output as any;
-    assert.equal(output.outcome, 'updated');
+    assert.equal(output.outcome, 'partial_success');
     assert.equal(output.acceptedTags.length, 1);
+    assert.equal(output.successfulCount, 1);
+    assert.equal(output.failedCount, 3);
+    assert.equal(output.complete, true);
     assert.deepEqual(output.rejectedTags.map((tag: any) => tag.reasonCode).sort(),
       ['tag_duplicate', 'tag_name_unknown', 'tag_value_invalid']);
     assert.ok(!JSON.stringify(output).includes('hidden'));

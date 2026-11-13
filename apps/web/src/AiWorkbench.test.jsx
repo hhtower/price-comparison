@@ -86,12 +86,12 @@ describe('AiWorkbench', () => {
     view.unmount();
   });
 
-  test('八个入口按任务与记录成对排列，标准化先于特性识别，支持键盘切换并关联面板', async () => {
+  test('任务与记录成对排列，文案审查独立入口支持键盘切换并关联面板', async () => {
     installFetch(url => url.pathname.endsWith('/task-queue') ? response({ items: [] }) : response(status));
     const user = userEvent.setup();
     render(<AiWorkbench shops={shops} />);
     const tabs = screen.getAllByRole('tab');
-    expect(tabs.map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '标准化', '标准化记录', '特性识别', '特性识别记录', '标签抽取', '标签抽取记录']);
+    expect(tabs.map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '标准化', '标准化记录', '特性识别', '特性识别记录', '标签抽取', '标签抽取记录', '文案审查', '文案审查记录']);
     expect(screen.queryByRole('button', { name: '新建任务' })).not.toBeInTheDocument();
     tabs[0].focus();
     await user.keyboard('{ArrowRight}');
@@ -102,15 +102,31 @@ describe('AiWorkbench', () => {
     expect(tabs[2]).toHaveFocus();
     expect(screen.getByRole('tabpanel', { name: '标准化' })).toHaveAttribute('id', tabs[2].getAttribute('aria-controls'));
     await user.keyboard('{End}');
-    expect(tabs[7]).toHaveFocus();
-    expect(screen.getByRole('tabpanel', { name: '标签抽取记录' })).toBeInTheDocument();
+    expect(tabs[9]).toHaveFocus();
+    expect(screen.getByRole('tabpanel', { name: '文案审查记录' })).toBeInTheDocument();
     await user.keyboard('{ArrowRight}');
     expect(tabs[0]).toHaveFocus();
     await user.keyboard('{ArrowLeft}');
-    expect(tabs[7]).toHaveFocus();
+    expect(tabs[9]).toHaveFocus();
     await user.keyboard('{Home}');
     expect(tabs[0]).toHaveFocus();
     expect(tabs.filter(tab => tab.tabIndex === 0)).toEqual([tabs[0]]);
+  });
+
+  test('文案审查独立按text_review读取任务和记录，不受标签开关影响', async () => {
+    const calls = installFetch(url => url.pathname.endsWith('/task-queue') ? response({ items: [], summary: { total: 0 } })
+      : response({ ...status, tagExtractionEnabled: false }));
+    render(<AiWorkbench shops={shops} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: '文案审查' }));
+    expect(await screen.findByRole('button', { name: '新建文案任务' })).toBeEnabled();
+    expect(screen.getByRole('tabpanel', { name: '文案审查' })).not.toHaveTextContent('标签');
+    await user.click(screen.getByRole('tab', { name: '文案审查记录' }));
+    expect(screen.getByRole('combobox', { name: '任务筛选' })).toHaveValue('all');
+    const queues = calls.filter(call => call.path.endsWith('/task-queue'));
+    expect(queues.length).toBeGreaterThan(0);
+    expect(queues.every(call => call.search.includes('jobType=text_review'))).toBe(true);
+    expect(queues.some(call => call.search.includes('status=all'))).toBe(true);
   });
 
   test('特性识别独立于标签开关，队列与记录按新任务类型读取', async () => {

@@ -1,39 +1,78 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseTagExtractionResponse } from '../src/ai/tag-extraction-request.js';
-import { buildTagExtractionOutcome, validateTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
-import { buildTagReviewRequest, parseTagReviewResponse } from '../src/ai/tag-review-request.js';
+import { buildTagExtractionOutcome, validateTagExtractionDecision, validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
+import { alignTagReviewDecisions, buildTagReviewRequest, parseTagReviewResponse } from '../src/ai/tag-review-request.js';
 import type { StandardizationTag } from '../src/ai/ai.schemas.js';
 
 const tag = (name: string, value: StandardizationTag['value'], quote: string, path = 'evidence') =>
   ({ name, value, evidence: [{ path, quote }] });
 
-test('duration JSON accepts numeric days and structured qualifiers, never numeric strings', () => {
+test('compact duration JSON and reviewed results preserve numeric days and structured qualifiers', () => {
   for (const value of [30, 365, 360, 0.5, { kind: 'range', min: 30, max: 90 }, { kind: 'min', days: 30 },
     { kind: 'max', days: 7 }, { kind: 'approx', days: 30 }, { kind: 'permanent' }]) {
-    const response = { items: [{ id: '1', tags: [{ name: 'duration', value, path: 'spec', quote: '期限' }] }] };
-    assert.deepEqual(parseTagExtractionResponse(JSON.stringify(response)), response);
+    const response = { items: [{ id: '1', tags: [{ name: 'duration', value }] }] };
+    const parsed = parseTagExtractionResponse(JSON.stringify(response));
+    assert.deepEqual(parsed, response);
+    const candidates = parsed.items[0]!.tags.map((tag, proposalIndex) => ({ ...tag, evidence: [], proposalIndex }));
+    const reviewed = validateReviewedTagExtractionDecision(1n, candidates, [], {}, [true], true);
+    assert.deepEqual(reviewed.tags, candidates);
+    assert.deepEqual(reviewed.rejectedTags, []);
+    assert.deepEqual(buildTagExtractionOutcome(reviewed, []).after, [{ name: 'duration', value }]);
   }
-  for (const value of ['30', '1 month', 0, -1, 36501, { kind: 'range', min: 30, max: 7 },
-    { kind: 'min', days: '30' }, { kind: 'permanent', days: 1 }]) {
+  for (const value of [{ kind: 'min', days: '30' }, { kind: 'permanent', days: 1 }]) {
     assert.throws(() => parseTagExtractionResponse(JSON.stringify({
-      items: [{ id: '1', tags: [{ name: 'duration', value, path: 'spec', quote: '期限' }] }],
+      items: [{ id: '1', tags: [{ name: 'duration', value }] }],
     })));
   }
 });
 
-test('review uses application assigned IDs and accepts reordered keyed votes', () => {
-  const proposals = { items: [{ id: '1', tags: [
-    { name: 'region', value: 'us', path: 'spec', quote: '美区' },
-    { name: 'region', value: 'jp', path: 'spec', quote: '日区' },
-  ] }] };
-  const request = buildTagReviewRequest([{ id: '1', name: '美区日区' }], proposals, 'mock');
-  assert.deepEqual(JSON.parse(request.messages[1]!.content).proposals.items[0].tags.map((t: { tagId: string }) => t.tagId), ['1:0', '1:1']);
-  const output = { items: [{ id: '1', decisions: [{ tagId: '1:1', accepted: false }, { tagId: '1:0', accepted: true }], textReview: null }] };
-  assert.deepEqual(parseTagReviewResponse(JSON.stringify(output)), output);
-  for (const decisions of [[true, false], [{ tagId: '1:0', accepted: true }, { tagId: '1:0', accepted: false }],
-    [{ tagId: '2:0', accepted: true }]]) {
-    assert.throws(() => parseTagReviewResponse(JSON.stringify({ items: [{ id: '1', decisions, textReview: null }] })));
+test('invalid duration values fail per candidate without discarding valid tags or the old duration', () => {
+  for (const value of ['30', '1 month', 0, -1, 36501, { kind: 'range', min: 30, max: 7 }]) {
+    const parsed = parseTagExtractionResponse(JSON.stringify({ items: [{ id: '1', tags: [
+      { name: 'region', value: 'us' }, { name: 'duration', value },
+    ] }] }));
+    const candidates = parsed.items[0]!.tags.map((tag, proposalIndex) => ({ ...tag, evidence: [], proposalIndex }));
+    const reviewed = validateReviewedTagExtractionDecision(1n, candidates, [], {}, [true, true], true);
+    assert.deepEqual(reviewed.tags, [{ name: 'region', value: 'us', evidence: [], proposalIndex: 0 }]);
+    assert.equal(reviewed.rejectedTags.length, 1);
+    assert.equal(reviewed.rejectedTags[0]!.reasonCode, 'tag_value_invalid');
+    assert.equal(reviewed.rejectedTags[0]!.proposalIndex, 1);
+    assert.deepEqual(reviewed.rejectedTags[0]!.value, value);
+    const result = buildTagExtractionOutcome(reviewed, [{ name: 'duration', value: 360 }]);
+    assert.equal(result.outcome, 'partial_success');
+    assert.equal(result.successfulCount, 1);
+    assert.equal(result.failedCount, 1);
+    assert.deepEqual(result.after, [{ name: 'region', value: 'us' }, { name: 'duration', value: 360 }]);
+  }
+});
+
+test('review matches products by ID and uses strict positional votes for every candidate occurrence', () => {
+  const proposals = { items: [
+    { id: '1', tags: [{ name: 'region', value: 'us' }, { name: 'region', value: 'jp' }, { name: 'region', value: 'us' }] },
+    { id: '2', tags: [{ name: 'duration', value: 30 }] },
+  ] };
+  const request = buildTagReviewRequest([{ id: '1', name: '美区日区' }, { id: '2', name: '月卡' }], proposals, 'mock');
+  assert.deepEqual(JSON.parse(request.messages[1]!.content).proposals, proposals);
+  const output = { items: [
+    { id: '2', accepted: [false], complete: false },
+    { id: '1', accepted: [true, false, false], complete: true },
+  ] };
+  const parsed = parseTagReviewResponse(JSON.stringify(output));
+  assert.deepEqual(parsed, output);
+  assert.deepEqual(alignTagReviewDecisions(parsed.items[1]!, proposals.items[0]!), [true, false, false]);
+  assert.deepEqual(alignTagReviewDecisions(parsed.items[0]!, proposals.items[1]!), [false]);
+  for (const accepted of [[], [true], [true, false], [true, false, false, true]]) {
+    assert.throws(() => alignTagReviewDecisions({ id: '1', accepted, complete: true }, proposals.items[0]!));
+  }
+  assert.throws(() => alignTagReviewDecisions({ id: '2', accepted: [true, false, false], complete: true }, proposals.items[0]!));
+  for (const item of [
+    { id: '1', accepted: ['true', false, false], complete: true },
+    { id: '1', accepted: [true, false, false], complete: 'true' },
+    { id: '1', accepted: [true, false, false] },
+    { id: '1', decisions: [{ tagId: '1:0', accepted: true }], textReview: null },
+  ]) {
+    assert.throws(() => parseTagReviewResponse(JSON.stringify({ items: [item] })));
   }
 });
 

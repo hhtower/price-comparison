@@ -11,7 +11,9 @@ import { productContentFingerprint } from '../src/standardization/fingerprint.js
 import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
 import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
-import { createManualTagJob, previewTagJob, createTagJob, prepareAllPendingTagJob } from '../src/ai/tag-extraction-jobs.js';
+import { createManualTagJob, previewTagJob, createTagJob, prepareAllPendingTagJob, createManualProductTextReviewJob, createProductTextReviewJob } from '../src/ai/tag-extraction-jobs.js';
+import { CONSISTENCY_KEYS, DISCLOSURE_KEYS, prepareTextReview, TEXT_REVIEW_VERSION } from '../src/shops/shop-text-review.js';
+import { captureRatingText } from '../src/platforms/source-evidence.js';
 import { readAiTaskQueue } from '../src/ai/ai-task-queue.js';
 import { getJobProgress } from '../src/ai/ai-progress.repository.js';
 import { randomUUID } from 'node:crypto';
@@ -597,4 +599,40 @@ for (const legacy of [
  const member=await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',pending.id).where('product_id','=',f.inputId).executeTakeFirst();
  assert.equal(Boolean(member),!legacy.current);
  await completeTagJob(pending.id);
+});
+
+test('all-pending text review selects a completed member again after a hash-only capture change', async () => {
+ const f=await fixture();
+ const product=f.products[0]!;
+ const source=await db.selectFrom('shops').select(['url','protocol','platform']).where('id','=',product.shop_id).executeTakeFirstOrThrow();
+ const text=captureRatingText('listing',product.name,'Support provided.')!;
+ await db.updateTable('products').set({source_data:jsonb({ratingText:text})}).where('id','=',product.id).execute();
+ const original=await db.transaction().execute(tx=>createProductTextReviewJob(tx,{productIds:[product.id],model:'mock'}));
+ const pending=()=>createManualProductTextReviewJob(db,{allPending:true,model:'mock',requestId:randomUUID()});
+ assert.equal((await preparePending((await pending()).id)).total,0n,'an active text review still prevents duplicate selection');
+ await completeTagJob(original.id);
+ const judgment={value:false,reason:'No explicit claim.',evidence:[]};
+ const stored={version:TEXT_REVIEW_VERSION,contentVersion:String(product.content_version),fingerprint:product.content_fingerprint,
+  source,textHash:text.hash,review:{
+   answers:Object.fromEntries(DISCLOSURE_KEYS.map(key=>[key,judgment])),
+   consistency:Object.fromEntries(CONSISTENCY_KEYS.map(key=>[key,judgment])),
+  }};
+ await db.updateTable('products').set({text_review:jsonb(stored)}).where('id','=',product.id).execute();
+ assert.ok(prepareTextReview({...product,source_data:{ratingText:text},text_review:stored}));
+ assert.equal((await preparePending((await pending()).id)).total,0n,'a current stored review remains covered');
+
+ const changed=captureRatingText('listing',product.name,'Support  provided.')!;
+ assert.notEqual(changed.hash,text.hash);
+ const current=await db.updateTable('products').set({source_data:jsonb({ratingText:changed})})
+  .where('id','=',product.id).returningAll().executeTakeFirstOrThrow();
+ assert.equal(current.content_version,product.content_version);
+ assert.equal(current.content_fingerprint,product.content_fingerprint);
+ assert.equal(current.standardization_revision,product.standardization_revision);
+ assert.equal(prepareTextReview(current),null);
+ const retry=await pending();
+ assert.equal((await preparePending(retry.id)).total,1n,'a stale stored review must not be covered by its old successful output');
+ const member=await db.selectFrom('ai_job_input_members').select(['product_id','payload']).where('job_id','=',retry.id).executeTakeFirstOrThrow();
+ assert.equal(member.product_id,product.id);
+ assert.deepEqual((member.payload as Record<string,unknown>).shopText,{...changed,description:'Support provided.'});
+ await completeTagJob(retry.id);
 });

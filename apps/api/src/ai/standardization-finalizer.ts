@@ -1,6 +1,6 @@
 import { isAttributeJobType } from '../database/types.js';
 import { DomainNotFoundError } from '../common/errors.js';
-import { createTagJob, createMembershipFeatureJob } from './tag-extraction-jobs.js';
+import { createTagJob, createMembershipFeatureJob, createProductTextReviewJob } from './tag-extraction-jobs.js';
 import { buildTagExtractionOutcome, tagExtractionVersions } from './tag-extraction-result.js';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../database/types.js';
@@ -58,8 +58,45 @@ async function materializeFailedBatch(
   if (!members.length) return;
   const terminal = terminalReason(batch.error_source, batch.error);
   if (isAttributeJobType(job.job_type)) {
+    const tagReference = batch.reference_snapshot as {
+      repairReviewBatchId?: string; tagRepairFallback?: boolean;
+    } | null;
+    if (job.job_type === 'tag_extraction' && tagReference?.repairReviewBatchId && !tagReference.tagRepairFallback) {
+      // A repair failure cannot discard labels already approved in the first review.
+      const queued = await tx.selectFrom('ai_job_batches').select('id').where('job_id', '=', jobId)
+        .where(sql<boolean>`reference_snapshot->>'repairFallbackBatchId' = ${String(batch.id)}`).executeTakeFirst();
+      if (queued) return;
+      if (!/^[1-9]\d*$/u.test(tagReference.repairReviewBatchId)) throw new Error('Invalid tag repair checkpoint');
+      const prior = await tx.selectFrom('ai_job_batches').select(['validated_decision', 'step', 'status'])
+        .where('job_id', '=', jobId).where('id', '=', BigInt(tagReference.repairReviewBatchId)).executeTakeFirstOrThrow();
+      const document = prior.validated_decision as { items?: Array<{ productId: string }> } | null;
+      if (prior.step !== 'done' || prior.status !== 'succeeded' || !Array.isArray(document?.items)) {
+        throw new Error('Missing approved tag repair checkpoint');
+      }
+      const ids = new Set(members.map(member => String(member.input_id)));
+      const items = document.items.filter(item => ids.has(item.productId));
+      if (items.length !== ids.size) throw new Error('Incomplete approved tag repair checkpoint');
+      const maximum = await tx.selectFrom('ai_job_batches').select(sql<bigint>`coalesce(max(batch_index),-1)`.as('index'))
+        .where('job_id', '=', jobId).executeTakeFirstOrThrow();
+      await tx.insertInto('ai_job_batches').values({
+        job_id: jobId, batch_index: maximum.index + 1n, product_ids: jsonb([...ids]),
+        product_count: BigInt(members.length), input_bytes: 0n, estimated_tokens: 0n,
+        round: 1, step: 'publish', status: 'queued', request_budget_limit: 1,
+        validated_decision: jsonb({ items } as unknown as JsonValue), decision_saved_at: sql<Date>`now()`,
+        reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1, tagRepairFallback: true,
+          repairFallbackBatchId: String(batch.id), repairReviewBatchId: tagReference.repairReviewBatchId }),
+      }).execute();
+      return;
+    }
     await tx.updateTable('ai_job_inputs').set({ status: 'failed', reason_code: terminal.code, error: terminal.reason }).where('job_id', '=', jobId).where('input_id', 'in', members.map(member => member.input_id)).execute();
-    for (const member of members) await tx.updateTable('ai_job_input_members').set({ status: 'failed', reason_code: terminal.code, output: jsonb({ ...buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, [], { outcome: 'failed', reasonCode: terminal.code }), versions: tagExtractionVersions(member, job.pipeline_versions) } as unknown as JsonValue) }).where('job_id', '=', jobId).where('product_id', '=', member.product_id).where('output', 'is', null).execute();
+    for (const member of members) {
+      const before = job.job_type === 'tag_extraction'
+        ? await tx.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', member.product_id).execute() : [];
+      await tx.updateTable('ai_job_input_members').set({ status: 'failed', reason_code: terminal.code,
+        output: jsonb({ ...buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, before,
+          { outcome: 'failed', reasonCode: terminal.code }), versions: tagExtractionVersions(member, job.pipeline_versions) } as unknown as JsonValue),
+      }).where('job_id', '=', jobId).where('product_id', '=', member.product_id).where('output', 'is', null).execute();
+    }
     return;
   }
   const preserved = new Map<bigint, StandardizationDecision>();
@@ -142,14 +179,13 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
   if (job.pause_requested || job.cancel_requested || job.configuration_blocked
     || ['paused', 'cancelled', 'failed', 'succeeded', 'ready_with_errors'].includes(job.status)) return;
 
-  const active = await tx.selectFrom('ai_job_batches').select('id')
-    .where('job_id', '=', jobId).where('status', 'in', ['queued', 'running']).executeTakeFirst();
-
   const failed = await tx.selectFrom('ai_job_batches')
     .select(['id', 'product_ids', 'error_source', 'error', 'reference_snapshot'])
     .where('job_id', '=', jobId).where('status', '=', 'failed').orderBy('id').execute();
   for (const batch of failed) await materializeFailedBatch(tx, jobId, batch);
   // Failed products must be visible to the global retry pool before unrelated batches finish.
+  const active = await tx.selectFrom('ai_job_batches').select('id')
+    .where('job_id', '=', jobId).where('status', 'in', ['queued', 'running']).executeTakeFirst();
   if (active) return;
 
   const existingRoundOne = await tx.selectFrom('ai_job_batches').select('id')
@@ -274,7 +310,7 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
     failed_batches: BigInt(failed.length),
     finished_at: sql`now()`,
   }).where('id', '=', jobId).execute();
-  // Both attribute jobs consume published identities; neither is an identity prerequisite.
+  // Attribute jobs consume published identities without blocking identity publication.
   if (classified > 0 && !isAttributeJobType(parentJob.job_type)) {
     await scheduleAttributeJobs(tx, jobId, parentJob.model);
   }
@@ -296,8 +332,8 @@ async function scheduleAttributeJobs(tx: Transaction<DatabaseSchema>, sourceJobI
     .execute();
   if (!classifiedProducts.length) return;
 
-  for (const kind of ['membership_features', 'tag_extraction'] as const) {
-    if (kind === 'tag_extraction' && !readAiStandardizationFeatures().tagExtractionEnabled) continue;
+  for (const kind of ['membership_features', 'tag_extraction', 'text_review'] as const) {
+    if (kind !== 'membership_features' && !readAiStandardizationFeatures().tagExtractionEnabled) continue;
     const covered = await tx.selectFrom('ai_job_input_members as m')
       .innerJoin('ai_jobs as j', 'j.id', 'm.job_id').innerJoin('products as p', 'p.id', 'm.product_id')
       .select('m.product_id').where('j.parent_identity_job_id', '=', sourceJobId).where('j.job_type', '=', kind)
@@ -306,7 +342,8 @@ async function scheduleAttributeJobs(tx: Transaction<DatabaseSchema>, sourceJobI
     const coveredIds = new Set(covered.map(member => member.product_id));
     const productIds = classifiedProducts.filter(product => !coveredIds.has(product.id)).map(product => product.id);
     if (!productIds.length) continue;
-    const create = kind === 'membership_features' ? createMembershipFeatureJob : createTagJob;
+    const create = kind === 'membership_features' ? createMembershipFeatureJob
+      : kind === 'text_review' ? createProductTextReviewJob : createTagJob;
     try {
       await create(tx, {model,productIds,parentIdentityJobId:sourceJobId});
     } catch(error) {

@@ -44,6 +44,13 @@ export class AiController {
     if (body.acknowledgePossibleCharge !== true) throw new DomainValidationError('AI_RETRY_ACK_REQUIRED', '请确认任务可能计费');
     return jsonSafe(await this.service.createMembershipFeatureJob({ ...tagScope(body), requestId: body.requestId, previewDigest: body.previewDigest }));
   }
+  @Post('text-review-jobs/preview') async previewTextReview(@Body(new ValidationPipe({ expectedType: TagJobScopeDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) body: TagJobScopeDto) {
+    return jsonSafe(await this.service.previewProductTextReviewJob(tagScope(body)));
+  }
+  @Post('text-review-jobs') async createTextReview(@Body(new ValidationPipe({ expectedType: TagJobCreateDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) body: TagJobCreateDto) {
+    if (body.acknowledgePossibleCharge !== true) throw new DomainValidationError('AI_RETRY_ACK_REQUIRED', '请确认任务可能计费');
+    return jsonSafe(await this.service.createProductTextReviewJob({ ...tagScope(body), requestId: body.requestId, previewDigest: body.previewDigest }));
+  }
   @Post('jobs') async createJob(@Body() body: CreateJobDto) { return jsonSafe(await this.service.createJob({ model: body.model, batchSize: body.batchSize, scopeShopId: body.scopeShopId == null ? null : id(body.scopeShopId) })); }
   @Post('jobs/:id/pause') async pause(@Param('id') value: string) { return jsonSafe(await this.repository.pauseJob(id(value))); }
   @Post('jobs/:id/resume') async resume(@Param('id') value: string) { return jsonSafe(await this.repository.resumeJob(id(value))); }

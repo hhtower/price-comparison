@@ -27,8 +27,7 @@ test('release requires complete coverage and measured baseline with no field reg
  assert.throws(()=>evaluateTagFacts(expected,[...expected,expected[0]]));
 });
 
-import { validateTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
-import { normalizeSpec } from '../src/products/product-spec.js';
+import { validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import { readFile } from 'node:fs/promises';
@@ -38,15 +37,17 @@ test('synthetic references satisfy closed protocol and retain validated facts', 
  for (const split of ['diagnostic']) {
   const samples=fixture.samples.filter((sample:any)=>sample.split===split);
   assert.ok(samples.length>=4);
-  const expected=samples.map((sample:any)=>({id:sample.id,tags:sample.expected}));
-  parseTagExtractionResponse(JSON.stringify({items:expected}));
+  const expected=samples.map((sample:any)=>({id:sample.id,tags:sample.expected.map(({name,value}:any)=>({name,value}))}));
+  const parsed=parseTagExtractionResponse(JSON.stringify({items:expected}));
   const accepted = [];
   for(const sample of samples) {
    const payload=buildTagExtractionRequest([sample.input],'mock').messages[1].content;
    assert.ok(!/https?:|@|api_key|password/iu.test(payload));
+   // Quotes remain offline annotation checks; the model protocol contains only name/value.
    for(const tag of sample.expected) assert.ok(tag.path.split('.').reduce((value:any,key:string)=>value[key],sample.input).includes(tag.quote));
-   const proposed=sample.expected.map(({name,value,path,quote}:any)=>({name,value,evidence:[{path,quote:path==='spec'?normalizeSpec(quote):quote}]}));
-   const validated=validateTagExtractionDecision(BigInt(sample.id),proposed,buildExtractionPayload(sample.input));
+   const proposed=parsed.items.find(item=>item.id===sample.id)!.tags.map((tag,proposalIndex)=>({...tag,evidence:[],proposalIndex}));
+   const validated=validateReviewedTagExtractionDecision(BigInt(sample.id),proposed,[],buildExtractionPayload(sample.input),proposed.map(()=>true),true);
+   assert.deepEqual(validated.rejectedTags,[],sample.id);
    accepted.push({id:sample.id,tags:validated.tags});
   }
   const report=evaluateTagFacts(expected,expected);

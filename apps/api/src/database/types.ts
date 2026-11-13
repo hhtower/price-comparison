@@ -29,10 +29,10 @@ export type StandardizationExecutionStatus = 'registered' | 'processing' | 'comp
 export type StandardizationOutboxStatus = 'queued' | 'running' | 'succeeded' | 'deferred' | 'failed' | 'cancelled';
 export type ProductChangeEventType = 'created' | 'evidence_changed' | 'restored';
 export type ProductDeletionSource = 'manual' | 'linked' | 'crawler_missing' | 'legacy';
-export type AttributeJobType = 'tag_extraction' | 'membership_features';
+export type AttributeJobType = 'tag_extraction' | 'membership_features' | 'text_review';
 export type AiJobType = 'incremental' | 'calibration' | 'manual_full' | AttributeJobType;
 export function isAttributeJobType(value: string): value is AttributeJobType {
-  return value === 'tag_extraction' || value === 'membership_features';
+  return value === 'tag_extraction' || value === 'membership_features' || value === 'text_review';
 }
 export type StandardVerificationState = 'provisional' | 'verified' | 'quarantined';
 export type PublicationState = 'provisional' | 'published' | 'quarantined';

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { buildTagExtractionOutcome, validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 
 const proposal = (proposalIndex: number, name: string, value: string) => ({
-  proposalIndex, name, value, evidence: [{ path: 'sourceData.evidence', quote: '已接码' }],
+  proposalIndex, name, value, evidence: [],
 });
 
 test('the saved vote vector distinguishes model rejection from a true vote rejected by program validation', () => {

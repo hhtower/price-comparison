@@ -5,8 +5,9 @@ import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { createAiWorker, createOpenAiModelCall } from '../src/ai/ai.worker.js';
-import { createTagJob } from '../src/ai/tag-extraction-jobs.js';
+import { createProductTextReviewJob, createTagJob } from '../src/ai/tag-extraction-jobs.js';
 import { buildTagReviewRequest } from '../src/ai/tag-review-request.js';
+import { buildProductTextReviewRequest } from '../src/ai/product-text-review-request.js';
 import { assertStandardizationRequestFits, estimateStandardizationRequest, readStandardizationRequestLimits } from '../src/ai/standardization-request.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
@@ -51,7 +52,7 @@ after(async () => {
   delete process.env.PG_SCHEMA;
 });
 
-async function fixture(count = 1, fanout = false) {
+async function fixture(count = 1, fanout = false, textReview = false) {
   const shop = await db.insertInto('shops').values({
     platform: 'test', name: 'budget', url: `https://budget.invalid/${Math.random()}`, enabled: true,
   }).returning('id').executeTakeFirstOrThrow();
@@ -59,10 +60,14 @@ async function fixture(count = 1, fanout = false) {
   const products = [];
   for (let index = 0; index < count; index++) {
     const name = source.name + (index && !(fanout && index === count - 1) ? ` variant ${index}` : '');
+    const sourceData = { ...source.sourceData, ...(textReview ? { ratingText: {
+      unitId: `budget-${index}`, name, description: 'Full original body.\n'.repeat(10) + 'Final condition: first login only.',
+      hash: 'a'.repeat(64),
+    } } : {}) };
     products.push(await db.insertInto('products').values({
       shop_id: shop.id, external_id: `budget-${index}`, name, spec: source.spec, source_category: source.sourceCategory,
-      source_data: jsonb(source.sourceData), normalized_key: 'budget', url: 'https://budget.invalid/product',
-      content_version: 1n, content_fingerprint: productContentFingerprint({ ...source, name }),
+      source_data: jsonb(sourceData), normalized_key: 'budget', url: 'https://budget.invalid/product',
+      content_version: 1n, content_fingerprint: productContentFingerprint({ ...source, name, sourceData }),
     }).returning('id').executeTakeFirstOrThrow());
   }
   const standard = await db.insertInto('standard_products').values({
@@ -71,7 +76,8 @@ async function fixture(count = 1, fanout = false) {
   for (const product of products) await db.insertInto('standard_product_members').values({
     product_id: product.id, standard_product_id: standard.id, assignment_source: 'ai', publication_state: 'published',
   }).execute();
-  const job = await db.transaction().execute(tx => createTagJob(tx, { productIds: products.map(product => product.id), model: 'glm-5.3' }));
+  const createJob = textReview ? createProductTextReviewJob : createTagJob;
+  const job = await db.transaction().execute(tx => createJob(tx, { productIds: products.map(product => product.id), model: 'glm-5.3' }));
   const batch = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', job.id).executeTakeFirstOrThrow();
   return { repository: new AiRepository(db), product: products[0]!, products, job, batch };
 }
@@ -89,7 +95,7 @@ async function reviewFixture(count = 1, fanout = false) {
     status: 'succeeded', step: 'done', request_budget_used: 1, confirmed_requests: 1,
     reference_snapshot: jsonb(reference), product_ids: jsonb(members.map(member => String(member.input_id))), product_count: BigInt(count),
     validated_decision: jsonb({ items: members.map(member => ({ productId: String(member.input_id), tags: [{
-      name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1 month' }],
+      name: 'duration', value: 30, evidence: [], proposalIndex: 0,
     }], rejectedTags: [] })) }),
   }).where('id', '=', f.batch.id).execute();
   for (const member of members) await db.updateTable('ai_job_input_members').set({
@@ -187,15 +193,15 @@ for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request
     return new Response(`data: ${JSON.stringify({
       id: 'budget-response', model: 'glm-5.3',
       choices: [{ delta: { content: JSON.stringify({ items: [{ id: String(f.product.id),
-        ...(stage === 'review' ? { decisions: [{ tagId: `${f.product.id}:0`, accepted: true }], textReview: null } : { tags: [] }),
+        ...(stage === 'review' ? { accepted: [true], complete: true } : { tags: [] }),
       }] }) }, finish_reason: 'stop' }],
     })}\n\ndata: [DONE]\n\n`);
   });
   const execute = await modelCall.prepare!({ id: f.batch.id, row: { job_type: 'tag_extraction' } }, new AbortController().signal);
   const result = await execute();
   assert.deepEqual(result.tagExtractionItems, [{ productId: f.product.id,
-    tags: stage === 'review' ? [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1 month' }] }] : [],
-    rejectedTags: [], ...(stage === 'review' ? { reviewed: true, reviewDecisions: [true], textReview: null } : {}),
+    tags: stage === 'review' ? [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }] : [],
+    rejectedTags: [], ...(stage === 'review' ? { reviewed: true, reviewDecisions: [true], complete: true } : {}),
   }]);
   assert.ok(body);
   const estimate = prepared.request_estimate as Record<string, number>;
@@ -215,11 +221,12 @@ for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request
     const frozen = await db.selectFrom('ai_job_input_members').select('payload')
       .where('job_id', '=', f.job.id).where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
     assert.deepEqual(sentPayload.inputs, [{
-      ...expectedInput, frozenOrigin: 'original-catalog', evidence: 'Additional frozen evidence',
-      shopSource: (frozen.payload as Record<string, unknown>).shopSource,
+      ...expectedInput, evidence: 'Additional frozen evidence',
     }]);
+    assert.equal((frozen.payload as Record<string, unknown>).frozenOrigin, 'original-catalog');
+    assert.ok((frozen.payload as Record<string, unknown>).shopSource);
     assert.deepEqual(sentPayload.proposals, { items: [{ id: String(f.product.id), tags: [
-      { tagId: `${f.product.id}:0`, name: 'duration', value: 30, path: 'spec', quote: '1 month' },
+      { name: 'duration', value: 30 },
     ] }] });
     assert.deepEqual(prepared.reference_snapshot, f.batch.reference_snapshot);
   } else assert.deepEqual(sentPayload, [expectedInput]);
@@ -227,23 +234,22 @@ for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request
   assert.deepEqual((await db.selectFrom('ai_job_batches').select('request_estimate').where('id', '=', f.batch.id).executeTakeFirstOrThrow()).request_estimate, prepared.request_estimate);
 });
 
-test('fourteen-question output capacity splits frozen review batches before reserving requests', async t => {
+test('fourteen-question output capacity splits independent text review batches before reserving requests', async t => {
   configureLimits(t);
-  const f = await reviewFixture(9);
-  const members = await db.selectFrom('ai_job_input_members').select(['input_id', 'payload'])
-    .where('job_id', '=', f.job.id).execute();
-  for (const member of members) await db.updateTable('ai_job_input_members').set({ payload: jsonb({
-    ...(member.payload as object), shopText: { unitId: String(member.input_id), name: 'Parent', description: '', hash: 'a'.repeat(64) },
-  }) }).where('job_id', '=', f.job.id).where('input_id', '=', member.input_id).execute();
+  const f = await fixture(9, false, true);
+  assert.equal(f.job.job_type, 'text_review');
+  assert.equal(f.batch.reference_snapshot, null);
   const original = await f.repository.getTagExtractionBatchInputs(f.batch.id);
+  assert.equal(original.stage, 'extract');
+  assert.equal(original.proposals, undefined);
   const payloads = original.inputs.map(input => ({ ...(input.payload as object), id: String(input.productId),
     name: input.name, spec: input.spec, sourceData: input.sourceData }));
-  const estimate = estimateStandardizationRequest(buildTagReviewRequest(payloads, original.proposals!, original.model), readStandardizationRequestLimits());
+  const estimate = estimateStandardizationRequest(buildProductTextReviewRequest(payloads, original.model), readStandardizationRequestLimits());
   assert.ok(estimate.requestBytes < Number(requestLimits.AI_REQUEST_MAX_BYTES));
   assert.ok(estimate.estimatedTotalTokens < Number(requestLimits.AI_REQUEST_MAX_CONTEXT_TOKENS));
   await f.repository.prepareBatch(f.batch.id);
   const batches = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id)
-    .where('round', '=', 1).orderBy('batch_index').execute();
+    .where('round', '=', 0).orderBy('batch_index').execute();
   assert.deepEqual(batches.map(batch => (batch.product_ids as string[]).length), [4, 4, 1]);
   assert.deepEqual(batches.flatMap(batch => batch.product_ids as string[]), payloads.map(input => input.id));
   for (const batch of batches) {
@@ -253,10 +259,30 @@ test('fourteen-question output capacity splits frozen review batches before rese
     assert.equal(stored.oversized, false);
     assert.ok((batch.product_ids as string[]).length <= 4);
     const frozen = await f.repository.getTagExtractionBatchInputs(batch.id);
-    assert.ok(frozen.inputs.every(input => (input.payload as Record<string, unknown>).shopText));
+    const reference = batch.reference_snapshot as { inputs: Array<{ id: string }> };
+    assert.deepEqual(reference.inputs.map(input => input.id).sort(), [...batch.product_ids as string[]].sort());
+    assert.deepEqual(frozen.inputs, original.inputs.filter(input => (batch.product_ids as string[]).includes(String(input.productId))));
+    const groupInputs = frozen.inputs.map(input => ({ ...(input.payload as object), id: String(input.productId), name: input.name }));
+    const { oversized, ...storedEstimate } = stored;
+    assert.equal(oversized, false);
+    assert.deepEqual(storedEstimate, estimateStandardizationRequest(buildProductTextReviewRequest(groupInputs, frozen.model), readStandardizationRequestLimits()));
     await f.repository.prepareBatch(batch.id);
   }
-  assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).where('round', '=', 1).execute()).length, 3);
+  assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 3);
+});
+
+test('tag review keeps a fitting batch together despite captured shop text', async t => {
+  configureLimits(t);
+  const f = await reviewFixture(9);
+  const members = await db.selectFrom('ai_job_input_members').select(['input_id', 'payload']).where('job_id', '=', f.job.id).execute();
+  for (const member of members) await db.updateTable('ai_job_input_members').set({ payload: jsonb({
+    ...(member.payload as object), shopText: { unitId: String(member.input_id), name: 'Parent', description: '', hash: 'a'.repeat(64) },
+  }) }).where('job_id', '=', f.job.id).where('input_id', '=', member.input_id).execute();
+  await f.repository.prepareBatch(f.batch.id);
+  const batches = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id).where('round', '=', 1).execute();
+  assert.equal(batches.length, 1);
+  assert.equal((batches[0]!.product_ids as string[]).length, 9);
+  assert.equal(batches[0]!.request_budget_used, 0);
 });
 
 for (const dimension of ['bytes', 'context'] as const) test(`review preparation splits complete requests by ${dimension} before reservation, atomically and idempotently`, async t => {

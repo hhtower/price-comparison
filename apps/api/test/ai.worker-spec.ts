@@ -66,12 +66,12 @@ function modelCall(body: unknown, options: { status?: number; finishReason?: str
 test('the extraction stage preserves every schema-valid candidate for independent semantic review', async () => {
   const payload = { productId: 11n, name: 'Team 5X成品JSON', spec: '', sourceData: { evidence: '成品JSON交付，仅支持Sub2API。禁止反代。质保30天，封号不保。' } };
   const tags = [
-    { name: 'duration', value: 30, path: 'sourceData.evidence', quote: '质保30天' },
-    { name: 'supported_client', value: 'sub2api', path: 'sourceData.evidence', quote: 'Sub2API' },
-    { name: 'supported_client', value: 'codex', path: 'sourceData.evidence', quote: 'JSON' },
-    { name: 'access_channel', value: 'reverse_proxy', path: 'sourceData.evidence', quote: '反代' },
-    { name: 'access_channel', value: 'web', path: 'sourceData.evidence', quote: '仅支持Sub2API' },
-    { name: 'warranty', value: '质保30天', path: 'sourceData.evidence', quote: '质保30天' },
+    { name: 'duration', value: 30 },
+    { name: 'supported_client', value: 'sub2api' },
+    { name: 'supported_client', value: 'codex' },
+    { name: 'access_channel', value: 'reverse_proxy' },
+    { name: 'access_channel', value: 'web' },
+    { name: 'warranty', value: '质保30天' },
   ];
   const call = (items: unknown) => createOpenAiModelCall({ getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', inputs: [payload] }) } as never,
     { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock' }, async (_url, init) => {
@@ -82,12 +82,12 @@ test('the extraction stage preserves every schema-valid candidate for independen
     });
   const job = { ...claimed(), row: { ...claimed().row, job_type: 'tag_extraction' } };
   const result = await call([{ id: '11', tags }])(job, new AbortController().signal) as any;
-  assert.deepEqual(result.tagExtractionItems[0].tags, tags.map(({ path, quote, ...tag }) => ({ ...tag, evidence: [{ path, quote }] })));
+  assert.deepEqual(result.tagExtractionItems[0].tags, tags.map((tag, proposalIndex) => ({ ...tag, evidence: [], proposalIndex })));
   assert.equal(result.tagExtractionStage, 'extract');
   assert.deepEqual(result.tagExtractionItems[0].rejectedTags, []);
   await assert.rejects(call([{ id: '99', tags }])(job, new AbortController().signal));
   await assert.rejects(call([{ id: '11', tags }, { id: '11', tags }])(job, new AbortController().signal));
-  await assert.rejects(call([{ id: '11', tags: [{ name: 'delivery_format', value: 'json', path: 'sourceData.evidence', quote: 'JSON' }] }])(job, new AbortController().signal));
+  await assert.rejects(call([{ id: '11', tags: [{ name: 'duration', value: [] }] }])(job, new AbortController().signal));
 });
 
 test('tag worker checkpoints complete candidates before semantic review or product publication', async () => {
@@ -111,12 +111,12 @@ test('tag worker checkpoints complete candidates before semantic review or produ
     events.push('send');
     const content = JSON.stringify({ items: [
       { id: '11', tags: [
-        { name: 'duration', value: 30, path: 'spec', quote: '1个月' },
-        { name: 'region', value: 'us', path: 'spec', quote: '1个月' },
+        { name: 'duration', value: 30 },
+        { name: 'region', value: 'us' },
       ] },
       { id: '12', tags: [
-        { name: 'subscription_override', value: '无', path: 'spec', quote: '不可覆盖订阅' },
-        { name: 'bulk_purchase', value: 'required', path: 'spec', quote: '不可覆盖订阅' },
+        { name: 'subscription_override', value: '无' },
+        { name: 'bulk_purchase', value: 'required' },
       ] },
     ] });
     return new Response([content.slice(0, 30), content.slice(30)].map((part, index) =>
@@ -132,6 +132,50 @@ test('tag worker checkpoints complete candidates before semantic review or produ
     assert.deepEqual(saved.map((item: any) => item.tags.map((tag: any) => [tag.name, tag.value])),
       [[['duration', 30], ['region', 'us']], [['subscription_override', '无'], ['bulk_purchase', 'required']]]);
     assert.deepEqual(saved.map((item: any) => item.rejectedTags), [[], []]);
+  } finally { await worker.stop(); }
+});
+
+for (const invalid of [false, true]) test(`text review ${invalid ? 'rejects invalid batches without checkpointing' : 'checkpoints once and publishes without another model request'}`, async () => {
+  const job = { ...claimed(), row: { ...claimed().row, job_type: 'text_review' } };
+  const state = service(job);
+  let sends = 0, checkpoints = 0, publications = 0;
+  const repository = {
+    prepareBatch: async () => undefined,
+    reserveBatchRequest: async () => 'reserved',
+    recordBatchRequestOutcome: async () => undefined,
+    getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', stage: 'extract', inputs: [
+      { productId: 11n, name: 'Account', spec: '', sourceData: {}, payload: { name: 'Account' } },
+    ] }),
+    checkpointTagExtractionBatchDecision: async (_job: bigint, _batch: bigint, items: unknown, _metadata: unknown, _claim: unknown, stage: string) => {
+      checkpoints++;
+      assert.equal(stage, 'extract');
+      assert.deepEqual(items, [{ productId: 11n, tags: [], rejectedTags: [], textReview: null }]);
+    },
+    publishTagExtractionBatch: async () => { publications++; },
+  };
+  const call = createOpenAiModelCall(repository as never, {
+    AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock',
+  }, async (_url, init) => {
+    sends++;
+    assert.equal(JSON.parse(String(init?.body)).stream, true);
+    const content = JSON.stringify({ items: [{ id: '11', textReview: invalid ? {} : null }] });
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+  });
+  const worker = createAiWorker(state as never, { repository: repository as never, modelCall: call });
+  try {
+    await worker.runOnce();
+    for (let i = 0; i < 40 && !state.completed && !state.failed; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(sends, 1);
+    assert.equal(checkpoints, invalid ? 0 : 1);
+    assert.equal(state.failed, invalid ? 1 : 0);
+    if (!invalid) {
+      state.item = { ...job, row: { ...job.row, step: 'publish' } };
+      await worker.runOnce();
+      for (let i = 0; i < 40 && state.completed < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
+      assert.equal(state.completed, 2);
+      assert.equal(publications, 1);
+      assert.equal(sends, 1);
+    }
   } finally { await worker.stop(); }
 });
 

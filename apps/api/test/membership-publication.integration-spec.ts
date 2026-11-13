@@ -200,7 +200,8 @@ test('compact feature batch streams extraction and mixed review through real che
     const planned = await batches();
     assert.equal(planned.length, stage === 'extract' ? 1 : 2, 'review must not split a fitting two-product batch');
     const batch = planned.find(row => row.id === batchId)!;
-    assert.deepEqual(batch.product_ids, ids.map(String));
+    assert.deepEqual([...(batch.product_ids as string[])].sort(), ids.map(String).sort(),
+      'each stage must retain both inputs regardless of model response order');
     assert.deepEqual(batch.request_estimate, estimate);
     assert.equal(await repo.reserveBatchRequest(batchId, claimToken(claimed)), 'reserved');
     const call = createOpenAiModelCall(repo, { ...process.env, AI_BASE_URL: 'https://mock.invalid/v1',
@@ -370,7 +371,7 @@ test('post-publication tags cannot overwrite the approved membership snapshot or
   const child = await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
     .where('job_type', '=', 'tag_extraction').executeTakeFirstOrThrow();
   const task = await featureTask(product.id, child.id);
-  const reviewed = validateReviewedTagExtractionDecision(task.input.input_id, [], [], task.input.payload, [], null);
+  const reviewed = validateReviewedTagExtractionDecision(task.input.input_id, [], [], task.input.payload, [], true);
   await f.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id, [reviewed], {}, task.claim);
   assert.deepEqual((await db.selectFrom('products').select('membership_features')
     .where('id', '=', product.id).executeTakeFirstOrThrow()).membership_features, product.membership_features);

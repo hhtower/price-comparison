@@ -42,6 +42,14 @@ export class AiService {
     const runtime = this.requireConfiguredRuntime();
     return this.repository.createMembershipFeatureJob({ ...input, model: runtime.model });
   }
+  previewProductTextReviewJob(input: TagJobScope) {
+    const runtime = this.requireConfiguredRuntime();
+    return this.repository.previewProductTextReviewJob({ ...input, model: runtime.model });
+  }
+  createProductTextReviewJob(input: TagJobScope & { requestId: string; previewDigest?: string }) {
+    const runtime = this.requireConfiguredRuntime();
+    return this.repository.createProductTextReviewJob({ ...input, model: runtime.model });
+  }
   private requireTagExtractionRuntime() {
     const runtime = this.requireConfiguredRuntime();
     if (!runtime.tagExtractionEnabled) {

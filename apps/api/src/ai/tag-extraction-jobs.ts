@@ -12,7 +12,7 @@ import { IDENTITY_POLICY_VERSION } from '../standardization/identity-policy.js';
 import { readAiConcurrency } from './ai-concurrency.js';
 import { incrementJobProgress } from './ai-progress.repository.js';
 import { buildTagExtractionOutcome, tagExtractionVersions } from './tag-extraction-result.js';
-import { readTextEvidence } from '../shops/shop-text-review.js';
+import { prepareTextReview, readTextEvidence } from '../shops/shop-text-review.js';
 import { readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
 
 type Db = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
@@ -38,7 +38,7 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
   let query = db.selectFrom('products as p').innerJoin('shops as s','s.id','p.shop_id')
     .leftJoin('standard_product_members as assignment','assignment.product_id','p.id')
     .leftJoin('standard_products as standard','standard.id','assignment.standard_product_id')
-    .select(['p.id','p.name','p.source_name','p.source_description','p.spec','p.source_category','p.source_data','p.membership_features','p.content_version','p.content_fingerprint','p.standardization_revision','p.standardization_locked','p.deleted_at','s.enabled','s.deleted_at as shop_deleted_at'])
+    .select(['p.id','p.external_id','p.name','p.source_name','p.source_description','p.spec','p.source_category','p.source_data','p.membership_features','p.text_review','p.content_version','p.content_fingerprint','p.standardization_revision','p.standardization_locked','p.deleted_at','s.enabled','s.deleted_at as shop_deleted_at'])
     .select(['assignment.standard_product_id', 's.url as shop_url', 's.protocol as shop_protocol', 's.platform as shop_platform'])
     .select(currentManualDecision.as('manual'))
     .select(sql<boolean>`coalesce(assignment.assignment_source='ai'
@@ -87,10 +87,14 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
     if (kind === 'membership_features') delete payload.shopText;
     payload.shopSource = { url: product.shop_url, protocol: product.shop_protocol, platform: product.shop_platform };
     const fingerprint = product.content_fingerprint;
-    const text = kind === 'tag_extraction' ? readTextEvidence(payload) : null;
+    const text = kind === 'membership_features' ? null : readTextEvidence(payload);
+    const storedText = kind === 'text_review' && input.allPending ? prepareTextReview(product) : null;
+    const textCurrent = storedText?.source.url === product.shop_url && storedText.source.protocol === product.shop_protocol
+      && storedText.source.platform === product.shop_platform;
     const inputKey = JSON.stringify([fingerprint,extractionContextKey(payload),text ? [text.name,text.description,text.hash] : null]);
     return {product,payload,fingerprint,inputKey,...estimateInputSize(payload), protected: !!(product.deleted_at || product.shop_deleted_at || !product.enabled || product.standardization_locked || product.manual || product.human
-      || !product.published || (kind === 'membership_features' && !product.ai_membership))};
+      || !product.published || (kind === 'membership_features' && !product.ai_membership)
+      || (kind === 'text_review' && (!text || textCurrent)))};
   });
   return {scope,sized:input.allPending?sized.filter(item=>!item.protected):sized};
 }
@@ -118,8 +122,10 @@ async function previewAttributeJob(db: Db,input: TagJobScope & {model:string},ki
 }
 export function previewTagJob(db: Db,input: TagJobScope & {model:string}) { return previewAttributeJob(db,input,'tag_extraction'); }
 export function previewMembershipFeatureJob(db: Db,input: TagJobScope & {model:string}) { return previewAttributeJob(db,input,'membership_features'); }
+export function previewProductTextReviewJob(db: Db,input: TagJobScope & {model:string}) { return previewAttributeJob(db,input,'text_review'); }
 export function createManualTagJob(db: Kysely<DatabaseSchema>,input:TagJobRequest) { return createManualAttributeJob(db,input,'tag_extraction'); }
 export function createManualMembershipFeatureJob(db: Kysely<DatabaseSchema>,input:TagJobRequest) { return createManualAttributeJob(db,input,'membership_features'); }
+export function createManualProductTextReviewJob(db: Kysely<DatabaseSchema>,input:TagJobRequest) { return createManualAttributeJob(db,input,'text_review'); }
 async function createManualAttributeJob(db: Kysely<DatabaseSchema>,input:TagJobRequest,kind:AttributeJobKind) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(input.requestId)) throw new DomainValidationError('AI_TAG_REQUEST_INVALID','requestId 必须是 UUID');
   const scope=canonicalScope(input);
@@ -217,13 +223,21 @@ export async function createTagJob(tx:Transaction<DatabaseSchema>,input:TagJobIn
 export async function createMembershipFeatureJob(tx:Transaction<DatabaseSchema>,input:TagJobInput) {
   return createAttributeJob(tx,input,'membership_features');
 }
+export async function createProductTextReviewJob(tx:Transaction<DatabaseSchema>,input:TagJobInput) {
+  return createAttributeJob(tx,input,'text_review');
+}
 async function createAttributeJob(tx:Transaction<DatabaseSchema>,input:TagJobInput,kind:AttributeJobKind) {
   if (!input.productIds.length) throw new DomainNotFoundError('AI_TAG_SCOPE_EMPTY','范围内没有商品');
   // Automatic sources may exceed the manual preview bound; select in bounded pieces.
   const sized: Awaited<ReturnType<typeof selection>>['sized']=[];
   for(let offset=0;offset<input.productIds.length;offset+=MAX_SCOPE) sized.push(...(await selection(tx,{productIds:input.productIds.slice(offset,offset+MAX_SCOPE)},true,kind)).sized);
   const pending = kind === 'membership_features'
-    ? sized.filter(item => !readCurrentMembershipFeatures(item.product.membership_features, item.product)) : sized;
+    ? sized.filter(item => !readCurrentMembershipFeatures(item.product.membership_features, item.product))
+    : kind === 'text_review' ? sized.filter(({ product }) => {
+      const review = prepareTextReview(product);
+      return !review || review.source.url !== product.shop_url || review.source.protocol !== product.shop_protocol
+        || review.source.platform !== product.shop_platform;
+    }) : sized;
   return persistAttributeJob(tx,input,{sized:pending,...plan(pending,kind)},kind);
 }
 async function persistAttributeJob(tx:Transaction<DatabaseSchema>,input:TagJobInput,{sized,representatives,batches,planned}:{sized:Awaited<ReturnType<typeof selection>>['sized']} & ReturnType<typeof plan>, kind:AttributeJobKind, existingJobId?:bigint) {

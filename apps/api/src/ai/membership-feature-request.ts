@@ -79,6 +79,14 @@ type Proposals = { items: Array<{ id: string; membershipKind?: unknown; tags?: u
 export function buildMembershipFeatureRequest(inputs: TagExtractionInput[], model: string) {
   const request = buildTagExtractionRequest(inputs, model);
   request.messages[0]!.content = SYSTEM_PROMPT;
+  // Classification still needs its full original evidence, independently of the tag projection.
+  request.messages[1]!.content = JSON.stringify(inputs.map(input => ({
+    id: input.id, name: input.name,
+    ...(input.spec ? { spec: input.spec } : {}),
+    ...(input.category ? { category: input.category } : {}),
+    ...(input.sourceData ? { sourceData: input.sourceData } : {}),
+    ...(input.evidence ? { evidence: input.evidence } : {}),
+  })));
   return request;
 }
 

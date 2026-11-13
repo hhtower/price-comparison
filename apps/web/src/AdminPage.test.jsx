@@ -632,7 +632,7 @@ describe('AdminPage', () => {
     await user.click(screen.getByRole('button', { name: '任务台' }));
     expect(screen.queryByRole('button', { name: '抓取记录' })).not.toBeInTheDocument();
     const workbench = screen.getByRole('region', { name: '后台任务' });
-    expect(within(workbench).getAllByRole('tab').map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '标准化', '标准化记录', '特性识别', '特性识别记录', '标签抽取', '标签抽取记录']);
+    expect(within(workbench).getAllByRole('tab').map(tab => tab.textContent)).toEqual(['抓取', '抓取记录', '标准化', '标准化记录', '特性识别', '特性识别记录', '标签抽取', '标签抽取记录', '文案审查', '文案审查记录']);
     expect(within(workbench).getByRole('tab', { name: '抓取' })).toHaveAttribute('aria-selected', 'true');
     expect(within(workbench).getByRole('region', { name: '抓取任务' })).toBeInTheDocument();
     expect(runRequests).toEqual([]);
