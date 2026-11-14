@@ -40,6 +40,12 @@ export class AiAdminController {
   @Get('jobs/:id/feature-results/:productId') featureAudit(@Param('id') value: string, @Param('productId') productId: string) {
     return this.repository.tagProductAudit(parseId(value, 'jobId'), parseId(productId, 'productId'));
   }
+  @Get('jobs/:id/text-review-results') textReviewResults(@Param('id') value: string, @Query('limit') size?: string, @Query('cursor') cursor?: string) {
+    return this.repository.listTagJobResults({ jobId: parseId(value, 'jobId'), limit: limit(size), cursor });
+  }
+  @Get('jobs/:id/text-review-results/:productId') textReviewAudit(@Param('id') value: string, @Param('productId') productId: string) {
+    return this.repository.tagProductAudit(parseId(value, 'jobId'), parseId(productId, 'productId'));
+  }
   @Get('jobs/:id') async detail(@Param('id') value: string) { return jsonSafe(await this.repository.adminJobSnapshot(parseId(value, 'jobId'))); }
   @Get('jobs/:id/progress') async progress(@Param('id') value: string, @Query('since') since: string | undefined, @Res() reply: any) {
     const jobId = parseId(value, 'jobId');

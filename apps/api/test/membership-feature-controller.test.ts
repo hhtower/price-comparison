@@ -11,9 +11,9 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { UnauthorizedException, ValidationPipe, VersioningType } from '@nestjs/common';
 
 const routes = [
-  { name: 'feature', path: 'feature-jobs', preview: 'previewFeatures', create: 'createFeatures',
+  { name: 'feature', path: 'feature-jobs', resultPath: 'feature-results', preview: 'previewFeatures', create: 'createFeatures',
     servicePreview: 'previewMembershipFeatureJob', serviceCreate: 'createMembershipFeatureJob' },
-  { name: 'text review', path: 'text-review-jobs', preview: 'previewTextReview', create: 'createTextReview',
+  { name: 'text review', path: 'text-review-jobs', resultPath: 'text-review-results', preview: 'previewTextReview', create: 'createTextReview',
     servicePreview: 'previewProductTextReviewJob', serviceCreate: 'createProductTextReviewJob' },
 ] as const;
 
@@ -39,20 +39,24 @@ for (const route of routes) test(`${route.name} creation uses dedicated routes, 
   ]);
 });
 
-test('feature result and audit routes retain authenticated generic auditing and reject invalid pagination', async () => {
+for (const route of [
+  { results: 'featureResults', audit: 'featureAudit', path: 'feature-results' },
+  { results: 'textReviewResults', audit: 'textReviewAudit', path: 'text-review-results' },
+] as const) test(`${route.path} routes retain authenticated generic auditing and reject invalid pagination`, async () => {
   const calls: unknown[] = [];
   const controller = new AiAdminController({
     listTagJobResults: (input: unknown) => { calls.push(input); return { items: [] }; },
     tagProductAudit: (...input: unknown[]) => { calls.push(input); return {}; },
   } as never);
   assert.ok(Reflect.getMetadata(GUARDS_METADATA, AiAdminController).includes(AuthGuard));
-  assert.equal(Reflect.getMetadata(PATH_METADATA, controller.featureResults), 'jobs/:id/feature-results');
-  assert.equal(Reflect.getMetadata(PATH_METADATA, controller.featureAudit), 'jobs/:id/feature-results/:productId');
-  await controller.featureResults('12', '10', 'cursor');
-  await controller.featureAudit('12', '3');
+  assert.equal(Reflect.getMetadata(PATH_METADATA, controller[route.results]), `jobs/:id/${route.path}`);
+  assert.equal(Reflect.getMetadata(PATH_METADATA, controller[route.audit]), `jobs/:id/${route.path}/:productId`);
+  await controller[route.results]('12', '10', 'cursor');
+  await controller[route.audit]('12', '3');
   assert.deepEqual(calls, [{ jobId: 12n, limit: 10, cursor: 'cursor' }, [12n, 3n]]);
-  assert.throws(() => controller.featureResults('12', '101'), { code: 'INVALID_PAGE_SIZE' });
-  assert.throws(() => controller.featureAudit('12', '0'), { code: 'INVALID_ID' });
+  assert.throws(() => controller[route.results]('12', '101'), { code: 'INVALID_PAGE_SIZE' });
+  assert.throws(() => controller[route.results]('0', '10'), { code: 'INVALID_ID' });
+  assert.throws(() => controller[route.audit]('12', '0'), { code: 'INVALID_ID' });
 });
 
 for (const route of routes) test(`${route.name} service uses the configured model even when tag extraction is disabled`, () => {
@@ -87,6 +91,10 @@ for (const route of routes) test(`${route.name} service uses the configured mode
 
 for (const route of routes) test(`${route.name} HTTP endpoints validate scopes and reject model overrides before creating work`, async () => {
   const calls: unknown[] = [];
+  const reads: unknown[] = [];
+  const results = { items: [{ id: '3', outcome: 'updated' }], nextCursor: '3' };
+  const audit = { member: { output: route.name === 'feature'
+    ? { classification: { kind: 'account' } } : { textReview: { answers: {}, consistency: {} } } } };
   const module = await Test.createTestingModule({
     controllers: [AiController, AiAdminController],
     providers: [
@@ -95,8 +103,8 @@ for (const route of routes) test(`${route.name} HTTP endpoints validate scopes a
         [route.serviceCreate]: async (input: unknown) => { calls.push(input); return { id: 12n }; },
       } },
       { provide: AiRepository, useValue: {
-        listTagJobResults: async () => ({ items: [{ id: '3', classification: { kind: 'account' } }] }),
-        tagProductAudit: async () => ({ member: { output: { classification: { kind: 'account' } } } }),
+        listTagJobResults: async (input: unknown) => { reads.push(input); return results; },
+        tagProductAudit: async (...input: unknown[]) => { reads.push(input); return audit; },
       } },
     ],
   }).overrideGuard(AuthGuard).useValue({ canActivate: (context: { switchToHttp: () => { getRequest: () => { headers: { authorization?: string } } } }) => {
@@ -143,9 +151,13 @@ for (const route of routes) test(`${route.name} HTTP endpoints validate scopes a
       { allPending: undefined, productIds: [3n], scopeShopId: undefined, retryOfJobId: undefined },
       { allPending: undefined, productIds: [3n], scopeShopId: undefined, retryOfJobId: undefined, requestId: valid.requestId, previewDigest: valid.previewDigest },
     ]);
-    for (const path of route.name === 'feature' ? ['feature-results', 'feature-results/3'] : []) {
-      assert.equal((await server.inject({ url: `/v1/admin/ai/jobs/12/${path}` })).statusCode, 401);
-      assert.equal((await server.inject({ url: `/v1/admin/ai/jobs/12/${path}`, headers: { authorization: 'admin' } })).statusCode, 200);
+    for (const [suffix, expected] of [['?limit=10&cursor=next-page', results], ['/3', audit]] as const) {
+      const resultUrl = `/v1/admin/ai/jobs/145458/${route.resultPath}${suffix}`;
+      assert.equal((await server.inject({ url: resultUrl })).statusCode, 401);
+      const response = await server.inject({ url: resultUrl, headers: { authorization: 'admin' } });
+      assert.equal(response.statusCode, 200, response.payload);
+      assert.deepEqual(response.json(), expected);
     }
+    assert.deepEqual(reads, [{ jobId: 145458n, limit: 10, cursor: 'next-page' }, [145458n, 3n]]);
   } finally { await app.close(); }
 });
