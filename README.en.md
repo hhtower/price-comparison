@@ -8,6 +8,10 @@
   <a href="README.md">简体中文</a> · English
 </p>
 
+<p align="center">
+  <a href="https://price.yufu.pub/">Live site</a> · <a href="https://price.yufu.pub/assistant">AI assistant</a> · <a href="https://price.yufu.pub/tools">Testing tools</a> · <a href="https://price.yufu.pub/mcp">Skill / MCP</a> · <a href="#installation">Quick start</a> · <a href="docs/README.md">Docs</a> · <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
 **Let AI help you choose offers—and let your own AI tools query them.**
 
 知途 · 拾价 is a subscription and account price comparison platform built around an **AI shopping assistant and Skill / MCP access**. Find and compare offers through conversations on the website, or connect the pricing data to your own AI clients and workflows through a skill or MCP.

@@ -8,6 +8,10 @@
   简体中文 · <a href="README.en.md">English</a>
 </p>
 
+<p align="center">
+  <a href="https://price.yufu.pub/">在线访问</a> · <a href="https://price.yufu.pub/assistant">AI 导购</a> · <a href="https://price.yufu.pub/tools">检测工具</a> · <a href="https://price.yufu.pub/mcp">Skill / MCP</a> · <a href="#使用方式">快速开始</a> · <a href="docs/README.md">文档</a> · <a href="CONTRIBUTING.md">贡献</a>
+</p>
+
 **让 AI 帮你挑选报价，也让你的 AI 工具直接查询报价。**
 
 知途 · 拾价是以 **AI 导购助手与 Skill / MCP 报价接入**为核心的订阅与账号比价平台。站内用对话筛选、比较商品，站外通过 Skill 或 MCP 将报价接入你自己的 AI 客户端与工作流。
