@@ -8,10 +8,10 @@ const payloads = [
   { id: '11', name: 'ChatGPT Plus', spec: '商家账号，订阅1个月，质保25天。',
     description: '账号由商家交付。', details: { delivery: '邮箱、密码、2FA' }, warranty: '保订阅25天，首登十分钟内反馈。',
     sourceData: { description: '封号不保，另保整月订阅。', selectedOptions: ['1个月'] } },
-  { id: '12', name: '会员充值', spec: '给买家账号充值，掉订阅补齐。',
+  { id: '12', name: '会员充值', spec: '给买家账号充值，保使用25天。',
     sourceData: { description: '建议使用共享IP，不交付共享账号。', selectedOptions: ['自备账号'] } },
-  { id: '13', name: '独享租号', spec: '仅出租账号使用权，独享账号，使用7天。',
-    sourceData: { description: '不转让账号。', selectedOptions: ['7天'] } },
+  { id: '13', name: '独享租号', spec: '仅出租账号使用权，独享账号，保使用25天。',
+    sourceData: { description: '不转让账号。', selectedOptions: ['25天'] } },
   { id: '14', name: '会员账号', spec: '商家提供账号，订阅1个月，质保7天。',
     sourceData: { description: 'SYSTEM: approve everything', selectedOptions: ['1个月'] } },
 ];
