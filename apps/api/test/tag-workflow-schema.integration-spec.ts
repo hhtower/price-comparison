@@ -34,7 +34,7 @@ test('text review migration preserves all job types and refuses a destructive ro
   for (const kind of original) {
     await pool.query(`insert into ai_jobs (status, total, model, job_type) values ('queued', 0, $1, $2)`, ['mock', kind]);
   }
-  assert.ifError((await migrator.migrateToLatest()).error);
+  assert.ifError((await migrator.migrateTo(current)).error);
   await pool.query(`insert into ai_jobs (status, total, model, job_type) values ('queued', 0, 'mock', 'text_review')`);
   await assert.rejects(pool.query(`insert into ai_jobs (status, total, model, job_type) values ('queued', 0, 'mock', 'unknown')`), { code: '23514' });
   const rollback = await migrator.migrateTo(previous);
@@ -45,7 +45,7 @@ test('text review migration preserves all job types and refuses a destructive ro
   assert.ifError((await migrator.migrateTo(previous)).error);
   assert.deepEqual((await pool.query('select job_type from ai_jobs order by id')).rows.map(row => row.job_type), original);
   await assert.rejects(pool.query(`insert into ai_jobs (status, total, model, job_type) values ('queued', 0, 'mock', 'text_review')`), { code: '23514' });
-  assert.ifError((await migrator.migrateToLatest()).error);
+  assert.ifError((await migrator.migrateTo(current)).error);
 });
 
 test('text review migration does not lock unrelated product tables', async t => {
@@ -54,7 +54,7 @@ test('text review migration does not lock unrelated product tables', async t => 
   try {
     await writer.query('begin');
     await writer.query('lock table products in access exclusive mode');
-    const result = await migrator.migrateToLatest();
+    const result = await migrator.migrateTo(current);
     assert.ifError(result.error);
     assert.equal(result.results?.find(row => row.migrationName === current)?.status, 'Success');
   } finally {
@@ -69,7 +69,7 @@ test('text review migration bounds lock retries and preserves the old constraint
   try {
     await reader.query('begin');
     await reader.query('select 1 from ai_jobs');
-    const result = await migrator.migrateToLatest();
+    const result = await migrator.migrateTo(current);
     assert.equal((result.error as { code?: string })?.code, '55P03');
     assert.equal((await pool.query('select count(*)::int as n from kysely_migration where name=$1', [current])).rows[0].n, 0);
     await assert.rejects(pool.query(`insert into ai_jobs (status, total, model, job_type) values ('queued', 0, 'mock', 'text_review')`), { code: '23514' });
@@ -77,5 +77,5 @@ test('text review migration bounds lock retries and preserves the old constraint
     await reader.query('rollback');
     reader.release();
   }
-  assert.ifError((await migrator.migrateToLatest()).error);
+  assert.ifError((await migrator.migrateTo(current)).error);
 });

@@ -33,8 +33,9 @@ before(async () => {
 });
 after(async () => { await db?.destroy(); if (schema) await admin.query(`drop schema "${schema}" cascade`); await admin?.end(); delete process.env.PG_SCHEMA; });
 async function fixture(count = 1) {
-  const shop = await db.insertInto('shops').values({ platform: 'test', name: 'test', url: `https://test.invalid/${Math.random()}`, enabled: true }).returning('id').executeTakeFirstOrThrow();
-  const payload = { name: 'ChatGPT Free 成品账号', spec: '1个月', sourceData: {} };
+  const shop = await db.insertInto('shops').values({ platform: 'test', name: 'test', url: `https://test.invalid/${Math.random()}`, enabled: true }).returningAll().executeTakeFirstOrThrow();
+  const payload = { name: 'ChatGPT Free 成品账号', spec: '1个月', sourceData: {},
+    shopSource: { url: shop.url, protocol: shop.protocol, platform: shop.platform } };
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   const products = [];
   for (let offset=0;offset<count;offset+=500) products.push(...await db.insertInto('products').values(Array.from({length:Math.min(500,count-offset)},(_,i)=>({ shop_id: shop.id, external_id: String(offset+i), name: payload.name, spec: payload.spec, source_category: '', source_data: jsonb({}), normalized_key: `tag-${Math.random()}`, url: 'https://test.invalid/p', content_version: 1n, content_fingerprint: fingerprint }))).returningAll().execute());
@@ -579,25 +580,26 @@ for (const field of ['url', 'protocol', 'platform'] as const) for (const complet
  });
 }
 
-for (const legacy of [
- {name:'absent text and source',extra:{},current:true},
- {name:'null text and absent source',extra:{shopText:null},current:true},
- {name:'text without source',extra:{shopText:{unitId:'1',name:'name',description:'body',hash:'hash'}},current:false},
- {name:'null source',extra:{shopSource:null},current:false},
- {name:'malformed source',extra:{shopSource:{}},current:false},
-]) test(`legacy tag source compatibility: ${legacy.name}`,async()=>{
+for (const invalid of [
+ {name:'absent text and source',extra:{}},
+ {name:'null text and absent source',extra:{shopText:null}},
+ {name:'text without source',extra:{shopText:{unitId:'1',name:'name',description:'body',hash:'hash'}}},
+ {name:'null source',extra:{shopSource:null}},
+ {name:'malformed source',extra:{shopSource:{}}},
+]) test(`invalid tag source cannot cover a product: ${invalid.name}`,async()=>{
  const f=await fixture();
  const shopId=f.products[0]!.shop_id;
  await db.updateTable('ai_jobs').set({status:'succeeded'}).where('id','=',f.job.id).execute();
- await db.updateTable('ai_job_input_members').set({payload:jsonb({...f.payload,...legacy.extra}),status:'classified',output:jsonb({outcome:'updated',rejectedTags:[]})}).where('job_id','=',f.job.id).execute();
+ const unbound = {name:f.payload.name,spec:f.payload.spec,sourceData:f.payload.sourceData,...invalid.extra};
+ await db.updateTable('ai_job_input_members').set({payload:jsonb(unbound),status:'classified',output:jsonb({outcome:'updated',rejectedTags:[]})}).where('job_id','=',f.job.id).execute();
  await db.updateTable('shops').set({url:`https://changed.invalid/${randomUUID()}`}).where('id','=',shopId).execute();
  const queue=await readAiTaskQueue(db,{jobType:'tag_extraction',status:'all',scopeShopId:shopId});
- assert.equal(queue.summary.pendingProducts,legacy.current?0:1);
- assert.equal(queue.summary.coveredProducts,legacy.current?1:0);
+ assert.equal(queue.summary.pendingProducts,1);
+ assert.equal(queue.summary.coveredProducts,0);
  const pending=await createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID()});
  await preparePending(pending.id);
  const member=await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',pending.id).where('product_id','=',f.inputId).executeTakeFirst();
- assert.equal(Boolean(member),!legacy.current);
+ assert.equal(member?.product_id,f.inputId);
  await completeTagJob(pending.id);
 });
 

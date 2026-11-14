@@ -1,21 +1,30 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { validateTagExtractionDecision, buildTagExtractionOutcome } from '../src/ai/tag-extraction-result.js';
+import { validateReviewedTagExtractionDecision, buildTagExtractionOutcome } from '../src/ai/tag-extraction-result.js';
 
-test('tag extraction retains rejected canonical facts and sanitized citations', () => {
-  const decision = validateTagExtractionDecision(1n, [
-    { name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1个月' }] },
-    { name: 'renewable', value: '有', evidence: [{ path: 'sourceData.note', quote: 'password=hidden' }] },
-  ], { spec: '1个月', sourceData: { note: 'password=hidden' } });
+test('mocked rejection retains the candidate and sanitizes its audit evidence', () => {
+  const decision = validateReviewedTagExtractionDecision(1n, [
+    { name: 'duration', value: 30, proposalIndex: 0, evidence: [] },
+  ], [
+    { name: 'warranty', value: 'password=hidden', proposalIndex: 1,
+      evidence: [{ path: 'sourceData.note', quote: 'password=hidden' }], reasonCode: 'review_rejected', reason: '' },
+  ], {}, [true, false], true);
   assert.equal(decision.tags.length, 1);
   assert.equal(decision.rejectedTags.length, 1);
-  assert.equal(buildTagExtractionOutcome(decision, []).rejectedTags[0]?.evidence[0]?.quote, 'password=[redacted]');
-  assert.ok(decision.rejectedTags[0]?.reasonCode);
+  const result = buildTagExtractionOutcome(decision, []);
+  assert.equal(result.rejectedTags[0]?.evidence[0]?.quote, 'password=[redacted]');
+  assert.equal(result.rejectedTags[0]?.reasonCode, 'review_rejected');
+  assert.equal(result.outcome, 'partial_success');
+  assert.equal(result.successfulCount, 1);
+  assert.equal(result.failedCount, 1);
+  assert.deepEqual(result.review, { mode: 'per_tag_binary', decisions: [true, false] });
 });
 
 test('complete results replace facts while failed results preserve existing facts', () => {
-  const decision = validateTagExtractionDecision(1n, [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '1个月' }] }], { spec: '1个月' });
-  const before = [{ name: 'duration', value: 30 }, { name: 'renewable', value: '有' }];
+  const decision = validateReviewedTagExtractionDecision(1n, [
+    { name: 'duration', value: 30, proposalIndex: 0, evidence: [] },
+  ], [], {}, [true], true);
+  const before = [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }];
   const unchanged = buildTagExtractionOutcome(decision, before);
   assert.equal(unchanged.outcome, 'updated');
   assert.deepEqual(unchanged.after, [before[0]]);
@@ -23,11 +32,13 @@ test('complete results replace facts while failed results preserve existing fact
   const updated = buildTagExtractionOutcome(decision, [{ name: 'duration', value: 365 }]);
   assert.equal(updated.outcome, 'updated');
   assert.equal(updated.diff.length, 1);
-  const empty = buildTagExtractionOutcome(validateTagExtractionDecision(1n, [], {}), before);
+  const empty = buildTagExtractionOutcome(validateReviewedTagExtractionDecision(1n, [], [], {}, [], true), before);
   assert.equal(empty.outcome, 'empty');
   assert.deepEqual(empty.after, []);
   assert.equal(empty.diff.length, 2);
-  const rejected = validateTagExtractionDecision(1n, [{ name: 'renewable', value: '有', evidence: [{ path: 'spec', quote: '无' }] }], { spec: '无' });
+  const rejected = validateReviewedTagExtractionDecision(1n, [], [
+    { name: 'region', value: 'jp', proposalIndex: 0, evidence: [], reasonCode: 'review_rejected', reason: '' },
+  ], {}, [false], true);
   const failed = buildTagExtractionOutcome(rejected, before);
   assert.equal(failed.outcome, 'failed');
   assert.deepEqual(failed.after, before);

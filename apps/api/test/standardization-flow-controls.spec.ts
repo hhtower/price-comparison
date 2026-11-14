@@ -26,7 +26,7 @@ for (const control of standardizationFlowControls) {
     assert.equal(Boolean(row.publicationConflict.text), control.expectedPublicationConflict ?? false, 'frozen publication guard');
     assert.equal(row.protocolReasonCode, null, 'control proposal must be structurally valid');
     assert.equal(row.finalDisposition, control.expectedDisposition, 'actual final validator disposition');
-    assert.deepEqual(row.finalTags, control.expectedTags ?? {}, 'only semantically supported tags survive');
+    assert.deepEqual(row.finalTags, control.expectedTags ?? {}, 'mock review decisions pass through objective validation');
     if (control.expectedReasonCode) assert.equal(row.finalReasonCode, control.expectedReasonCode);
     if (control.expectedDisposition === 'release') assert.deepEqual(row.finalIdentity, control.expectedIdentity);
     if (control.expectedIdentity && !control.inputBudgetBytes) {
@@ -66,13 +66,25 @@ test('checked-in control facts contain no private URLs, contact details or crede
     'label controls use current typed vocabulary even when their cited meaning is deliberately wrong');
 });
 
-test('multiple clients cannot hide a forbidden client proposal behind an explicitly supported sibling', async () => {
+test('explicit mock review rejects one client while retaining its approved sibling', async () => {
   const evaluate = await loadFlow();
   const control = standardizationFlowControls.find(row => row.id === 'rt-wrong-client')!;
   const report = evaluate([control], standardizationFlowCatalog);
   assert.deepEqual(report.controls[0].proposedTags, { supported_client: ['codex', 'sub2api'] });
   assert.deepEqual(report.metrics.syntheticProposalCorrectness, { numerator: 0, denominator: 1, value: 0 });
   assert.deepEqual(report.controls[0].finalTags, { supported_client: 'sub2api' });
+});
+
+test('flow evaluation requires explicit mock votes and does not infer tag semantics from evidence', async () => {
+  const evaluate = await loadFlow();
+  const control = standardizationFlowControls.find(row => row.id === 'team-ban-not-capability')!;
+  assert.throws(() => evaluate([{ ...control, mockTagReview: undefined }], standardizationFlowCatalog));
+  assert.throws(() => evaluate([{ ...control, mockTagReview: { accepted: [], complete: true } }], standardizationFlowCatalog));
+  const approved = evaluate([{ ...control, mockTagReview: { accepted: [true], complete: true } }], standardizationFlowCatalog);
+  assert.deepEqual(approved.controls[0].finalTags, { access_channel: 'reverse_proxy' });
+  assert.equal(approved.controls[0].matchesExpected, false);
+  assert.equal(approved.tagRegression.unsupportedOrContradictoryValues, 1);
+  assert.equal(approved.metrics.modelSemanticQuality, 'unknown');
 });
 
 test('offline CLI reports current controls separately from historical mocked accuracy', () => {

@@ -15,7 +15,7 @@ const REASONS = {
   evidence_invalid: '商品证据引用无效', citation_missing: '缺少商品证据', citation_path_invalid: '证据位置无效',
   citation_quote_mismatch: '证据引文与商品资料不符', citation_type_invalid: '证据未引用原始文本或数值字段',
   tag_name_unknown: '标签名称不在规范词表中', tag_value_invalid: '标签值格式或枚举不符',
-  tag_value_conflict: '标签值与商品证据冲突', tag_single_value_conflict: '同一字段存在互斥标签',
+  tag_value_conflict: '标签值与商品证据冲突', tag_single_value_conflict: '单值字段返回了多个不同值',
   tag_subject_mismatch: '标签不属于当前商品', tag_duplicate: '重复标签已去重', warranty_group_invalid: '质保条件不完整或冲突，整组待复核',
   review_unsupported: 'LLM复核：证据不足', review_conflict: 'LLM复核：证据冲突', review_wrong_subject: 'LLM复核：不属于当前商品',
   review_incomplete_terms: 'LLM复核：条件不完整', review_citation_invalid: 'LLM复核：证据引用无效', review_not_applicable: 'LLM复核：标签不适用',
@@ -68,11 +68,9 @@ function jobTitle(job, attention) {
 }
 const versions = value => value ? Object.entries(value).map(([key, version]) => `${key}: ${typeof version === 'object' ? JSON.stringify(version) : version}`).join(' · ') : '未记录';
 const auditValue = tag => displayPurchaseTagValue(tag) || (typeof tag.value === 'object' ? JSON.stringify(tag.value) : String(tag.value ?? ''));
+const booleanVotes = decisions => Array.isArray(decisions) && decisions.every(value => typeof value === 'boolean');
 function reviewVote(tag, decisions) {
-  if (!Array.isArray(decisions)) return undefined;
-  if (decisions.every(value => typeof value === 'boolean')) return indexed(tag.proposalIndex) ? decisions[tag.proposalIndex] : undefined;
-  const matches = decisions.filter(value => tag.tagId && value.tagId === tag.tagId);
-  return matches.length === 1 ? matches[0].accepted : undefined;
+  return booleanVotes(decisions) && indexed(tag.proposalIndex) ? decisions[tag.proposalIndex] : undefined;
 }
 const indexed = index => Number.isInteger(index) && index >= 0;
 const voteTitle = vote => vote === true ? 'YES (true)' : vote === false ? 'NO (false)' : 'LLM 原始投票未记录';
@@ -106,9 +104,8 @@ function TextReviewAudit({ review }) {
 }
 function programDisposition(output, candidate, noun) {
   if (!output) return '发布尚未完成';
-  if (!candidate.tagId && !indexed(candidate.proposalIndex)) return '程序处置索引未记录';
-  const matches = tag => tag.tagId && candidate.tagId ? tag.tagId === candidate.tagId
-    : indexed(candidate.proposalIndex) && tag.proposalIndex === candidate.proposalIndex;
+  if (!indexed(candidate.proposalIndex)) return '程序处置索引未记录';
+  const matches = tag => tag.proposalIndex === candidate.proposalIndex;
   const rejected = output.rejectedTags?.find(matches);
   if (rejected) return rejected.reasonCode === 'review_rejected' ? reasonTitle(rejected.reasonCode, noun) : `程序拒绝：${reasonTitle(rejected.reasonCode, noun)}`;
   return output.acceptedTags?.some(matches) ? '程序采纳' : '程序处置索引未记录';
@@ -117,7 +114,7 @@ function CandidateTable({ proposals, decisions, output, publicationRecorded, lab
   return Array.isArray(proposals) ? proposals.length ? <div className="data-table-wrap"><table aria-label={label}>
     <thead><tr><th>候选编号 / 原始索引（从 0 开始）</th><th>提取候选与原始证据</th><th>LLM 原始判定</th><th>{dispositionTitle}</th></tr></thead>
     <tbody>{proposals.map((tag, index) => <tr key={index}>
-      <td>{tag.tagId || (indexed(tag.proposalIndex) ? `#${tag.proposalIndex}` : '未记录')}</td>
+      <td>{indexed(tag.proposalIndex) ? `#${tag.proposalIndex}` : '未记录'}</td>
       <td><strong>{fieldTitle(tag.name)}：{auditValue(tag)}</strong><p>{tag.name} = {typeof tag.value === 'object' ? JSON.stringify(tag.value) : tag.value}</p>{tag.evidence?.length ? <ul>{tag.evidence.map((evidence, i) => <li key={i}>{evidence.path}：<q>{evidence.quote}</q></li>)}</ul> : null}</td>
       <td>{voteTitle(reviewVote(tag, decisions))}</td>
       <td>{publicationRecorded && !output ? '最终处置来源关联未记录' : programDisposition(output, tag, noun)}</td>
@@ -159,7 +156,7 @@ function BatchAudit({ batch, data, outputSource, noun }) {
     </details>
     {review && !text ? <>
       <p>来源提取批次：{batch.extraction_batch_id == null ? '未记录' : `#${batch.extraction_batch_id}`}</p>
-      {!feature ? <p>持久化原始投票：{Array.isArray(batch.review_decisions) ? JSON.stringify(batch.review_decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
+      {!feature ? <p>持久化原始投票：{booleanVotes(batch.review_decisions) ? JSON.stringify(batch.review_decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
     </> : null}
     {text ? null : feature ? <>
       <p>提议分类：{membershipKindLabel(batch.proposed_membership_kind ?? source?.proposed_membership_kind) || '未记录'}</p>
@@ -247,27 +244,27 @@ function Audit({ data, noun = '标签' }) {
   const feature = noun === '特性';
   const text = noun === '文案';
   const output = data.member?.output;
-  const hasReviewVotes = data.batches?.some(batch => batchStage(batch) === 'review' && (feature ? typeof batch.classification_decision === 'boolean' : Array.isArray(batch.review_decisions)));
+  const hasReviewVotes = data.batches?.some(batch => batchStage(batch) === 'review' && (feature ? typeof batch.classification_decision === 'boolean' : booleanVotes(batch.review_decisions)));
+  const recordedVotes = output?.review?.mode === 'per_tag_binary' && booleanVotes(output.review.decisions) ? output.review.decisions : undefined;
   const reviewSources = [...new Set(data.batches?.filter(batch => batchStage(batch) === 'review').map(batch => batch.extraction_batch_id == null ? null : String(batch.extraction_batch_id)))];
   const outputSource = reviewSources.length === 1 ? reviewSources[0] : undefined;
   const evidence = output ? ['acceptedTags', 'rejectedTags'].map(key => <section key={key}><h5>{feature ? key === 'acceptedTags' ? '采纳的历史依据' : '拒绝的历史依据' : key === 'acceptedTags' ? `通过${noun}与证据` : `拒绝${noun}与诊断`}</h5>{output[key]?.length ? <ul>{output[key].map((tag, index) => <li key={index}><strong>{fieldTitle(tag.name)}：{auditValue(tag)}</strong><p>原候选索引：{indexed(tag.proposalIndex) ? `#${tag.proposalIndex}` : '未记录'} · {voteTitle(reviewVote(tag, output.review?.decisions))} · {key === 'acceptedTags' ? '程序采纳' : '程序拒绝'}</p>{tag.reasonCode ? <p title={tag.reasonCode}>{reasonTitle(tag.reasonCode, noun)}{tag.reason && output.review?.mode !== 'per_tag_binary' ? `：${taskText(tag.reason, noun)}` : ''}</p> : null}{tag.evidence?.length ? <ul>{tag.evidence.map((evidence, i) => <li key={i}>{evidence.path}：<q>{evidence.quote}</q></li>)}</ul> : null}</li>)}</ul> : <p>无</p>}</section>) : null;
   return <div className="tag-audit">
     <p>结果：{resultTitle(output?.outcome, output?.successfulCount ?? output?.acceptedTags?.length, output?.failedCount ?? output?.rejectedTags?.length, noun)} · 原因：{reasonTitle(data.member?.reason_code || output?.reasonCode, noun)}</p>
     {!feature && !text && output?.outcome !== 'partial_success' && output?.successfulCount != null ? <p>成功 {output.successfulCount} 条标签 · 失败 {output.failedCount ?? '未记录'} 条标签</p> : null}
-    {!feature && !text ? <Completeness value={output?.complete ?? output?.review?.complete} /> : null}
+    {!feature && !text ? <Completeness value={output?.complete} /> : null}
     {text ? null : feature ? <MembershipClassification value={output?.classification} proposedKind={output?.proposedMembershipKind} reviewed={output?.review?.mode === 'membership_binary' ? output.review.decision ?? output.classificationReviewed : output?.classificationReviewed} />
-      : <p>{(output?.review?.mode === 'per_tag_binary' || Array.isArray(output?.review?.decisions)) ? `逐${noun}二元复核 · 通过 ${output.acceptedTags?.length ?? 0} · 拒绝 ${output.rejectedTags?.length ?? 0}` : output?.review ? `历史 LLM 复核：${output.review.status === 'approved' ? '已通过' : '待复核'} · 原因：${output.review.reason || '未记录'}` : hasReviewVotes ? `逐${noun}二元复核：已保存原始判定，发布尚未完成` : 'LLM 复核未记录（不能确认历史执行状态）'}</p>}
-    {!feature && !text && output?.review?.mode === 'per_tag_binary' ? <p>商品原始投票：{Array.isArray(output.review.decisions) ? JSON.stringify(output.review.decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
+      : <p>{recordedVotes ? `逐${noun}二元复核 · 通过 ${recordedVotes.filter(vote => vote).length} · 拒绝 ${recordedVotes.filter(vote => !vote).length}` : hasReviewVotes ? `逐${noun}二元复核：已保存原始判定${!output ? '，发布尚未完成' : ''}` : 'LLM 复核未记录'}</p>}
+    {!feature && !text && output?.review?.mode === 'per_tag_binary' ? <p>商品原始投票：{recordedVotes ? JSON.stringify(recordedVotes) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
     {!output && (hasReviewVotes || ['queued', 'processing'].includes(data.member?.status)) ? <p>发布尚未完成，不能视为已写入。</p> : ['skipped', 'failed', 'cancelled'].includes(output?.outcome) && !output?.diff?.length ? <p>发布结果：{OUTCOMES[output.outcome]}，本次未写入商品{noun}；程序采纳候选不代表发布成功。</p> : null}
     <p>内容版本：{data.member?.content_version ?? '未记录'} · 修订：{data.member?.standardization_revision ?? '未记录'}</p>
     <p>输入指纹：{data.member?.fingerprint ?? output?.versions?.fingerprint ?? '未记录'}</p>
     <p>任务模型：{data.job?.model ?? '未记录'} · 抽取版本：{versions(output?.versions?.pipeline ?? data.job?.pipeline_versions)}</p>
     <details><summary>冻结输入 JSON</summary>{data.member?.payload != null ? <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}><code>{JSON.stringify(data.member.payload, null, 2)}</code></pre> : <p>冻结输入未记录，不能用实时商品资料还原。</p>}</details>
-    {text || output?.textReview != null ? <TextReviewAudit review={output?.textReview} /> : null}
+    {text ? <TextReviewAudit review={output?.textReview} /> : null}
     {!output ? <p>{hasReviewVotes || ['queued', 'processing'].includes(data.member?.status) ? '商品最终发布审计尚未生成。' : '历史未记录审计结果，不能视为已验证完成。'}</p> : text ? null : !feature ? <>
       {evidence}
       <h5>写入差异</h5>{output.diff?.length ? <ul>{output.diff.map((change, i) => <li key={i}>{fieldTitle(change.name)}：{change.before.map(value => auditValue({ name: change.name, value })).join('、') || '无'} → {change.after.map(value => auditValue({ name: change.name, value })).join('、') || '无'}</li>)}</ul> : <p>无字段变化</p>}
-      {output.retainedUnconfirmed?.length ? <p>保留但本次未确认：{output.retainedUnconfirmed.map(tag => `${fieldTitle(tag.name)}：${auditValue(tag)}`).join('；')}</p> : null}
       {output.attempts?.length ? <details><summary>提取与修正历史</summary>
         {output.attempts.map((attempt, index) => <section key={index}>
           <h5>第 {attempt.round} 轮（{attempt.round === 1 ? '初次复核' : '修正复核'}）</h5>

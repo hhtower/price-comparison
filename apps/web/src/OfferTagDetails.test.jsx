@@ -63,15 +63,27 @@ test('access channels and tools share a group without adding exclusive support',
   expect(section).not.toHaveTextContent('仅支持');
 });
 
-test.each(['none', 'unknown', 'covered'])('omits obsolete warranty %s without hiding original sale conditions', value => {
-  const tags = [{ name: 'warranty', value }, { name: 'warranty_days', value: '30' }];
+test.each(['none', 'unknown', 'covered', '首次进入遇到异常，请提交截图，我们会重新发放一份'])('renders saved warranty %s verbatim alongside original sale conditions', value => {
+  const tags = [{ name: 'warranty', value }];
   const view = render(<OfferFacts tags={tags} />);
-  expect(view.container.querySelector('.offer-warranty')).toBeNull();
+  expect(view.container.querySelector('.offer-warranty')).toHaveTextContent(value);
+  expect(view.container.querySelector('.offer-warranty')).toHaveAttribute('title', value);
   expect(view.container.querySelector('button')).toBeNull();
   view.unmount();
   render(<OfferTagDetails offer={{ ...offer, tags, settlementQuantity: 1 }} item={{}} onClose={() => {}} />);
   expect(screen.getByRole('dialog')).toHaveTextContent('10个一包；禁止改密');
   expect(screen.getByRole('dialog')).not.toHaveTextContent(/无售后|有质保|无质保|未知|未说明/);
+  expect(within(screen.getByRole('dialog')).getByText(value, { exact: true })).toBeVisible();
+  expect(screen.queryByText('暂无商品条件信息')).not.toBeInTheDocument();
+});
+
+test('malformed warranty values leave an empty summary and preserve the original specification', () => {
+  const tags = [{ name: 'warranty', value: { days: 30 } }];
+  const view = render(<OfferFacts tags={tags} />);
+  expect(screen.queryByRole('group', { name: '商品标签' })).not.toBeInTheDocument();
+  view.unmount();
+  render(<OfferTagDetails offer={{ ...offer, tags, settlementQuantity: 1 }} item={{}} onClose={() => {}} />);
+  expect(screen.getByRole('dialog')).toHaveTextContent('10个一包；禁止改密');
   expect(screen.getByText('暂无商品条件信息')).toBeInTheDocument();
 });
 

@@ -1,25 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
-import { validateStandardizationEvidence, validateStandardizationTags } from '../src/ai/standardization-evidence.js';
-import type { JsonValue } from '../src/database/types.js';
+import { validateStandardizationEvidence } from '../src/ai/standardization-evidence.js';
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { identityGuardRegressions } from './fixtures/identity-guard-regressions.js';
-import { tagCitationSupports, tagEvidenceFacts } from '../src/ai/tag-evidence.js';
 import { publicationEvidenceConflict } from '../src/standardization/publication-evidence.js';
 
-test('quoted spec separators keep negation and uncertainty in their own attribute', () => {
-  const spec = '说明: "不支持 / 交付格式: JSON" / 期限: 1个月';
-  const fact = { name: 'delivery_format', value: 'json' };
-  assert.equal(tagEvidenceFacts(fact, spec.toLowerCase()).has('json'), false);
-  assert.equal(tagCitationSupports({ name: 'access_channel', value: 'api' }, 'api',
-    '说明: "不支持 / 访问渠道: api" / 期限: 1个月'), false);
+test('quoted spec uncertainty does not create an identity publication conflict', () => {
   assert.equal(publicationEvidenceConflict({ name: 'ChatGPT Plus',
     spec: '说明: "不保证 / 质保: 30天" / 期限: 1个月',
     sourceData: { evidence: '质保5天。' } }), null);
 });
 
-test('software-only JSON evidence retains account identity and omits invented capabilities', () => {
+test('software-only JSON evidence retains account identity', () => {
   const name = 'Team 5X 成品JSON';
   const description = '已开通Team 5X账号，成品JSON交付，仅支持Sub2API。';
   const input = { id: 'team-software', name, spec: '', sourceData: { evidence: description } };
@@ -30,19 +23,9 @@ test('software-only JSON evidence retains account identity and omits invented ca
   }, [{ id: input.id, candidateStandardProductIds: [], candidateRefs: {} }]);
   const result = validateStandardizationEvidence(parsed, [{ id: input.id, payload: buildExtractionPayload(input) }], []).items[0]!;
   assert.equal(result.status, 'classified');
-  const attributes = validateStandardizationTags([tag('delivery_format', 'json', 'sourceData.evidence', 'JSON'),
-    tag('supported_client', 'sub2api', 'sourceData.evidence', 'Sub2API'),
-    tag('usage_restriction', '仅支持sub2api', 'sourceData.evidence', '仅支持Sub2API'),
-    tag('access_channel', 'web', 'sourceData.evidence', '仅支持Sub2API'),
-    tag('delivery_format', 'credentials', 'sourceData.evidence', 'JSON'),
-    tag('2fa', '有', 'sourceData.evidence', 'JSON')], buildExtractionPayload(input));
-  assert.deepEqual(attributes.tags.map(({ name, value }) => ({ name, value })), [
-    { name: 'supported_client', value: 'sub2api' },
-  ]);
 });
 
 const citation = (path: string, quote: string) => ({ path, quote });
-const tag = (name: string, value: string, path: string, quote: string) => ({ name, value, evidence: [citation(path, quote)] });
 
 test('a valid X recharge citation cannot publish an unsupported Premium Plus candidate', () => {
   const input = { id: '7332973', name: '【自助充值】x Twitter 30天卡密', spec: '',
@@ -57,21 +40,6 @@ test('a valid X recharge citation cannot publish an unsupported Premium Plus can
   assert.equal(result.status, 'unclassified');
   assert.equal(result.reasonCode, 'identity_conflict');
 });
-function validate(payload: Record<string, JsonValue>, tags: ReturnType<typeof tag>[]) {
-  return validateStandardizationTags(tags, payload);
-}
-
-function assertDropped(result: ReturnType<typeof validate>, context?: string) {
-  assert.deepEqual(result.tags, [], context);
-  assert.ok(result.diagnostic, context);
-}
-
-function assertFact(name: string, value: string, source: string, quote = source, accepted = true) {
-  const proposed = tag(name, value, 'sourceData.evidence', quote);
-  const result = validate({ name: '商品', sourceData: { evidence: source } }, [proposed]);
-  assert.deepEqual(result.tags, accepted ? [proposed] : [], `${name}: ${source} quoting ${quote}`);
-}
-
 for (const { input, identity } of identityGuardRegressions) {
   test('evidence validation retains a correct created or reused identity: ' + input.name, () => {
     const payload = buildExtractionPayload(input);
@@ -170,15 +138,6 @@ test('invalid first identity cannot win canonical folding over a valid sibling',
   assert.doesNotMatch(JSON.stringify(result), /unvalidated-private/);
 });
 
-test('missing tag citations remain evidence errors with bounded diagnostics', () => {
-  const result = validate({ name: 'ChatGPT Plus' }, [tag('access_channel', 'web', 'sourceData.missing', 'private quote')]);
-  assertDropped(result);
-  assert.equal(result.diagnostic?.code, 'citation_path_invalid');
-  assert.equal(result.diagnostic?.fieldPath, 'evidence[0].path');
-  assert.doesNotMatch(JSON.stringify(result.diagnostic), /private quote/);
-  assert.deepEqual(result.tags, []);
-});
-
 test('real identity contradictions keep the failed rule and proposed identity', () => {
   const payload = { name: 'ChatGPT Plus', sourceData: { description: '实际交付 Claude Pro 账号' } };
   const evidence = [citation('name', payload.name)];
@@ -193,7 +152,7 @@ test('real identity contradictions keep the failed rule and proposed identity', 
   assert.deepEqual(result.diagnostic?.proposedIdentity, { family: 'openai', product: 'chatgpt', tier: 'plus' });
 });
 
-test('Gemini Pro classification survives the actual unsafe delivery and warranty tag shapes', () => {
+test('Gemini Pro classification survives unrelated delivery and import instructions', () => {
   const payload = { name: 'Google Gemini Pro', sourceData: { description: '不带邮箱密码；1小时内导入' } };
   const evidence = [citation('name', payload.name)];
   const parsed = parseStandardizationProtocolResponse({ items: [{ id: '1', action: 'create_identity',
@@ -203,8 +162,4 @@ test('Gemini Pro classification survives the actual unsafe delivery and warranty
   const result = validateStandardizationEvidence(parsed, [{ id: '1', payload }], []);
   assert.equal(result.items[0]?.status, 'classified');
   assert.equal(result.identities[0]?.product, 'gemini');
-  assertDropped(validate(payload, [
-    tag('delivery_format', 'credentials', 'sourceData.description', '不带邮箱密码'),
-    tag('warranty_days', '30', 'sourceData.description', '1小时内导入'),
-  ]));
 });

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseTagExtractionResponse } from '../src/ai/tag-extraction-request.js';
-import { buildTagExtractionOutcome, validateTagExtractionDecision, validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
+import { buildTagExtractionOutcome, validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { alignTagReviewDecisions, buildTagReviewRequest, parseTagReviewResponse } from '../src/ai/tag-review-request.js';
 import type { StandardizationTag } from '../src/ai/ai.schemas.js';
 
-const tag = (name: string, value: StandardizationTag['value'], quote: string, path = 'evidence') =>
-  ({ name, value, evidence: [{ path, quote }] });
+const tag = (name: string, value: StandardizationTag['value'], proposalIndex = 0) =>
+  ({ name, value, proposalIndex, evidence: [] });
 
 test('compact duration JSON and reviewed results preserve numeric days and structured qualifiers', () => {
   for (const value of [30, 365, 360, 0.5, { kind: 'range', min: 30, max: 90 }, { kind: 'min', days: 30 },
@@ -47,6 +47,33 @@ test('invalid duration values fail per candidate without discarding valid tags o
   }
 });
 
+test('mocked approval cannot bypass enum and tag-name constraints', () => {
+  for (const [name, value, code] of [
+    ['subscription_override', '有', 'tag_value_invalid'],
+    ['sms_verification', 'maybe', 'tag_value_invalid'],
+    ['bulk_purchase', 'many', 'tag_value_invalid'],
+    ['delivery', 'account', 'tag_name_unknown'],
+  ] as const) {
+    const result = validateReviewedTagExtractionDecision(1n, [tag(name, value)], [], {}, [true], true);
+    assert.deepEqual(result.tags, []);
+    assert.equal(result.rejectedTags[0]?.reasonCode, code);
+    assert.equal(result.rejectedTags[0]?.proposalIndex, 0);
+    assert.deepEqual(result.reviewDecisions, [true]);
+  }
+});
+
+test('subjective decisions follow explicit mocked votes even when source wording differs', () => {
+  const payload = { name: '商品', evidence: '具体情况请与我们联系' };
+  const candidate = tag('warranty', '首次进入遇到异常，请在六十分钟内提交截图，我们会重新发放一份');
+  const approved = validateReviewedTagExtractionDecision(1n, [candidate], [], payload, [true], true);
+  assert.deepEqual(approved.tags, [candidate]);
+  assert.deepEqual(approved.rejectedTags, []);
+  const rejected = { ...candidate, reasonCode: 'review_rejected', reason: '' };
+  const denied = validateReviewedTagExtractionDecision(1n, [], [rejected], payload, [false], true);
+  assert.deepEqual(denied.tags, []);
+  assert.deepEqual(denied.rejectedTags, [rejected]);
+});
+
 test('review matches products by ID and uses strict positional votes for every candidate occurrence', () => {
   const proposals = { items: [
     { id: '1', tags: [{ name: 'region', value: 'us' }, { name: 'region', value: 'jp' }, { name: 'region', value: 'us' }] },
@@ -78,7 +105,7 @@ test('review matches products by ID and uses strict positional votes for every c
 
 test('successful results replace the complete set including empty; terminal failure preserves it', () => {
   const before = [{ name: 'region', value: 'us' }, { name: 'duration', value: 30 }];
-  const empty = { productId: 1n, tags: [], rejectedTags: [] };
+  const empty = validateReviewedTagExtractionDecision(1n, [], [], {}, [], true);
   assert.deepEqual(buildTagExtractionOutcome(empty, before).after, []);
   assert.equal('retainedUnconfirmed' in buildTagExtractionOutcome(empty, before), false);
   assert.deepEqual(buildTagExtractionOutcome(empty, before).diff.map(t => t.name), ['region', 'duration']);
@@ -88,23 +115,26 @@ test('successful results replace the complete set including empty; terminal fail
 test('structured duration equality ignores object key order and preserves typed audits', () => {
   const value = { kind: 'range', min: 30, max: 90 } as const;
   const reordered = { max: 90, min: 30, kind: 'range' } as const;
-  const decision = validateTagExtractionDecision(1n, [tag('duration', value, '1-3个月'), tag('duration', reordered, '1-3个月')], { evidence: '1-3个月' });
+  const decision = validateReviewedTagExtractionDecision(1n, [tag('duration', value), tag('duration', reordered, 1)], [], {}, [true, true], true);
   assert.equal(decision.tags.length, 1);
   assert.equal(decision.rejectedTags[0]?.reasonCode, 'tag_duplicate');
+  assert.equal(decision.rejectedTags[0]?.proposalIndex, 1);
+  assert.deepEqual(decision.reviewDecisions, [true, true]);
   const result = buildTagExtractionOutcome(decision, [{ name: 'duration', value: reordered }]);
   assert.deepEqual(result.diff, []);
   assert.deepEqual(result.after, [{ name: 'duration', value }]);
 });
 
 for (const [name, value] of [['美区代充', 'us'], ['菲区充值', 'ph']] as const) {
-  test(`the current recharge product retains its region: ${name}`, () => {
-    const proposed = [tag('region', value, name, 'name')];
-    const result = validateTagExtractionDecision(1n, proposed, { name });
+  test(`mocked approval retains the proposed region: ${name}`, () => {
+    const proposed = [tag('region', value)];
+    const result = validateReviewedTagExtractionDecision(1n, proposed, [], { name }, [true], true);
     assert.deepEqual(result.tags, proposed);
     assert.deepEqual(result.rejectedTags, []);
   });
 }
 
+// Model reference examples with fixed votes; these tests check vote handling, not semantic accuracy.
 const positives: Array<[string, StandardizationTag['value'], string]> = [
   ['duration', 30, '使用期限1个月'], ['duration', 90, '使用期限3个月'],
   ['duration', 365, '使用期限1年'], ['duration', 360, '使用期限12个月'],
@@ -123,27 +153,27 @@ const positives: Array<[string, StandardizationTag['value'], string]> = [
   ['warranty', '购买后1小时内仅保首登', '购买后1小时内仅保首登'],
   ['warranty', '保订阅30天，封号不保', '保订阅30天，封号不保'],
 ];
-for (const [name, value, evidence] of positives) test(`supported fact: ${name} ${evidence}`, () => {
-  const proposed = [tag(name, value, evidence)];
-  const result = validateTagExtractionDecision(1n, proposed, { name: '商品', evidence });
+for (const [name, value, evidence] of positives) test(`model reference with mocked approval: ${name} ${evidence}`, () => {
+  const proposed = [tag(name, value)];
+  const result = validateReviewedTagExtractionDecision(1n, proposed, [], { name: '商品', evidence }, [true], true);
   assert.deepEqual(result.rejectedTags, []);
   assert.deepEqual(result.tags, proposed);
 });
 
-const negatives: Array<[string, StandardizationTag['value'], string, string?]> = [
-  ['duration', 30, '至少使用1个月'], ['duration', 30, '30天内兑换'], ['duration', 7, 'Token有效期7天', '7天'],
-  ['duration', 365, '账号号龄1年', '1年'], ['duration', 30, '质保30天', '30天'],
-  ['region', 'us', '账号建议使用美区IP', '美区'], ['region', 'us', '账号必须使用美区IP', '美区'],
-  ['region', 'ph', '推荐商品：菲区账号', '菲区'],
-  ['region', 'us', '普通账号付款时建议使用美区IP', '美区'],
-  ['region', 'us', '普通账号支付时必须使用美区IP', '美区'],
-  ['region', 'us', '美区代充或菲区充值，可选规格尚未确定', '美区代充'],
-  ['region', 'us', '不提供美区代充', '美区代充'],
+const negatives: Array<[string, StandardizationTag['value'], string]> = [
+  ['duration', 30, '至少使用1个月'], ['duration', 30, '30天内兑换'], ['duration', 7, 'Token有效期7天'],
+  ['duration', 365, '账号号龄1年'], ['duration', 30, '质保30天'],
+  ['region', 'us', '账号建议使用美区IP'], ['region', 'us', '账号必须使用美区IP'],
+  ['region', 'ph', '推荐商品：菲区账号'],
+  ['region', 'us', '普通账号付款时建议使用美区IP'],
+  ['region', 'us', '普通账号支付时必须使用美区IP'],
+  ['region', 'us', '美区代充或菲区充值，可选规格尚未确定'],
+  ['region', 'us', '不提供美区代充'],
   ['sms_verification', 'verified', '需要买家接码'], ['sms_verification', 'unverified', '建议买家接码'],
   ['subscription_override', '有', '可覆盖订阅'], ['bulk_purchase', 'required', '支持批量下单'],
   ['bulk_purchase', 'bundle', '库存1000'], ['bulk_purchase', 'supported', '不支持批量下单'],
-  ['access_channel', 'reverse_proxy', '禁止反代', '反代'], ['supported_client', 'sub2api', 'JSON格式'],
-  ['warranty', '质保30天', '仅保订阅30天，封号不保'], ['warranty', '保订阅30天', '保订阅30天，封号不保', '保订阅30天'],
+  ['access_channel', 'reverse_proxy', '禁止反代'], ['supported_client', 'sub2api', 'JSON格式'],
+  ['warranty', '质保30天', '仅保订阅30天，封号不保'], ['warranty', '保订阅30天', '保订阅30天，封号不保'],
   ['warranty', 'covered', '质保30天'], ['warranty', 'none', '无售后'], ['delivery', 'account', '成品账号'],
   ['warranty', '本商品不提供售后。', '本商品不提供售后。'],
   ['warranty', '无售后，售出不退', '无售后，售出不退'],
@@ -153,8 +183,10 @@ const negatives: Array<[string, StandardizationTag['value'], string, string?]> =
   ['warranty', '首登不保', '首登不保'],
   ['warranty', '订阅不保', '订阅不保'],
 ];
-for (const [name, value, evidence, quote = evidence] of negatives) test(`unsupported fact: ${name} ${evidence}`, () => {
-  const result = validateTagExtractionDecision(1n, [tag(name, value, quote)], { name: '商品', evidence });
+for (const [name, value, evidence] of negatives) test(`model reference with mocked rejection: ${name} ${evidence}`, () => {
+  const rejected = { ...tag(name, value), reasonCode: 'review_rejected', reason: '' };
+  const result = validateReviewedTagExtractionDecision(1n, [], [rejected], { name: '商品', evidence }, [false], true);
   assert.deepEqual(result.tags, []);
-  assert.equal(result.rejectedTags.length, 1);
+  assert.deepEqual(result.rejectedTags, [rejected]);
+  assert.deepEqual(result.reviewDecisions, [false]);
 });

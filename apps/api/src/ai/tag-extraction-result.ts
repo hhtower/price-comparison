@@ -2,7 +2,6 @@ import type { JsonValue } from '../database/types.js';
 import { tagValueKey, type TagValue } from '@price-comparison/catalog/purchase-attributes';
 import type { TextReview } from '../shops/shop-text-review.js';
 import type { StandardizationTag } from './ai.schemas.js';
-import { validateStandardizationTags } from './standardization-evidence.js';
 import { sanitizeEvidenceText } from '../standardization/service-evidence.js';
 import { PRODUCT_TAG_RULES, isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
 import type { MembershipClassification, MembershipKind } from '@price-comparison/catalog/membership-policy';
@@ -34,32 +33,6 @@ function auditTag<T extends StandardizationTag>(tag: T): T {
     evidence: tag.evidence.slice(0, 8).map(c => ({ path: sanitizeTagAuditText(c.path, 300), quote: sanitizeTagAuditText(c.quote) })),
     ...('reason' in tag ? { reason: sanitizeTagAuditText(String(tag.reason)), reasonCode: sanitizeTagAuditText(String(Reflect.get(tag, 'reasonCode')), 100) } : {}) };
 }
-export function validateTagExtractionDecision(productId: bigint, tags: readonly StandardizationTag[], payload: JsonValue): TagExtractionDecision {
-  const rejectedTags: RejectedTag[] = [];
-  const candidates = tags.filter(tag => {
-    if (!Object.hasOwn(PRODUCT_TAG_RULES, tag.name)) {
-      rejectedTags.push({ ...tag, reasonCode: 'tag_name_unknown', reason: '标签名称不在规范词表中' });
-      return false;
-    }
-    if (!isCanonicalProductTag({ name: tag.name, value: tag.value })) {
-      rejectedTags.push({ ...tag, reasonCode: 'tag_value_invalid', reason: '标签值不符合规范枚举或格式' });
-      return false;
-    }
-    return true;
-  });
-  const validated = validateStandardizationTags(candidates, payload);
-  const facts = new Set<string>();
-  validated.tags = validated.tags.filter(tag => {
-    const fact = JSON.stringify([tag.name, tagValueKey(tag.value)]);
-    if (facts.has(fact)) {
-      rejectedTags.push({ ...tag, reasonCode: 'tag_duplicate', reason: '重复的标签事实已去重' });
-      return false;
-    }
-    facts.add(fact);
-    return true;
-  });
-  return { productId, tags: validated.tags, rejectedTags: [...rejectedTags, ...validated.rejectedTags] };
-}
 export function validateReviewedTagExtractionDecision(productId: bigint, tags: readonly TagExtractionTag[], rejectedTags: readonly RejectedTag[], _payload: JsonValue, decisions?: readonly boolean[], complete = true): TagExtractionDecision {
   if (typeof complete !== 'boolean') throw new Error('标签复核完整性必须为布尔值');
   if (decisions !== undefined) {
@@ -86,7 +59,7 @@ export function validateReviewedTagExtractionDecision(productId: bigint, tags: r
       code = 'tag_value_invalid'; reason = '标签值不符合规范枚举或格式';
     } else if (!rule!.multiple && tags.some(other => other.name === tag.name && tagValueKey(other.value) !== tagValueKey(tag.value)
       && isCanonicalProductTag(other))) {
-      code = 'tag_single_value_conflict'; reason = '单值标签出现多个互相冲突的值';
+      code = 'tag_single_value_conflict'; reason = '单值标签只能返回一个不同值';
     }
     const key = JSON.stringify([tag.name, tagValueKey(tag.value)]);
     if (!code && facts.has(key)) { code = 'tag_duplicate'; reason = '重复的标签事实已去重'; }
@@ -123,7 +96,7 @@ export function mergeTagExtractionDecision(previous: TagExtractionDecision, curr
   const rejected = [
     ...current.rejectedTags.map(tag => ({ tag, source: current })),
     ...conflicts,
-    ...previous.rejectedTags.filter(tag => !repairedNames.has(tag.name)).map(tag => ({ tag, source: previous })),
+    ...previous.rejectedTags.filter(tag => current.complete !== true && !repairedNames.has(tag.name)).map(tag => ({ tag, source: previous })),
   ].filter(({ tag }) => {
     const key = factKey(tag);
     if (facts.has(key)) return false;

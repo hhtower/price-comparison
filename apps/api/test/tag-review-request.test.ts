@@ -45,8 +45,38 @@ test('repair context excludes internal evidence/reasons and review never revotes
 test('review examples parse and align mixed votes and completeness without text review', () => {
   const prompt = buildTagReviewRequest([], { items: [] }, 'mock').messages[0]!.content;
   const blocks = [...prompt.matchAll(/```json\n([\s\S]*?)\n```/gu)];
-  const input = JSON.parse(blocks[0]![1]!);
   const output = parseTagReviewResponse(blocks[1]![1]!);
   assert.deepEqual(output.items[0]!.accepted, [true, false]);
-  for (const row of output.items) alignTagReviewDecisions(row, input.proposals.items.find((p: { id: string }) => p.id === row.id));
+  assert.equal(blocks.length, 4, 'initial review and repair examples each have input and output');
+  for (let index = 0; index < blocks.length; index += 2) {
+    const source = JSON.parse(blocks[index]![1]!);
+    const response = parseTagReviewResponse(blocks[index + 1]![1]!);
+    assert.deepEqual(response.items.map(item => item.id), source.inputs.map((item: { id: string }) => item.id));
+    for (const row of response.items) alignTagReviewDecisions(row, source.proposals.items.find((p: { id: string }) => p.id === row.id));
+  }
+});
+
+test('repair review preserves full conditions and an empty new vector can carry the model completeness verdict', () => {
+  const inputs = [{ id: '11', name: '账号', description: '一次性商品，不退不换。\n支持Codex。',
+    sourceData: { details: '交付后一小时内无法使用可联系处理;封禁不退', warranty_info: '仅处理所述无法使用问题' } }];
+  const previous = [{ productId: 11n, tags: [
+    { name: 'supported_client', value: 'codex', evidence: [], proposalIndex: 0 },
+    { name: 'warranty', value: '交付后一小时内无法使用可联系处理;封禁不退', evidence: [], proposalIndex: 1 },
+  ], rejectedTags: [{ name: 'region', value: 'us', evidence: [], reasonCode: 'review_rejected', reason: 'unsupported', proposalIndex: 2 }],
+  reviewed: true, complete: false, reviewDecisions: [true, true, false] }];
+  const proposals = { items: [{ id: '11', tags: [] }] };
+  const before = structuredClone({ inputs, proposals, previous });
+  const sent = JSON.parse(buildTagReviewRequest(inputs, proposals, 'mock', previous).messages[1]!.content);
+  assert.deepEqual(sent.inputs, inputs);
+  assert.deepEqual(sent.proposals, proposals);
+  assert.deepEqual(sent.previousDecisions, [{ id: '11', accepted: [
+    { name: 'supported_client', value: 'codex' },
+    { name: 'warranty', value: '交付后一小时内无法使用可联系处理;封禁不退' },
+  ] }]);
+  for (const complete of [true, false]) {
+    const response = parse({ items: [{ id: '11', accepted: [], complete }] });
+    assert.equal(response.items[0]!.complete, complete);
+    assert.deepEqual(alignTagReviewDecisions(response.items[0]!, proposals.items[0]!), []);
+  }
+  assert.deepEqual({ inputs, proposals, previous }, before);
 });

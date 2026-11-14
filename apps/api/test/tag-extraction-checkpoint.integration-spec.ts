@@ -7,7 +7,7 @@ import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { createAiWorker, createOpenAiModelCall } from '../src/ai/ai.worker.js';
-import { mergeTagExtractionDecision, validateTagExtractionDecision, validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
+import { mergeTagExtractionDecision, validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { CONSISTENCY_KEYS, DISCLOSURE_KEYS, TEXT_REVIEW_VERSION, validateTextReview } from '../src/shops/shop-text-review.js';
 import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
@@ -43,9 +43,10 @@ const claim = { workerId: 'checkpoint-worker', attempt: 1n, token: 'request-clai
 const metadata = { firstContentMs: 10, responseMs: 20, usage: { promptTokens: 100, completionTokens: 200, totalTokens: 300 },
   responseId: 'mock-response', responseModel: 'mock-model' };
 
-async function fixture(count = 1, evidence?: string) {
-  const shop = await db.insertInto('shops').values({ platform: 'test', name: 'test', url: `https://test.invalid/${Math.random()}`, enabled: true }).returning('id').executeTakeFirstOrThrow();
-  const payload = { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData: evidence === undefined ? {} : { evidence } };
+async function fixture(count = 1, evidence?: string, stage: 'extract' | 'review' = 'extract') {
+  const shop = await db.insertInto('shops').values({ platform: 'test', name: 'test', url: `https://test.invalid/${Math.random()}`, enabled: true }).returningAll().executeTakeFirstOrThrow();
+  const payload = { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData: evidence === undefined ? {} : { evidence },
+    shopSource: { url: shop.url, protocol: shop.protocol, platform: shop.platform } };
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   const products = await db.insertInto('products').values(Array.from({ length: count }, (_, index) => ({
     shop_id: shop.id, external_id: String(index), ...{ name: payload.name, spec: payload.spec }, source_category: '',
@@ -74,12 +75,13 @@ async function fixture(count = 1, evidence?: string) {
     job_id: job.id, batch_index: 0n, product_ids: jsonb([String(inputId)]), product_count: BigInt(count),
     step: 'request', status: 'running', claimed_by: claim.workerId, attempts: claim.attempt,
     claim_token: claim.token, lease_until: new Date(Date.now() + 60000), request_budget_used: 1, request_budget_limit: 2,
+    ...(stage === 'review' ? { reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1 }) } : {}),
   }).returning('id').executeTakeFirstOrThrow();
-  const decision = validateTagExtractionDecision(inputId, [
-    { name: 'duration', value: 30, evidence: [{ path: 'spec', quote: payload.spec }] },
-    { name: 'unknown', value: 'no', evidence: [{ path: 'spec', quote: payload.spec }] },
-  ], payload);
-  return { job, batch, inputId, products, decision, repo: new AiRepository(db) };
+  const decision = validateReviewedTagExtractionDecision(inputId, [
+    { name: 'duration', value: 30, evidence: [], proposalIndex: 0 },
+    { name: 'unknown', value: 'no', evidence: [], proposalIndex: 1 },
+  ], [], payload, [true, true], true);
+  return { job, batch, inputId, products, decision, payload, repo: new AiRepository(db) };
 }
 async function batchRow(id: bigint) {
   return db.selectFrom('ai_job_batches').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
@@ -135,6 +137,7 @@ test('review is claimable and reservable while a prior extraction still occupies
   process.env.AI_CONCURRENCY = '1';
   const f = await fixture();
   f.decision.rejectedTags = [];
+  f.decision.reviewDecisions = [true];
   try {
     await f.repo.prepareBatch(f.batch.id);
     const blocker = await db.insertInto('ai_job_batches').values({
@@ -172,6 +175,10 @@ test('review is claimable and reservable while a prior extraction still occupies
 test('explicit checkpoint stages must match the frozen batch marker; only review can queue publication', async () => {
   const f = await fixture();
   f.decision.rejectedTags = [];
+  f.decision.reviewDecisions = [true];
+  await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim), /stage/);
+  assert.equal((await batchRow(f.batch.id)).confirmed_requests, 0);
+  assert.equal((await batchRow(f.batch.id)).validated_decision, null);
   await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review'), /stage/);
   await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [], metadata, claim, 'extract'), /does not match/);
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'extract');
@@ -201,6 +208,7 @@ test('explicit checkpoint stages must match the frozen batch marker; only review
 test('streamed review rejects coerced votes and completeness before saving any checkpoint', async () => {
   const f = await fixture();
   f.decision.rejectedTags = [];
+  f.decision.reviewDecisions = [true];
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'extract');
   const review = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id)
     .where('id', '!=', f.batch.id).executeTakeFirstOrThrow();
@@ -252,63 +260,53 @@ test('complete reviewed empty extraction clears old tags without scheduling repa
 });
 
 test('publication preserves reviewer rejections instead of semantically accepting them again', async () => {
-  const f = await fixture();
-  const reviewed = {
-    productId: f.inputId, tags: [],
-    rejectedTags: [{ ...f.decision.tags[0]!, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' }],
-    reviewed: true, complete: true,
-  };
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
+  const f = await fixture(1, undefined, 'review');
+  const reviewed = validateReviewedTagExtractionDecision(f.inputId, [],
+    [{ ...f.decision.tags[0]!, reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' }], {}, [false], true);
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim, 'review');
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
   assert.equal((await db.selectFrom('product_tags').selectAll().where('product_id', '=', f.inputId).execute()).length, 0);
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   assert.equal((member.output as any).outcome, 'failed');
   assert.deepEqual((member.output as any).rejectedTags, reviewed.rejectedTags);
-  assert.deepEqual((member.output as any).review, { mode: 'per_tag_binary' });
+  assert.deepEqual((member.output as any).review, { mode: 'per_tag_binary', decisions: [false] });
 });
 
 test('reviewed client passes structural revalidation without inventing citations or a second classification', async () => {
-  const f = await fixture(1, '可使用Codex。');
-  const tag = { name: 'supported_client', value: 'codex', evidence: [] };
-  const validated = validateReviewedTagExtractionDecision(f.inputId, [tag], [], { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData: { evidence: '可使用Codex。' } });
-  assert.equal(validated.tags.length, 1);
-  const reviewed = { productId: f.inputId, tags: [tag], rejectedTags: [], reviewed: true, complete: true };
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
+  const f = await fixture(1, '可使用Codex。', 'review');
+  const tag = { name: 'supported_client', value: 'codex', evidence: [], proposalIndex: 0 };
+  const reviewed = validateReviewedTagExtractionDecision(f.inputId, [tag], [], {}, [true], true);
+  assert.equal(reviewed.tags.length, 1);
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim, 'review');
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).execute(),
     [{ name: 'supported_client', value: 'codex' }]);
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
-  assert.deepEqual((member.output as any).review, { mode: 'per_tag_binary' });
+  assert.deepEqual((member.output as any).review, { mode: 'per_tag_binary', decisions: [true] });
 });
 
-test('accepted warranty replaces the complete tag set and removes retired qualifier fields', async () => {
-  const f = await fixture(1, '\u672c\u5546\u54c1\u8d28\u4fdd30\u5929\u3002');
+test('accepted warranty replaces the complete tag set without a citation check', async () => {
+  const f = await fixture(1, '\u672c\u5546\u54c1\u8d28\u4fdd30\u5929\u3002', 'review');
   await db.insertInto('product_tags').values(tagRows([
-    { product_id: f.inputId, name: 'warranty', value: 'none' },
-    { product_id: f.inputId, name: 'warranty_exclusion', value: 'ban' },
+    { product_id: f.inputId, name: 'warranty', value: '仅保首登' },
+    { product_id: f.inputId, name: 'region', value: 'us' },
   ])).execute();
-  const reviewed = {
-    productId: f.inputId,
-    tags: [{ name: 'warranty', value: '质保30天', evidence: [{ path: 'sourceData.evidence', quote: '\u8d28\u4fdd30\u5929' }] }],
-    rejectedTags: [], reviewed: true, complete: true,
-  };
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
+  const reviewed = validateReviewedTagExtractionDecision(f.inputId,
+    [{ name: 'warranty', value: '质保30天', evidence: [], proposalIndex: 0 }], [], {}, [true], true);
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim, 'review');
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).orderBy('name').execute(),
     [{ name: 'warranty', value: '质保30天' }]);
 });
 
 test('local publication of only false votes preserves stored tags without model requests or tag writes', async () => {
-  const f = await fixture(1, '\u8d28\u4fdd30\u5929\u3002\u672c\u5546\u54c1\u65e0\u4efb\u4f55\u552e\u540e\u3002');
-  const before = [{ name: 'access', value: 'dedicated' }, { name: 'warranty', value: 'covered' }, { name: 'warranty_days', value: '30' }];
+  const f = await fixture(1, '\u8d28\u4fdd30\u5929\u3002\u672c\u5546\u54c1\u65e0\u4efb\u4f55\u552e\u540e\u3002', 'review');
+  const before = [{ name: 'access_channel', value: 'web' }, { name: 'duration', value: 30 }, { name: 'warranty', value: '仅保首登' }];
   await db.insertInto('product_tags').values(tagRows(before.map(tag => ({ ...tag, product_id: f.inputId })))).execute();
-  const reviewed = {
-    productId: f.inputId, tags: [],
-    rejectedTags: [{ name: 'warranty', value: 'covered', evidence: [{ path: 'sourceData.evidence', quote: '\u8d28\u4fdd30\u5929' }],
-      reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' }],
-    reviewed: true, complete: true,
-  };
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim);
+  const reviewed = validateReviewedTagExtractionDecision(f.inputId, [],
+    [{ name: 'warranty', value: '质保30天', evidence: [], proposalIndex: 0,
+      reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' }], {}, [false], true);
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim, 'review');
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).orderBy('name').execute(), before);
   const jobs = new JobsRepository(db);
   let modelCalls = 0, reservations = 0;
@@ -343,7 +341,7 @@ test('local publication of only false votes preserves stored tags without model 
   const audit = member.output as any;
   assert.deepEqual(audit.acceptedTags, []);
   assert.deepEqual(audit.rejectedTags, reviewed.rejectedTags);
-  assert.deepEqual(audit.review, { mode: 'per_tag_binary' });
+  assert.deepEqual(audit.review, { mode: 'per_tag_binary', decisions: [false] });
   assert.deepEqual(audit.before, before);
   assert.deepEqual(audit.after, before);
   assert.equal('retainedUnconfirmed' in audit, false);
@@ -379,8 +377,8 @@ test('review enqueue failure rolls back the extraction checkpoint and request co
 });
 
 test('checkpoint durably confirms the request and saves evidence before any product writes; a new repository publishes it', async () => {
-  const f = await fixture();
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim);
+  const f = await fixture(1, undefined, 'review');
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
   const saved = await batchRow(f.batch.id);
   assert.equal(saved.step, 'publish');
   assert.equal(saved.status, 'queued');
@@ -407,17 +405,17 @@ test('checkpoint durably confirms the request and saves evidence before any prod
 });
 
 test('invalid IDs, stale claims and an unresolved request cannot checkpoint or confirm anything', async () => {
-  const f = await fixture();
+  const f = await fixture(1, undefined, 'review');
   for (const items of [[f.decision, f.decision], [{ ...f.decision, productId: 999999999n }]]) {
-    await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, items, metadata, claim), /does not match/);
+    await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, items, metadata, claim, 'review'), /does not match/);
   }
   for (const stale of [{ ...claim, token: 'stale' }, { ...claim, attempt: 2n }, { ...claim, workerId: 'other' }]) {
-    await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, stale), /stale batch/);
+    await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, stale, 'review'), /stale batch/);
   }
   await db.updateTable('ai_job_batches').set({ unknown_requests: 1 }).where('id', '=', f.batch.id).execute();
-  await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim), /request/);
+  await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review'), /request/);
   await db.updateTable('ai_job_batches').set({ unknown_requests: 0, lease_until: new Date(Date.now() - 1000) }).where('id', '=', f.batch.id).execute();
-  await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim), /stale batch/);
+  await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review'), /stale batch/);
   const unchanged = await batchRow(f.batch.id);
   assert.equal(unchanged.validated_decision, null);
   assert.equal(unchanged.confirmed_requests, 0);
@@ -426,15 +424,15 @@ test('invalid IDs, stale claims and an unresolved request cannot checkpoint or c
 
 test('old tag protocol cannot checkpoint or publish a saved response over current tags', async () => {
   for (const stage of ['request', 'publish'] as const) {
-    const f = await fixture();
+    const f = await fixture(1, undefined, 'review');
     const before = [{ name: 'duration', value: 365 }];
     await db.insertInto('product_tags').values(tagRows(before.map(tag => ({ ...tag, product_id: f.inputId })))).execute();
-    if (stage === 'publish') await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim);
+    if (stage === 'publish') await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
     await db.updateTable('ai_jobs').set({ pipeline_versions: jsonb({
       ...(pipelineVersionSnapshot('mock') as Record<string, string>), tagProtocol: 'tag-json-object-per-tag-20261023-v2',
     }) }).where('id', '=', f.job.id).execute();
     if (stage === 'request') {
-      await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim),
+      await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review'),
         { code: 'AI_POLICY_STALE' });
       assert.equal((await batchRow(f.batch.id)).confirmed_requests, 0);
     } else {
@@ -448,7 +446,7 @@ test('old tag protocol cannot checkpoint or publish a saved response over curren
 });
 
 test('a failed checkpoint update rolls back its confirmation and leaves no durable response', async () => {
-  const f = await fixture();
+  const f = await fixture(1, undefined, 'review');
   await sql`create function fail_tag_checkpoint() returns trigger language plpgsql as $$
     begin
       if new.id = ${sql.raw(String(f.batch.id))} and new.step = 'publish' then raise exception 'checkpoint storage unavailable'; end if;
@@ -456,7 +454,7 @@ test('a failed checkpoint update rolls back its confirmation and leaves no durab
     end $$`.execute(db);
   await sql`create trigger fail_tag_checkpoint before update on ai_job_batches for each row execute function fail_tag_checkpoint()`.execute(db);
   try {
-    await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim), /checkpoint storage unavailable/);
+    await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review'), /checkpoint storage unavailable/);
     const unchanged = await batchRow(f.batch.id);
     assert.equal(unchanged.validated_decision, null);
     assert.equal(unchanged.confirmed_requests, 0);
@@ -471,6 +469,7 @@ test('a failed checkpoint update rolls back its confirmation and leaves no durab
 test('extraction and review survive a product SQL failure with no model request during local publication retry', async () => {
   const f = await fixture(2);
   f.decision.rejectedTags = [];
+  f.decision.reviewDecisions = [true];
   await db.updateTable('ai_job_batches').set({ status: 'queued', attempts: 0n, claimed_by: null,
     claim_token: null, lease_until: null, request_budget_used: 0 }).where('id', '=', f.batch.id).execute();
   await sql`create function fail_tag_write() returns trigger language plpgsql as $$
@@ -533,7 +532,7 @@ test('streamed extraction and one repair review preserve accepted facts and publ
   const evidence = '支持Codex。账号已接码。支持批量下单。美区账号。质保30天。封号不保。修改密码后不保。';
   const f = await fixture(2, evidence);
   const second = f.products[1]!;
-  const secondPayload = { name: 'ChatGPT Plus second SKU', spec: second.spec, sourceData: { evidence } };
+  const secondPayload = { name: 'ChatGPT Plus second SKU', spec: second.spec, sourceData: { evidence }, shopSource: f.payload.shopSource };
   const fingerprint = productContentFingerprint({ ...secondPayload, sourceCategory: '' });
   await db.updateTable('products').set({ name: secondPayload.name, content_fingerprint: fingerprint }).where('id', '=', second.id).execute();
   await db.insertInto('ai_job_inputs').values({ job_id: f.job.id, input_id: second.id, payload: jsonb(secondPayload),
@@ -681,7 +680,7 @@ test('streamed extraction and one repair review preserve accepted facts and publ
 test('mixed initial review publishes resolved inputs immediately and isolates the remaining repair', async () => {
   const f = await fixture(2);
   const second = f.products[1]!;
-  const payload = { name: second.name, spec: '2个月，日区', sourceData: {} };
+  const payload = { name: second.name, spec: '2个月，日区', sourceData: {}, shopSource: f.payload.shopSource };
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   await db.updateTable('products').set({ spec: payload.spec, content_fingerprint: fingerprint }).where('id', '=', second.id).execute();
   await db.insertInto('ai_job_inputs').values({ job_id: f.job.id, input_id: second.id, payload: jsonb(payload),
@@ -783,8 +782,8 @@ test('review preparation excludes proposals for frozen inputs whose shop became 
 });
 
 test('publication fences old claims and rechecks source, lock and frozen member evidence', async () => {
-  const f = await fixture(3);
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim);
+  const f = await fixture(3, undefined, 'review');
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
   const currentClaim = await claimPublish(f.batch.id);
   await assert.rejects(f.repo.publishTagExtractionBatch(f.batch.id, { ...currentClaim, token: 'stale' }), /stale batch/);
   await db.updateTable('products').set({ standardization_locked: true }).where('id', '=', f.products[1]!.id).execute();
@@ -796,8 +795,8 @@ test('publication fences old claims and rechecks source, lock and frozen member 
 });
 
 test('cancellation after checkpoint retains the response but permits no product publication', async () => {
-  const f = await fixture();
-  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim);
+  const f = await fixture(1, undefined, 'review');
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'review');
   const currentClaim = await claimPublish(f.batch.id);
   await f.repo.cancelJob(f.job.id);
   await assert.rejects(f.repo.publishTagExtractionBatch(f.batch.id, currentClaim));
@@ -805,12 +804,12 @@ test('cancellation after checkpoint retains the response but permits no product 
   assert.ok((await batchRow(f.batch.id)).validated_decision);
 });
 
-test('audit returns the full frozen payload after source changes and redacts legacy secrets without rewriting snapshots', async () => {
+test('audit returns the full frozen payload after source changes and redacts untrusted secrets without rewriting snapshots', async () => {
   const f = await fixture();
   const evidence = 'Public evidence. '.repeat(150) + 'The final original fact.';
   const payload = { name: 'Original product', spec: 'Original spec', sourceData: {
-    evidence, nested: [{ 'API-Key': 'legacy-key', password: 123456, token: { value: 'legacy-token' },
-      Authorization: 'legacy-auth', cookie: ['legacy-cookie'], session_id: 'legacy-session',
+    evidence, nested: [{ 'API-Key': 'untrusted-key', password: 123456, token: { value: 'untrusted-token' },
+      Authorization: 'untrusted-auth', cookie: ['untrusted-cookie'], session_id: 'untrusted-session',
       text: 'Bearer private-token password=private-password https://user:private-pass@test.invalid/p?api_key=private-query',
       'field password=private-field': 'public fact' }],
   } };
@@ -827,7 +826,7 @@ test('audit returns the full frozen payload after source changes and redacts leg
   assert.equal(nested['field password=[redacted]'], 'public fact');
   assert.equal(nested.text, 'Bearer [redacted] password=[redacted] https://test.invalid/p');
   const serialized = JSON.stringify(audit);
-  for (const secret of ['legacy-key', '123456', 'legacy-token', 'legacy-auth', 'legacy-cookie', 'legacy-session',
+  for (const secret of ['untrusted-key', '123456', 'untrusted-token', 'untrusted-auth', 'untrusted-cookie', 'untrusted-session',
     'private-token', 'private-password', 'private-pass', 'private-query', 'private-field', 'Current evidence']) {
     assert.ok(!serialized.includes(secret), `audit leaked ${secret}`);
   }
@@ -836,14 +835,14 @@ test('audit returns the full frozen payload after source changes and redacts leg
   assert.deepEqual(member.payload, payload);
 });
 
-test('audit redacts bare legacy secrets cited by candidates and member output without changing database snapshots', async () => {
+test('audit redacts bare untrusted secrets cited by candidates and member output without changing database snapshots', async () => {
   const f = await fixture();
-  const secret = 'legacy-secret';
-  const payload = { name: 'Legacy product', spec: '1\u4e2a\u6708', sourceData: { api_key: secret } };
+  const secret = 'untrusted-secret';
+  const payload = { name: 'Untrusted product', spec: '1\u4e2a\u6708', sourceData: { api_key: secret } };
   const sensitive = { name: 'unknown', value: secret, evidence: [{ path: 'sourceData.api_key', quote: secret }] };
   const publicTag = { name: 'duration', value: 30, evidence: [{ path: 'spec', quote: payload.spec }] };
   const output = { outcome: 'review', acceptedTags: [sensitive, publicTag],
-    rejectedTags: [{ ...sensitive, reasonCode: 'tag_value_invalid', reason: 'Legacy rejected tag' }],
+    rejectedTags: [{ ...sensitive, reasonCode: 'tag_value_invalid', reason: 'Untrusted rejected tag' }],
     before: [], after: [], diff: [], retainedUnconfirmed: [] };
   await db.updateTable('ai_job_inputs').set({ payload: jsonb(payload) }).where('job_id', '=', f.job.id).where('input_id', '=', f.inputId).execute();
   await db.updateTable('ai_job_input_members').set({ payload: jsonb(payload), output: jsonb(output) })
@@ -866,13 +865,13 @@ test('audit redacts bare legacy secrets cited by candidates and member output wi
   assert.deepEqual(audited.map(tag => ({ value: tag.value, evidence: tag.evidence })), audited.map(() => ({
     value: '[redacted]', evidence: [{ path: 'sourceData.api_key', quote: '[redacted]' }],
   })));
-  assert.ok(!JSON.stringify(audit).includes(secret), 'audit response must not expose a bare secret through any candidate or legacy output');
+  assert.ok(!JSON.stringify(audit).includes(secret), 'audit response must not expose a bare secret through any candidate or untrusted output');
 });
 
 test('audit exposes only its own ordered proposals, raw votes and exact lineage after a publication failure', async () => {
   const f = await fixture(2);
   const second = f.products[1]!;
-  const payload = { name: 'Second independent product', spec: second.spec, sourceData: {} };
+  const payload = { name: 'Second independent product', spec: second.spec, sourceData: {}, shopSource: f.payload.shopSource };
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   await db.insertInto('ai_job_inputs').values({ job_id: f.job.id, input_id: second.id, payload: jsonb(payload),
     fingerprint, content_version: 1n, input_bytes: 100n, estimated_tokens: 100n }).execute();
@@ -945,7 +944,7 @@ test('audit exposes only its own ordered proposals, raw votes and exact lineage 
     'private-name', 'private-value', 'private-path', 'private-quote', 'private-failure']) assert.ok(!serialized.includes(privateValue), privateValue);
 });
 
-test('audit preserves historical extraction tags plus rejected tags in the review loader order', async () => {
+test('audit preserves indexed candidates in the review loader order', async () => {
   const f = await fixture();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim, 'extract');
   const review = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).where('round', '=', 1).executeTakeFirstOrThrow();
@@ -959,15 +958,15 @@ test('audit preserves historical extraction tags plus rejected tags in the revie
   assert.ok(!Object.hasOwn(audit.batches[0].proposals[1], 'reasonCode'));
 });
 
-test('audit never fabricates historic or malformed review vectors from accepted and rejected tags', async () => {
+test('audit exposes saved votes and never reconstructs corrupted vectors from tag outcomes', async () => {
   const f = await fixture();
   const reviewed = { ...f.decision, reviewed: true, complete: true };
   await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1 }) }).where('id', '=', f.batch.id).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim, 'review');
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
-  const historic = await f.repo.tagProductAudit(f.job.id, f.inputId);
-  assert.equal(historic.batches[0].review_decisions, null);
-  assert.deepEqual(historic.member.output.review, { mode: 'per_tag_binary' });
+  const saved = await f.repo.tagProductAudit(f.job.id, f.inputId);
+  assert.deepEqual(saved.batches[0].review_decisions, [true, true]);
+  assert.deepEqual(saved.member.output.review, { mode: 'per_tag_binary', decisions: [true, true] });
   for (const vector of [[true, 'false'], null, [], [false, true]]) {
     await db.updateTable('ai_job_batches').set({ validated_decision: jsonb({ items: [
       { ...reviewed, productId: String(f.inputId), reviewDecisions: vector },

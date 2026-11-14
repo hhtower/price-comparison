@@ -48,11 +48,26 @@ test('region, bulk and warranty normalize without recreating retired fields', ()
   assert.equal(purchaseTagLabel({ name: 'bulk_purchase', value: 'required' }), '需批量购买');
   assert.equal(purchaseTagLabel({ name: 'bulk_purchase', value: 'bundle' }), '打包出售');
   assert.equal(purchaseWarrantyLabel([{ name: 'warranty', value: '购买后1小时内仅保首登；封号不保' }]), '购买后1小时内仅保首登；封号不保');
-  for (const value of ['none', 'covered', 'unknown', '无售后', '无质保', '未说明', '不享受质保', '质保已过期', '本商品不提供售后。', '无售后，售出不退', '本商品不保订阅30天']) {
-    assert.equal(isCanonicalProductTag({ name: 'warranty', value }), false);
-  }
   assert.equal(isCanonicalProductTag({ name: 'warranty', value: '仅保首登1小时，后续无售后' }), true);
   assert.equal(isCanonicalProductTag({ name: 'warranty', value: '质保30天，质保到期后不再免费换货' }), true);
+});
+
+test('text tags are validated structurally and displayed without guessing their meaning', () => {
+  for (const value of [
+    '到手1小时内无法使用可联系处理；超过1小时不售后；登录后封禁不退款不换号',
+    '密码或2FA错误可联系处理；账号被封禁不处理',
+    '一个月内掉订阅但账号未封可按天售后',
+    '卡密一次性，不退不换', '不享受质保', '质保已过期', 'unknown',
+    'El vendedor ayuda si no funciona al recibirlo.',
+  ]) {
+    const fact = { name: 'warranty', value };
+    assert.equal(isCanonicalProductTag(fact), true, value);
+    assert.deepEqual(normalizeProductTag(fact), [fact]);
+    assert.equal(purchaseWarrantyLabel([fact]), value);
+  }
+  for (const value of ['', ' ', ' leading', 'trailing ', 'x'.repeat(251), 30, true, null, {}]) {
+    assert.equal(isCanonicalProductTag({ name: 'warranty', value }), false);
+  }
 });
 
 test('search uses numeric durations without treating warranty or redemption deadlines as use periods', () => {

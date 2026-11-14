@@ -1,7 +1,8 @@
 import { buildCandidateSearchQuery, buildExtractionPayload, estimateInputSize, planAdaptiveBatches } from '../ai/adaptive-batching.js';
 import { tagValueKey } from '@price-comparison/catalog/purchase-attributes';
 import { parseStandardizationProtocolResponse, type StandardizationTag } from '../ai/ai.schemas.js';
-import { validateStandardizationEvidence, validateStandardizationTags } from '../ai/standardization-evidence.js';
+import { validateStandardizationEvidence } from '../ai/standardization-evidence.js';
+import { validateReviewedTagExtractionDecision } from '../ai/tag-extraction-result.js';
 import { BoundedCandidateIndex, type CandidateDocument } from './candidate-index.js';
 import { buildCanonicalStandardKey } from './canonical-key.js';
 import { identityEvidenceConflict, normalizeIdentity, type Identity } from './identity-policy.js';
@@ -21,11 +22,12 @@ export interface StandardizationFlowControl {
   readonly expectedReasonCode?: string;
   readonly proposalIdentity: Identity;
   readonly proposalAction?: 'create_identity' | 'reuse_candidate';
-  readonly proposalTags?: readonly StandardizationTag[];
+  readonly proposalTags?: readonly Pick<StandardizationTag, 'name' | 'value'>[];
+  readonly mockTagReview?: { readonly accepted: readonly boolean[]; readonly complete: boolean };
   readonly inputBudgetBytes?: number;
 }
 
-function tagValues(tags: readonly StandardizationTag[]): FlowTagValues {
+function tagValues(tags: readonly Pick<StandardizationTag, 'name' | 'value'>[]): FlowTagValues {
   const grouped = new Map<string, Set<string>>();
   for (const tag of tags) {
     const values = grouped.get(tag.name) ?? new Set<string>();
@@ -49,6 +51,13 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
     const candidateRefs = Object.fromEntries(candidates.map((candidate, position) => ['i1c' + (position + 1), candidate.id]));
     const evidence = [{ path: 'name', quote: control.name }];
     const proposalTags = control.proposalTags ?? [];
+    if (proposalTags.length && !control.mockTagReview) throw new Error('Tag controls require explicit mock review decisions');
+    const votes = control.mockTagReview?.accepted ?? [];
+    const tags = proposalTags.map((tag, proposalIndex) => ({ ...tag, proposalIndex, evidence: [] }));
+    const reviewed = validateReviewedTagExtractionDecision(1n, tags.filter(tag => votes[tag.proposalIndex] === true),
+      tags.filter(tag => votes[tag.proposalIndex] !== true).map(tag => ({
+        ...tag, reasonCode: 'review_rejected', reason: '模拟复核拒绝该标签',
+      })), payload, votes, control.mockTagReview?.complete ?? true);
     const proposedCandidate = candidates.find(candidate =>
       buildCanonicalStandardKey(candidate) === buildCanonicalStandardKey(control.proposalIdentity));
     const candidateRef = Object.keys(candidateRefs).find(ref => candidateRefs[ref] === proposedCandidate?.id);
@@ -75,7 +84,7 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
     // Publication guard results are observations only: the actual validator must enforce them.
     const finalDisposition: FlowDisposition = !planned || decision.status !== 'classified' ? 'review' : 'release';
     const finalIdentity = finalDisposition === 'release' && chosen ? normalizeIdentity(chosen) : null;
-    const finalTags = finalDisposition === 'release' ? tagValues(validateStandardizationTags(proposalTags, payload).tags) : {};
+    const finalTags = finalDisposition === 'release' ? tagValues(reviewed.tags) : {};
     const finalReasonCode = !planned ? 'input_too_large' : decision.reasonCode;
     const observation: StandardizationStageObservation = {
       id: control.id, proposalSource: 'synthetic-control', expectedIdentity: control.expectedIdentity,
@@ -100,7 +109,8 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
       && Boolean(publicationConflict.text) === (control.expectedPublicationConflict ?? false)
       && (candidateTargetId === undefined || observation.recalledCandidateIds!.includes(candidateTargetId))
       && (!control.inputBudgetBytes || (!planned && frozenEvidenceLength === control.body.length));
-    return { ...observation, soldObject: control.soldObject, identityConflict, publicationConflict,
+    return { ...observation, mockTagReview: { accepted: [...votes], complete: reviewed.complete },
+      soldObject: control.soldObject, identityConflict, publicationConflict,
       protocolReasonCode: parsed.items[0]!.reasonCode, finalReasonCode, planned, frozenEvidenceLength,
       matchesExpected: Boolean(matchesExpected) };
   });
@@ -118,7 +128,7 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
   const tagValuesArray = (value: string | readonly string[] | undefined): readonly string[] => value === undefined ? [] : typeof value === 'string' ? [value] : value;
   return {
     version: 'standardization-flow-controls-20261013-v3', mode: 'synthetic-pure-function-controls',
-    purpose: 'Hand-reviewed identities/publication labels with synthetic proposals; not production or model accuracy.',
+    purpose: 'Hand-reviewed identities/publication labels with synthetic proposals and explicit mock tag-review votes; not production or model accuracy.',
     providerRequests: 0, actualUsage: null, metrics: evaluateStandardizationStages(rows),
     metricDefinitions: {
       modelProposalCorrectness: 'Correct observed model dispositions, identities and tags / observed model proposals; no observations means null.',
@@ -139,6 +149,7 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
     },
     limitations: [
       'No real model responses, provider usage, production distribution or production accuracy observed.',
+      'Tag semantics are supplied as mock review votes; the program checks objective constraints only.',
       'Candidate recall uses a small public-safe control catalog, not the production catalog or request-budget pruning.',
       'Final release means frozen pure-function validation only; no database, atomic publication, manual locks, outbox or retries exercised.',
       'Oversize control verifies full payload and batch-planner rejection under an explicit offline byte budget, not repository review routing.',

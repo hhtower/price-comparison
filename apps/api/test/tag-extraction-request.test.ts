@@ -27,10 +27,11 @@ test('tag prompt examples use the same sparse canonical protocol as worker respo
   assert.deepEqual(response.items.map(item => item.tags.map(tag => [tag.name, tag.value])), [
     [['duration', 30], ['subscription_override', '无']],
     [['supported_client', 'sub2api']],
-    [['warranty', '购买后1小时内仅保首登,封号不保']],
+    [['warranty', '交付后一小时内无法使用可联系处理;封禁不退']],
     [],
     [['duration', 360]],
     [['bulk_purchase', 'bundle']],
+    [],
   ]);
   assert.notEqual(inputs[4]!.name, inputs[4]!.spec, 'example distinguishes general title from selected SKU');
 
@@ -60,12 +61,14 @@ test('compact context preserves every shared field, applicability and canonical 
 });
 
 test('product-scoped prompt expires v5 while retaining the per-tag protocol', () => {
-  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261114-v10');
-  assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261114-v6');
+  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261114-v11');
+  assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261114-v7');
   assert.equal(TAG_EXTRACTION_PROTOCOL_VERSION, 'tag-json-typed-values-20261114-v4');
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261015-v5' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261025-v7' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-object-closed-v1' }), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261114-v10' }), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagReviewPrompt: 'tag-review-20261114-v6' }), false);
 });
 
 
@@ -108,6 +111,19 @@ test('generation still rejects malformed, oversized and unsupported wire values 
   }
   assert.throws(() => parseTagExtractionResponse('{"items":'));
   assert.throws(() => parseTagExtractionResponse('{"items":[{"id":"1","tags":[{"name":"duration","value":1e400}]}]}'));
+});
+
+test('request and parser leave warranty meaning to the model without rewriting the source or proposed wording', () => {
+  const inputs = [{ id: '1', name: '账号', description: '一次性商品，不退不换。\n交付后一小时内无法使用可联系处理;封禁不退',
+    sourceData: { details: '须在交付后一小时内联系，核实后处理。', warranty_info: '封禁不退' } }];
+  const before = structuredClone(inputs);
+  assert.deepEqual(JSON.parse(buildTagExtractionRequest(inputs, 'mock').messages[1]!.content), before);
+  // This checks transport responsibility, not whether any of these candidates deserve approval.
+  for (const value of ['交付后一小时内无法使用可联系处理;封禁不退', '不退不换', '一次性', '无售后', 'unknown']) {
+    const output = { items: [{ id: '1', tags: [{ name: 'warranty', value }] }] };
+    assert.deepEqual(parseTagExtractionResponse(JSON.stringify(output)), output);
+  }
+  assert.deepEqual(inputs, before);
 });
 
 test('tag projection preserves full raw conditions but excludes operational data without changing membership input', () => {

@@ -15,7 +15,7 @@ import { PRODUCT_TEXT_REVIEW_PROMPT_VERSION } from './product-text-review-reques
 export const EVIDENCE_PROJECTION_VERSION = 'evidence-visible-text-20261007-v3';
 export const CANDIDATE_RETRIEVAL_VERSION = 'weighted-member-name-display-20261007-v2';
 export const EVIDENCE_VALIDATION_VERSION = 'evidence-identity-publication-20261025-v11';
-export const TAG_VALIDATION_VERSION = 'tag-partial-workflow-20261114-v2';
+export const TAG_VALIDATION_VERSION = 'tag-objective-boundary-20261114-v3';
 export const PIPELINE_VERSIONS = Object.freeze({
   contentFingerprint: 'name-description-spec-20261028-v1',
   prompt: STANDARDIZATION_PROMPT_VERSION, schema: STANDARDIZATION_SCHEMA_VERSION,

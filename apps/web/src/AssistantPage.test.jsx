@@ -398,13 +398,26 @@ test.each(['购买后1小时内仅保首登', '保订阅30天，封号不保', '
   expect(screen.getByText(value)).toBeVisible();
 });
 
-test.each(['none', 'unknown', 'covered'])('invalid historical warranty %s preserves the original reply without false promises', async value => {
+test.each(['none', 'unknown', 'covered', '首次进入遇到异常，请提交截图，我们会重新发放一份'])('saved warranty text %s renders verbatim without generated labels', async value => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
   const card = { ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'warranty', value }] } };
   render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(),
     turns: [{ ...done, reply: { ...reply, text: '历史选择依据', kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
-  expect(await screen.findByText(/历史选择依据/)).toHaveTextContent('历史推荐条件已失效');
+  expect(await screen.findByText('历史选择依据')).not.toHaveTextContent('历史推荐条件已失效');
+  fireEvent.click(await screen.findByText('购买须知'));
+  expect(screen.getByText(value, { exact: true })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
+  expect(within(screen.getByRole('dialog')).getByText(value, { exact: true })).toBeVisible();
   expect(screen.queryByText(/无售后|有质保|质保未说明/)).not.toBeInTheDocument();
+});
+
+test.each([30, { days: 30 }])('malformed warranty %j preserves reply text with an invalid-conditions fallback', async value => {
+  sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
+  const card = { ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'warranty', value }] } };
+  render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(),
+    turns: [{ ...done, reply: { ...reply, text: '原始选择依据', kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
+  expect(await screen.findByText(/原始选择依据/)).toHaveTextContent('历史推荐条件已失效');
+  expect(screen.queryByRole('button', { name: '查看报价详情' })).not.toBeInTheDocument();
 });
 
 test('quote details reuse cleaned merchant titles and facts, with the update time beside the price', async () => {

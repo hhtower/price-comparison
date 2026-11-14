@@ -1,8 +1,9 @@
 import React from 'react';
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { emptyShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
 import AssistantWidget from './AssistantWidget.jsx';
+import './AssistantPage.jsx';
 import App from './App.jsx';
 
 vi.mock('./PublicPage.jsx', () => ({ default: () => <main>商品目录</main> }));
@@ -30,7 +31,6 @@ function mockApi(enabled = true) {
     deleteSession: vi.fn(async () => {}),
   };
 }
-beforeAll(async () => { await import('./AssistantPage.jsx'); });
 beforeEach(() => {
   Object.defineProperty(HTMLDialogElement.prototype, 'show', { configurable: true, value: function () { this.open = true; } });
 });

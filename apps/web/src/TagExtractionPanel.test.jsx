@@ -741,7 +741,7 @@ test('部分成功显示标签计数、顶层完整性和实际写入，空证�
   expect(audit).toHaveTextContent('完整性：不完整');
   expect(audit).not.toHaveTextContent('完整性：完整');
   expect(audit).toHaveTextContent('使用期限：无 → 1个月');
-  expect(audit).toHaveTextContent('保留但本次未确认');
+  expect(audit).not.toHaveTextContent('保留但本次未确认');
   expect(audit).toHaveTextContent('标签值格式或枚举不符');
   expect(audit).not.toHaveTextContent('本次未写入');
   expect(audit).not.toHaveTextContent('原始证据未记录');
@@ -764,12 +764,12 @@ test.each([
   expect(audit).not.toHaveTextContent('部分成功');
 });
 
-test('历史review完整性可读取，失败带实际diff时不声称没有写入', async () => {
+test('旧review完整性不冒充当前完整性，失败带实际diff时不声称没有写入', async () => {
   const audit = await openAudit({ member: { output: {
     outcome: 'failed', review: { mode: 'per_tag_binary', decisions: [], complete: false },
     acceptedTags: [], rejectedTags: [], diff: [{ name: 'duration', before: [30], after: [60] }],
   } }, batches: [] });
-  expect(audit).toHaveTextContent('完整性：不完整');
+  expect(audit).not.toHaveTextContent('完整性：');
   expect(audit).toHaveTextContent('使用期限：1个月 → 2个月');
   expect(audit).not.toHaveTextContent('本次未写入');
 });
@@ -933,24 +933,16 @@ const textReview = {
   }])),
 };
 
-test('历史标签结果仍可展示独立的8项披露和6项一致性文案审查', async () => {
+test('标签任务不解释内嵌文案审查结果', async () => {
   const audit = await openAudit({ member: { output: {
     outcome: 'empty', acceptedTags: [], rejectedTags: [], textReview,
     review: { mode: 'per_tag_binary', decisions: [] },
   } }, batches: [] });
-  const disclosure = within(audit).getByRole('table', { name: '信息披露（8项）' });
-  const consistency = within(audit).getByRole('table', { name: '描述一致性（6项）' });
-  expect(within(disclosure).getAllByRole('row')).toHaveLength(9);
-  expect(within(consistency).getAllByRole('row')).toHaveLength(7);
-  expect(disclosure).toHaveTextContent('已披露');
-  expect(disclosure).toHaveTextContent('未披露');
-  expect(disclosure).toHaveTextContent('无法判断');
-  expect(disclosure).toHaveTextContent('完整标题中的套餐');
-  expect(consistency).toHaveTextContent('存在冲突');
-  expect(consistency).toHaveTextContent('未发现冲突');
-  expect(consistency).toHaveTextContent('标题正文使用期限冲突');
-  expect(consistency).toHaveTextContent('正文：三个月');
-  expect(audit.querySelectorAll('ul:empty')).toHaveLength(0);
+  expect(within(audit).queryByRole('region', { name: '文案审查结果' })).not.toBeInTheDocument();
+  expect(within(audit).queryByRole('table', { name: '信息披露（8项）' })).not.toBeInTheDocument();
+  expect(within(audit).queryByRole('table', { name: '描述一致性（6项）' })).not.toBeInTheDocument();
+  expect(audit).not.toHaveTextContent('完整标题中的套餐');
+  expect(audit).not.toHaveTextContent('标题正文使用期限冲突');
 });
 
 test('独立文案任务读取专用结果并显示8+6审查，不显示标签复核及写入', async () => {
@@ -973,6 +965,13 @@ test('独立文案任务读取专用结果并显示8+6审查，不显示标签�
   expect(await screen.findByRole('table', { name: '信息披露（8项）' })).toBeInTheDocument();
   const dialog = screen.getByRole('dialog', { name: '文案任务详情' });
   expect(dialog).toHaveTextContent('文案审查批次 #21 详情');
+  const disclosure = within(dialog).getByRole('table', { name: '信息披露（8项）' });
+  const consistency = within(dialog).getByRole('table', { name: '描述一致性（6项）' });
+  expect(within(disclosure).getAllByRole('row')).toHaveLength(9);
+  expect(within(consistency).getAllByRole('row')).toHaveLength(7);
+  for (const value of ['已披露', '未披露', '无法判断', '完整标题中的套餐']) expect(disclosure).toHaveTextContent(value);
+  for (const value of ['存在冲突', '未发现冲突', '标题正文使用期限冲突', '正文：三个月']) expect(consistency).toHaveTextContent(value);
+  expect(dialog.querySelectorAll('ul:empty')).toHaveLength(0);
   expect(dialog).not.toHaveTextContent('标签');
   expect(dialog).not.toHaveTextContent('LLM 二元复核');
   expect(dialog).not.toHaveTextContent('写入差异');
@@ -1198,71 +1197,59 @@ test('请求详情展示模型、预算、时间和白名单诊断，不展示�
 });
 
 test.each([
-  ['review_unsupported', 'LLM复核：证据不足'],
-  ['review_conflict', 'LLM复核：证据冲突'],
-  ['review_wrong_subject', 'LLM复核：不属于当前商品'],
-  ['review_incomplete_terms', 'LLM复核：条件不完整'],
-  ['review_citation_invalid', 'LLM复核：证据引用无效'],
-  ['review_not_applicable', 'LLM复核：标签不适用'],
-  ['tag_review_conflict', '复核同时通过和拒绝同一标签事实'],
-])('历史复核诊断 %s 保留语义原因、原始证据和复核结论', async (reasonCode, label) => {
-  installApi({ handle(call) {
-    if (call.path.endsWith('/tag-results/3')) return Response.json({ member: { reason_code: reasonCode, output: {
-      outcome: 'review', review: { status: 'review', reason: '仅说明使用步骤，不能确认可续费' },
-      acceptedTags: [], rejectedTags: [{ name: 'renewable', value: 'yes', reasonCode, reason: '教程不代表商品承诺', evidence: [{ path: 'sourceData.description', quote: '续费操作教程' }] }],
-    } }, batches: [] });
-  } });
-  const user = userEvent.setup(); render(<TagExtractionPanel shops={shops} />);
-  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
-  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
-  const audit = (await screen.findByText('续费操作教程')).closest('.tag-audit');
+  ['review_rejected', 'LLM 对该标签判定为否'],
+  ['tag_name_unknown', '标签名称不在规范词表中'],
+  ['tag_value_invalid', '标签值格式或枚举不符'],
+  ['tag_single_value_conflict', '单值字段返回了多个不同值'],
+  ['tag_duplicate', '重复标签已去重'],
+])('当前标签诊断 %s 保留程序原因并独立展示原始布尔判定', async (reasonCode, label) => {
+  const vote = reasonCode !== 'review_rejected';
+  const audit = await openAudit({ member: { reason_code: reasonCode, output: {
+    outcome: 'failed', complete: true, review: { mode: 'per_tag_binary', decisions: [vote] },
+    acceptedTags: [], rejectedTags: [{ proposalIndex: 0, name: 'bulk_purchase', value: 'supported', reasonCode, evidence: [] }],
+  } }, batches: [] });
   expect(within(audit).getAllByText(new RegExp(label)).length).toBeGreaterThan(0);
-  expect(within(audit).getByText(/历史 LLM 复核：待复核.*仅说明使用步骤，不能确认可续费/)).toBeInTheDocument();
-  expect(within(audit).queryByText(/逐标签二元复核/)).not.toBeInTheDocument();
-  expect(within(audit).getByText(/sourceData.description/)).toBeInTheDocument();
-  expect(within(audit).queryByText(/未识别原因|LLM 复核：已通过/)).not.toBeInTheDocument();
+  expect(audit).toHaveTextContent(vote ? 'YES (true)' : 'NO (false)');
+  expect(audit).toHaveTextContent('程序拒绝');
+  expect(audit).not.toHaveTextContent('历史 LLM 复核');
+  expect(audit).not.toHaveTextContent('已通过');
 });
 
 test.each([
-  [null, 'LLM 复核未记录'],
-  [{ outcome: 'updated', acceptedTags: [], rejectedTags: [] }, 'LLM 复核未记录'],
-  [{ outcome: 'unchanged', review: { status: 'approved', reason: '已核对销售规格与原文' } }, '历史 LLM 复核：已通过'],
-])('复核状态来自保存的结论，历史结果不冒充通过（%j）', async (output, label) => {
-  installApi({ handle(call) {
-    if (call.path.endsWith('/tag-results/3')) return Response.json({ member: { output }, batches: [] });
-  } });
-  const user = userEvent.setup(); render(<TagExtractionPanel shops={shops} />);
-  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
-  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
-  expect(await screen.findByText(new RegExp(label))).toBeInTheDocument();
-  if (output?.review) expect(screen.getByText(/已核对销售规格与原文/)).toBeInTheDocument();
-  else expect(screen.queryByText(/LLM 复核：已通过/)).not.toBeInTheDocument();
+  null,
+  { outcome: 'updated', acceptedTags: [], rejectedTags: [] },
+  { outcome: 'unchanged', review: { status: 'approved', reason: '旧聚合批准不能作为投票' } },
+  { outcome: 'review', review: { status: 'review', reason: '旧聚合原因不能作为投票' } },
+  { outcome: 'updated', review: { mode: 'per_tag_binary' }, acceptedTags: [{ proposalIndex: 0, name: 'duration', value: 30 }] },
+  { outcome: 'updated', review: { mode: 'per_tag_binary', decisions: [{ tagId: '3:0', accepted: true }] }, acceptedTags: [{ tagId: '3:0', name: 'duration', value: 30 }] },
+])('标签复核缺少有效布尔票时不把旧状态或程序采纳解释为批准（%j）', async output => {
+  const audit = await openAudit({ member: { output }, batches: [] });
+  expect(audit).toHaveTextContent('LLM 复核未记录');
+  expect(audit).not.toHaveTextContent('已通过');
+  expect(audit).not.toHaveTextContent('YES (true)');
+  expect(audit).not.toHaveTextContent('逐标签二元复核 · 通过');
+  expect(audit).not.toHaveTextContent('旧聚合');
 });
 
-test.each([true, false])('逐标签二元复核按原始标签计数并保留引文，含通过标签：%s', async accepted => {
-  installApi({ handle(call) {
-    if (call.path.endsWith('/tag-results/3')) return Response.json({ member: { output: {
-      outcome: accepted ? 'updated' : 'review', review: { mode: 'per_tag_binary' },
-      acceptedTags: accepted ? [{ name: 'duration', value: 30, evidence: [{ path: 'sourceData.spec', quote: '一个月' }] }] : [],
-      rejectedTags: [{ name: 'renewable', value: 'yes', reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否', evidence: [{ path: 'sourceData.description', quote: '续费操作教程' }] }],
-    } }, batches: [] });
-  } });
-  const user = userEvent.setup(); render(<TagExtractionPanel shops={shops} />);
-  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
-  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
-  const audit = (await screen.findByText('续费操作教程')).closest('.tag-audit');
-  expect(within(audit).getByText(`逐标签二元复核 · 通过 ${accepted ? 1 : 0} · 拒绝 1`)).toBeInTheDocument();
-  expect(within(audit).getByText('LLM 对该标签判定为否')).toBeInTheDocument();
-  expect(within(audit).getByText(/sourceData.description/)).toBeInTheDocument();
-  expect(within(audit).queryByText(/LLM 复核：|未识别原因|证据不足|证据冲突/)).not.toBeInTheDocument();
+test.each([true, false])('逐标签二元复核只按显式布尔票计数，含通过标签：%s', async accepted => {
+  const audit = await openAudit({ member: { output: {
+    outcome: accepted ? 'partial_success' : 'failed', complete: true,
+    review: { mode: 'per_tag_binary', decisions: accepted ? [true, false] : [false] },
+    acceptedTags: accepted ? [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }] : [],
+    rejectedTags: [{ proposalIndex: accepted ? 1 : 0, name: 'bulk_purchase', value: 'supported', reasonCode: 'review_rejected', evidence: [] }],
+  } }, batches: [] });
+  expect(within(audit).getByText('逐标签二元复核 · 通过 ' + (accepted ? 1 : 0) + ' · 拒绝 1')).toBeInTheDocument();
+  expect(audit).toHaveTextContent('LLM 对该标签判定为否');
+  expect(audit).toHaveTextContent('NO (false)');
+  expect(audit).not.toHaveTextContent('历史 LLM 复核');
+  expect(audit.querySelectorAll('q')).toHaveLength(0);
   if (accepted) {
-    expect(within(audit).getByText('使用期限：1个月')).toBeInTheDocument();
-    expect(within(audit).getByText('一个月')).toBeInTheDocument();
-    expect(within(audit).getByText(/sourceData.spec/)).toBeInTheDocument();
-    expect(within(audit).getByText(/结果：部分采纳，已更新/)).toBeInTheDocument();
+    expect(audit).toHaveTextContent('使用期限：1个月');
+    expect(audit).toHaveTextContent('YES (true)');
+    expect(audit).toHaveTextContent('结果：部分成功');
   } else {
-    expect(within(audit).getByText(/结果：待复核/)).toBeInTheDocument();
-    expect(within(audit).queryByText(/已通过/)).not.toBeInTheDocument();
+    expect(audit).toHaveTextContent('结果：失败');
+    expect(audit).not.toHaveTextContent('YES (true)');
   }
 });
 
@@ -1272,7 +1259,7 @@ test('提取和复核请求分别展示用量，阶段进度按批次计数', as
       rawProductCount: 1, processed: '1',
       tagStages: { extractionCompleted: 3, reviewQueued: 2, reviewRunning: 1, reviewCompleted: 4, publicationQueued: 5 },
     } });
-    if (call.path.endsWith('/tag-results/3')) return Response.json({ member: { output: { outcome: 'updated', review: { status: 'approved', reason: '证据一致' } } }, batches: [
+    if (call.path.endsWith('/tag-results/3')) return Response.json({ member: { output: { outcome: 'updated', review: { mode: 'per_tag_binary', decisions: [] } } }, batches: [
       { stage: 'extract', batch_index: 0, round: 0, status: 'succeeded', response_ms: 120, response_usage: { total_tokens: 42 } },
       { stage: 'review', batch_index: 1, round: 0, status: 'succeeded', response_ms: 230, response_usage: { total_tokens: 84 } },
       { batch_index: 2, round: 0, status: 'succeeded', response_ms: null, response_usage: null },
@@ -1514,7 +1501,7 @@ test('商品展开显示通过拒绝证据、写入差异、版本和已记录�
   expect(screen.getByText(/证据不足/)).toBeInTheDocument();
   expect(screen.getByText(/使用期限：无 → 1个月/)).toBeInTheDocument();
   expect(screen.getByText(/total_tokens: 42/)).toBeInTheDocument();
-  expect(screen.getByText(/保留但本次未确认/)).toBeInTheDocument();
+  expect(screen.queryByText(/保留但本次未确认/)).not.toBeInTheDocument();
   expect(screen.getByText(/来源身份任务 #7/)).toBeInTheDocument();
 });
 
@@ -1611,23 +1598,48 @@ test('任务和商品分页在刷新详情后保留', async () => {
   expect(screen.getByLabelText('标签抽取记录分页')).toHaveTextContent('第 2 / 2 页，共 11 条');
 });
 
-test('keyed review votes follow tag IDs after reordering and render typed values without affecting classification votes', async () => {
-  installApi({ handle(call) {
-    if (call.path.endsWith('/tag-results/3')) return Response.json({ member: { status: 'succeeded', output: { outcome: 'updated', acceptedTags: [{ tagId: '3:0', name: 'duration', value: { kind: 'min', days: 30 } }], rejectedTags: [{ tagId: '3:1', name: 'bulk_purchase', value: 'supported', reasonCode: 'review_rejected' }] } }, batches: [
-      { id: '91', stage: 'extract', proposals: [
-        { tagId: '3:0', name: 'duration', value: { kind: 'min', days: 30 }, evidence: [{ path: 'sourceData.spec', quote: '至少一个月' }] },
-        { tagId: '3:1', name: 'bulk_purchase', value: 'supported', evidence: [{ path: 'sourceData.description', quote: '支持批量下单' }] },
-      ] },
-      { id: '92', stage: 'review', extraction_batch_id: '91', review_decisions: [{ tagId: '3:1', accepted: false }, { tagId: '3:0', accepted: true }] },
-    ] });
-  } });
-  const user = userEvent.setup(); render(<TagExtractionPanel shops={shops} />);
-  await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
-  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
-  await user.click(await screen.findByText('复核批次 #92 详情'));
-  const table = screen.getByRole('table', { name: '复核批次 #92 候选判定' });
-  const duration = within(table).getByText('使用期限：至少1个月').closest('tr');
-  expect(duration).toHaveTextContent('3:0'); expect(duration).toHaveTextContent('YES (true)'); expect(duration).toHaveTextContent('程序采纳');
-  const bulk = within(table).getByText('批量购买：支持批量购买').closest('tr');
-  expect(bulk).toHaveTextContent('3:1'); expect(bulk).toHaveTextContent('NO (false)'); expect(bulk).toHaveTextContent('LLM 对该标签判定为否');
+test.each([
+  ['仅旧tagId和对象票', { tagId: '3:0' }, [{ tagId: '3:0', accepted: true }]],
+  ['有索引但旧对象票', { proposalIndex: 0, tagId: '3:0' }, [{ tagId: '3:0', accepted: true }]],
+  ['仅旧tagId和布尔票', { tagId: '3:0' }, [true]],
+  ['混合对象和布尔票', { proposalIndex: 0, tagId: '3:0' }, [true, { tagId: '3:1', accepted: true }]],
+])('旧候选标识不产生原始投票或程序处置：%s', async (_name, identity, decisions) => {
+  const audit = await openAudit({ member: { output: {
+    outcome: 'updated', review: { status: 'approved' },
+    acceptedTags: [{ tagId: '3:0', name: 'duration', value: 30 }], rejectedTags: [],
+  } }, batches: [
+    { id: '91', stage: 'extract', proposals: [{ ...identity, name: 'duration', value: 30, evidence: [] }] },
+    { id: '92', stage: 'review', extraction_batch_id: '91', review_decisions: decisions },
+  ] });
+  await userEvent.setup().click(within(audit).getByText('复核批次 #92 详情'));
+  const table = within(audit).getByRole('table', { name: '复核批次 #92 候选判定' });
+  expect(table).toHaveTextContent('LLM 原始投票未记录');
+  expect(table).toHaveTextContent('程序处置索引未记录');
+  expect(table).not.toHaveTextContent('3:0');
+  expect(table).not.toHaveTextContent('YES (true)');
+  expect(table).not.toHaveTextContent('程序采纳');
+  expect(audit).not.toHaveTextContent('已通过');
+});
+
+test('索引候选按布尔向量展示结构化值，忽略冲突的旧tagId', async () => {
+  const duration = { proposalIndex: 0, tagId: 'ignored:1', name: 'duration', value: { kind: 'min', days: 30 }, evidence: [] };
+  const bulk = { proposalIndex: 1, tagId: 'ignored:0', name: 'bulk_purchase', value: 'supported', evidence: [] };
+  const audit = await openAudit({ member: { output: {
+    outcome: 'partial_success', complete: true, review: { mode: 'per_tag_binary', decisions: [true, false] },
+    acceptedTags: [{ ...duration, tagId: 'ignored:0' }], rejectedTags: [{ ...bulk, tagId: 'ignored:1', reasonCode: 'review_rejected' }],
+  } }, batches: [
+    { id: '91', stage: 'extract', proposals: [bulk, duration] },
+    { id: '92', stage: 'review', extraction_batch_id: '91', review_decisions: [true, false] },
+  ] });
+  await userEvent.setup().click(within(audit).getByText('复核批次 #92 详情'));
+  const table = within(audit).getByRole('table', { name: '复核批次 #92 候选判定' });
+  const durationRow = within(table).getByText('使用期限：至少1个月').closest('tr');
+  expect(durationRow).toHaveTextContent('#0');
+  expect(durationRow).toHaveTextContent('YES (true)');
+  expect(durationRow).toHaveTextContent('程序采纳');
+  const bulkRow = within(table).getByText('批量购买：支持批量购买').closest('tr');
+  expect(bulkRow).toHaveTextContent('#1');
+  expect(bulkRow).toHaveTextContent('NO (false)');
+  expect(bulkRow).toHaveTextContent('LLM 对该标签判定为否');
+  expect(table).not.toHaveTextContent('ignored:');
 });

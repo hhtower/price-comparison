@@ -331,7 +331,8 @@ test('shows the same region in detail badges and quote comparison', async () => 
 });
 
 test.each([
-  [[], null], [[{ name: 'warranty', value: 'unknown' }], null], [[{ name: 'warranty', value: 'none' }], null], [[{ name: 'warranty', value: 'covered' }], null],
+  [[], null], [[{ name: 'warranty', value: { days: 30 } }], null],
+  [[{ name: 'warranty', value: 'unknown' }], 'unknown'], [[{ name: 'warranty', value: 'none' }], 'none'], [[{ name: 'warranty', value: 'covered' }], 'covered'],
   [[{ name: 'warranty', value: '购买后1小时内仅保首登' }], '购买后1小时内仅保首登'],
   [[{ name: 'warranty', value: '激活后24小时内仅保首次接码' }], '激活后24小时内仅保首次接码'],
   [[{ name: 'warranty', value: '保订阅30天，封号不保' }], '保订阅30天，封号不保'],
@@ -676,10 +677,13 @@ test.each(['/', '/products/42'])('prioritizes complete warranty and actual minim
   expect(screen.getByRole('dialog')).toHaveTextContent('需批量购买');
 });
 
-test.each(['none', 'unknown', 'covered'])('obsolete warranty %s does not create unknown or negative badges', async value => {
+test('saved free-text warranty stays ahead of verification without generated labels', async () => {
+  const value = '首次进入遇到异常，请提交截图，我们会重新发放一份';
   mockApi({ tags: [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value }] });
   await renderWithOffers(); await screen.findByRole('button', { name: product.name });
-  expect(screen.getByLabelText('商品标签')).toHaveTextContent(/^已接码$/);
+  const facts = screen.getByLabelText('商品标签');
+  expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual([value, '已接码']);
+  expect(facts).not.toHaveTextContent(/有质保|无质保|未知|未说明/);
 });
 
 test.each([false, true])('summary priorities do not depend on incoming tag order: %s', async reversed => {

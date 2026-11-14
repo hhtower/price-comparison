@@ -1629,11 +1629,12 @@ describe('catalog SQL read model', () => {
     }
   });
 
-  test('only saved warranty summaries appear, without unknown or no-warranty placeholders', async () => {
+  test('saved warranty text appears without a second semantic judgment in catalog reads', async () => {
     const { noWarranty, firstLogin } = await addPurchaseChoices();
     const result = await readPublished({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [], limit: 20 });
     const offers = detailOffers(result.items[0]!);
-    assert.ok(!offers.find(offer => offer.productId === String(noWarranty))!.tags.some(tag => tag.name === 'warranty'));
+    assert.deepEqual(offers.find(offer => offer.productId === String(noWarranty))!.tags.filter(tag => tag.name === 'warranty'),
+      [{ name: 'warranty', value: '无质保' }]);
     assert.deepEqual(offers.find(offer => offer.productId === String(firstLogin))!.tags.filter(tag => tag.name === 'warranty'),
       [{ name: 'warranty', value: '购买后1小时内仅保首登' }]);
   });

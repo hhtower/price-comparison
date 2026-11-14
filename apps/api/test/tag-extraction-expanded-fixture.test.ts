@@ -3,7 +3,7 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { parseTagExtractionResponse } from '../src/ai/tag-extraction-request.js';
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
-import { validateTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
+import { validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 
 test('synthetic references use the compact tag protocol while retaining cited ground truth', async () => {
   const fixture = JSON.parse(await readFile(new URL('./fixtures/tag-extraction-quality-expanded-20261016.json', import.meta.url), 'utf8'));
@@ -17,9 +17,10 @@ test('synthetic references use the compact tag protocol while retaining cited gr
   assert.deepEqual(parseTagExtractionResponse(JSON.stringify(response)), response);
   for (const sample of fixture.samples) {
     assert.equal(sample.provenance.kind, 'synthetic-control');
-    const proposed = sample.expected.map(({ name, value, path, quote }: any) =>
-      ({ name, value, evidence: [{ path, quote }] }));
-    assert.deepEqual(validateTagExtractionDecision(BigInt(sample.id), proposed, sample.input).rejectedTags, [], sample.id);
+    const proposed = sample.expected.map(({ name, value }: any, proposalIndex: number) =>
+      ({ name, value, proposalIndex, evidence: [] }));
+    const mockVotes = proposed.map(() => true);
+    assert.deepEqual(validateReviewedTagExtractionDecision(BigInt(sample.id), proposed, [], sample.input, mockVotes, true).rejectedTags, [], sample.id);
     for (const tag of sample.expected) {
       const value = tag.path.split('.').reduce((field: any, key: string) => field[key], sample.input);
       assert.ok(typeof value === 'string' && value.includes(tag.quote));

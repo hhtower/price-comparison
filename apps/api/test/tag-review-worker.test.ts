@@ -11,13 +11,13 @@ const proposals = { items: [{ id: '11', tags: [bill, twoFactor] }, { id: '12', t
 const review = { items: [{ id: '12', accepted: [false], complete: false }, { id: '11', accepted: [true, false], complete: true }] };
 const job = { id: 7n, row: { job_id: 3n, job_type: 'tag_extraction', step: 'request' } };
 
-function setup(content = JSON.stringify(review), finish: string | null = 'stop', timeout = 1000, hang = false, shopText?: unknown, candidates = proposals, jobType = 'tag_extraction', stage = 'review', previousDecisions?: any[]) {
+function setup(content = JSON.stringify(review), finish: string | null = 'stop', timeout = 1000, hang = false, shopText?: unknown, candidates = proposals, jobType = 'tag_extraction', stage = 'review', previousDecisions?: any[], sourceEvidence = '建议使用美区IP。\n支持Codex。') {
   let sends = 0;
   const call = createOpenAiModelCall({
     getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', stage, proposals: candidates, previousDecisions,
       inputs: [
-        { productId: 11n, name: '商品甲', spec: '', sourceData: { evidence: '建议使用美区IP。\n支持Codex。' },
-          ...(shopText === undefined ? {} : { payload: { name: '商品甲', spec: '', sourceData: { evidence: '建议使用美区IP。\n支持Codex。' }, shopText } }) },
+        { productId: 11n, name: '商品甲', spec: '', sourceData: { evidence: sourceEvidence },
+          ...(shopText === undefined ? {} : { payload: { name: '商品甲', spec: '', sourceData: { evidence: sourceEvidence }, shopText } }) },
         { productId: 12n, name: '商品乙', spec: '1个月', sourceData: {} },
       ] }),
   } as never, { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock', AI_TIMEOUT_MS: String(timeout),
@@ -29,7 +29,10 @@ function setup(content = JSON.stringify(review), finish: string | null = 'stop',
     if (jobType === 'tag_extraction' && stage === 'review') assert.deepEqual(JSON.parse(body.messages[1].content).proposals, candidates);
     const sent = JSON.parse(body.messages[1].content);
     if (jobType === 'text_review' && shopText !== undefined) assert.deepEqual(sent[0].shopText, shopText);
-    if (jobType === 'tag_extraction' && stage === 'review') assert.equal(Object.hasOwn(sent.inputs[0], 'shopText'), false);
+    if (jobType === 'tag_extraction' && stage === 'review') {
+      assert.equal(Object.hasOwn(sent.inputs[0], 'shopText'), false);
+      assert.equal(sent.inputs[0].sourceData.evidence, sourceEvidence);
+    }
     if (hang) return new Response(new ReadableStream({
       start(controller) { init?.signal?.addEventListener('abort', () => controller.error(init.signal!.reason), { once: true }); },
     }));
@@ -63,6 +66,35 @@ test('one review request judges several products and labels, preserving true can
   assert.equal(byId.get(11n)!.complete, true);
   assert.equal(byId.get(12n)!.complete, false);
   assert.equal(Object.hasOwn(byId.get(11n)!, 'textReview'), false);
+});
+
+for (const [label, value, accepted] of [
+  ['approved handling without warranty keywords', '交付后一小时内无法使用可联系处理;封禁不退', true],
+  ['rejected identical handling', '交付后一小时内无法使用可联系处理;封禁不退', false],
+  ['mock-approved no-return limitation', '不退不换', true],
+  ['mock-approved one-time limitation', '一次性', true],
+] as const) test(`streamed warranty review follows the model vote: ${label}`, async () => {
+  // Deliberately approving limitations checks that code does not override semantics, not model accuracy.
+  const candidates = { items: [{ id: '11', tags: [{ name: 'warranty', value }] }, { id: '12', tags: [] }] };
+  const state = setup(JSON.stringify({ items: [
+    { id: '11', accepted: [accepted], complete: true }, { id: '12', accepted: [], complete: true },
+  ] }), 'stop', 1000, false, undefined, candidates, 'tag_extraction', 'review', undefined, value);
+  const result = await state.call(job, new AbortController().signal);
+  assert.equal(state.sends(), 1);
+  assert.equal(result.tagExtractionStage, 'review');
+  const decision = result.tagExtractionItems!.find(item => item.productId === 11n)!;
+  const tag = { name: 'warranty', value, evidence: [], proposalIndex: 0 };
+  assert.deepEqual(decision.reviewDecisions, [accepted]);
+  assert.equal(decision.reviewed, true);
+  assert.equal(decision.complete, true);
+  assert.deepEqual(decision.tags, accepted ? [tag] : []);
+  if (accepted) assert.deepEqual(decision.rejectedTags, []);
+  else {
+    assert.equal(decision.rejectedTags.length, 1);
+    const { reason, ...rejected } = decision.rejectedTags[0]!;
+    assert.deepEqual(rejected, { ...tag, reasonCode: 'review_rejected' });
+    assert.ok(reason);
+  }
 });
 
 for (const [name, content] of [

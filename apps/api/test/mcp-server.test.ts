@@ -272,6 +272,8 @@ test('MCP accepts typed tag values and advertises only current fields', async t 
   for (const tags of [
     [{ name: 'bulk_purchase', value: 'supported' }], [{ name: 'bulk_purchase', value: 'required' }],
     [{ name: 'bulk_purchase', value: 'bundle' }], [{ name: 'warranty', value: '保订阅30天，封号不保' }],
+    [{ name: 'warranty', value: '到手无法使用可联系处理' }], [{ name: 'warranty', value: 'none' }],
+    [{ name: 'warranty', value: 'covered' }],
   ]) assert.equal((await call('get_product_offers', { standardProductId: '1', tags })).json().result.isError, undefined);
   const count = queries.length;
   for (const args of [
@@ -280,7 +282,7 @@ test('MCP accepts typed tag values and advertises only current fields', async t 
       { name: 'delivery', value: 'account' }, { name: 'warranty_days', value: '30' },
       { name: 'duration', value: '30 days' }, { name: 'duration', value: { kind: 'range', min: 90, max: 30 } },
       { name: 'duration', value: { kind: 'min', days: 30, unit: 'days' } },
-      { name: 'region', value: 30 }, { name: 'warranty', value: 'covered' }, { name: 'warranty', value: 'none' },
+      { name: 'region', value: 30 }, { name: 'warranty', value: '' }, { name: 'warranty', value: 'x'.repeat(251) },
       { name: 'subscription_override', value: '有' }, { name: 'bulk_purchase', value: 'yes' },
     ].map(tag => ({ tags: [tag] })),
   ]) {

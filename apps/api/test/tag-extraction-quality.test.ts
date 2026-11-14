@@ -12,14 +12,14 @@ test('typed duration metrics ignore object key order but distinguish exact and q
  assert.deepEqual(changed.falsePositives, [{ id: '1', name: 'duration', value: { kind: 'min', days: 30 } }]);
 });
 test('fact metrics count product/field/value, duplicates once, wrong values as FP and FN', () => {
- const expected = [{id:'1',tags:[{name:'duration',value:'1 month'},{name:'renewable',value:'无'}]}];
- const report = evaluateTagFacts(expected, [{id:'1',tags:[{name:'duration',value:'30 days'},{name:'renewable',value:'无'},{name:'renewable',value:'无'}]}]);
+ const expected = [{id:'1',tags:[{name:'duration',value:30},{name:'sms_verification',value:'verified'}]}];
+ const report = evaluateTagFacts(expected, [{id:'1',tags:[{name:'duration',value:365},{name:'sms_verification',value:'verified'},{name:'sms_verification',value:'verified'}]}]);
  assert.deepEqual(report.total, {expected:2,predicted:2,tp:1,fp:1,fn:1,precision:0.5,recall:0.5});
  assert.equal(report.fields.duration.fn,1); assert.equal(report.fields.duration.fp,1);
  assert.equal(passesTagReleaseGate(report,report),false);
 });
 test('release requires complete coverage and measured baseline with no field regression', () => {
- const expected=[{id:'1',tags:[]},{id:'2',tags:[{name:'duration',value:'1 month'}]}];
+ const expected=[{id:'1',tags:[]},{id:'2',tags:[{name:'duration',value:30}]}];
  const good=evaluateTagFacts(expected,expected);
  assert.equal(passesTagReleaseGate(good,good),true);
  assert.equal(passesTagReleaseGate(good,null),false);
@@ -33,7 +33,7 @@ import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-
 import { readFile } from 'node:fs/promises';
 import { parseTagExtractionResponse, buildTagExtractionRequest } from '../src/ai/tag-extraction-request.js';
 const fixture = JSON.parse(await readFile(new URL('./fixtures/tag-extraction-quality-expanded-20261016.json', import.meta.url), 'utf8'));
-test('synthetic references satisfy closed protocol and retain validated facts', () => {
+test('synthetic references satisfy closed protocol and objective validation with explicitly mocked approvals', () => {
  for (const split of ['diagnostic']) {
   const samples=fixture.samples.filter((sample:any)=>sample.split===split);
   assert.ok(samples.length>=4);
@@ -46,7 +46,8 @@ test('synthetic references satisfy closed protocol and retain validated facts', 
    // Quotes remain offline annotation checks; the model protocol contains only name/value.
    for(const tag of sample.expected) assert.ok(tag.path.split('.').reduce((value:any,key:string)=>value[key],sample.input).includes(tag.quote));
    const proposed=parsed.items.find(item=>item.id===sample.id)!.tags.map((tag,proposalIndex)=>({...tag,evidence:[],proposalIndex}));
-   const validated=validateReviewedTagExtractionDecision(BigInt(sample.id),proposed,[],buildExtractionPayload(sample.input),proposed.map(()=>true),true);
+   const mockVotes=proposed.map(()=>true);
+   const validated=validateReviewedTagExtractionDecision(BigInt(sample.id),proposed,[],buildExtractionPayload(sample.input),mockVotes,true);
    assert.deepEqual(validated.rejectedTags,[],sample.id);
    accepted.push({id:sample.id,tags:validated.tags});
   }
@@ -58,7 +59,7 @@ test('synthetic references satisfy closed protocol and retain validated facts', 
 
 test('saved real run comparisons require matching immutable manifests and holdout observations',()=>{
  const manifest={kind:'real-model' as const,provider:'provider',requestedModel:'model',responseModel:'snapshot',promptVersion:'v3',promptSha256:'a'.repeat(64),protocolVersion:'json-v1',rulesSha256:'b'.repeat(64),fixtureVersion:'fixture-v1',fixtureSha256:'c'.repeat(64),split:'holdout' as const,capturedAt:'2026-10-15'};
- const responses=[{id:'1',tags:[{name:'duration',value:'1 month'}]}];
+ const responses=[{id:'1',tags:[{name:'duration',value:30}]}];
  const baseline={manifest,responses}; const candidate={manifest:{...manifest,promptVersion:'v4'},responses};
  assert.equal(compareTagEvaluationRuns(responses,null,candidate).passed,false);
  assert.equal(compareTagEvaluationRuns(responses,baseline,candidate).passed,true);
@@ -66,8 +67,8 @@ test('saved real run comparisons require matching immutable manifests and holdou
 });
 
 test('release gate accepts removing a baseline-only hallucinated field',()=>{
- const gold=[{id:'1',tags:[{name:'duration',value:'1 month'}]}];
- const baseline=evaluateTagFacts(gold,[{id:'1',tags:[...gold[0].tags,{name:'renewable',value:'有'}]}]);
+ const gold=[{id:'1',tags:[{name:'duration',value:30}]}];
+ const baseline=evaluateTagFacts(gold,[{id:'1',tags:[...gold[0].tags,{name:'region',value:'us'}]}]);
  assert.equal(passesTagReleaseGate(evaluateTagFacts(gold,gold),baseline),true);
 });
 

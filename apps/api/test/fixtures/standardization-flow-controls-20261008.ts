@@ -13,10 +13,7 @@ const jimeng = { family: '即梦', product: '即梦', tier: '高级会员' };
 const canva = { family: 'canva', product: 'canva', tier: 'pro' };
 const tavily = { family: 'tavily', product: 'search', tier: 'standard' };
 const apple = { family: 'apple', product: 'apple_id', tier: 'standard' };
-const cite = (path: string, quote: string) => ({ path, quote });
-const tag = (name: string, value: TagValue, quote: string) => ({
-  name, value, evidence: [cite('sourceData.evidence', quote)],
-});
+const tag = (name: string, value: TagValue) => ({ name, value });
 
 // Minimal rewritten facts, independently hand-reviewed; numeric catalog IDs are generated locally, not seller IDs.
 export const standardizationFlowCatalog: readonly CandidateDocument[] = [
@@ -38,7 +35,8 @@ export const standardizationFlowControls: readonly StandardizationFlowControl[] 
     id: 'team-json-software', name: 'Team 5X 成品JSON', body: '已开通Team 5X账号，成品JSON交付，仅支持Sub2API。',
     soldObject: 'Activated Team 5X account credentials limited to Sub2API', expectedIdentity: team5x, proposalIdentity: team5x,
     expectedDisposition: 'release', expectedTags: { supported_client: 'sub2api' },
-    proposalTags: [tag('supported_client', 'sub2api', 'Sub2API'), tag('access_channel', 'web', 'JSON')],
+    proposalTags: [tag('supported_client', 'sub2api'), tag('access_channel', 'web')],
+    mockTagReview: { accepted: [true,false], complete: true },
   },
   {
     id: 'team-rt-credentials', name: 'G Team 子号Token', body: '实时验活的ChatGPT Team子号，含RT凭证。CPA JSON和sub2api导入JSON。',
@@ -79,7 +77,8 @@ export const standardizationFlowControls: readonly StandardizationFlowControl[] 
     id: 'team-ban-not-capability', name: 'Team 5X成品账号', body: '交付Team 5X账号，禁止反代。',
     soldObject: 'Team 5X account with a prohibition, not supported proxy use', expectedIdentity: team5x, proposalIdentity: team5x,
     expectedDisposition: 'release',
-    proposalTags: [tag('access_channel', 'reverse_proxy', '反代')],
+    proposalTags: [tag('access_channel', 'reverse_proxy')],
+    mockTagReview: { accepted: [false], complete: true },
   },
   {
     id: 'registered-gmail-free', name: 'Gmail注册 Free 已接码',
@@ -167,45 +166,53 @@ export const standardizationFlowControls: readonly StandardizationFlowControl[] 
     body: '实际只提供RT，不带邮箱密码。提供登录JSON文件，仅支持Sub2API，禁止Codex。',
     soldObject: 'ChatGPT Free token/JSON supporting Sub2API but not Codex', expectedIdentity: free, proposalIdentity: free,
     expectedDisposition: 'release', expectedTags: { supported_client: 'sub2api' },
-    proposalTags: [tag('supported_client', 'codex', 'Codex'), tag('supported_client', 'sub2api', 'Sub2API')],
+    proposalTags: [tag('supported_client', 'codex'), tag('supported_client', 'sub2api')],
+    mockTagReview: { accepted: [false,true], complete: true },
   },
   {
     id: 'import-not-warranty', name: 'ChatGPT Plus 账号',
     body: '首次登录请在1小时内导入。',
     soldObject: 'ChatGPT Plus account, import instruction is not a warranty',
     expectedIdentity: plus, proposalIdentity: plus, expectedDisposition: 'release',
-    proposalTags: [tag('warranty', '质保30天', '1小时内导入'), tag('duration', 1 / 24, '1小时内导入')],
+    proposalTags: [tag('warranty', '质保30天'), tag('duration', 1 / 24)],
+    mockTagReview: { accepted: [false,false], complete: true },
   },
   {
     id: 'us-region', name: 'ChatGPT Plus 美国区账号', body: '交付美国区账号。',
     soldObject: 'US-region ChatGPT Plus account', expectedIdentity: plus, proposalIdentity: plus, expectedDisposition: 'release',
-    proposalTags: [tag('region', 'us', '美国区')], expectedTags: { region: 'us' },
+    proposalTags: [tag('region', 'us')], expectedTags: { region: 'us' },
+    mockTagReview: { accepted: [true], complete: true },
   },
   {
     id: 'random-not-us', name: 'ChatGPT Plus 账号', body: '随机区账号。',
     soldObject: 'ChatGPT Plus account, region unspecified/random', expectedIdentity: plus, proposalIdentity: plus,
-    expectedDisposition: 'release', proposalTags: [tag('region', 'us', '随机区')],
+    expectedDisposition: 'release', proposalTags: [tag('region', 'us')],
+    mockTagReview: { accepted: [false], complete: true },
   },
   {
     id: 'actual-one-month', name: 'ChatGPT Plus 账号', body: '账户余额10美元。订阅使用期1个月。',
     soldObject: 'ChatGPT Plus account with one month of use and incidental balance', expectedIdentity: plus, proposalIdentity: plus,
-    expectedDisposition: 'release', proposalTags: [tag('duration', 30, '1个月')], expectedTags: { duration: tagValueKey(30) },
+    expectedDisposition: 'release', proposalTags: [tag('duration', 30)], expectedTags: { duration: tagValueKey(30) },
+    mockTagReview: { accepted: [true], complete: true },
   },
   {
     id: 'wrong-one-year', name: 'ChatGPT Plus 账号', body: '账户余额10美元。订阅使用期1个月。',
     soldObject: 'ChatGPT Plus account with one month of use, not one year', expectedIdentity: plus, proposalIdentity: plus,
-    expectedDisposition: 'release', proposalTags: [tag('duration', 365, '1个月')],
+    expectedDisposition: 'release', proposalTags: [tag('duration', 365)],
+    mockTagReview: { accepted: [false], complete: true },
   },
   {
     id: 'qualified-duration', name: 'ChatGPT Plus 账号', body: '订阅至少使用1个月。',
     soldObject: 'ChatGPT Plus account with a stated minimum use period', expectedIdentity: plus, proposalIdentity: plus,
-    expectedDisposition: 'release', proposalTags: [tag('duration', { kind: 'min', days: 30 }, '至少使用1个月')],
+    expectedDisposition: 'release', proposalTags: [tag('duration', { kind: 'min', days: 30 })],
     expectedTags: { duration: tagValueKey({ kind: 'min', days: 30 }) },
+    mockTagReview: { accepted: [true], complete: true },
   },
   {
     id: 'qualified-duration-wrong-exact', name: 'ChatGPT Plus 账号', body: '订阅至少使用1个月。',
     soldObject: 'A minimum use period incorrectly proposed as an exact term', expectedIdentity: plus, proposalIdentity: plus,
-    expectedDisposition: 'release', proposalTags: [tag('duration', 30, '至少使用1个月')],
+    expectedDisposition: 'release', proposalTags: [tag('duration', 30)],
+    mockTagReview: { accepted: [false], complete: true },
   },
   {
     id: 'first-login-conflict', name: '即梦高级会员 首登质保2h', body: '首登质保1h。',

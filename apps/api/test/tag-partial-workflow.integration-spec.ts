@@ -176,6 +176,28 @@ test('a verified complete empty result clears old tags without a repair', async 
   assert.deepEqual(await f.stored(), []);
 });
 
+test('reviewed tags without the frozen shop source cannot be published', async () => {
+  const f = await fixture();
+  const before = await f.stored();
+  const extraction = await f.next();
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, extraction.id,
+    [{ productId: f.product.id, tags: [candidate('duration', 30, 0)], rejectedTags: [] }],
+    {}, await f.claim(extraction.id), 'extract');
+  const review = await f.next();
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id,
+    [{ productId: f.product.id, tags: [candidate('duration', 30, 0)], rejectedTags: [],
+      reviewed: true, reviewDecisions: [true], complete: true }], {}, await f.claim(review.id), 'review');
+  await db.updateTable('ai_job_input_members').set({ payload: sql`payload - 'shopSource'` })
+    .where('job_id', '=', f.job.id).execute();
+  const publication = await f.next();
+  await f.repo.publishTagExtractionBatch(publication.id, await f.claim(publication.id));
+  assert.deepEqual(await f.stored(), before);
+  const member = await db.selectFrom('ai_job_input_members').select('output')
+    .where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
+  assert.equal((member.output as any).outcome, 'skipped');
+  assert.equal((member.output as any).reasonCode, 'source_changed');
+});
+
 test('partial publication preserves every existing fact exactly beyond the audit size limit', async () => {
   const f = await fixture();
   const oldClients = Array.from({ length: 200 }, (_, index) => ({
@@ -186,9 +208,12 @@ test('partial publication preserves every existing fact exactly beyond the audit
   }))).execute();
   const newClients = Array.from({ length: 100 }, (_, index) => candidate('supported_client', `new-client-${index}`, index));
   const batch = await f.next();
+  await db.updateTable('ai_job_batches').set({
+    reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1 }),
+  }).where('id', '=', batch.id).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, batch.id,
     [{ productId: f.product.id, tags: newClients, rejectedTags: [], reviewed: true, complete: false,
-      reviewDecisions: newClients.map(() => true) }], {}, await f.claim(batch.id));
+      reviewDecisions: newClients.map(() => true) }], {}, await f.claim(batch.id), 'review');
   await f.repo.publishTagExtractionBatch(batch.id, await f.claim(batch.id));
   const stored = await f.stored();
   assert.equal(stored.length, 302);

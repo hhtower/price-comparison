@@ -3,7 +3,7 @@ import { normalizePageRequest, buildCursorPage } from '../common/pagination.js';
 import { previewTagJob, createManualTagJob, prepareAllPendingTagJob, previewMembershipFeatureJob,
   createManualMembershipFeatureJob, previewProductTextReviewJob, createManualProductTextReviewJob,
   type TagJobScope, type TagJobRequest } from './tag-extraction-jobs.js';
-import { sanitizeTagAuditText, buildTagExtractionOutcome, needsTagRepair, resolveTagExtractionFacts, tagExtractionVersions, validateTagExtractionDecision, validateReviewedTagExtractionDecision, type TagExtractionDecision } from './tag-extraction-result.js';
+import { sanitizeTagAuditText, buildTagExtractionOutcome, needsTagRepair, resolveTagExtractionFacts, tagExtractionVersions, validateReviewedTagExtractionDecision, type TagExtractionDecision } from './tag-extraction-result.js';
 import { projectShopText, readTextEvidence, TEXT_REVIEW_VERSION, validateTextReview } from '../shops/shop-text-review.js';
 import type { StandardizationTag } from './ai.schemas.js';
 import { Inject, Injectable, Optional } from '@nestjs/common';
@@ -942,7 +942,7 @@ export class AiRepository {
       candidates: reference.candidates, inputs: inputs.map((row) => ({ productId: row.input_id, fingerprint: row.fingerprint, payload: row.payload, previousDecision: row.previous_decision, candidateStandardProductIds: references.get(row.input_id.toString()) ?? [] })) };
   }
 
-  /** Checkpoint and confirm before queueing review/publication; omitted stage preserves legacy direct calls. */
+  /** Checkpoint and confirm the frozen stage before queueing review or publication. */
   async checkpointTagExtractionBatchDecision(jobId: bigint, batchId: bigint, items: TagExtractionDecision[], metadata: AiBatchResultMetadata = {}, claim?: { workerId?: string; attempt?: bigint; token?: string }, stage?: 'extract' | 'review' | 'repair'): Promise<void> {
     await this.database.transaction().execute(async tx => {
       const job = await tx.selectFrom('ai_jobs').select(['status', 'pause_requested', 'cancel_requested', 'job_type', 'prompt_version', 'rule_version', 'pipeline_versions'])
@@ -956,10 +956,10 @@ export class AiRepository {
         || batch.lease_until === null || batch.lease_until <= new Date()) throw new Error('stale batch checkpoint claim');
       const reference = batch.reference_snapshot as Record<string, JsonValue> | null;
       const expectedStage = reference?.tagStage === 'review' ? 'review' : reference?.tagStage === 'repair' ? 'repair' : 'extract';
-      if (stage !== undefined && stage !== expectedStage) throw new Error('tag checkpoint stage does not match frozen batch');
+      if (stage !== expectedStage) throw new Error('tag checkpoint stage does not match frozen batch');
       if (batch.unknown_requests !== 0 || batch.request_budget_used - batch.confirmed_requests !== 1) throw new Error('tag checkpoint requires one unresolved request');
       const expected = new Set((batch.product_ids as unknown as string[]).map(String));
-      if ((stage !== undefined && items.length !== expected.size) || new Set(items.map(item => String(item.productId))).size !== items.length
+      if (items.length !== expected.size || new Set(items.map(item => String(item.productId))).size !== items.length
         || items.some(item => !expected.has(String(item.productId)))) throw new Error('tag extraction decision does not match batch inputs');
       if (job.job_type === 'membership_features') for (const item of items) {
         if (!Array.isArray(item.tags) || item.tags.length || !Array.isArray(item.rejectedTags) || item.rejectedTags.length) {
@@ -971,7 +971,7 @@ export class AiRepository {
         }
       }
       if (job.job_type === 'tag_extraction' && stage === 'review'
-        && items.some(item => item.reviewed !== true || typeof item.complete !== 'boolean')) {
+        && items.some(item => item.reviewed !== true || typeof item.complete !== 'boolean' || !Array.isArray(item.reviewDecisions))) {
         throw new Error('Tag review requires boolean completeness and reviewed candidates');
       }
       const needsRepair = job.job_type === 'tag_extraction' && stage === 'review'
@@ -1102,13 +1102,10 @@ export class AiRepository {
           return [[member.product_id, { productId: item.productId, tags: [], rejectedTags: [],
             reviewed: true, complete: true, textReview }] as const];
         }
-        const reference = batch.reference_snapshot as Record<string, JsonValue> | null;
-        if (reference?.tagStage === 'review' && (item.reviewed !== true || typeof item.complete !== 'boolean')) {
+        if (item.reviewed !== true || typeof item.complete !== 'boolean' || !Array.isArray(item.reviewDecisions)) {
           throw new Error('Reviewed tags and completeness are missing from publication');
         }
-        const validated = item.reviewed
-          ? validateReviewedTagExtractionDecision(member.input_id, item.tags, item.rejectedTags, member.payload, item.reviewDecisions, item.complete)
-          : validateTagExtractionDecision(member.input_id, [...item.tags, ...item.rejectedTags.map(({ reasonCode, reason, ...tag }) => tag)], member.payload);
+        const validated = validateReviewedTagExtractionDecision(member.input_id, item.tags, item.rejectedTags, member.payload, item.reviewDecisions, item.complete);
         return [[member.product_id, { ...validated, ...(item.attempts ? { attempts: item.attempts } : {}) }] as const];
       }));
       let changed = false;
@@ -1132,7 +1129,7 @@ export class AiRepository {
           : product.standardization_locked ? 'product_locked'
           : product.content_version !== member.content_version || productFingerprint(product) !== member.fingerprint ? 'source_changed'
           : text && (!sourceMatches || projectShopText(product.source_data)?.hash !== text.hash) ? 'text_review_source_changed'
-          : source && !sourceMatches ? 'source_changed'
+          : !sourceMatches ? 'source_changed'
           : product.standardization_revision !== member.standardization_revision ? 'revision_changed'
           : isManualDecisionForCurrentEvidence(manual.get(member.product_id), { content_version: product.content_version, content_fingerprint: productFingerprint(product) }) ? 'manual_decision' : null;
         const missing = !decision && !skip;

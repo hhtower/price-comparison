@@ -21,9 +21,7 @@ export interface TagJobRequest extends TagJobScope { model: string; requestId: s
 const MAX_SCOPE = 500;
 export function currentTagMemberSource(member: 'm' | 'newer') {
   const payload = sql.ref(`${member}.payload`);
-  // Only legacy tag-only payloads without a source binding retain source-independent coverage.
-  return sql<boolean>`(${payload}->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)
-    or (not (${payload} ? 'shopSource') and coalesce(${payload}->'shopText','null'::jsonb)='null'::jsonb))`;
+  return sql<boolean>`${payload}->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)`;
 }
 function canonicalScope(input: TagJobScope) {
   if ((input.allPending !== undefined && input.allPending !== true) || Number(input.productIds !== undefined) + Number(input.scopeShopId !== undefined) + Number(input.allPending === true) !== 1 || (input.allPending && input.retryOfJobId !== undefined)) throw new DomainValidationError('AI_TAG_SCOPE_REQUIRED', '请选择全部未完成、商品或店铺范围');

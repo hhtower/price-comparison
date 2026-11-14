@@ -30,9 +30,15 @@ test('keeps bulk meanings distinct and preserves complete warranty conditions', 
   expect(displayPurchaseTagValue({ name: 'warranty', value })).toBe(value);
 });
 
+test('displays approved warranty wording without requiring coverage keywords', () => {
+  const value = '首次进入遇到异常，请在六十分钟内提交截图，我们会重新发放一份';
+  expect(displayPurchaseTagValue({ name: 'warranty', value })).toBe(value);
+  expect(displayPurchaseTagText({ name: 'warranty', value })).toBe(value);
+});
+
 test.each([
   ['duration', '1 month'], ['warranty_days', '30'], ['delivery', 'account'],
-  ['warranty', 'covered'], ['warranty', 'none'], ['warranty', 'unknown'], ['subscription_override', '有'],
+  ['warranty', ''], ['warranty', 'x'.repeat(251)], ['subscription_override', '有'],
 ])('does not display obsolete or invalid %s:%s', (name, value) => {
   expect(displayPurchaseTagText({ name, value })).toBe('');
 });

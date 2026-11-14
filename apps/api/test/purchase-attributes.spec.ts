@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import { normalizeProductTag } from '@price-comparison/catalog/product-tag-policy';
 import { parseCatalogSearch, normalizePurchaseTag, purchaseTagLabel, purchaseWarrantyLabel, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
 
-test('warranty displays the complete scoped promise and never a legacy positive placeholder', () => {
+test('warranty displays the saved text without semantic interpretation or placeholder conversion', () => {
   const text = '购买后1小时内仅保首登；自行改密不保';
   assert.equal(purchaseWarrantyLabel([{ name: 'warranty', value: text }]), text);
-  for (const value of ['none', 'unknown', 'covered', '无售后', '有质保']) assert.equal(purchaseWarrantyLabel([{ name: 'warranty', value }]), '');
+  for (const value of ['none', 'unknown', 'covered', '无售后', '有质保', '到手有问题可联系处理']) {
+    assert.equal(purchaseWarrantyLabel([{ name: 'warranty', value }]), value);
+  }
   assert.equal(purchaseWarrantyLabel([{ name: 'warranty_days', value: '30' }]), '');
 });
 

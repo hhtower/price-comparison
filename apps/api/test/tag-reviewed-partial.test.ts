@@ -125,14 +125,37 @@ test('repair cannot replace a previously approved single value and same facts de
   assert.equal(published.reviewDecisions?.[conflict.proposalIndex!], true);
 });
 
-test('unresolved earlier failures survive a repair in another dimension', () => {
+test('unresolved earlier failures survive an incomplete repair in another dimension', () => {
   const previous = decision([tag('duration', 30)], [reject(tag('region', 'us'))], false);
-  const current = decision([tag('supported_client', 'codex')]);
+  const current = decision([tag('supported_client', 'codex')], [], false);
   assert.equal(typeof results.mergeTagExtractionDecision, 'function');
   const result = results.buildTagExtractionOutcome(results.mergeTagExtractionDecision(previous, current), [{ name: 'region', value: 'jp' }]);
   assert.equal(result.outcome, 'partial_success');
   assert.equal(result.failedCount, 1);
   assert.ok(result.after.some(fact => fact.name === 'region' && fact.value === 'jp'));
+});
+
+test('a complete correction resolves withdrawn candidates but preserves their original audit', () => {
+  const previous = results.validateReviewedTagExtractionDecision(1n, [tag('bulk_purchase', 'supported', 0)],
+    [reject(tag('warranty', '卡密一次性，不退不换', 1))], {}, [true, false], true);
+  const current = results.validateReviewedTagExtractionDecision(1n, [], [], {}, [], true);
+  const merged = results.mergeTagExtractionDecision(previous, current);
+  const outcome = results.buildTagExtractionOutcome(merged, []);
+  assert.deepEqual(merged.tags, [tag('bulk_purchase', 'supported', 0)]);
+  assert.deepEqual(merged.rejectedTags, []);
+  assert.deepEqual(merged.reviewDecisions, [true]);
+  assert.equal(outcome.outcome, 'updated');
+  assert.equal(outcome.failedCount, 0);
+  assert.deepEqual(merged.attempts?.[0]?.rejectedTags, previous.rejectedTags);
+  assert.deepEqual(merged.attempts?.[1]?.reviewDecisions, []);
+});
+
+test('confirmed complete empty correction can finish successfully after all candidates were withdrawn', () => {
+  const previous = decision([], [reject(tag('warranty', '卡密一次性，不退不换'))], false);
+  const result = results.buildTagExtractionOutcome(results.mergeTagExtractionDecision(previous, decision([])), []);
+  assert.equal(result.outcome, 'empty');
+  assert.equal(result.failedCount, 0);
+  assert.equal(result.attempts?.[0]?.rejectedTags.length, 1);
 });
 
 test('merging different products fails instead of transferring facts', () => {
