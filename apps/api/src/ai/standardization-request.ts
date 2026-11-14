@@ -20,6 +20,8 @@ export interface BuiltStandardizationRequest {
   protocolInputs: StandardizationProtocolInput[];
   parseResponse: (content: string) => unknown;
 }
+export type BudgetedRequest = Pick<BuiltStandardizationRequest, 'model' | 'messages' | 'responseFormat'>
+  & { temperature?: number; maxOutputTokens?: number };
 
 function positive(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
@@ -166,18 +168,20 @@ ${JSON.stringify(schema)}` },
 }
 
 /** A conservative multilingual estimate, not measured provider token usage. */
-export function estimateStandardizationRequest(built: Pick<BuiltStandardizationRequest, 'model' | 'messages' | 'responseFormat'>, limits: StandardizationRequestLimits = readStandardizationRequestLimits()) {
+export function estimateStandardizationRequest(built: BudgetedRequest, limits: StandardizationRequestLimits = readStandardizationRequestLimits()) {
   for (const name of ['maxRequestBytes', 'maxContextTokens', 'outputReserveTokens'] as const) positive(limits[name], name);
+  const outputReserveTokens = Math.min(limits.outputReserveTokens, built.maxOutputTokens ?? limits.outputReserveTokens);
   const body = JSON.stringify({ model: built.model, stream: true, messages: built.messages, response_format: built.responseFormat,
-    stream_options: { include_usage: true }, ...buildModelRequestOptions(built.model, limits, limits.outputReserveTokens) });
+    stream_options: { include_usage: true }, ...(built.temperature !== undefined ? { temperature: built.temperature } : {}),
+    ...buildModelRequestOptions(built.model, limits, outputReserveTokens) });
   let ascii = 0, nonAsciiBytes = 0;
   for (const char of body) { if (char.codePointAt(0)! <= 127) ascii++; else nonAsciiBytes += Buffer.byteLength(char); }
   const estimatedInputTokens = Math.ceil(ascii / 3) + nonAsciiBytes + 12 * built.messages.length;
-  return { requestBytes: Buffer.byteLength(body), estimatedInputTokens, outputReserveTokens: limits.outputReserveTokens,
-    estimatedTotalTokens: estimatedInputTokens + limits.outputReserveTokens };
+  return { requestBytes: Buffer.byteLength(body), estimatedInputTokens, outputReserveTokens,
+    estimatedTotalTokens: estimatedInputTokens + outputReserveTokens };
 }
 
-export function assertStandardizationRequestFits(built: Pick<BuiltStandardizationRequest, 'model' | 'messages' | 'responseFormat'>, limits: StandardizationRequestLimits = readStandardizationRequestLimits()) {
+export function assertStandardizationRequestFits(built: BudgetedRequest, limits: StandardizationRequestLimits = readStandardizationRequestLimits()) {
   const size = estimateStandardizationRequest(built, limits);
   if (size.requestBytes > limits.maxRequestBytes || size.estimatedTotalTokens > limits.maxContextTokens) {
     throw Object.assign(new Error('Complete AI request exceeds local request budget limit'), { retryClass: 'input_too_large', retryable: false, requestOutcome: 'local_failure', size });

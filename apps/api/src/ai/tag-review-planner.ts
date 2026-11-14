@@ -1,5 +1,5 @@
 import { buildTagReviewRequest } from './tag-review-request.js';
-import { buildMembershipFeatureReviewRequest } from './membership-feature-request.js';
+import { buildMembershipFeatureReviewRequest, MEMBERSHIP_FEATURE_MAX_ITEMS } from './membership-feature-request.js';
 import { buildProductTextReviewRequest } from './product-text-review-request.js';
 import type { TagExtractionInput, TagExtractionResponse } from './tag-extraction-request.js';
 import { estimateStandardizationRequest, type StandardizationRequestLimits } from './standardization-request.js';
@@ -29,7 +29,8 @@ export function planTagReviewRequests(request: {
         : 64 + Math.ceil(input.id.length / 3) + tags * 2);
     }, 0);
     return { request: subset, estimate, oversized: estimate.requestBytes > limits.maxRequestBytes
-      || estimate.estimatedTotalTokens > limits.maxContextTokens || estimatedOutputTokens > limits.outputReserveTokens };
+      || estimate.estimatedTotalTokens > limits.maxContextTokens || estimatedOutputTokens > estimate.outputReserveTokens
+      || (!!request.membershipFeatures && inputs.length > MEMBERSHIP_FEATURE_MAX_ITEMS) };
   };
   const groups: ReturnType<typeof make>[] = [];
   let current: TagExtractionInput[] = [];

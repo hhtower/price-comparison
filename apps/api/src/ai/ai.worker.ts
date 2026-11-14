@@ -7,7 +7,7 @@ import { classifyRetryClass } from '../jobs/jobs.repository.js';
 import { recordAiTimingSafely, type AiTimingRecorder } from '../observability/ai-metrics.js';
 import { validateStandardizationEvidence } from './standardization-evidence.js';
 import { classifyProviderRequestFailure } from './standardization-state.js';
-import { buildStandardizationRequest, assertStandardizationRequestFits, readStandardizationRequestLimits } from './standardization-request.js';
+import { buildStandardizationRequest, assertStandardizationRequestFits, readStandardizationRequestLimits, type BudgetedRequest } from './standardization-request.js';
 import { buildTagExtractionRequest, parseTagExtractionResponse } from './tag-extraction-request.js';
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest,
   parseMembershipFeatureResponse, parseMembershipFeatureReviewResponse, type MembershipFeatureResponse,
@@ -146,7 +146,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
       const payloads = inputs.map(i => ({ ...(i.payload && typeof i.payload === 'object' && !Array.isArray(i.payload) ? i.payload : {}),
         id: i.productId.toString(), name: i.name, spec: i.spec as string | null, sourceData: i.sourceData }));
       if (stage === 'review' && !proposals) throw new Error('tag review proposals are missing');
-      const built = textReview ? buildProductTextReviewRequest(payloads, model)
+      const built: BudgetedRequest = textReview ? buildProductTextReviewRequest(payloads, model)
         : stage === 'review' ? membershipFeatures ? buildMembershipFeatureReviewRequest(payloads, proposals!, model)
           : buildTagReviewRequest(payloads, proposals!, model, previousDecisions)
         : membershipFeatures ? buildMembershipFeatureRequest(payloads, model) : buildTagExtractionRequest(payloads, model, previousDecisions);
@@ -157,15 +157,17 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
       return async () => {
         const response = await streamCall({
           model: built.model, messages: built.messages, responseFormat: built.responseFormat,
-          includeUsage: true, maxOutputTokens: limits.outputReserveTokens, signal, context,
+          includeUsage: true, signal, context,
+          temperature: built.temperature,
+          maxOutputTokens: Math.min(limits.outputReserveTokens, built.maxOutputTokens ?? limits.outputReserveTokens),
         });
         let phase: 'json' | 'schema' | 'evidence' = 'json';
         try {
           if (response.finishReason !== 'stop') throw new Error('AI response has invalid completion reason');
           phase = 'schema';
           const parsed = textReview ? parseProductTextReviewResponse(response.content)
-            : stage === 'review' ? (membershipFeatures ? parseMembershipFeatureReviewResponse : parseTagReviewResponse)(response.content)
-            : membershipFeatures ? parseMembershipFeatureResponse(response.content) : parseTagExtractionResponse(response.content);
+            : stage === 'review' ? membershipFeatures ? parseMembershipFeatureReviewResponse(response.content, payloads) : parseTagReviewResponse(response.content)
+            : membershipFeatures ? parseMembershipFeatureResponse(response.content, payloads) : parseTagExtractionResponse(response.content);
           if (parsed.items.length !== inputs.length || new Set(parsed.items.map(item => item.id)).size !== parsed.items.length
             || parsed.items.some(item => !inputs.some(input => String(input.productId) === item.id)))
             throw new Error('Tag extraction response IDs do not match inputs');
@@ -193,10 +195,12 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
                 const proposed = proposals!.items.find(candidate => candidate.id === item.id)!;
                 return { productId: input!.productId, tags: [], rejectedTags: [], reviewed: true,
                   membershipKind: (proposed as typeof proposed & MembershipFeatureResponse['items'][number]).membershipKind,
+                  membershipRefs: (proposed as typeof proposed & MembershipFeatureResponse['items'][number]).refs,
                   classificationReviewed: (item as MembershipFeatureReviewResponse['items'][number]).classificationDecision };
               }
               return { productId: input!.productId, tags: [], rejectedTags: [],
-                membershipKind: (item as MembershipFeatureResponse['items'][number]).membershipKind };
+                membershipKind: (item as MembershipFeatureResponse['items'][number]).membershipKind,
+                membershipRefs: (item as MembershipFeatureResponse['items'][number]).refs };
             }
             const payload = input!.payload ?? buildExtractionPayload({ id: item.id, name: input!.name, spec: input!.spec, sourceData: input!.sourceData as JsonValue });
             if (stage === 'review') {

@@ -3,6 +3,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
 import { isAttributeJobType, jsonb, type AttributeJobType as AttributeJobKind, type DatabaseSchema, type JsonValue } from '../database/types.js';
 import { readAiBatchLimits } from '../config/env.js';
+import { MEMBERSHIP_FEATURE_MAX_ITEMS } from './membership-feature-request.js';
 import { buildExtractionPayload, estimateInputSize, extractionContextKey } from './adaptive-batching.js';
 import { planBulkStandardizationBatches, planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { currentManualDecision } from './ai-retry-pool.js';
@@ -100,10 +101,12 @@ function plan(sized: Awaited<ReturnType<typeof selection>>['sized'], kind: Attri
   const representatives = new Map<string, typeof sized[number]>();
   for (const item of sized) if (!item.protected && !representatives.has(item.inputKey)) representatives.set(item.inputKey,item);
   const inputs=[...representatives.values()].map(item=>({productId:item.product.id,standardProductId:item.product.standard_product_id!,payload:item.payload,inputBytes:item.inputBytes,estimatedTokens:item.estimatedTokens}));
+  const limits = readAiBatchLimits();
+  if (kind === 'membership_features') limits.maxItems = Math.min(limits.maxItems, MEMBERSHIP_FEATURE_MAX_ITEMS);
   // shortcut: bulk scopes use published identities instead of fuzzy similarity above 1,000 inputs; refine only if refusal isolation needs it.
   const batches = kind === 'tag_extraction' && inputs.length > 1_000
-    ? planBulkStandardizationBatches(inputs,readAiBatchLimits())
-    : planIndependentStandardizationBatches(inputs,readAiBatchLimits());
+    ? planBulkStandardizationBatches(inputs,limits)
+    : planIndependentStandardizationBatches(inputs,limits);
   const planned = new Set(batches.flatMap(b=>b.productIds.map(String)));
   return {representatives,batches,planned};
 }

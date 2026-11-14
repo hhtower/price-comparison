@@ -92,7 +92,7 @@ async function rerunFeatures(productId: bigint) {
 function reviewedFeature(task: Awaited<ReturnType<typeof featureTask>>, kind: MembershipKind,
   tags: TagExtractionDecision['tags'] = []): TagExtractionDecision {
   return { productId: task.input.input_id, tags, rejectedTags: [], reviewed: true,
-    membershipKind: kind, classificationReviewed: true };
+    membershipKind: kind, membershipRefs: [0], classificationReviewed: true };
 }
 
 async function saveFeature(task: Awaited<ReturnType<typeof featureTask>>, kind: MembershipKind, classificationReviewed = true,
@@ -162,12 +162,12 @@ test('compact feature batch streams extraction and mixed review through real che
   assert.equal(initial.length, 1);
   assert.deepEqual(initial[0]!.product_ids, ids.map(String), 'distinct inputs must share the extraction batch');
   const extraction = { items: [
-    { id: String(rejected.product.id), membershipKind: 'rental' },
-    { id: String(accepted.product.id), membershipKind: 'account' },
+    { id: '2', refs: [0], membershipKind: 'rental' },
+    { id: '1', refs: [0], membershipKind: 'account' },
   ] };
   const review = { items: [
-    { id: String(accepted.product.id), classificationDecision: true },
-    { id: String(rejected.product.id), classificationDecision: false },
+    { id: '1', classificationDecision: true },
+    { id: '2', classificationDecision: false },
   ] };
   async function claimBatch(batchId: bigint): Promise<ClaimedJob> {
     const batch = await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'feature-stream-test',
@@ -222,11 +222,12 @@ test('compact feature batch streams extraction and mixed review through real che
     assert.equal(result.tagExtractionStage, stage);
     assert.deepEqual(result.tagExtractionItems?.map(item => ({
       id: String(item.productId), kind: item.membershipKind, tags: item.tags, rejectedTags: item.rejectedTags,
+      refs: item.membershipRefs,
       ...(stage === 'review' ? { reviewed: item.reviewed, approved: item.classificationReviewed } : {}),
     })).sort((a, b) => a.id.localeCompare(b.id)), [
-      { id: String(accepted.product.id), kind: 'account', tags: [], rejectedTags: [],
+      { id: String(accepted.product.id), kind: 'account', tags: [], rejectedTags: [], refs: [0],
         ...(stage === 'review' ? { reviewed: true, approved: true } : {}) },
-      { id: String(rejected.product.id), kind: 'rental', tags: [], rejectedTags: [],
+      { id: String(rejected.product.id), kind: 'rental', tags: [], rejectedTags: [], refs: [0],
         ...(stage === 'review' ? { reviewed: true, approved: false } : {}) },
     ].sort((a, b) => a.id.localeCompare(b.id)));
     await repo.checkpointTagExtractionBatchDecision(job.id, batchId, result.tagExtractionItems!,
@@ -413,12 +414,14 @@ test('first empty-fact short-term classification is updated, repeated kind uncha
   }
 });
 
-for (const invalid of ['tags', 'rejectedTags', 'invalid_kind'] as const) {
+for (const invalid of ['tags', 'rejectedTags', 'invalid_kind', 'missing_refs', 'invalid_refs'] as const) {
   test(`feature checkpoint and publication reject ${invalid} atomically`, async () => {
     const f = await fixture();
     const task = await featureTask(f.product.id);
     const decision = reviewedFeature(task, 'account');
     if (invalid === 'invalid_kind') decision.membershipKind = 'unknown' as MembershipKind;
+    else if (invalid === 'missing_refs') delete decision.membershipRefs;
+    else if (invalid === 'invalid_refs') decision.membershipRefs = [999];
     else {
       const tag = { name: 'delivery', value: 'account', evidence: [{ path: 'name', quote: '成品账号' }] };
       if (invalid === 'tags') decision.tags = [tag];

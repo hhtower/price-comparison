@@ -34,7 +34,7 @@ import { IDENTITY_POLICY_VERSION, normalizeIdentity, type Identity } from '../st
 import { assertCurrentPipeline, isCurrentPipeline, pipelineVersionSnapshot, PIPELINE_VERSIONS } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION, readStandardizationRequestLimits, assertStandardizationRequestFits } from './standardization-request.js';
 import { buildTagExtractionRequest, type TagExtractionInput, type TagExtractionResponse } from './tag-extraction-request.js';
-import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest } from './membership-feature-request.js';
+import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest, assertMembershipFeatureRefs } from './membership-feature-request.js';
 import { buildTagReviewRequest } from './tag-review-request.js';
 import { buildProductTextReviewRequest } from './product-text-review-request.js';
 import { planTagReviewRequests } from './tag-review-planner.js';
@@ -882,10 +882,10 @@ export class AiRepository {
       if (!reference?.extractionBatchId || !/^[1-9]\d*$/u.test(reference.extractionBatchId)) throw new Error('tag review source is invalid');
       const extraction = await this.database.selectFrom('ai_job_batches').select(['validated_decision', 'step', 'status'])
         .where('id', '=', BigInt(reference.extractionBatchId)).where('job_id', '=', batch.job_id).executeTakeFirstOrThrow();
-      const document = extraction.validated_decision as unknown as { items?: Array<{ productId: string; tags: StandardizationTag[]; rejectedTags: StandardizationTag[]; membershipKind?: import('@price-comparison/catalog/membership-policy').MembershipKind }> } | null;
+      const document = extraction.validated_decision as unknown as { items?: Array<{ productId: string; tags: StandardizationTag[]; rejectedTags: StandardizationTag[]; membershipKind?: import('@price-comparison/catalog/membership-policy').MembershipKind; membershipRefs?: number[] }> } | null;
       if (extraction.step !== 'done' || extraction.status !== 'succeeded' || !document || !Array.isArray(document.items)) throw new Error('tag extraction checkpoint is unavailable');
       proposals = { items: document.items.filter(item => activeInputs.has(item.productId)).map(item => ({
-        id: item.productId, ...(batch.job_type === 'membership_features' ? { membershipKind: item.membershipKind } : {}), tags: [...item.tags, ...item.rejectedTags].map(tag => ({
+        id: item.productId, ...(batch.job_type === 'membership_features' ? { membershipKind: item.membershipKind, refs: item.membershipRefs } : {}), tags: [...item.tags, ...item.rejectedTags].map(tag => ({
           name: tag.name, value: tag.value,
         })),
       })) };
@@ -961,13 +961,20 @@ export class AiRepository {
       const expected = new Set((batch.product_ids as unknown as string[]).map(String));
       if (items.length !== expected.size || new Set(items.map(item => String(item.productId))).size !== items.length
         || items.some(item => !expected.has(String(item.productId)))) throw new Error('tag extraction decision does not match batch inputs');
-      if (job.job_type === 'membership_features') for (const item of items) {
-        if (!Array.isArray(item.tags) || item.tags.length || !Array.isArray(item.rejectedTags) || item.rejectedTags.length) {
-          throw new Error('Membership feature result must not contain tags');
-        }
-        if (!item.membershipKind || !MEMBERSHIP_KINDS.includes(item.membershipKind)) throw new Error('Reviewed membership kind is required');
-        if (stage !== 'extract' && (item.reviewed !== true || typeof item.classificationReviewed !== 'boolean')) {
-          throw new Error('Membership feature review requires one boolean classification decision');
+      if (job.job_type === 'membership_features') {
+        const members = await tx.selectFrom('ai_job_input_members').select(['input_id', 'payload'])
+          .where('job_id', '=', jobId).where('input_id', 'in', items.map(item => item.productId)).execute();
+        for (const item of items) {
+          if (!Array.isArray(item.tags) || item.tags.length || !Array.isArray(item.rejectedTags) || item.rejectedTags.length) {
+            throw new Error('Membership feature result must not contain tags');
+          }
+          if (!item.membershipKind || !MEMBERSHIP_KINDS.includes(item.membershipKind)) throw new Error('Reviewed membership kind is required');
+          const member = members.find(member => member.input_id === item.productId);
+          if (!member) throw new Error('Membership feature input is missing');
+          assertMembershipFeatureRefs(item.membershipRefs, member.payload as unknown as TagExtractionInput);
+          if (stage !== 'extract' && (item.reviewed !== true || typeof item.classificationReviewed !== 'boolean')) {
+            throw new Error('Membership feature review requires one boolean classification decision');
+          }
         }
       }
       if (job.job_type === 'tag_extraction' && stage === 'review'
@@ -1091,6 +1098,7 @@ export class AiRepository {
         const item = byInput.get(member.input_id);
         if (!item) return [];
         if (featureTask) {
+          assertMembershipFeatureRefs(item.membershipRefs, member.payload as unknown as TagExtractionInput);
           const decision: TagExtractionDecision = { productId: item.productId, tags: [], rejectedTags: [],
             membershipKind: item.membershipKind, reviewed: item.reviewed, classificationReviewed: item.classificationReviewed };
           return [[member.product_id, decision] as const];

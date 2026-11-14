@@ -146,6 +146,9 @@ test('tag projection preserves full raw conditions but excludes operational data
   assert.deepEqual(sent.sourceData.selectedOptions, [{ name: 'duration', value: 'one month' }]);
   for (const key of ['shopText', 'taskId', 'price', 'inventory']) assert.equal(Object.hasOwn(sent, key), false);
   for (const key of ['price', 'stock', 'ratingText']) assert.equal(Object.hasOwn(sent.sourceData, key), false);
-  assert.deepEqual(JSON.parse(buildMembershipFeatureRequest([input], 'mock').messages[1]!.content)[0].sourceData, input.sourceData);
+  const featureLines = JSON.parse(buildMembershipFeatureRequest([input], 'mock').messages[1]!.content).inputs[0].lines;
+  for (const text of ['second original body', 'full content', 'within one hour', 'one month']) {
+    assert(featureLines.some((line: { text: string }) => line.text === text));
+  }
   assert.deepEqual(input, before);
 });

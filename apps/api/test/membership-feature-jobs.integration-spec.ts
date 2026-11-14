@@ -15,6 +15,7 @@ import {
 } from '../src/ai/tag-extraction-jobs.js';
 import { planIndependentStandardizationBatches } from '../src/ai/standardization-batch-planner.js';
 import { readAiBatchLimits } from '../src/config/env.js';
+import { MEMBERSHIP_FEATURE_MAX_ITEMS } from '../src/ai/membership-feature-request.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
 before(async () => {
@@ -111,6 +112,13 @@ test('published AI features deduplicate quote inputs and preserve their shared s
     .where('product_id', 'in', f.ids).execute()).map(member => member.standard_product_id),
   [f.standardId, f.standardId, f.standardId]);
   assert.equal((await db.selectFrom('product_tags').select('id').where('product_id', 'in', f.ids).execute()).length, 0);
+});
+
+test('feature jobs cap distinct inputs at three per extraction batch', async () => {
+  const f = await fixture(7, true);
+  const job = await db.transaction().execute(tx => createMembershipFeatureJob(tx, { productIds: f.ids, model: 'mock' }));
+  const batches = await db.selectFrom('ai_job_batches').select('product_ids').where('job_id', '=', job.id).orderBy('batch_index').execute();
+  assert.deepEqual(batches.map(batch => (batch.product_ids as string[]).length), [3, 3, 1]);
 });
 
 test('provisional assignments and unverified standards cannot schedule features or tags', async () => {
@@ -456,7 +464,7 @@ test('large published feature scopes preserve independent batching and existing 
   assert.equal(inputs.length, 1002);
   const expected = planIndependentStandardizationBatches(inputs.map(input => ({
     productId: input.input_id, payload: input.payload, inputBytes: Number(input.input_bytes), estimatedTokens: Number(input.estimated_tokens),
-  })), readAiBatchLimits());
+  })), { ...readAiBatchLimits(), maxItems: MEMBERSHIP_FEATURE_MAX_ITEMS });
   const actual = await db.selectFrom('ai_job_batches').select('product_ids').where('job_id', '=', job.id).orderBy('batch_index').execute();
   assert.deepEqual(actual.map(batch => batch.product_ids), expected.map(batch => batch.productIds.map(String)));
   assert.deepEqual(actual.find(batch => (batch.product_ids as string[]).includes(String(f.ids.at(-1))))?.product_ids, [String(f.ids.at(-1))]);

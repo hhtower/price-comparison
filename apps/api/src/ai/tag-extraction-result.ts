@@ -11,7 +11,7 @@ export interface TagFact { name: string; value: TagValue }
 export interface TagExtractionTag extends StandardizationTag { proposalIndex?: number }
 export interface RejectedTag extends TagExtractionTag { reasonCode: string; reason: string }
 export interface TagExtractionAttempt { round: number; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; complete: boolean; reviewDecisions?: boolean[] }
-export interface TagExtractionDecision { productId: bigint; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; membershipKind?: MembershipKind; classificationReviewed?: boolean; reviewed?: boolean; reviewDecisions?: boolean[]; complete?: boolean; attempts?: TagExtractionAttempt[]; textReview?: TextReview }
+export interface TagExtractionDecision { productId: bigint; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; membershipKind?: MembershipKind; membershipRefs?: number[]; classificationReviewed?: boolean; reviewed?: boolean; reviewDecisions?: boolean[]; complete?: boolean; attempts?: TagExtractionAttempt[]; textReview?: TextReview }
 export interface TagExtractionResult {
   classification?: MembershipClassification;
   proposedMembershipKind?: MembershipKind;
