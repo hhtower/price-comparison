@@ -29,6 +29,23 @@ test('feature requests batch complete evidence with one category and one review 
   assert.deepEqual({ inputs, proposals }, original);
 });
 
+test('both stages preserve the same complete original fields and exclude assignment metadata', () => {
+  const originalInput = {
+    id: '7', name: '会员充值', spec: '', category: null, description: '买家自己的账号自动充值。',
+    details: { interaction: '提交买家账号后兑换CDK', exclusions: ['首登十分钟内反馈'] },
+    warranty: { subscription: '保订阅25天', usage: '首登十分钟' }, evidence: '',
+    sourceData: { selected: { warranty: '保订阅25天' }, price: 42, content: '完整原文，不投影为标签' },
+  };
+  const supplied = [{ ...originalInput, standardProductId: '999', membershipKind: 'rental',
+    previousDecision: { membershipKind: 'rental' }, shopSource: { url: 'https://shop.invalid' } }];
+  const before = structuredClone(supplied);
+  const extraction = buildMembershipFeatureRequest(supplied, 'mock');
+  const review = buildMembershipFeatureReviewRequest(supplied, { items: [proposals.items[0]!] }, 'mock');
+  assert.deepEqual(JSON.parse(extraction.messages[1]!.content), [originalInput]);
+  assert.deepEqual(JSON.parse(review.messages[1]!.content).inputs, [originalInput]);
+  assert.deepEqual(supplied, before);
+});
+
 test('classification parses exactly one allowed category per unique product ID', () => {
   const items = ['account', 'top_up', 'rental', 'short_term'].map((membershipKind, index) =>
     ({ id: String(index + 1), membershipKind }));
@@ -69,17 +86,17 @@ test('review refuses legacy fact proposals or invalid categories before building
 
 test('prompt examples obey the same strict batched schemas as real responses', () => {
   const prompt = buildMembershipFeatureRequest([], 'mock').messages[0]!.content;
-  const blocks = [...prompt.matchAll(/```json\n([\s\S]*?)\n```/gu)];
+  const blocks = [...prompt.matchAll(/<(input|output)>([\s\S]*?)<\/\1>/gu)];
   assert.equal(blocks.length, 2);
-  const exampleInputs = JSON.parse(blocks[0]![1]!);
-  const extracted = parseMembershipFeatureResponse(blocks[1]![1]!);
+  const exampleInputs = JSON.parse(blocks[0]![2]!);
+  const extracted = parseMembershipFeatureResponse(blocks[1]![2]!);
   assert.deepEqual(extracted.items.map(item => item.id), exampleInputs.map((item: { id: string }) => item.id));
   assert.deepEqual([...new Set(extracted.items.map(item => item.membershipKind))].sort(),
     ['account', 'rental', 'short_term', 'top_up']);
-  const reviewBlocks = [...MEMBERSHIP_FEATURE_REVIEW_PROMPT.matchAll(/```json\n([\s\S]*?)\n```/gu)];
+  const reviewBlocks = [...MEMBERSHIP_FEATURE_REVIEW_PROMPT.matchAll(/<(input|output)>([\s\S]*?)<\/\1>/gu)];
   assert.equal(reviewBlocks.length, 2);
-  const reviewInput = JSON.parse(reviewBlocks[0]![1]!);
-  const reviewed = parseMembershipFeatureReviewResponse(reviewBlocks[1]![1]!);
+  const reviewInput = JSON.parse(reviewBlocks[0]![2]!);
+  const reviewed = parseMembershipFeatureReviewResponse(reviewBlocks[1]![2]!);
   assert.deepEqual(reviewed.items.map(item => item.id), reviewInput.inputs.map((item: { id: string }) => item.id));
   assert.ok(reviewed.items.some(item => item.classificationDecision));
   assert.ok(reviewed.items.some(item => !item.classificationDecision));

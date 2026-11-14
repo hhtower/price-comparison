@@ -5,7 +5,8 @@ import type { ClaimedJob } from '../src/jobs/jobs.repository.js';
 import { WorkerRuntime } from '../src/workers/worker-runtime.js';
 
 const payloads = [
-  { id: '11', name: 'ChatGPT Plus', spec: '商家账号，订阅1个月，质保28天。',
+  { id: '11', name: 'ChatGPT Plus', spec: '商家账号，订阅1个月，质保25天。',
+    description: '账号由商家交付。', details: { delivery: '邮箱、密码、2FA' }, warranty: '保订阅25天，首登十分钟内反馈。',
     sourceData: { description: '封号不保，另保整月订阅。', selectedOptions: ['1个月'] } },
   { id: '12', name: '会员充值', spec: '给买家账号充值，掉订阅补齐。',
     sourceData: { description: '建议使用共享IP，不交付共享账号。', selectedOptions: ['自备账号'] } },
