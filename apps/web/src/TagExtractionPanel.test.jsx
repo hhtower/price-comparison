@@ -921,16 +921,8 @@ test.each(['repair', 'review'])('在途批次读取冻结的修正阶段（%s）
 });
 
 const textReview = {
-  answers: Object.fromEntries(['L1', 'L2', 'L3', 'R1', 'R2', 'R3', 'A1', 'A2'].map(key => [key, {
-    value: key === 'L1' ? true : key === 'A2' ? null : false,
-    reason: key === 'L1' ? '明确说明套餐' : '未发现明确说明',
-    evidence: key === 'L1' ? [{ field: 'name', quote: '完整标题中的套餐' }] : [],
-  }])),
-  consistency: Object.fromEntries(['C1', 'C2', 'C3', 'C4', 'C5', 'C6'].map(key => [key, {
-    value: key === 'C3' ? true : key === 'C6' ? null : false,
-    reason: key === 'C3' ? '标题正文使用期限冲突' : '未发现明确冲突',
-    evidence: key === 'C3' ? [{ field: 'name', quote: '一个月' }, { field: 'description', quote: '三个月' }] : [],
-  }])),
+  answers: { L1: true, L2: false, L3: true, R1: false, R2: true, R3: false, A1: true, A2: false },
+  consistency: { C1: false, C2: true, C3: false, C4: true, C5: false, C6: true },
 };
 
 test('标签任务不解释内嵌文案审查结果', async () => {
@@ -941,18 +933,26 @@ test('标签任务不解释内嵌文案审查结果', async () => {
   expect(within(audit).queryByRole('region', { name: '文案审查结果' })).not.toBeInTheDocument();
   expect(within(audit).queryByRole('table', { name: '信息披露（8项）' })).not.toBeInTheDocument();
   expect(within(audit).queryByRole('table', { name: '描述一致性（6项）' })).not.toBeInTheDocument();
-  expect(audit).not.toHaveTextContent('完整标题中的套餐');
-  expect(audit).not.toHaveTextContent('标题正文使用期限冲突');
 });
 
-test('独立文案任务读取专用结果并显示8+6审查，不显示标签复核及写入', async () => {
+test.each([
+  ['布尔值', textReview,
+    ['已披露', '未披露', '已披露', '未披露', '已披露', '未披露', '已披露', '未披露'],
+    ['未发现冲突', '存在冲突', '未发现冲突', '存在冲突', '未发现冲突', '存在冲突']],
+  ['缺字段', { answers: { L1: false } },
+    ['未披露', ...Array(7).fill('未记录')], Array(6).fill('未记录')],
+  ['历史格式', {
+    answers: { L1: { value: true, reason: '明确说明套餐', evidence: [{ field: 'name', quote: '完整标题中的套餐' }] } },
+    consistency: { C3: { value: null, reason: '历史未知判定', evidence: [] } },
+  }, Array(8).fill('未记录'), Array(6).fill('未记录')],
+])('独立文案任务以两列显示8+6审查，不显示标签复核及写入：%s', async (_name, review, answers, conflicts) => {
   const calls = installApi({ handle(call, job) {
     if (call.path.endsWith('/jobs/8')) return Response.json({ job: { ...job, job_type: 'text_review' }, progress: {
       rawProductCount: 1, processed: 1, textReviewResults: { updated: 1, failed: 0 },
     } });
     if (call.path.endsWith('/text-review-results')) return Response.json({ items: [{ id: '3', name: '文案商品', outcome: 'updated' }] });
     if (call.path.endsWith('/text-review-results/3')) return Response.json({ member: {
-      output: { outcome: 'updated', textReview },
+      output: { outcome: 'updated', textReview: review },
     }, batches: [{ id: '21', stage: 'extract', status: 'succeeded', response_ms: 100 }] });
   } });
   const user = userEvent.setup();
@@ -969,9 +969,13 @@ test('独立文案任务读取专用结果并显示8+6审查，不显示标签�
   const consistency = within(dialog).getByRole('table', { name: '描述一致性（6项）' });
   expect(within(disclosure).getAllByRole('row')).toHaveLength(9);
   expect(within(consistency).getAllByRole('row')).toHaveLength(7);
-  for (const value of ['已披露', '未披露', '无法判断', '完整标题中的套餐']) expect(disclosure).toHaveTextContent(value);
-  for (const value of ['存在冲突', '未发现冲突', '标题正文使用期限冲突', '正文：三个月']) expect(consistency).toHaveTextContent(value);
-  expect(dialog.querySelectorAll('ul:empty')).toHaveLength(0);
+  expect(within(disclosure).getAllByRole('cell').map(cell => cell.textContent)).toEqual(answers);
+  expect(within(consistency).getAllByRole('cell').map(cell => cell.textContent)).toEqual(conflicts);
+  for (const table of [disclosure, consistency]) {
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual(['项目', '判定']);
+    expect(table).not.toHaveTextContent(/说明与原文|无法判断|unknown|明确说明套餐|完整标题中的套餐|历史未知判定/);
+    expect(table.querySelector('q')).not.toBeInTheDocument();
+  }
   expect(dialog).not.toHaveTextContent('标签');
   expect(dialog).not.toHaveTextContent('LLM 二元复核');
   expect(dialog).not.toHaveTextContent('写入差异');

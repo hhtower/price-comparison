@@ -184,7 +184,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
                 const reviewed = validateTextReview((item as ProductTextReviewResponse['items'][number]).textReview, readTextEvidence(input!.payload));
                 return { productId: input!.productId, tags: [], rejectedTags: [], textReview: reviewed };
               } catch {
-                throw new StandardizationValidationError('Product text review evidence is invalid', 'evidence_invalid',
+                throw new StandardizationValidationError('Product text review is invalid', 'evidence_invalid',
                   { stage: 'attribute', code: 'text_review_invalid', fieldPath: 'items.textReview' });
               }
             }

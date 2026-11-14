@@ -11,7 +11,7 @@ export interface TagFact { name: string; value: TagValue }
 export interface TagExtractionTag extends StandardizationTag { proposalIndex?: number }
 export interface RejectedTag extends TagExtractionTag { reasonCode: string; reason: string }
 export interface TagExtractionAttempt { round: number; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; complete: boolean; reviewDecisions?: boolean[] }
-export interface TagExtractionDecision { productId: bigint; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; membershipKind?: MembershipKind; classificationReviewed?: boolean; reviewed?: boolean; reviewDecisions?: boolean[]; complete?: boolean; attempts?: TagExtractionAttempt[]; textReview?: TextReview | null }
+export interface TagExtractionDecision { productId: bigint; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; membershipKind?: MembershipKind; classificationReviewed?: boolean; reviewed?: boolean; reviewDecisions?: boolean[]; complete?: boolean; attempts?: TagExtractionAttempt[]; textReview?: TextReview }
 export interface TagExtractionResult {
   classification?: MembershipClassification;
   proposedMembershipKind?: MembershipKind;
@@ -23,7 +23,7 @@ export interface TagExtractionResult {
   before: TagFact[]; after: TagFact[];
   diff: Array<{ name: string; before: TagValue[]; after: TagValue[] }>;
   review?: { mode: 'per_tag_binary'; decisions?: boolean[] } | { mode: 'membership_binary'; decision: boolean };
-  textReview?: TextReview | null;
+  textReview?: TextReview;
   versions?: { contentVersion: string; fingerprint: string; revision: string; pipeline: JsonValue };
 }
 export const sanitizeTagAuditText = (value: string, limit = 1000): string => sanitizeEvidenceText(value).slice(0, limit);

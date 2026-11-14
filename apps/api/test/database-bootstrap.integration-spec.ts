@@ -138,3 +138,28 @@ test('published results backfill asynchronously and survive migration rollback w
   assert.ifError((await migrator.migrateTo('029_catalog_published_results_20261101')).error);
   assert.equal(await publishNextCatalogChange(database), true);
 });
+
+test('boolean text review upgrade invalidates cached scores while retaining historical reviews', async t => {
+  const { database, schema } = await databaseFixture(t);
+  const migrator = new Migrator({ db: database, provider: migrationProvider, migrationTableSchema: schema });
+  assert.ifError((await migrator.migrateTo('040_tag_structural_validation_20261114')).error);
+  const shop = await database.insertInto('shops').values({
+    name: 'Text review upgrade', platform: 'test', url: 'https://text-upgrade.invalid',
+  }).returning('id').executeTakeFirstOrThrow();
+  const product = (await sql<{ id: bigint; text_review: unknown }>`
+    insert into products (shop_id, external_id, name, normalized_key, url, text_review)
+    values (${shop.id}, 'old-text', 'Old text', 'old-text', '',
+      '{"version":"shop-title-body-20261027-v1","review":{"answers":{"L1":{"value":null,"reason":"unknown","evidence":[]}}}}'::jsonb)
+    returning id, text_review`.execute(database)).rows[0]!;
+  await sql`delete from catalog_projection_changes`.execute(database);
+  await sql`insert into catalog_shop_ratings (shop_id, score, details, computed_at)
+    values (${shop.id}, '20.00', '{"text":{"reviewed":1}}'::jsonb, now())`.execute(database);
+  const version = (await sql<{ version: string }>`select version::text from catalog_cache_versions where id = 1`.execute(database)).rows[0]!.version;
+  await migrateToLatest(database);
+  assert.equal((await sql`select shop_id from catalog_shop_ratings where shop_id = ${shop.id}`.execute(database)).rows.length, 0);
+  assert.equal((await sql`select id from catalog_projection_changes where shop_id = ${shop.id}`.execute(database)).rows.length, 1);
+  assert.deepEqual((await sql`select id, text_review from products where id = ${product.id}`.execute(database)).rows[0], product);
+  assert.notEqual((await sql<{ version: string }>`select version::text from catalog_cache_versions where id = 1`.execute(database)).rows[0]!.version, version);
+  while (await publishNextCatalogChange(database)) {}
+  assert.equal((await sql<{ score: string | null }>`select score from catalog_shop_ratings where shop_id = ${shop.id}`.execute(database)).rows[0]!.score, null);
+});

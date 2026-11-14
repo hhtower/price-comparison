@@ -4,10 +4,9 @@ import { buildProductTextReviewRequest } from './product-text-review-request.js'
 import type { TagExtractionInput, TagExtractionResponse } from './tag-extraction-request.js';
 import { estimateStandardizationRequest, type StandardizationRequestLimits } from './standardization-request.js';
 import type { TagExtractionDecision } from './tag-extraction-result.js';
-import { CONSISTENCY_KEYS, DISCLOSURE_KEYS, readTextEvidence } from '../shops/shop-text-review.js';
+import { CONSISTENCY_KEYS, DISCLOSURE_KEYS } from '../shops/shop-text-review.js';
 
-// Planning allowance for brief reasons, citations and JSON, not a bound on schema-valid output.
-const TEXT_REVIEW_OUTPUT_TOKENS = (DISCLOSURE_KEYS.length + CONSISTENCY_KEYS.length) * 512;
+const TEXT_REVIEW_OUTPUT_TOKENS = (DISCLOSURE_KEYS.length + CONSISTENCY_KEYS.length) * 16;
 
 /** Keep whole frozen inputs and their proposals together within the actual review request budget. */
 export function planTagReviewRequests(request: {
@@ -25,7 +24,7 @@ export function planTagReviewRequests(request: {
     const estimatedOutputTokens = inputs.reduce((total, input) => {
       const tags = subset.proposals.items.find(item => item.id === input.id)?.tags.length ?? 0;
       // A singleton is indivisible and retains the entire configured response budget.
-      return total + Math.min(limits.outputReserveTokens, request.textReview ? 64 + (readTextEvidence(input) ? TEXT_REVIEW_OUTPUT_TOKENS : 0)
+      return total + Math.min(limits.outputReserveTokens, request.textReview ? 64 + Math.ceil(input.id.length / 3) + TEXT_REVIEW_OUTPUT_TOKENS
         : request.membershipFeatures ? 64
         : 64 + Math.ceil(input.id.length / 3) + tags * 2);
     }, 0);

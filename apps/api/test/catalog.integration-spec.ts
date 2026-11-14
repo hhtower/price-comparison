@@ -291,10 +291,8 @@ describe('catalog SQL read model', () => {
     const source = { url: 'https://catalog-shop.invalid', protocol: 'dujiaoka', platform: 'alpha' };
     const text = { unitId: 'shared-parent', name: '套餐', description: 'x'.repeat(32768), hash: 'a'.repeat(64) };
     const review = {
-      answers: Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key,
-        { value: true, reason: '明确说明', evidence: [{ field: 'name', quote: text.name }] }])),
-      consistency: Object.fromEntries(['C1','C2','C3','C4','C5','C6'].map(key => [key,
-        { value: false, reason: '无冲突', evidence: [] }])),
+      answers: Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key, true])),
+      consistency: Object.fromEntries(['C1','C2','C3','C4','C5','C6'].map(key => [key, false])),
     };
     await database.updateTable('shops').set({ rating_manifest: jsonb({
       sourceUrl: source.url, sourceProtocol: source.protocol, sourcePlatform: source.platform,
@@ -306,7 +304,7 @@ describe('catalog SQL read model', () => {
       content_version: BigInt(i + 1), content_fingerprint: i.toString(16).padStart(64, '0'), source_data: jsonb({ ratingText: text }),
       text_review: jsonb({ version: TEXT_REVIEW_VERSION, contentVersion: String(i + 1), fingerprint: i.toString(16).padStart(64, '0'),
         source, textHash: text.hash, review: i === 129
-          ? { ...review, answers: { ...review.answers, L1: { value: false, reason: '未明确', evidence: [] } } } : review }),
+          ? { ...review, answers: { ...review.answers, L1: false } } : review }),
     }))).execute();
     let reviewRows = 0;
     const measured = database.withPlugin({
@@ -423,10 +421,8 @@ describe('catalog SQL read model', () => {
   test('text rating uses the complete source manifest across searches and invalidates changed content', async () => {
     const source = { url: 'https://catalog-shop.invalid', protocol: 'dujiaoka', platform: 'alpha' };
     const text = { unitId: 'source-product', name: '月度套餐', description: '交付账号', hash: 'a'.repeat(64) };
-    const review = { answers: Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key,
-      { value: true, reason: '明确说明', evidence: [{ field: 'name', quote: text.name }] }])),
-    consistency: Object.fromEntries(['C1','C2','C3','C4','C5','C6'].map(key => [key,
-      { value: false, reason: '完整审核未见冲突', evidence: [] }])) };
+    const review = { answers: Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key, true])),
+      consistency: Object.fromEntries(['C1','C2','C3','C4','C5','C6'].map(key => [key, false])) };
     const product = await database.updateTable('products').set({ source_data: jsonb({ ratingText: text }),
       content_fingerprint: 'b'.repeat(64) }).where('id', '=', productOne).returningAll().executeTakeFirstOrThrow();
     const stored = { version: TEXT_REVIEW_VERSION, contentVersion: String(product.content_version),
@@ -468,10 +464,8 @@ describe('catalog SQL read model', () => {
     await database.updateTable('shops').set({ rating_manifest: jsonb(manifest) }).where('id', '=', shopOne).execute();
     const stored = { version: TEXT_REVIEW_VERSION, contentVersion: String(product.content_version),
       fingerprint: product.content_fingerprint, source, textHash: text.hash, review: {
-        answers: Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key,
-          { value: true, reason: '明确说明', evidence: [{ field: 'name', quote: text.name }] }])),
-        consistency: Object.fromEntries(['C1','C2','C3','C4','C5','C6'].map(key => [key,
-          { value: false, reason: '无冲突', evidence: [] }])),
+        answers: Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key, true])),
+        consistency: Object.fromEntries(['C1','C2','C3','C4','C5','C6'].map(key => [key, false])),
       } };
     await publishChanges();
     await sql`insert into catalog_projection_changes (shop_id) values (${shopOne})`.execute(database);

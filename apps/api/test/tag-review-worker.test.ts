@@ -18,7 +18,10 @@ function setup(content = JSON.stringify(review), finish: string | null = 'stop',
       inputs: [
         { productId: 11n, name: '商品甲', spec: '', sourceData: { evidence: sourceEvidence },
           ...(shopText === undefined ? {} : { payload: { name: '商品甲', spec: '', sourceData: { evidence: sourceEvidence }, shopText } }) },
-        { productId: 12n, name: '商品乙', spec: '1个月', sourceData: {} },
+        { productId: 12n, name: '商品乙', spec: '1个月', sourceData: {},
+          ...(jobType === 'text_review' ? { payload: { shopText: {
+            unitId: 'other-unit', name: '商品乙', description: '', hash: 'b'.repeat(64),
+          } } } : {}) },
       ] }),
   } as never, { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock', AI_TIMEOUT_MS: String(timeout),
     AI_REQUEST_MAX_CONTEXT_TOKENS: '131072' },
@@ -127,11 +130,10 @@ test('truncated and unfinished batches never publish partial votes', async () =>
 
 const text = { unitId: 'shared-unit', name: '完整商品标题', description: '正文。'.repeat(5000) + '末尾说明交付账号', hash: 'a'.repeat(64) };
 const textReview = {
-  answers: Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, { value: null, reason: '适用范围不明确', evidence: [] }])),
-  consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, { value: false, reason: '完整原文未发现冲突', evidence: [] }])),
+  answers: Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, false])),
+  consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, false])),
 };
-const fullReview = { ...textReview, answers: { ...textReview.answers,
-  L2: { value: true, reason: '正文末尾明确交付形式', evidence: [{ field: 'description', quote: '末尾说明交付账号' }] } } };
+const fullReview = { ...textReview, answers: { ...textReview.answers, L2: true } };
 
 test('tag review ignores captured shop text and succeeds without requesting fourteen text judgments', async () => {
   const state = setup(JSON.stringify(review), 'stop', 1000, false, text);
@@ -142,7 +144,7 @@ test('tag review ignores captured shop text and succeeds without requesting four
 });
 
 test('independent full title/body review survives fragmented SSE without generating tag decisions', async () => {
-  const output = { items: [{ id: '12', textReview: null }, { id: '11', textReview: fullReview }] };
+  const output = { items: [{ id: '12', textReview }, { id: '11', textReview: fullReview }] };
   const state = setup(JSON.stringify(output), 'stop', 1000, false, text, proposals, 'text_review', 'extract');
   const result = await state.call(job, new AbortController().signal);
   const item = result.tagExtractionItems!.find(item => item.productId === 11n)!;
@@ -156,7 +158,7 @@ test('independent full title/body review survives fragmented SSE without generat
 
 test('text review runs even when both products have zero proposed tags', async () => {
   const candidates = { items: proposals.items.map(item => ({ ...item, tags: [] })) };
-  const output = { items: [{ id: '11', textReview: fullReview }, { id: '12', textReview: null }] };
+  const output = { items: [{ id: '11', textReview: fullReview }, { id: '12', textReview }] };
   const state = setup(JSON.stringify(output), 'stop', 1000, false, text, candidates, 'text_review', 'extract');
   const result = await state.call(job, new AbortController().signal);
   assert.deepEqual(result.tagExtractionItems![0]!.textReview, fullReview);
@@ -166,7 +168,7 @@ test('text review runs even when both products have zero proposed tags', async (
 test('text review rejects missing, foreign and duplicate product IDs before returning any decisions', async () => {
   for (const items of [
     [{ id: '11', textReview: fullReview }],
-    [{ id: '11', textReview: fullReview }, { id: '99', textReview: null }],
+    [{ id: '11', textReview: fullReview }, { id: '99', textReview }],
     [{ id: '11', textReview: fullReview }, { id: '11', textReview: fullReview }],
   ]) {
     const state = setup(JSON.stringify({ items }), 'stop', 1000, false, text, proposals, 'text_review', 'extract');
@@ -176,21 +178,23 @@ test('text review rejects missing, foreign and duplicate product IDs before retu
   }
 });
 
-test('missing, unknown-shaped, uncited and fabricated text reviews reject the entire completed response', async () => {
+test('missing, nullable, nonboolean and verbose text reviews reject the entire completed response', async () => {
   const badReviews = [null, undefined, { ...textReview, answers: {} },
-    { ...textReview, answers: { ...textReview.answers, L1: { value: true, reason: '无引文', evidence: [] } } },
-    { ...textReview, answers: { ...textReview.answers, L1: { value: true, reason: '错误字段引文', evidence: [{ field: 'name', quote: '末尾说明交付账号' }] } } },
-    { ...textReview, consistency: { ...textReview.consistency, C1: { value: true, reason: '单侧无法证明冲突', evidence: [{ field: 'name', quote: '完整商品标题' }] } } },
+    { ...textReview, answers: { ...textReview.answers, L1: null } },
+    { ...textReview, answers: { ...textReview.answers, L1: 'true' } },
+    { ...textReview, consistency: { ...textReview.consistency, C1: { value: true, reason: '旧格式', evidence: [] } } },
+    { ...textReview, reason: '不允许额外输出' },
   ];
-  for (const textReview of badReviews) {
-    const output = { items: [{ id: '12', textReview: null }, { id: '11', textReview }] };
+  for (const invalid of badReviews) {
+    const output = { items: [{ id: '12', textReview }, { id: '11', textReview: invalid }] };
     const state = setup(JSON.stringify(output), 'stop', 1000, false, text, proposals, 'text_review', 'extract');
     await assert.rejects(state.call(job, new AbortController().signal), error => Reflect.get(error as object, 'retryClass') === 'invalid_response'
       && Reflect.get(error as object, 'responseMetadata').responseDiagnostic.code === 'text_review_invalid');
     assert.equal(state.sends(), 1);
   }
-  const absentSource = setup(JSON.stringify({ items: [{ id: '12', textReview: null }, { id: '11', textReview }] }), 'stop', 1000, false, undefined, proposals, 'text_review', 'extract');
+  const absentSource = setup(JSON.stringify({ items: [{ id: '12', textReview }, { id: '11', textReview }] }), 'stop', 1000, false, undefined, proposals, 'text_review', 'extract');
   await assert.rejects(absentSource.call(job, new AbortController().signal));
+  assert.equal(absentSource.sends(), 0);
 });
 
 test('batch review timeout and cancellation stop the shared stream without resending', async () => {
@@ -207,17 +211,17 @@ test('batch review timeout and cancellation stop the shared stream without resen
 
 
 for (const jobType of ['tag_extraction', 'text_review']) test(jobType + ' extraction rejects truncation, invalid output and aborts stalled streams', async () => {
-  const valid = jobType === 'text_review' ? { items: [{ id: '11', textReview: null }, { id: '12', textReview: null }] }
+  const valid = jobType === 'text_review' ? { items: [{ id: '11', textReview }, { id: '12', textReview }] }
     : { items: [{ id: '11', tags: [] }, { id: '12', tags: [] }] };
   for (const [content, finish] of [[JSON.stringify(valid), 'length'], [JSON.stringify(valid), null], ['{', 'stop']] as const) {
-    const state = setup(content, finish, 1000, false, undefined, proposals, jobType, 'extract');
+    const state = setup(content, finish, 1000, false, text, proposals, jobType, 'extract');
     await assert.rejects(state.call(job, new AbortController().signal), error => finish === null ? /missing finish reason/u.test(String(error)) : Reflect.get(error as object, 'retryClass') === 'invalid_response');
     assert.equal(state.sends(), 1);
   }
-  const timeout = setup('', 'stop', 20, true, undefined, proposals, jobType, 'extract');
+  const timeout = setup('', 'stop', 20, true, text, proposals, jobType, 'extract');
   await assert.rejects(timeout.call(job, new AbortController().signal), /timed out/u);
   assert.equal(timeout.sends(), 1);
-  const cancelled = setup('', 'stop', 1000, true, undefined, proposals, jobType, 'extract');
+  const cancelled = setup('', 'stop', 1000, true, text, proposals, jobType, 'extract');
   const controller = new AbortController();
   const pending = cancelled.call(job, controller.signal);
   const timer = setTimeout(() => controller.abort(new Error('cancel extraction')), 20);

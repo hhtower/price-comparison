@@ -613,11 +613,10 @@ test('all-pending text review selects a completed member again after a hash-only
  const pending=()=>createManualProductTextReviewJob(db,{allPending:true,model:'mock',requestId:randomUUID()});
  assert.equal((await preparePending((await pending()).id)).total,0n,'an active text review still prevents duplicate selection');
  await completeTagJob(original.id);
- const judgment={value:false,reason:'No explicit claim.',evidence:[]};
  const stored={version:TEXT_REVIEW_VERSION,contentVersion:String(product.content_version),fingerprint:product.content_fingerprint,
   source,textHash:text.hash,review:{
-   answers:Object.fromEntries(DISCLOSURE_KEYS.map(key=>[key,judgment])),
-   consistency:Object.fromEntries(CONSISTENCY_KEYS.map(key=>[key,judgment])),
+   answers:Object.fromEntries(DISCLOSURE_KEYS.map(key=>[key,false])),
+   consistency:Object.fromEntries(CONSISTENCY_KEYS.map(key=>[key,false])),
   }};
  await db.updateTable('products').set({text_review:jsonb(stored)}).where('id','=',product.id).execute();
  assert.ok(prepareTextReview({...product,source_data:{ratingText:text},text_review:stored}));

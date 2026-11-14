@@ -991,10 +991,8 @@ async function textPublicationFixture(count = 1) {
   await db.updateTable('ai_jobs').set({ job_type: 'text_review' }).where('id', '=', f.job.id).execute();
   await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({ tagStage: 'extract' }) }).where('id', '=', f.batch.id).execute();
   const review = validateTextReview({
-    answers: { ...Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, { value: null, reason: '适用范围不明确', evidence: [] }])),
-      L1: { value: true, reason: '标题明确商品', evidence: [{ field: 'name', quote: text.name }] },
-      L2: { value: true, reason: '正文明确交付形式', evidence: [{ field: 'description', quote: '交付账号' }] } },
-    consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, { value: false, reason: '完整原文未发现冲突', evidence: [] }])),
+    answers: { ...Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, false])), L1: true, L2: true },
+    consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, false])),
   }, text)!;
   const decision = { productId: f.inputId, tags: [], rejectedTags: [], textReview: review };
   const stored = { version: TEXT_REVIEW_VERSION, contentVersion: String(product.content_version), fingerprint,
@@ -1120,7 +1118,7 @@ for (const changed of ['body', 'url', 'protocol', 'platform'] as const) {
 
 test('changing only the text review bumps the catalog version without changing tags and done publication is idempotent', async () => {
   const f = await textPublicationFixture();
-  const priorReview = { ...f.review, answers: { ...f.review.answers, L2: { value: null, reason: '旧审核范围不明', evidence: [] } } };
+  const priorReview = { ...f.review, answers: { ...f.review.answers, L2: false } };
   await db.updateTable('products').set({ text_review: jsonb({ ...f.stored, review: priorReview }) }).where('id', '=', f.inputId).execute();
   const tags = [{ name: 'duration', value: 360 }];
   await db.insertInto('product_tags').values(tagRows(tags.map(tag => ({ ...tag, product_id: f.inputId })))).execute();

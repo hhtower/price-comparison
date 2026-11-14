@@ -3,10 +3,8 @@ import { test } from 'node:test';
 import { readTextEvidence, validateTextReview, createTextReviewAccumulator, prepareTextReview, TEXT_REVIEW_VERSION, type ProductReviewRow } from '../src/shops/shop-text-review.js';
 
 const text = { unitId: 'item', name: '月度套餐', description: '交付账号。服务一个月。', hash: 'a'.repeat(64) };
-const answers = Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key,
-  { value: true, reason: '明确说明', evidence: [{ field: 'name', quote: '月度套餐' }] }]));
-const consistency = Object.fromEntries(['C1','C2','C3','C4','C5','C6'].map(key => [key,
-  { value: false, reason: '完整审核未见冲突', evidence: [] }]));
+const answers = Object.fromEntries(['L1','L2','L3','R1','R2','R3','A1','A2'].map(key => [key, true]));
+const consistency = Object.fromEntries(['C1','C2','C3','C4','C5','C6'].map(key => [key, false]));
 const review = { answers, consistency };
 const source = { url: 'https://example.test/shop', protocol: 'liandong', platform: 'test' };
 const manifest = { sourceUrl: source.url, sourceProtocol: source.protocol, sourcePlatform: source.platform,
@@ -24,14 +22,16 @@ function aggregateTextReviews(input: unknown, origin: typeof source, rows: Produ
   return accumulator?.finish() ?? null;
 }
 
-test('text review requires closed complete three-state judgments and real scoped quotes', () => {
+test('text review requires exactly fourteen booleans and complete captured text', () => {
   assert.deepEqual(validateTextReview(review, text), review);
-  assert.equal(validateTextReview(null, null), null);
+  assert.throws(() => validateTextReview(null, null));
   assert.throws(() => validateTextReview(review, null));
   assert.throws(() => validateTextReview(null, text));
   assert.throws(() => validateTextReview({ ...review, answers: { L1: answers.L1 } }, text));
-  assert.throws(() => validateTextReview({ ...review, answers: { ...answers, L1: { ...answers.L1, evidence: [{ field: 'name', quote: '伪造' }] } } }, text));
-  assert.throws(() => validateTextReview({ ...review, consistency: { ...consistency, C1: { value: true, reason: '冲突', evidence: [] } } }, text));
+  for (const value of [null, 'false', 0, { value: true, reason: '旧格式', evidence: [] }]) {
+    assert.throws(() => validateTextReview({ ...review, answers: { ...answers, L1: value } }, text));
+    assert.throws(() => validateTextReview({ ...review, consistency: { ...consistency, C1: value } }, text));
+  }
   assert.deepEqual(readTextEvidence({ shopText: text }), text);
   assert.equal(readTextEvidence({ shopText: { ...text, hash: 'invalid' } }), null);
 });
@@ -47,7 +47,7 @@ test('whole-source manifest preserves unknowns, deduplicates SKUs and rejects st
   assert.equal(aggregateTextReviews(manifest, source, [{ ...row, content_version: 2n }], 100)?.reviewed, 0);
   assert.equal(aggregateTextReviews(manifest, source, [{ ...row, text_review: { ...stored, source: { ...source, protocol: 'other' } } }], 100)?.reviewed, 0);
   const conflict = { ...row, text_review: { ...stored, review: { ...review,
-    answers: { ...answers, L1: { value: false, reason: '未明确', evidence: [] } } } } };
+    answers: { ...answers, L1: false } } } };
   assert.equal(aggregateTextReviews(manifest, source, [row, conflict], 100)?.reviewed, 0);
   assert.deepEqual(aggregateTextReviews(manifest, source, [row], 86_400_100), first);
   assert.equal(aggregateTextReviews(manifest, source, [row], 99), null);
@@ -60,7 +60,7 @@ test('incremental text reviews keep conflicts across batches and retain only jud
   accumulator.add(prepareTextReview({ ...row, external_id: 'duplicate' })!);
   assert.equal(accumulator.finish().reviewed, 1);
   accumulator.add(prepareTextReview({ ...row, text_review: { ...stored, review: { ...review,
-    answers: { ...answers, L1: { value: false, reason: '未明确', evidence: [] } } } } })!);
+    answers: { ...answers, L1: false } } } })!);
   accumulator.add(prepareTextReview(row)!);
   const result = accumulator.finish();
   assert.equal(result.reviewed, 0);
@@ -89,6 +89,7 @@ test('prepared reviews retain only validated judgments and recheck the live mani
   assert.equal(prepareTextReview({ ...row, content_version: 2n }), null);
   assert.equal(prepareTextReview({ ...row, content_fingerprint: 'changed' }), null);
   assert.equal(prepareTextReview({ ...row, text_review: { ...stored, review: {
-    ...review, answers: { ...answers, L1: { ...answers.L1, evidence: [{ field: 'name', quote: 'missing' }] } },
+    ...review, answers: { ...answers, L1: null },
   } } }), null);
+  assert.equal(prepareTextReview({ ...row, text_review: { ...stored, version: 'shop-title-body-20261027-v1' } }), null);
 });

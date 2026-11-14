@@ -138,18 +138,24 @@ test('tag worker checkpoints complete candidates before semantic review or produ
 for (const invalid of [false, true]) test(`text review ${invalid ? 'rejects invalid batches without checkpointing' : 'checkpoints once and publishes without another model request'}`, async () => {
   const job = { ...claimed(), row: { ...claimed().row, job_type: 'text_review' } };
   const state = service(job);
+  const textReview = {
+    answers: { L1: true, L2: false, L3: false, R1: false, R2: false, R3: false, A1: false, A2: false },
+    consistency: { C1: false, C2: false, C3: false, C4: false, C5: false, C6: false },
+  };
   let sends = 0, checkpoints = 0, publications = 0;
   const repository = {
     prepareBatch: async () => undefined,
     reserveBatchRequest: async () => 'reserved',
     recordBatchRequestOutcome: async () => undefined,
     getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', stage: 'extract', inputs: [
-      { productId: 11n, name: 'Account', spec: '', sourceData: {}, payload: { name: 'Account' } },
+      { productId: 11n, name: 'Account', spec: '', sourceData: {}, payload: {
+        shopText: { unitId: '11', name: 'Account', description: '', hash: 'a'.repeat(64) },
+      } },
     ] }),
     checkpointTagExtractionBatchDecision: async (_job: bigint, _batch: bigint, items: unknown, _metadata: unknown, _claim: unknown, stage: string) => {
       checkpoints++;
       assert.equal(stage, 'extract');
-      assert.deepEqual(items, [{ productId: 11n, tags: [], rejectedTags: [], textReview: null }]);
+      assert.deepEqual(items, [{ productId: 11n, tags: [], rejectedTags: [], textReview }]);
     },
     publishTagExtractionBatch: async () => { publications++; },
   };
@@ -158,7 +164,7 @@ for (const invalid of [false, true]) test(`text review ${invalid ? 'rejects inva
   }, async (_url, init) => {
     sends++;
     assert.equal(JSON.parse(String(init?.body)).stream, true);
-    const content = JSON.stringify({ items: [{ id: '11', textReview: invalid ? {} : null }] });
+    const content = JSON.stringify({ items: [{ id: '11', textReview: invalid ? {} : textReview }] });
     return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
   });
   const worker = createAiWorker(state as never, { repository: repository as never, modelCall: call });

@@ -234,8 +234,8 @@ for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request
   assert.deepEqual((await db.selectFrom('ai_job_batches').select('request_estimate').where('id', '=', f.batch.id).executeTakeFirstOrThrow()).request_estimate, prepared.request_estimate);
 });
 
-test('fourteen-question output capacity splits independent text review batches before reserving requests', async t => {
-  configureLimits(t);
+test('boolean text output capacity splits independent text review batches before reserving requests', async t => {
+  configureLimits(t, { AI_REQUEST_OUTPUT_RESERVE_TOKENS: '1024' });
   const f = await fixture(9, false, true);
   assert.equal(f.job.job_type, 'text_review');
   assert.equal(f.batch.reference_snapshot, null);
@@ -250,14 +250,14 @@ test('fourteen-question output capacity splits independent text review batches b
   await f.repository.prepareBatch(f.batch.id);
   const batches = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id)
     .where('round', '=', 0).orderBy('batch_index').execute();
-  assert.deepEqual(batches.map(batch => (batch.product_ids as string[]).length), [4, 4, 1]);
+  assert.deepEqual(batches.map(batch => (batch.product_ids as string[]).length), [3, 3, 3]);
   assert.deepEqual(batches.flatMap(batch => batch.product_ids as string[]), payloads.map(input => input.id));
   for (const batch of batches) {
     assert.equal(batch.request_budget_used, 0);
     assert.equal(batch.confirmed_requests, 0);
     const stored = batch.request_estimate as Record<string, number | boolean>;
     assert.equal(stored.oversized, false);
-    assert.ok((batch.product_ids as string[]).length <= 4);
+    assert.ok((batch.product_ids as string[]).length <= 3);
     const frozen = await f.repository.getTagExtractionBatchInputs(batch.id);
     const reference = batch.reference_snapshot as { inputs: Array<{ id: string }> };
     assert.deepEqual(reference.inputs.map(input => input.id).sort(), [...batch.product_ids as string[]].sort());

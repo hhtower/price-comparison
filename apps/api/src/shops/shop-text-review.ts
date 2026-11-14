@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 import { visibleEvidenceText } from '../standardization/evidence-text.js';
 
-export const TEXT_REVIEW_VERSION = 'shop-title-body-20261027-v1';
+export const TEXT_REVIEW_VERSION = 'shop-title-body-20261114-v2';
 export const DISCLOSURE_KEYS = ['L1','L2','L3','R1','R2','R3','A1','A2'] as const;
 export const CONSISTENCY_KEYS = ['C1','C2','C3','C4','C5','C6'] as const;
 export type TextEvidence = { unitId: string; name: string; description: string; hash: string };
-type Judgment = { value: boolean | null; reason: string; evidence: Array<{ field: 'name' | 'description'; quote: string }> };
-export type TextReview = { answers: Record<typeof DISCLOSURE_KEYS[number], Judgment>; consistency: Record<typeof CONSISTENCY_KEYS[number], Judgment> };
+export type TextReview = { answers: Record<typeof DISCLOSURE_KEYS[number], boolean>; consistency: Record<typeof CONSISTENCY_KEYS[number], boolean> };
 type Source = { url: string; protocol: string | null; platform: string };
 const closed = (value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
@@ -25,25 +24,14 @@ export function projectShopText(sourceData: unknown): TextEvidence | null {
   return text ? { ...text, name: visibleEvidenceText(text.name), description: visibleEvidenceText(text.description) } : null;
 }
 
-export function validateTextReview(value: unknown, text: TextEvidence | null): TextReview | null {
-  if (!text) { assert.equal(value, null, 'text review requires a complete captured title/body'); return null; }
+export function validateTextReview(value: unknown, text: TextEvidence | null): TextReview {
+  assert(text, 'text review requires a complete captured title/body');
   assert(closed(value, ['answers','consistency']), 'invalid text review');
   for (const [group, keys] of [['answers', DISCLOSURE_KEYS], ['consistency', CONSISTENCY_KEYS]] as const) {
     const judgments: unknown = value[group];
     assert(closed(judgments, keys), 'text review must answer every question');
     for (const key of keys) {
-      const item: unknown = judgments[key];
-      assert(closed(item, ['value','reason','evidence']), 'invalid text judgment');
-      assert(item.value === null || typeof item.value === 'boolean', 'invalid judgment value');
-      assert(typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 600, 'invalid judgment reason');
-      assert(Array.isArray(item.evidence) && item.evidence.length <= 4, 'invalid text evidence');
-      for (const citation of item.evidence) {
-        assert(closed(citation, ['field','quote']) && (citation.field === 'name' || citation.field === 'description'), 'invalid evidence field');
-        assert(typeof citation.quote === 'string' && citation.quote.trim() && citation.quote.length <= 1000
-          && text[citation.field].includes(citation.quote), 'text quote is not in the reviewed field');
-      }
-      if (item.value === true) assert(item.evidence.length >= (group === 'consistency' ? 2 : 1), 'positive judgment lacks evidence');
-      if (group === 'consistency' && item.value === true) assert(new Set(item.evidence.map(c => JSON.stringify(c))).size >= 2, 'conflict needs two distinct claims');
+      assert(typeof judgments[key] === 'boolean', 'text judgment must be a boolean');
     }
   }
   return value as unknown as TextReview;
@@ -63,11 +51,9 @@ export function prepareTextReview(row: ProductReviewRow): PreparedTextReview | n
     || typeof stored.source.url !== 'string' || typeof stored.source.platform !== 'string'
     || stored.source.protocol !== null && typeof stored.source.protocol !== 'string') return null;
   try {
-    const text = projectShopText(row.source_data)!;
-    const review = validateTextReview(stored.review, text)!;
-    return { unitId: text.unitId, hash: text.hash, source: stored.source as Source,
-      answers: Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, review.answers[key].value])),
-      consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, review.consistency[key].value])) };
+    const review = validateTextReview(stored.review, captured);
+    return { unitId: captured.unitId, hash: captured.hash, source: stored.source as Source,
+      answers: review.answers, consistency: review.consistency };
   } catch { return null; }
 }
 

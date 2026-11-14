@@ -230,8 +230,8 @@ test('text review publishes independently in one request and leaves product labe
   const lease = await f.claim(batch.id);
   await f.repo.prepareBatch(batch.id);
   const textReview = {
-    answers: Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, { value: false, reason: 'Mock judgment', evidence: [] }])),
-    consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, { value: false, reason: 'Mock judgment', evidence: [] }])),
+    answers: Object.fromEntries(DISCLOSURE_KEYS.map(key => [key, false])),
+    consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, false])),
   } as TextReview;
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, batch.id,
     [{ productId: f.product.id, tags: [], rejectedTags: [], textReview }], {}, lease, 'extract');

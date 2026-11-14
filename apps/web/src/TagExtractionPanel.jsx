@@ -91,12 +91,11 @@ function TextReviewAudit({ review }) {
     const disclosure = group === 'answers';
     const label = disclosure ? '信息披露（8项）' : '描述一致性（6项）';
     return <div className="data-table-wrap" key={group}><table aria-label={label}>
-      <caption>{label}</caption><thead><tr><th>项目</th><th>判定</th><th>说明与原文</th></tr></thead>
+      <caption>{label}</caption><thead><tr><th>项目</th><th>判定</th></tr></thead>
       <tbody>{Object.entries(fields).map(([key, title]) => {
         const judgment = review[group]?.[key];
         return <tr key={key}><th scope="row">{key} · {title}</th>
-          <td>{judgment?.value === true ? disclosure ? '已披露' : '存在冲突' : judgment?.value === false ? disclosure ? '未披露' : '未发现冲突' : judgment?.value === null ? '无法判断' : '未记录'}</td>
-          <td>{judgment?.reason}{judgment?.evidence?.length ? <ul>{judgment.evidence.map((evidence, index) => <li key={index}>{evidence.field === 'name' ? '标题' : '正文'}：<q>{evidence.quote}</q></li>)}</ul> : null}</td>
+          <td>{judgment === true ? disclosure ? '已披露' : '存在冲突' : judgment === false ? disclosure ? '未披露' : '未发现冲突' : '未记录'}</td>
         </tr>;
       })}</tbody>
     </table></div>;

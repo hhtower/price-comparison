@@ -34,7 +34,7 @@ test('shop text does not affect tag-only output budgeting', () => {
   assert.equal(planTagReviewRequests(fixture(32, false), limits).length, 1);
 });
 
-test('independent text review splits output-heavy products while preserving full frozen text and exact request estimates', () => {
+test('boolean text review preserves full frozen text and exact request estimates in one batch', () => {
   const request = { ...fixture(2), textReview: true, proposals: { items: [] } };
   for (const input of request.inputs) input.shopText!.description = 'Original body with all conditions.\n'.repeat(400);
   const before = structuredClone(request);
@@ -43,7 +43,7 @@ test('independent text review splits output-heavy products while preserving full
   assert.ok(combined.requestBytes < budget.maxRequestBytes);
   assert.ok(combined.estimatedTotalTokens < budget.maxContextTokens);
   const groups = planTagReviewRequests(request, budget);
-  assert.deepEqual(groups.map(group => group.request.inputs.map(input => input.id)), [['1'], ['2']]);
+  assert.deepEqual(groups.map(group => group.request.inputs.map(input => input.id)), [['1', '2']]);
   assert.ok(groups.every(group => !group.oversized));
   for (const group of groups) {
     assert.deepEqual(group.request.proposals, { items: [] });
@@ -55,9 +55,11 @@ test('independent text review splits output-heavy products while preserving full
   assert.equal(planTagReviewRequests({ ...request, textReview: false }, budget).length, 1);
 });
 
-test('text review uses the fourteen-question allowance and isolates oversized whole inputs', () => {
+test('text review budgets fourteen booleans and isolates oversized whole inputs', () => {
   const request = { ...fixture(9), textReview: true, proposals: { items: [] } };
-  assert.deepEqual(planTagReviewRequests(request, limits).map(group => group.request.inputs.length), [4, 4, 1]);
+  assert.deepEqual(planTagReviewRequests(request, limits).map(group => group.request.inputs.length), [9]);
+  assert.deepEqual(planTagReviewRequests(request, { ...limits, outputReserveTokens: 1024 })
+    .map(group => group.request.inputs.length), [3, 3, 3]);
   const large = { ...fixture(2), textReview: true, proposals: { items: [] } };
   large.inputs[0]!.shopText!.description = 'x'.repeat(200000);
   const groups = planTagReviewRequests(large, limits);

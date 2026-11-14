@@ -52,9 +52,8 @@ async function seed(db: Kysely<DatabaseSchema>, options: { stale?: boolean; pend
   const fact = { name: 'warranty', value: 'covered', evidence: [{ path: 'sourceData.evidence', quote: '质保订阅30天' }] };
   const features = { ...buildMembershipFeatures([fact], { ...p, shop_url: source.url, shop_protocol: null, shop_platform: source.platform }, [], 'top_up'),
     evidenceKey: options.stale ? 'stale-evidence-key' : oldKey, correctionReview: { reviewedFingerprint: old, note: 'keep audit' } };
-  const judgment = { value: false, reason: 'fixture', evidence: [] };
   const textReview = { version: TEXT_REVIEW_VERSION, contentVersion: '5', fingerprint: old, source, textHash: rating.hash,
-    review: { answers: Object.fromEntries(DISCLOSURE_KEYS.map(k => [k, judgment])), consistency: Object.fromEntries(CONSISTENCY_KEYS.map(k => [k, judgment])) } };
+    review: { answers: Object.fromEntries(DISCLOSURE_KEYS.map(k => [k, false])), consistency: Object.fromEntries(CONSISTENCY_KEYS.map(k => [k, false])) } };
   await db.updateTable('products').set({ membership_features: jsonb(features as unknown as JsonValue), text_review: jsonb(textReview) }).where('id', '=', p.id).execute();
   const manual = await db.insertInto('product_standardization_decisions').values({ product_id: p.id, action: 'assign',
     content_version: p.content_version, content_fingerprint: old, standardization_revision: p.standardization_revision,
