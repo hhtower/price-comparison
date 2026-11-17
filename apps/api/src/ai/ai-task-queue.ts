@@ -113,7 +113,13 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
      ${input.jobType==='membership_features'?sql`and is_ai_membership(standard.canonical_family,standard.canonical_product,standard.canonical_tier)`:sql``}
  )`;
  const capture=sql`(p.source_data->'ratingText')`;
- const currentSource=(member:'m'|'newer')=>sql<boolean>`${currentTagMemberSource(member)}
+ const warrantyEligible = input.jobType === 'tag_extraction' ? sql<boolean>`exists(
+   select 1 from standard_product_members a join standard_products standard on standard.id=a.standard_product_id
+   where a.product_id=p.id and a.assignment_source='ai' and a.publication_state='published'
+     and standard.verification_state='verified' and standard.merged_into_id is null
+     and is_ai_membership(standard.canonical_family,standard.canonical_product,standard.canonical_tier)
+ )` : undefined;
+ const currentSource=(member:'m'|'newer')=>sql<boolean>`${currentTagMemberSource(member, warrantyEligible)}
    ${input.jobType==='text_review'?sql`and ${sql.ref(`${member}.payload`)}->'shopText'->>'hash'=${capture}->>'hash'`:sql``}`;
  const eligible=sql<boolean>`p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked
    ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`}

@@ -6,7 +6,7 @@ test('mocked rejection retains the candidate and sanitizes its audit evidence', 
   const decision = validateReviewedTagExtractionDecision(1n, [
     { name: 'duration', value: 30, proposalIndex: 0, evidence: [] },
   ], [
-    { name: 'warranty', value: 'password=hidden', proposalIndex: 1,
+    { name: 'supported_client', value: 'password=hidden', proposalIndex: 1,
       evidence: [{ path: 'sourceData.note', quote: 'password=hidden' }], reasonCode: 'review_rejected', reason: '' },
   ], {}, [true, false], true);
   assert.equal(decision.tags.length, 1);

@@ -10,18 +10,41 @@ const reject = (fact: TagExtractionTag) => ({ ...fact, reasonCode: 'review_rejec
 const decision = (tags: TagExtractionTag[], rejectedTags: ReturnType<typeof reject>[] = [], complete = true): TagExtractionDecision =>
   results.validateReviewedTagExtractionDecision(1n, tags, rejectedTags, {}, undefined, complete);
 
-test('partial success replaces a valid single value and retains the failed dimension', () => {
+test('full repair replaces approved duration and withdraws approved clients while retaining both feedback audits', () => {
+  const previous = { ...results.validateReviewedTagExtractionDecision(1n, [
+    tag('duration', 30, 0),
+    tag('supported_client', 'codex', 1),
+  ], [], {}, [true, true], false), reviewFeedback: 'Recheck the selected duration and supported clients.' };
+  const current = { ...results.validateReviewedTagExtractionDecision(1n, [
+    tag('supported_client', 'sub2api', 1),
+    tag('duration', 90, 0),
+  ], [], {}, [true, true], true), reviewFeedback: 'The selected duration and supported client are complete.' };
+  const before = structuredClone({ previous, current });
+  const merged = results.recordTagRepairAttempt(previous, current);
+  assert.deepEqual(merged.tags, current.tags);
+  assert.deepEqual(merged.rejectedTags, []);
+  assert.deepEqual(merged.reviewDecisions, current.reviewDecisions);
+  assert.equal(merged.reviewFeedback, current.reviewFeedback);
+  assert.deepEqual(merged.attempts?.map(attempt => attempt.reviewFeedback), [previous.reviewFeedback, current.reviewFeedback]);
+  const published = results.buildTagExtractionOutcome(merged, []);
+  assert.deepEqual(published.after, current.tags.map(({ name, value }) => ({ name, value })));
+  assert.equal(published.review?.mode === 'per_tag_binary' && published.review.feedback, current.reviewFeedback);
+  assert.deepEqual(published.attempts?.map(attempt => attempt.reviewFeedback), [previous.reviewFeedback, current.reviewFeedback]);
+  assert.deepEqual({ previous, current }, before);
+});
+
+test('partial success publishes only the accepted current values', () => {
   const result = results.buildTagExtractionOutcome(decision([tag('duration', 30)], [reject(tag('region', 'jp'))]),
     [{ name: 'duration', value: 7 }, { name: 'region', value: 'us' }]);
   assert.equal(result.outcome, 'partial_success');
   assert.equal(result.successfulCount, 1);
   assert.equal(result.failedCount, 1);
   assert.equal(result.complete, true);
-  assert.deepEqual(result.after, [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }]);
-  assert.deepEqual(result.diff, [{ name: 'duration', before: [7], after: [30] }]);
+  assert.deepEqual(result.after, [{ name: 'duration', value: 30 }]);
+  assert.deepEqual(result.diff, [{ name: 'duration', before: [7], after: [30] }, { name: 'region', before: ['us'], after: [] }]);
 });
 
-test('incomplete results retain unmentioned facts and accumulate successful multivalues', () => {
+test('incomplete results do not merge unmentioned persisted facts', () => {
   const result = results.buildTagExtractionOutcome(decision([tag('duration', 30), tag('region', 'jp')], [], false),
     [{ name: 'duration', value: 7 }, { name: 'region', value: 'us' }, { name: 'sms_verification', value: 'verified' }]);
   assert.equal(result.outcome, 'partial_success');
@@ -29,14 +52,13 @@ test('incomplete results retain unmentioned facts and accumulate successful mult
   assert.equal(result.failedCount, 0);
   assert.deepEqual(result.after, [
     { name: 'duration', value: 30 }, { name: 'region', value: 'jp' },
-    { name: 'region', value: 'us' }, { name: 'sms_verification', value: 'verified' },
   ]);
 });
 
-test('a failed multivalue retains old facts alongside successes without duplicates', () => {
+test('a failed multivalue cannot introduce other values into the accepted result', () => {
   const result = results.buildTagExtractionOutcome(decision([tag('region', 'jp')], [reject(tag('region', 'ca'))]),
     [{ name: 'region', value: 'us' }, { name: 'region', value: 'jp' }]);
-  assert.deepEqual(result.after, [{ name: 'region', value: 'jp' }, { name: 'region', value: 'us' }]);
+  assert.deepEqual(result.after, [{ name: 'region', value: 'jp' }]);
   assert.equal(result.outcome, 'partial_success');
 });
 
@@ -62,10 +84,10 @@ test('pure failure or incomplete empty results cannot delete any existing fact',
   }
 });
 
-test('an unknown rejected name prevents deletion of unmentioned existing dimensions', () => {
+test('an unknown rejected name cannot expand the accepted result', () => {
   const result = results.buildTagExtractionOutcome(decision([tag('duration', 30)], [reject(tag('unknown', 'yes'))]),
     [{ name: 'duration', value: 7 }, { name: 'region', value: 'us' }]);
-  assert.deepEqual(result.after, [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }]);
+  assert.deepEqual(result.after, [{ name: 'duration', value: 30 }]);
 });
 
 test('a failed single-value candidate does not block an independently accepted replacement', () => {
@@ -85,17 +107,17 @@ test('terminal results keep existing data even when a successful replacement was
   }
 });
 
-test('repair preserves earlier success, resolves corrected failures and records both rounds', () => {
+test('repair uses only current candidates and records both independent rounds', () => {
   const previous = results.validateReviewedTagExtractionDecision(1n, [tag('duration', 30, 0)],
     [reject(tag('region', 'us', 1))], {}, [true, false], false);
   const current = results.validateReviewedTagExtractionDecision(1n, [tag('region', 'jp', 0)], [], {}, [true], true);
-  assert.equal(typeof results.mergeTagExtractionDecision, 'function');
-  const merged = results.mergeTagExtractionDecision(previous, current);
+  assert.equal(typeof results.recordTagRepairAttempt, 'function');
+  const merged = results.recordTagRepairAttempt(previous, current);
   assert.deepEqual(merged.tags.map(item => [item.name, item.value, item.proposalIndex]), [
-    ['duration', 30, 0], ['region', 'jp', 1],
+    ['region', 'jp', 0],
   ]);
   assert.deepEqual(merged.rejectedTags, []);
-  assert.deepEqual(merged.reviewDecisions, [true, true]);
+  assert.deepEqual(merged.reviewDecisions, [true]);
   assert.equal(merged.complete, true);
   assert.deepEqual(merged.attempts, [
     { round: 1, tags: previous.tags, rejectedTags: previous.rejectedTags, complete: false, reviewDecisions: [true, false] },
@@ -105,62 +127,82 @@ test('repair preserves earlier success, resolves corrected failures and records 
   assert.deepEqual(previous.reviewDecisions, [true, false]);
 });
 
-test('repair cannot replace a previously approved single value and same facts deduplicate', () => {
+test('repair replaces previously approved single values and keeps only current votes and indexes', () => {
   const previous = results.validateReviewedTagExtractionDecision(1n, [tag('duration', 30, 0), tag('region', 'us', 1)], [], {}, [true, true], false);
   const current = results.validateReviewedTagExtractionDecision(1n, [tag('duration', 90, 0), tag('region', 'us', 1)],
     [reject(tag('sms_verification', 'verified', 2))], {}, [true, true, false]);
-  assert.equal(typeof results.mergeTagExtractionDecision, 'function');
-  const merged = results.mergeTagExtractionDecision(previous, current);
-  assert.deepEqual(merged.tags.map(item => [item.name, item.value]), [['duration', 30], ['region', 'us']]);
+  assert.equal(typeof results.recordTagRepairAttempt, 'function');
+  const merged = results.recordTagRepairAttempt(previous, current);
+  assert.deepEqual(merged.tags.map(item => [item.name, item.value]), [['duration', 90], ['region', 'us']]);
   assert.deepEqual(merged.rejectedTags.map(item => [item.name, item.reasonCode]), [
-    ['sms_verification', 'review_rejected'], ['duration', 'tag_single_value_conflict'],
+    ['sms_verification', 'review_rejected'],
   ]);
-  assert.deepEqual(merged.reviewDecisions, [true, true, false, true]);
-  assert.deepEqual([...merged.tags, ...merged.rejectedTags].map(item => item.proposalIndex), [0, 1, 2, 3]);
+  assert.deepEqual(merged.reviewDecisions, [true, true, false]);
+  assert.deepEqual([...merged.tags, ...merged.rejectedTags].map(item => item.proposalIndex), [0, 1, 2]);
   const published = results.validateReviewedTagExtractionDecision(1n, merged.tags, merged.rejectedTags, {}, merged.reviewDecisions, merged.complete);
   assert.deepEqual(published.tags, merged.tags);
   assert.deepEqual(published.rejectedTags, merged.rejectedTags);
-  assert.deepEqual(published.reviewDecisions, [true, true, false, true]);
-  const conflict = published.rejectedTags.find(item => item.reasonCode === 'tag_single_value_conflict')!;
-  assert.equal(published.reviewDecisions?.[conflict.proposalIndex!], true);
+  assert.deepEqual(published.reviewDecisions, [true, true, false]);
 });
 
-test('unresolved earlier failures survive an incomplete repair in another dimension', () => {
+test('incomplete repair does not restore earlier accepted or rejected candidates', () => {
   const previous = decision([tag('duration', 30)], [reject(tag('region', 'us'))], false);
   const current = decision([tag('supported_client', 'codex')], [], false);
-  assert.equal(typeof results.mergeTagExtractionDecision, 'function');
-  const result = results.buildTagExtractionOutcome(results.mergeTagExtractionDecision(previous, current), [{ name: 'region', value: 'jp' }]);
+  assert.equal(typeof results.recordTagRepairAttempt, 'function');
+  const result = results.buildTagExtractionOutcome(results.recordTagRepairAttempt(previous, current), [{ name: 'region', value: 'jp' }]);
   assert.equal(result.outcome, 'partial_success');
-  assert.equal(result.failedCount, 1);
-  assert.ok(result.after.some(fact => fact.name === 'region' && fact.value === 'jp'));
+  assert.equal(result.failedCount, 0);
+  assert.equal(result.complete, false);
+  assert.deepEqual(result.after, [{ name: 'supported_client', value: 'codex' }]);
+  assert.equal(result.attempts?.[0]?.rejectedTags.length, 1);
+});
+
+test('previous completeness and feedback cannot override the current review', () => {
+  const previous = { ...decision([tag('region', 'us')]), reviewFeedback: '上一轮认为完整。' };
+  const current = { ...decision([tag('duration', 30)], [], false), reviewFeedback: '' };
+  const merged = results.recordTagRepairAttempt(previous, current);
+  assert.equal(merged.complete, false);
+  assert.equal(merged.reviewFeedback, '');
+  assert.equal(results.needsTagRepair(merged), true);
+  assert.equal(results.buildTagExtractionOutcome(merged, []).complete, false);
+  assert.deepEqual(merged.tags, current.tags);
+});
+
+test('internal feedback validation only checks string shape and length', () => {
+  assert.equal(results.validateReviewedTagExtractionDecision(1n, [], [], {}, [], true, '').reviewFeedback, '');
+  const feedback = '不需要程序理解反馈含义。'.repeat(20);
+  assert.equal(results.validateReviewedTagExtractionDecision(1n, [], [], {}, [], false, feedback).reviewFeedback, feedback);
+  for (const invalid of [null, 1, {}, 'x'.repeat(1001)]) {
+    assert.throws(() => results.validateReviewedTagExtractionDecision(1n, [], [], {}, [], true, invalid as string));
+  }
 });
 
 test('a complete correction resolves withdrawn candidates but preserves their original audit', () => {
   const previous = results.validateReviewedTagExtractionDecision(1n, [tag('bulk_purchase', 'supported', 0)],
-    [reject(tag('warranty', '卡密一次性，不退不换', 1))], {}, [true, false], true);
+    [reject(tag('supported_client', 'codex', 1))], {}, [true, false], true);
   const current = results.validateReviewedTagExtractionDecision(1n, [], [], {}, [], true);
-  const merged = results.mergeTagExtractionDecision(previous, current);
+  const merged = results.recordTagRepairAttempt(previous, current);
   const outcome = results.buildTagExtractionOutcome(merged, []);
-  assert.deepEqual(merged.tags, [tag('bulk_purchase', 'supported', 0)]);
+  assert.deepEqual(merged.tags, []);
   assert.deepEqual(merged.rejectedTags, []);
-  assert.deepEqual(merged.reviewDecisions, [true]);
-  assert.equal(outcome.outcome, 'updated');
+  assert.deepEqual(merged.reviewDecisions, []);
+  assert.equal(outcome.outcome, 'empty');
   assert.equal(outcome.failedCount, 0);
   assert.deepEqual(merged.attempts?.[0]?.rejectedTags, previous.rejectedTags);
   assert.deepEqual(merged.attempts?.[1]?.reviewDecisions, []);
 });
 
 test('confirmed complete empty correction can finish successfully after all candidates were withdrawn', () => {
-  const previous = decision([], [reject(tag('warranty', '卡密一次性，不退不换'))], false);
-  const result = results.buildTagExtractionOutcome(results.mergeTagExtractionDecision(previous, decision([])), []);
+  const previous = decision([], [reject(tag('supported_client', 'codex'))], false);
+  const result = results.buildTagExtractionOutcome(results.recordTagRepairAttempt(previous, decision([])), []);
   assert.equal(result.outcome, 'empty');
   assert.equal(result.failedCount, 0);
   assert.equal(result.attempts?.[0]?.rejectedTags.length, 1);
 });
 
 test('merging different products fails instead of transferring facts', () => {
-  assert.equal(typeof results.mergeTagExtractionDecision, 'function');
-  assert.throws(() => results.mergeTagExtractionDecision(decision([]), { ...decision([]), productId: 2n }));
+  assert.equal(typeof results.recordTagRepairAttempt, 'function');
+  assert.throws(() => results.recordTagRepairAttempt(decision([]), { ...decision([]), productId: 2n }));
 });
 
 test('repair is needed for missing or rejected facts but not harmless duplicate proposals', () => {
@@ -174,7 +216,7 @@ test('repair is needed for missing or rejected facts but not harmless duplicate 
 test('a repeated failed repair retains the latest program rejection and its true model vote', () => {
   const previous = results.validateReviewedTagExtractionDecision(1n, [], [reject(tag('unknown', 'yes', 0))], {}, [false]);
   const current = results.validateReviewedTagExtractionDecision(1n, [tag('unknown', 'yes', 0)], [], {}, [true]);
-  const merged = results.mergeTagExtractionDecision(previous, current);
+  const merged = results.recordTagRepairAttempt(previous, current);
   assert.deepEqual(merged.rejectedTags.map(item => item.reasonCode), ['tag_name_unknown']);
   assert.deepEqual(merged.reviewDecisions, [true]);
   assert.deepEqual(merged.attempts?.map(attempt => attempt.reviewDecisions), [[false], [true]]);
@@ -183,25 +225,28 @@ test('a repeated failed repair retains the latest program rejection and its true
 test('two full rounds keep every final candidate index and vote without audit truncation', () => {
   const round = (prefix: string) => results.validateReviewedTagExtractionDecision(1n,
     Array.from({ length: 100 }, (_, index) => tag('supported_client', `${prefix}${index}`, index)), [], {}, Array(100).fill(true));
-  const merged = results.mergeTagExtractionDecision(round('first'), round('second'));
+  const merged = results.recordTagRepairAttempt(round('first'), round('second'));
   const published = results.validateReviewedTagExtractionDecision(1n, merged.tags, merged.rejectedTags, {}, merged.reviewDecisions, merged.complete);
-  assert.equal(published.tags.length, 200);
-  assert.equal(published.tags.at(-1)?.proposalIndex, 199);
+  assert.equal(published.tags.length, 100);
+  assert.equal(published.tags.at(-1)?.proposalIndex, 99);
   const audit = results.buildTagExtractionOutcome(merged, []);
-  assert.equal(audit.acceptedTags.length, 200);
+  assert.equal(audit.acceptedTags.length, 100);
   assert.equal(audit.review?.mode, 'per_tag_binary');
-  assert.equal(audit.review?.mode === 'per_tag_binary' && audit.review.decisions?.length, 200);
+  assert.equal(audit.review?.mode === 'per_tag_binary' && audit.review.decisions?.length, 100);
   assert.equal(audit.attempts?.[0]?.tags.length, 100);
   assert.equal(audit.attempts?.[1]?.tags.length, 100);
   assert.throws(() => results.validateReviewedTagExtractionDecision(1n,
-    [...published.tags, tag('supported_client', 'overflow', 200)], [], {}, Array(201).fill(true)));
+    [...published.tags, tag('supported_client', 'overflow', 100)], [], {}, Array(101).fill(true)));
 });
 
 test('repair attempts redact rejected credentials without mutating the original snapshot', () => {
-  const previous = decision([], [reject(tag('unknown', 'password=hidden'))], false);
-  const merged = results.mergeTagExtractionDecision(previous, decision([tag('duration', 30)]));
+  const previous = { ...decision([], [reject(tag('unknown', 'password=hidden'))], false), reviewFeedback: 'password=old-secret' };
+  const merged = results.recordTagRepairAttempt(previous, { ...decision([tag('duration', 30)]), reviewFeedback: 'password=new-secret' });
   const audit = results.buildTagExtractionOutcome(merged, []);
   assert.equal(audit.attempts?.[0]?.rejectedTags[0]?.value, 'password=[redacted]');
   assert.equal(merged.attempts?.[0]?.rejectedTags[0]?.value, 'password=hidden');
   assert.ok(!JSON.stringify(audit).includes('hidden'));
+  assert.ok(!JSON.stringify(audit).includes('old-secret'));
+  assert.ok(!JSON.stringify(audit).includes('new-secret'));
+  assert.equal(merged.reviewFeedback, 'password=new-secret');
 });

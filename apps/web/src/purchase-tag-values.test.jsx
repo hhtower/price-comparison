@@ -23,17 +23,16 @@ test.each([
   expect(displayPurchaseTagText({ name, value })).toContain(text);
 });
 
-test('keeps bulk meanings distinct and preserves complete warranty conditions', () => {
+test('keeps bulk meanings distinct and rejects retired warranty conditions', () => {
   const labels = ['supported', 'required', 'bundle'].map(value => displayPurchaseTagText({ name: 'bulk_purchase', value }));
   expect(new Set(labels).size).toBe(3);
   const value = '购买后1小时内仅保首登，封号不保';
-  expect(displayPurchaseTagValue({ name: 'warranty', value })).toBe(value);
+  expect(displayPurchaseTagValue({ name: 'warranty_terms', value })).toBe('');
 });
 
-test('displays approved warranty wording without requiring coverage keywords', () => {
-  const value = '首次进入遇到异常，请在六十分钟内提交截图，我们会重新发放一份';
-  expect(displayPurchaseTagValue({ name: 'warranty', value })).toBe(value);
-  expect(displayPurchaseTagText({ name: 'warranty', value })).toBe(value);
+test.each(['质保 2.5 小时', '质保 12 天', '首登', '质保（期限未注明）'])('displays canonical warranty %s verbatim', value => {
+  expect(displayPurchaseTagValue({ name: 'usage_warranty', value })).toBe(value);
+  expect(displayPurchaseTagText({ name: 'usage_warranty', value })).toBe(value);
 });
 
 test.each([

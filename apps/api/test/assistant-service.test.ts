@@ -170,7 +170,7 @@ test('recommendation reads the complete reference pool once including alternativ
   const offers = Array.from({ length: 52 }, (_, index) => ({ ...fixture.offer,
     productId: String(index + 1), price: index < 50 ? '30.00' : '60.00',
     spec: index < 50 ? '需资格账号' : index === 50 ? '普通账号可用' : '需实名验证',
-    tags: [...fixture.offer.tags, { name: 'warranty', value: '保订阅30天，封号不保' }],
+    tags: [...fixture.offer.tags, { name: 'subscription_warranty', value: '质保 12 天' }],
   }));
   let reads = 0;
   const needs = { ...emptyShoppingNeeds(), product: 'ChatGPT Plus', requiredTags: [{ name: 'sms_verification', value: 'verified' }],
@@ -611,7 +611,7 @@ test('quote snapshots bound merchant text, preserve terms or mark omissions, and
 test('model explanation cannot replace the preferred price with a longer warranty claim', async () => {
   const fixture = shoppingFixture();
   const expensive = { ...fixture.offer, productId: '10', price: '50.00', tags: [...fixture.offer.tags,
-    { name: 'warranty', value: '保订阅30天，封号不保' }] };
+    { name: 'subscription_warranty', value: '质保 12 天' }] };
   const state = harness([{ intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
     (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => {
       assert.equal(input.candidates[0]!.productId, '9');
@@ -625,21 +625,34 @@ test('model explanation cannot replace the preferred price with a longer warrant
   assert.equal(state.saved?.text, '找到以下报价。');
 });
 
-test('membership evidence and complete warranty summary fit the card budget', async () => {
+test('membership evidence and deterministic warranty values fit the card budget', async () => {
   const fixture = shoppingFixture();
   fixture.offer.membershipKind = 'account';
-  fixture.offer.tags.push({ name: 'warranty', value: '保订阅30天，封号不保；需联系商家处理' });
+  fixture.offer.tags.push({ name: 'subscription_warranty', value: '质保 12 天' });
   const state = harness([
     { intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
     (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string; text: string }> }> }) => ({
       selections: [{ productId: '9', evidenceIds: input.candidates[0]!.evidence
-        .filter(item => !/会员商品特性|商家质保/u.test(item.text)).slice(0, 4).map(item => item.id) }],
+        .filter(item => !/会员商品特性|订阅保障/u.test(item.text)).slice(0, 4).map(item => item.id) }],
     }),
   ], '请推荐', fixture.needs, fixture.catalog);
   await state.run();
   assert.match(state.saved?.cards[0]?.reasons.join(' ') ?? '', /成品号/u);
-  assert.match(state.saved?.cards[0]?.caveats.join(' ') ?? '', /封号不保/u);
+  assert.match(state.saved?.cards[0]?.caveats.join(' ') ?? '', /订阅保障：质保 12 天/u);
   assert.ok(state.saved!.cards[0]!.evidenceIds.length <= 8);
+});
+
+test('warranty explanations use the final forms and never refer to retired supporting tags', async () => {
+  for (const text of ['什么是质保？', '订阅保障是什么意思？', '使用保障是什么意思？']) {
+    const state = harness([{ intent: 'explain', patch: {}, evidence: [], question: null, options: [] }], text);
+    await state.run();
+    assert.equal(state.saved?.kind, 'explanation');
+    assert.match(state.saved!.text, /质保 X 小时.*质保 X 天.*质保（期限未注明）/u);
+    assert.match(state.saved!.text, /商家说明/u);
+    assert.doesNotMatch(state.saved!.text, /warranty_terms|保障条款/u);
+    if (!text.startsWith('订阅保障')) assert.match(state.saved!.text, /首登仅指首次登录/u);
+    assert.equal(state.calls, 1);
+  }
 });
 
 test('recommendation retains the capability evidence captured by the initial query', async () => {
@@ -736,10 +749,12 @@ test('model cannot add free claims or references outside the actual candidate ev
   assert.equal(state.saved, null);
 });
 
-test('warranty scope and exclusions are shown even when the model selects only a price reason', async () => {
+test('both warranty values are shown even when the model selects only a price reason', async () => {
   const fixture = shoppingFixture();
   fixture.offer.tags.push(
-    { name: 'warranty', value: '购买后1小时仅保首登，不保封号' },
+    { name: 'subscription_warranty', value: '质保（期限未注明）' },
+    { name: 'usage_warranty', value: '首登' },
+    { name: 'warranty_terms', value: '退役条款不再展示' },
   );
   const state = harness([
     { intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
@@ -749,8 +764,10 @@ test('warranty scope and exclusions are shown even when the model selects only a
   ], '请推荐', fixture.needs, fixture.catalog);
   await state.run();
   const warnings = state.saved?.cards[0]?.caveats.join(' ') ?? '';
-  assert.match(warnings, /仅保首登/u);
-  assert.match(warnings, /不保封号/u);
+  assert.match(warnings, /使用保障：首登/u);
+  assert.match(warnings, /订阅保障：质保（期限未注明）/u);
+  assert.doesNotMatch(warnings, /退役条款/u);
+  assert.equal(state.saved?.cards[0]?.offer?.tags.some(tag => tag.name === 'warranty_terms'), false);
 });
 
 test('purpose-only requests without supporting product evidence continue with a question', async () => {

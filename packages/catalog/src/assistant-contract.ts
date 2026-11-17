@@ -1,4 +1,4 @@
-import { isCanonicalProductTag, PRODUCT_TAG_RULES } from './product-tag-policy.js';
+import { isCanonicalProductTag, isFilterableProductTag, PRODUCT_TAG_RULES } from './product-tag-policy.js';
 import { tagValueKey, type PurchaseTag, type TagValue } from './purchase-attributes.js';
 import { MEMBERSHIP_KINDS, MEMBERSHIP_GROUPS, type MembershipKind, type MembershipGroup } from './membership-policy.js';
 
@@ -247,6 +247,7 @@ export function validateNeedsPatch(value: unknown): NeedsPatch {
         const seen = new Map<string, Set<string>>();
         patch.requiredTags = list(entry, ASSISTANT_LIMITS.tagsMax, item => {
           const parsed = parseTag(item);
+          if (!isFilterableProductTag(parsed)) invalid('requiredTags');
           const key = tagValueKey(parsed.value);
           const values = seen.get(parsed.name);
           if (values && (values.has(key) || !PRODUCT_TAG_RULES[parsed.name].multiple)) invalid('conflicting tags');

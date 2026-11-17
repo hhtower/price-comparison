@@ -92,7 +92,7 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
       select count(*)::int batch_total, count(*) filter (where status='queued')::int batch_queued,
         count(*) filter (where status='running')::int batch_running, count(*) filter (where status='succeeded')::int batch_succeeded,
         count(*) filter (where status='failed')::int batch_failed, count(*) filter (where status='cancelled')::int batch_cancelled,
-        count(*) filter (where status='succeeded' and step='done' and stage is distinct from 'review')::int extraction_completed,
+        count(*) filter (where status='succeeded' and step='done' and stage is distinct from 'review' and stage is distinct from 'warranty')::int extraction_completed,
         count(*) filter (where status='queued' and step='request' and stage='review')::int review_queued,
         count(*) filter (where status='running' and step='request' and stage='review')::int review_running,
         count(*) filter (where status='succeeded' and stage='review')::int review_completed,

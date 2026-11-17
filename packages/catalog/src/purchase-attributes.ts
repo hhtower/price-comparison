@@ -25,7 +25,8 @@ export const PURCHASE_ATTRIBUTE_DEFINITIONS: PurchaseAttributeDefinition[] = [
   { name: 'bulk_purchase', label: '批量购买', quick: true, values: [
     { value: 'supported', label: '支持批量购买' }, { value: 'required', label: '需批量购买' }, { value: 'bundle', label: '打包出售' },
   ] },
-  { name: 'warranty', label: '售后保障', quick: false, values: [] },
+  { name: 'subscription_warranty', label: '订阅保障', quick: false, values: [] },
+  { name: 'usage_warranty', label: '使用保障', quick: false, values: [] },
 ];
 
 export function normalizePurchaseTag(tag: PurchaseTag): PurchaseTag[] {
@@ -43,11 +44,6 @@ export function purchaseTagLabel(tag: PurchaseTag): string {
   if (normalized.name === 'region' && /^[a-z]{2}$/u.test(value)) return countries.of(value.toUpperCase()) ?? value;
   return value;
 }
-export function purchaseWarrantyLabel(tags: readonly PurchaseTag[]): string {
-  const tag = tags.find(t => t.name === 'warranty');
-  return tag ? purchaseTagLabel(tag) : '';
-}
-
 export function parseCatalogSearch(input: string): ParsedCatalogSearch {
   let text = input.normalize('NFKC').toLowerCase();
   const tags: PurchaseTag[] = [];

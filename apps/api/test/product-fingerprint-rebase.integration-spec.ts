@@ -49,7 +49,7 @@ async function seed(db: Kysely<DatabaseSchema>, options: { stale?: boolean; pend
   }).returningAll().executeTakeFirstOrThrow();
   const legacyPayload = { id: '0', name, spec: '月卡', sourceData: { evidence: description }, shopText: projectShopText(p.source_data)!, category: 'AI' };
   const oldKey = createHash('sha256').update(JSON.stringify(legacyPayload)).digest('hex');
-  const fact = { name: 'warranty', value: 'covered', evidence: [{ path: 'sourceData.evidence', quote: '质保订阅30天' }] };
+  const fact = { name: 'warranty_terms', value: 'covered', evidence: [{ path: 'sourceData.evidence', quote: '质保订阅30天' }] };
   const features = { ...buildMembershipFeatures([fact], { ...p, shop_url: source.url, shop_protocol: null, shop_platform: source.platform }, [], 'top_up'),
     evidenceKey: options.stale ? 'stale-evidence-key' : oldKey, correctionReview: { reviewedFingerprint: old, note: 'keep audit' } };
   const textReview = { version: TEXT_REVIEW_VERSION, contentVersion: '5', fingerprint: old, source, textHash: rating.hash,

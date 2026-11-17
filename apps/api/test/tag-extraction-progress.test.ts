@@ -78,8 +78,11 @@ test(`${jobType} progress counts stored acceptance for completed members and its
       { status: 'queued', step: 'request', reference: null },
       { status: 'running', step: 'publish', reference: { tagStage: 'review' } },
       { status: 'succeeded', step: 'request', reference: null },
+      { status: 'succeeded', step: 'done', reference: { tagStage: 'repair' } },
     ] as const;
-    await db.insertInto('ai_job_batches').values(batches.map((batch, i) => ({
+    const jobBatches = jobType === 'tag_extraction'
+      ? [...batches, { status: 'succeeded', step: 'done', reference: { tagStage: 'warranty' } } as const] : batches;
+    await db.insertInto('ai_job_batches').values(jobBatches.map((batch, i) => ({
       job_id: job.id, batch_index: i, round: 0, product_ids: jsonb([String(inputId)]), product_count: 1,
       status: batch.status, step: batch.step, reference_snapshot: batch.reference ? jsonb(batch.reference) : null,
     }))).execute();
@@ -97,8 +100,8 @@ test(`${jobType} progress counts stored acceptance for completed members and its
     assert.deepEqual(p?.featureAcceptance, jobType === 'membership_features'
       ? { acceptedProducts: 1, rejectedProducts: 0 } : undefined);
     assert.equal(p?.failed, '0'); assert.equal(p?.requests.failedBatches, 1);
-    assert.equal(p?.requests.totalBatches, 11);
-    assert.deepEqual(p?.tagStages, { extractionCompleted: 2, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1 });
+    assert.equal(p?.requests.totalBatches, jobBatches.length);
+    assert.deepEqual(p?.tagStages, { extractionCompleted: 3, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1 });
     const standardizationJob = await db.insertInto('ai_jobs').values({
       total: 9n, model: 'mock', job_type: 'manual_full', status: 'running',
     }).returning('id').executeTakeFirstOrThrow();
@@ -117,7 +120,7 @@ test(`${jobType} progress counts stored acceptance for completed members and its
     const standardization = await getJobProgress(db, standardizationJob.id);
     assert.equal(standardization?.jobType, 'manual_full');
     assert.deepEqual(standardization?.standardizationStages, {
-      generationCompleted: 2, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
+      generationCompleted: 3, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
     });
     assert.equal(standardization?.tagStages, undefined);
     assert.equal(standardization?.results.classified, 0);

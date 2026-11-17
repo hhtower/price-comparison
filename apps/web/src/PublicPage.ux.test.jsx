@@ -309,15 +309,15 @@ test('shop search uses shop names and Escape dismisses only the condition popove
 test.each(['offers', 'shops'])('opening %s inherits list filters and restores them when reopened', async kind => {
   const manual = { name: 'region', value: 'us' };
   const initialParams = new URLSearchParams({ q: 'Plus 已接码', platform: 'openai', tag: JSON.stringify(manual) });
-  initialParams.append('tag', JSON.stringify({ name: 'warranty', value: '保订阅30天' }));
+  initialParams.append('tag', JSON.stringify({ name: 'subscription_warranty', value: '质保 12 天' }));
   window.history.replaceState(null, '', '/?' + initialParams);
-  const matching = { ...offers[0], name: 'Plus 匹配报价', shop: '匹配店', tags: [...tags, { name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: '保订阅30天' }] };
+  const matching = { ...offers[0], name: 'Plus 匹配报价', shop: '匹配店', tags: [...tags, { name: 'sms_verification', value: 'verified' }, { name: 'subscription_warranty', value: '质保 12 天' }] };
   const excluded = { ...offers[1], name: 'Plus 未匹配报价', shop: '未匹配店', tags: [] };
   vi.stubGlobal('fetch', vi.fn(async input => {
     const url = new URL(input, 'http://localhost');
     if (url.pathname !== '/api/catalog') return new Response(null, { status: 204 });
     requests.push(url);
-    const filtered = url.searchParams.getAll('tag').includes(JSON.stringify(manual)) && url.searchParams.getAll('tag').includes(JSON.stringify({ name: 'warranty', value: '保订阅30天' }));
+    const filtered = url.searchParams.getAll('tag').includes(JSON.stringify(manual)) && url.searchParams.getAll('tag').includes(JSON.stringify({ name: 'subscription_warranty', value: '质保 12 天' }));
     const selected = filtered ? [matching] : [matching, excluded];
     const entries = url.searchParams.get('detailKind') === 'shops'
       ? selected.map(offer => ({ key: offer.shopId, name: offer.shop, count: 1, offer })) : selected;
@@ -337,7 +337,7 @@ test.each(['offers', 'shops'])('opening %s inherits list filters and restores th
     expect(params.get('q')).toBe('plus');
     expect(params.getAll('tag')).toEqual(expect.arrayContaining([JSON.stringify(manual), '{"name":"sms_verification","value":"verified"}']));
     expect(params.getAll('tag')).toHaveLength(3);
-    expect(params.getAll('tag')).toContain(JSON.stringify({ name: 'warranty', value: '保订阅30天' }));
+    expect(params.getAll('tag')).toContain(JSON.stringify({ name: 'subscription_warranty', value: '质保 12 天' }));
     expect(params.get('platform')).toBe('openai');
     expect(params.get('standardProductId')).toBe('42');
     expect(params.get('currency')).toBe('CNY');
@@ -349,7 +349,7 @@ test.each(['offers', 'shops'])('opening %s inherits list filters and restores th
   fireEvent.click(dialog.getByRole('button', { name: kind === 'shops' ? '关闭商铺详情' : '关闭报价详情' }));
   expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Plus 已接码');
   expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('美区');
-  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('保订阅30天');
+  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('质保 12 天');
   fireEvent.click(screen.getByRole('button', { name: trigger }));
   const reopened = within(screen.getByRole('dialog'));
   expect(await reopened.findByText(kind === 'shops' ? '匹配店' : 'Plus 匹配报价')).toBeInTheDocument();

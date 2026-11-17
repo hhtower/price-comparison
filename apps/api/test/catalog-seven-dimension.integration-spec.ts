@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { setTimeout } from 'node:timers/promises';
 import test from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Migrator } from 'kysely/migration';
@@ -31,6 +30,7 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
   const migrator = new Migrator({ db, provider: migrationProvider, migrationTableSchema: schema });
   const initial = await (upgrade ? migrator.migrateTo('039_tag_workflow_20261114') : migrator.migrateToLatest());
   if (initial.error) throw initial.error;
+  if (upgrade) assert.ifError((await migrator.migrateToLatest()).error);
   const shop = await db.insertInto('shops').values({ name: 'Tag test', platform: 'test', url: 'https://tags.invalid' })
     .returning('id').executeTakeFirstOrThrow();
   const standard = await db.insertInto('standard_products').values({ name: 'Tag plan', platform: 'test', verification_state: 'verified' })
@@ -55,51 +55,6 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
   const cache = createCache();
   t.after(() => cache.disconnect());
   const service = new CatalogService(repository, cache);
-  if (upgrade) {
-    const hidden = { name: 'warranty', value: '不享受质保；如有问题请联系商家' };
-    await db.insertInto('product_tags').values({
-      product_id: source.id, name: hidden.name, value: jsonb(hidden.value),
-    }).execute();
-    const stored = await db.selectFrom('product_tags').selectAll().execute();
-    assert.deepEqual(await facts(), [], '038 hides structurally valid approved warranty text');
-    while (await publishNextCatalogChange(db)) {}
-    assert.deepEqual((await service.getFacets({})).tagFacets, []);
-    assert.deepEqual((await service.getCatalog({})).items[0]!.offers[0]!.tags, []);
-    const before = (await sql<{ version: bigint }>`select version from catalog_cache_versions`.execute(db)).rows[0]!.version;
-    const writer = await admin.connect();
-    await writer.query('begin');
-    await writer.query(`lock table "${schema}".catalog_cache_versions in row exclusive mode`);
-    const migration = migrator.migrateToLatest();
-    try {
-      let retrying = false;
-      for (let attempt = 0; attempt < 100; attempt++) {
-        const activity = await admin.query(`select 1 from pg_stat_activity
-          where application_name = $1 and wait_event = 'PgSleep'`, [schema]);
-        if (activity.rowCount) { retrying = true; break; }
-        await setTimeout(25);
-      }
-      assert.ok(retrying, '040 retries contention instead of waiting with a partial lock set');
-      await writer.query(`lock table "${schema}".products in row exclusive mode nowait`);
-    } finally {
-      await writer.query('rollback');
-      writer.release();
-    }
-    const result = await migration;
-    if (result.error) throw result.error;
-    assert.deepEqual(await facts(), [hidden], '040 restores existing approved text without retagging');
-    assert.deepEqual(await db.selectFrom('product_tags').selectAll().execute(), stored, 'stored tags are neither converted nor deleted');
-    assert.deepEqual((await sql`select tags from catalog_read_offers where product_id = ${source.id}`.execute(db)).rows,
-      [{ tags: [hidden] }]);
-    assert.deepEqual((await sql`select facet_tags::jsonb as facet_tags, product_count::int from catalog_read_facet_counts`.execute(db)).rows,
-      [{ facet_tags: [hidden], product_count: 1 }]);
-    assert.ok((await sql<{ version: bigint }>`select version from catalog_cache_versions`.execute(db)).rows[0]!.version > before);
-    t.mock.timers.tick(5000);
-    assert.ok((await service.getFacets({})).tagFacets.some(tag => tag.name === hidden.name && tag.value === hidden.value));
-    assert.deepEqual((await service.getCatalog({})).items[0]!.offers[0]!.tags, [hidden]);
-    const rollback = await migrator.migrateTo('039_tag_workflow_20261114');
-    assert.match(String(rollback.error), /cannot be downgraded/);
-    assert.deepEqual(await facts(), [hidden], 'refused rollback must not silently hide approved facts');
-  }
   const columns = await sql`select column_name from information_schema.columns
     where table_schema = current_schema() and table_name = 'catalog_read_offers' and column_name = 'warranty_days'`.execute(db);
   assert.deepEqual(columns.rows, []);
@@ -110,7 +65,7 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
     { name: 'sms_verification', value: 'unverified' }, { name: 'region', value: 'us' }, { name: 'region', value: 'jp' },
     { name: 'duration', value: 30 }, { name: 'access_channel', value: 'web' }, { name: 'supported_client', value: 'codex' },
     { name: 'subscription_override', value: '无' }, { name: 'bulk_purchase', value: 'supported' },
-    { name: 'warranty', value: '购买后1小时内仅保首登' },
+    { name: 'subscription_warranty', value: '质保 30 天' }, { name: 'usage_warranty', value: '首登' },
   ];
   const accepted: { name: string; value: unknown }[] = [
     ...valid, ...[0.5, 2, 90, 360, 365, { kind: 'range', min: 30, max: 90 }, { kind: 'min', days: 30 },
@@ -119,18 +74,10 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
       ...['min', 'max', 'approx'].map(kind => ({ kind, days: 36500 })),
     ].map(value => ({ name: 'duration', value })),
     ...Object.entries(PRODUCT_TAG_RULES).flatMap(([name, rule]) => (rule.values ?? []).map(value => ({ name, value }))),
-    { name: 'supported_client', value: 'x'.repeat(80) }, { name: 'warranty', value: 'x'.repeat(250) },
-    ...[
-      'covered', 'none', 'unknown', 'unspecified', '有质保', '有售后', '无售后', '无质保', '不保',
-      '不质保', '不提供售后', '不提供质保', '未说明', '质保未说明',
-      '不享受质保', '质保已过期', '本商品不提供售后。', '无售后，售出不退',
-      '本商品不保订阅30天', '质保30天，质保到期后不再免费换货',
-      '仅保首登1小时，后续无售后', '保订阅30天，封号不保',
-      '保修结束，支持退款', 'Warranty has expired; refund available',
-      'no warranty', 'warranty expired', '质保unknown', '无任何保障，仅保首登1小时',
-      '30 day warranty, bans not covered', '30 day warranty; no refund',
-      'no warranty\nreplacement within 1 hour', '商家说明', '联系卖家协商处理', '售后按实际情况处理',
-    ].map(value => ({ name: 'warranty', value })),
+    { name: 'supported_client', value: 'x'.repeat(80) },
+    ...['subscription_warranty', 'usage_warranty'].flatMap(name => [
+      '质保 48 小时', '质保 0.125 小时', '质保 1.3333 天', '质保 1e+21 天', '质保（期限未注明）',
+    ].map(value => ({ name, value }))),
   ];
   const rejected: { name: string; value: unknown }[] = [
     ...['30', '1 month', 0, -1, 36501, null, [], {}, true, { kind: 'range', min: 30, max: 30 },
@@ -152,6 +99,21 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
     { name: 'subscription_override', value: '有' }, { name: 'sms_verification', value: 'unknown' },
     { name: 'region', value: '美国' }, { name: 'access_channel', value: 'other' },
     { name: 'bulk_purchase', value: 'other' }, { name: 'warranty_days', value: '30' },
+    { name: 'subscription_warranty', value: '首登' },
+    ...['subscription_warranty', 'usage_warranty', 'warranty_terms'].flatMap(name => [
+      'covered', 'none', 'unknown', 'unspecified', '有质保', '有售后', '无售后', '无质保', '不保',
+      '不质保', '不提供售后', '不提供质保', '未说明', '质保未说明',
+      '不享受质保', '质保已过期', '本商品不提供售后。', '无售后，售出不退',
+      '本商品不保订阅30天', '质保30天，质保到期后不再免费换货',
+      '仅保首登1小时，后续无售后', '保订阅30天，封号不保',
+      '保修结束，支持退款', 'Warranty has expired; refund available',
+      'no warranty', 'warranty expired', '质保unknown', '无任何保障，仅保首登1小时',
+      '30 day warranty, bans not covered', '30 day warranty; no refund',
+      'no warranty\nreplacement within 1 hour', '商家说明', '联系卖家协商处理', '售后按实际情况处理',
+      '质保 0 天', '质保 -1 天', '质保 1e309 天', '质保 NaN 天', '质保 Infinity 天',
+      '质保 60 分钟', '质保 1 月', '质保 1 天；封号不保', 'x'.repeat(250),
+    ].map(value => ({ name, value }))),
+    ...['首登', '质保 30 天', '质保（期限未注明）'].map(value => ({ name: 'warranty_terms', value })),
     { name: 'access', value: 'dedicated' }, { name: 'delivery', value: 'account' },
     { name: '', value: 'text' }, { name: 'constructor', value: 'text' },
   ];

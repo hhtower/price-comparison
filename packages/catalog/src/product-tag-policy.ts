@@ -34,7 +34,7 @@ const REGION_ALIASES: Record<string, string[]> = {
 };
 const regions = new Map(Object.entries(REGION_ALIASES).flatMap(([code, values]) => [code, ...values].map(value => [value, code])));
 
-export interface TagRule { values?: readonly string[]; pattern?: string; multiple?: boolean; valueType?: 'duration' | 'text' }
+export interface TagRule { values?: readonly string[]; pattern?: string; multiple?: boolean; valueType?: 'duration' | 'text'; filterable?: false }
 export const PRODUCT_TAG_RULES: Record<string, TagRule> = {
   sms_verification: { values: ['verified', 'unverified'] },
   region: { values: [...Object.keys(REGION_ALIASES), 'eg', 'bd', 'it', 'es', 'pl', 'pt', 'se', 'no', 'fi', 'ch', 'at', 'be', 'ie', 'nz', 'ae', 'sa', 'il', 'kz', 'pe', 'ke', 'ee'], multiple: true },
@@ -43,7 +43,8 @@ export const PRODUCT_TAG_RULES: Record<string, TagRule> = {
   supported_client: { valueType: 'text', multiple: true },
   subscription_override: { values: ['无'] },
   bulk_purchase: { values: ['supported', 'required', 'bundle'] },
-  warranty: { valueType: 'text' },
+  subscription_warranty: { valueType: 'text' },
+  usage_warranty: { valueType: 'text' },
 };
 
 /** Check comparable storage constraints only; tag meaning is decided by the reviewer. */
@@ -54,7 +55,16 @@ export function isCanonicalProductTag(tag: { name: string; value: unknown }): ta
   if (typeof tag.value !== 'string' || !tag.value.trim() || tag.value !== tag.value.trim() || tag.value.length > 250) return false;
   if (rule.values && !rule.values.includes(tag.value)) return false;
   if (tag.name === 'supported_client' && (tag.value !== tag.value.toLowerCase() || tag.value.length > 80)) return false;
+  if (tag.name === 'subscription_warranty' || tag.name === 'usage_warranty') {
+    if (tag.value === '质保（期限未注明）' || (tag.name === 'usage_warranty' && tag.value === '首登')) return true;
+    const duration = /^质保 (\d+(?:\.\d+)?(?:e[+-]?\d+)?) (?:小时|天)$/u.exec(tag.value)?.[1];
+    return duration !== undefined && Number.isFinite(Number(duration)) && Number(duration) > 0;
+  }
   return true;
+}
+
+export function isFilterableProductTag(tag: { name: string; value: unknown }): tag is PurchaseTag {
+  return isCanonicalProductTag(tag) && PRODUCT_TAG_RULES[tag.name]!.filterable !== false;
 }
 
 /** Normalize current values only; retired tag names never map to a new dimension. */
@@ -62,7 +72,9 @@ export function normalizeProductTag(tag: PurchaseTag): PurchaseTag[] | undefined
   if (!Object.hasOwn(PRODUCT_TAG_RULES, tag.name)) return undefined;
   let value = tag.value;
   if (typeof value === 'string') {
-    value = (tag.name === 'warranty' ? value : value.normalize('NFKC')).replace(/\s+/gu, ' ').trim();
+    // Free text is an exact stored filter value; display and query must not rewrite it.
+    if (PRODUCT_TAG_RULES[tag.name]!.valueType !== 'text' || tag.name === 'supported_client') value = value.normalize('NFKC').replace(/\s+/gu, ' ');
+    value = value.trim();
     if (tag.name === 'region') value = regions.get(value.toLowerCase()) ?? value.toLowerCase();
     if (tag.name === 'supported_client' || tag.name === 'access_channel') value = value.toLowerCase();
   }

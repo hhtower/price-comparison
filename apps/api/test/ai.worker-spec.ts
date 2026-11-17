@@ -71,7 +71,6 @@ test('the extraction stage preserves every schema-valid candidate for independen
     { name: 'supported_client', value: 'codex' },
     { name: 'access_channel', value: 'reverse_proxy' },
     { name: 'access_channel', value: 'web' },
-    { name: 'warranty', value: '质保30天' },
   ];
   const call = (items: unknown) => createOpenAiModelCall({ getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', inputs: [payload] }) } as never,
     { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock' }, async (_url, init) => {

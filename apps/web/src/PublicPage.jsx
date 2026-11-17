@@ -10,7 +10,8 @@ import { usePageAnalytics } from './usePageAnalytics.js';
 import { trackUsage } from './analytics.js';
 import { keepPreviousData, QueryClient, QueryClientProvider, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
-import { normalizePurchaseTag, parseCatalogSearch, purchaseWarrantyLabel, tagValueKey, PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
+import { normalizePurchaseTag, parseCatalogSearch, tagValueKey, PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
+import { isFilterableProductTag } from '@price-comparison/catalog/product-tag-policy';
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import { DurationFilterOptions } from './components/PurchasePeriodFilters.jsx';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
@@ -102,7 +103,7 @@ function readCatalogLocation(params = new URLSearchParams(window.location.search
   const tags = params.getAll('tag').slice(0, 50).flatMap(value => {
     try {
       const tag = JSON.parse(value);
-      const normalized = normalizePurchaseTag(tag);
+      const normalized = normalizePurchaseTag(tag).filter(isFilterableProductTag);
       if (!normalized.length) invalidFilters = true;
       return normalized.map(tagKey);
     } catch { invalidFilters = true; return []; }
@@ -197,7 +198,7 @@ const PLATFORM_LABELS = {
   ...Object.fromEntries(CATALOG_PLATFORMS.map(group => [group.id, group.label])), other: '其它',
 };
 
-const TAG_GROUPS = Object.entries(PURCHASE_GUIDE_FIELDS).filter(([name]) => name !== 'supported_client').map(([name, field]) => ({
+const TAG_GROUPS = Object.entries(PURCHASE_GUIDE_FIELDS).filter(([name, field]) => name !== 'supported_client' && field.rule.filterable !== false).map(([name, field]) => ({
   id: name, label: name === 'access_channel' ? '使用入口/支持工具' : field.label,
   names: name === 'access_channel' ? ['access_channel', 'supported_client'] : [name],
 }));
@@ -388,9 +389,7 @@ function trapDialogFocus(event) {
 const COMPARISON_FACTS = [...TAG_GROUPS.map(group => [group.id, group.label]), ['settlement_quantity', '起购数量']];
 function offerFact(offer, name) {
   if (name === 'settlement_quantity') return offer.settlementQuantity > 1 ? `${offer.settlementQuantity}件起购` : '';
-  if (name === 'warranty') return purchaseWarrantyLabel(offer.tags || []);
-  const facts = uniqueTags([offer.tags]).filter(tag => tag.value && !['unknown', 'unspecified'].includes(tag.value)
-    && (tag.name === name || name === 'access_channel' && tag.name === 'supported_client'));
+  const facts = uniqueTags([offer.tags]).filter(tag => tag.name === name || name === 'access_channel' && tag.name === 'supported_client');
   return [...new Set(facts.map(displayPurchaseValue))].join(' · ');
 }
 

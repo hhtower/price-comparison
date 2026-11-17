@@ -774,13 +774,42 @@ test('旧review完整性不冒充当前完整性，失败带实际diff时不声�
   expect(audit).not.toHaveTextContent('本次未写入');
 });
 
-test('两轮修正历史保留各轮候选、布尔票和完整性，不按最终合并索引反推', async () => {
+test('全量修正只展示最终采纳标签和复核意见，首轮采纳留在历史中', async () => {
+  const initial = { name: 'duration', value: 30, proposalIndex: 0, evidence: [] };
+  const repaired = { name: 'region', value: 'US', proposalIndex: 0, evidence: [] };
+  const feedback = '原文未承诺使用期限，不应保留首轮期限标签。';
+  const audit = await openAudit({ member: { output: {
+    outcome: 'updated', complete: true, successfulCount: 1, failedCount: 0,
+    acceptedTags: [repaired], rejectedTags: [],
+    review: { mode: 'per_tag_binary', decisions: [true], feedback },
+    attempts: [
+      { round: 1, tags: [initial], rejectedTags: [], complete: false, reviewDecisions: [true] },
+      { round: 2, tags: [repaired], rejectedTags: [], complete: true, reviewDecisions: [true] },
+    ],
+  } }, batches: [] });
+  expect(within(audit).getByText(`复核意见：${feedback}`)).toBeInTheDocument();
+  const accepted = within(audit).getByText('通过标签与证据').closest('section');
+  expect(accepted).toHaveTextContent('地区：美区');
+  expect(accepted).not.toHaveTextContent('使用期限');
+  await userEvent.setup().click(within(audit).getByText('提取与修正历史'));
+  expect(within(audit).getByRole('table', { name: '第 1 轮候选判定' })).toHaveTextContent('duration = 30');
+});
+
+test.each([undefined, ''])('没有复核意见时不显示空标题（%s）', async feedback => {
+  const audit = await openAudit({ member: { output: {
+    outcome: 'empty', acceptedTags: [], rejectedTags: [],
+    review: { mode: 'per_tag_binary', decisions: [], feedback },
+  } }, batches: [] });
+  expect(audit).not.toHaveTextContent('复核意见：');
+});
+
+test('两轮修正历史保留各轮候选、布尔票和完整性，不按最终索引反推', async () => {
   const initial = { name: 'duration', value: 30, proposalIndex: 0, evidence: [] };
   const repaired = { name: 'region', value: 'US', proposalIndex: 0, evidence: [] };
   const audit = await openAudit({ member: { output: {
-    outcome: 'partial_success', successfulCount: 1, failedCount: 1, complete: false,
-    acceptedTags: [initial], rejectedTags: [{ ...repaired, proposalIndex: 1, reasonCode: 'review_rejected' }],
-    review: { mode: 'per_tag_binary', decisions: [true, false] },
+    outcome: 'failed', successfulCount: 0, failedCount: 1, complete: false,
+    acceptedTags: [], rejectedTags: [{ ...repaired, reasonCode: 'review_rejected' }],
+    review: { mode: 'per_tag_binary', decisions: [false] },
     attempts: [
       { round: 1, tags: [initial], rejectedTags: [], complete: false, reviewDecisions: [true] },
       { round: 2, tags: [], rejectedTags: [{ ...repaired, reasonCode: 'review_rejected' }], complete: false, reviewDecisions: [false] },
@@ -809,14 +838,14 @@ test('两轮修正历史保留各轮候选、布尔票和完整性，不按最�
   expect(within(audit).getByText('修正提取批次 #22 详情')).toBeInTheDocument();
 });
 
-test.each([true, false])('批次按本轮索引显示duration通过、warranty拒绝，修正索引0不关联最终duration（批次票：%s）', async recorded => {
+test.each([true, false])('批次保留首轮投票，修正结果不继承首轮duration（批次票：%s）', async recorded => {
   const duration = { name: 'duration', value: 30, proposalIndex: 0, evidence: [] };
   const warranty = { name: 'warranty', value: 'covered', proposalIndex: 1, evidence: [] };
   const repaired = { ...warranty, proposalIndex: 0 };
   const audit = await openAudit({ member: { output: {
-    outcome: 'partial_success', successfulCount: 1, failedCount: 1, complete: false,
-    acceptedTags: [duration], rejectedTags: [{ ...warranty, reasonCode: 'review_rejected' }],
-    review: { mode: 'per_tag_binary', decisions: [true, false] },
+    outcome: 'failed', successfulCount: 0, failedCount: 1, complete: false,
+    acceptedTags: [], rejectedTags: [{ ...repaired, reasonCode: 'review_rejected' }],
+    review: { mode: 'per_tag_binary', decisions: [false] },
     attempts: [
       { round: 1, tags: [duration], rejectedTags: [{ ...warranty, reasonCode: 'review_rejected' }], complete: false, reviewDecisions: [true, false] },
       { round: 2, tags: [], rejectedTags: [{ ...repaired, reasonCode: 'review_rejected' }], complete: false, reviewDecisions: [false] },
@@ -853,7 +882,7 @@ test.each([true, false])('批次按本轮索引显示duration通过、warranty�
   expect(extraction).toHaveTextContent('LLM 对该标签判定为否');
 });
 
-test.each(['missing-round', 'duplicate-attempt', 'missing-attempt'])('修正轮关联不确定时不借用最终合并索引及投票（%s）', async scenario => {
+test.each(['missing-round', 'duplicate-attempt', 'missing-attempt'])('修正轮关联不确定时不借用最终索引及投票（%s）', async scenario => {
   const repaired = { name: 'warranty', value: 'covered', proposalIndex: 0, evidence: [] };
   const attempt = { round: 2, tags: [], rejectedTags: [{ ...repaired, reasonCode: 'review_rejected' }], complete: false, reviewDecisions: [false] };
   const audit = await openAudit({ member: { output: {
@@ -907,7 +936,9 @@ test('不完整但未拒绝候选仍显示部分成功和零失败数，并展�
   expect(audit).not.toHaveTextContent('未识别原因');
 });
 
-test.each(['repair', 'review'])('在途批次读取冻结的修正阶段（%s）', async stage => {
+test.each([
+  ['warranty', '质保判定'], ['repair', '修正提取'], ['review', '修正复核'],
+])('在途批次读取冻结阶段（%s）', async (stage, title) => {
   installApi({ state: 'running', handle(call, job) {
     if (call.path.endsWith('/jobs/8')) return Response.json({ job, progress: { rawProductCount: 1 }, currentBatches: [{
       batch_index: 2, step: 'request', product_count: 1, reference_snapshot: { tagStage: stage, tagRepairRound: 1 },
@@ -917,7 +948,7 @@ test.each(['repair', 'review'])('在途批次读取冻结的修正阶段（%s）
   render(<TagExtractionPanel shops={shops} />);
   await user.click(await screen.findByRole('button', { name: '查看标签任务 #8' }));
   const info = screen.getByText('任务信息').closest('details');
-  expect(info).toHaveTextContent(`在途批次 3 · ${stage === 'repair' ? '修正提取' : '修正复核'}`);
+  expect(info).toHaveTextContent(`在途批次 3 · ${title}`);
 });
 
 const textReview = {
@@ -1286,23 +1317,28 @@ test('提取和复核请求分别展示用量，阶段进度按批次计数', as
   expect(screen.getByText(/阶段未记录 · 第 3 批/)).toHaveTextContent('耗时 不可用 · token 用量不可用');
 });
 
-test('范围预览显示正常两阶段调用数并沿用费用确认', async () => {
+test.each([
+  ['tag_extraction', '标签', 2],
+  ['membership_features', '特性', 2],
+  ['text_review', '文案', 1],
+])('范围预览按任务类型显示正常调用数并沿用费用确认（%s）', async (taskKind, noun, callsPerBatch) => {
   installApi({ handle(call) {
     if (call.path.endsWith('/preview')) return Response.json({ model: 'mock', previewDigest: 'c'.repeat(64), counts: { selected: 3, eligible: 3, requestBatches: 3 } });
   } });
-  const user = userEvent.setup(); render(<TagExtractionPanel shops={shops} />);
-  await user.click(screen.getByRole('button', { name: '新建标签任务' }));
+  const user = userEvent.setup(); render(<TagExtractionPanel shops={shops} taskKind={taskKind} />);
+  await user.click(screen.getByRole('button', { name: `新建${noun}任务` }));
   await user.type(screen.getByRole('textbox', { name: /商品 ID/ }), '3,4,5');
-  await user.click(screen.getByRole('button', { name: '预览标签范围' }));
-  const create = await screen.findByRole('button', { name: '确认创建标签任务' });
+  await user.click(screen.getByRole('button', { name: `预览${noun}范围` }));
+  const create = await screen.findByRole('button', { name: `确认创建${noun}任务` });
   const dialog = screen.getByRole('dialog');
-  expect(within(dialog).getByText('预计模型调用（正常两阶段）').nextElementSibling).toHaveTextContent(/^6$/);
-  expect(within(dialog).getByText(/提取 LLM → 复核 LLM → 原子发布/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/每个初始批次通常调用模型 2 次/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/一次提取、一次批量复核/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/每批可包含多个商品及其多个候选标签/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/逐标签只判 YES\/NO，不纠正或补充标签/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/提取和复核两个阶段均可能产生费用/)).toBeInTheDocument();
+  expect(within(dialog).getByText(taskKind === 'tag_extraction' ? '普通标签预计调用' : '预计模型调用').nextElementSibling).toHaveTextContent(new RegExp(`^${3 * callsPerBatch}$`));
+  expect(dialog).toHaveTextContent(`通常调用模型 ${callsPerBatch} 次`);
+  if (taskKind === 'tag_extraction') {
+    expect(dialog).toHaveTextContent('普通标签提取 → 复核');
+    expect(dialog).toHaveTextContent('AI 会员另按每件商品单独调用质保判定');
+    expect(dialog).toHaveTextContent('非 AI 会员不发起质保请求');
+  } else expect(dialog).not.toHaveTextContent('质保判定');
+  expect(dialog).not.toHaveTextContent('整理保障原文');
   expect(create).toBeDisabled();
   await user.click(within(dialog).getByRole('checkbox', { name: /我确认可能消耗模型额度/ }));
   expect(create).toBeEnabled();
@@ -1392,9 +1428,10 @@ test('批量新建任务明确全站选取范围且不等待证据预览', async
   expect(calls.some(call => call.path.endsWith('/preview'))).toBe(false);
   expect(within(dialog).getByText(/资料和流水线版本未变化时，已完成的部分采纳及待复核结果不会自动重新入队/)).toBeInTheDocument();
   expect(within(dialog).queryByText(/请勾选商品后定向重试/)).not.toBeInTheDocument();
-  expect(within(dialog).getByText(/提取和复核两个阶段均可能产生费用/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/一次提取、一次批量复核/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/逐标签只判 YES\/NO，不纠正或补充标签/)).toBeInTheDocument();
+  expect(dialog).toHaveTextContent('模型调用可能消耗额度或产生费用');
+  expect(dialog).toHaveTextContent('普通标签提取 → 复核，每批通常调用模型 2 次');
+  expect(dialog).toHaveTextContent('AI 会员另按每件商品单独调用质保判定');
+  expect(dialog).toHaveTextContent('最多修正一轮并再次复核，可能增加 2 次调用');
   await user.click(within(dialog).getByRole('checkbox', { name: /我确认可能消耗模型额度/ }));
   await user.click(create);
   await screen.findByText('标签任务 #9');

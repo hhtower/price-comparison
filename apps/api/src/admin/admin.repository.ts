@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
+import { isCanonicalProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 import { tagValueKey, type TagValue } from '@price-comparison/catalog/purchase-attributes';
 import { validateProductTags } from '../products/product-tags.js';
 import { jsonb } from '../database/types.js';
@@ -373,6 +373,7 @@ export class AdminRepository {
       .innerJoin('products as tagged_products', 'tagged_products.id', 'product_tags.product_id')
       .select([sql<bigint>`min(product_tags.id)`.as('id'), sql<bigint>`min(product_tags.product_id)`.as('product_id'), 'product_tags.name', 'product_tags.value', sql<bigint>`count(*)`.as('product_count')])
       .where('tagged_products.deleted_at', 'is', null)
+      .where('product_tags.name', 'in', Object.keys(PRODUCT_TAG_RULES).filter(name => PRODUCT_TAG_RULES[name]!.filterable !== false))
       .groupBy(['product_tags.name', 'product_tags.value'])
       .orderBy('product_tags.name', 'asc')
       .orderBy('product_tags.value', 'asc')

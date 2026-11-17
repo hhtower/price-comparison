@@ -1,15 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeProductTag } from '@price-comparison/catalog/product-tag-policy';
-import { parseCatalogSearch, normalizePurchaseTag, purchaseTagLabel, purchaseWarrantyLabel, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
+import { parseCatalogSearch, normalizePurchaseTag, purchaseTagLabel, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
 
-test('warranty displays the saved text without semantic interpretation or placeholder conversion', () => {
-  const text = '购买后1小时内仅保首登；自行改密不保';
-  assert.equal(purchaseWarrantyLabel([{ name: 'warranty', value: text }]), text);
-  for (const value of ['none', 'unknown', 'covered', '无售后', '有质保', '到手有问题可联系处理']) {
-    assert.equal(purchaseWarrantyLabel([{ name: 'warranty', value }]), value);
+test('warranty displays deterministic values without interpretation or unit conversion', () => {
+  for (const value of ['质保 48 小时', '质保 1.5 天', '首登', '质保（期限未注明）']) {
+    assert.equal(purchaseTagLabel({ name: 'usage_warranty', value }), value);
   }
-  assert.equal(purchaseWarrantyLabel([{ name: 'warranty_days', value: '30' }]), '');
+  for (const value of ['none', 'unknown', 'covered', '无售后', '有质保', '到手有问题可联系处理']) {
+    assert.equal(purchaseTagLabel({ name: 'usage_warranty', value }), '');
+  }
+  assert.equal(purchaseTagLabel({ name: 'warranty_terms', value: '购买后1小时内仅保首登；自行改密不保' }), '');
+  assert.equal(purchaseTagLabel({ name: 'warranty_days', value: '30' }), '');
 });
 
 test('normalization only accepts current fields and explicit negative override', () => {

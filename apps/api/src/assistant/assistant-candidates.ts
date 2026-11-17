@@ -2,7 +2,7 @@ import { validateShoppingNeeds, type ShoppingNeeds } from '@price-comparison/cat
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
-import { purchaseTagLabel, purchaseWarrantyLabel, tagValueKey, type TagValue } from '@price-comparison/catalog/purchase-attributes';
+import { purchaseTagLabel, tagValueKey, type TagValue } from '@price-comparison/catalog/purchase-attributes';
 import { isCanonicalProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import type { CatalogOffer, PublicCatalogProduct } from '../catalog/catalog.repository.js';
@@ -88,7 +88,7 @@ function purchaseFacets(candidate: AssistantCandidate): Map<string, Set<string>>
   ]));
   for (const tag of candidate.offer.tags) {
     const field = PURCHASE_GUIDE_FIELDS[tag.name];
-    if (!field || !isCanonicalProductTag(tag)) continue;
+    if (!field || !isCanonicalProductTag(tag) || field.rule.filterable === false) continue;
     const values = facets.get(field.collectionGroup) ?? new Set<string>();
     values.add(JSON.stringify([tag.name, typeof tag.value === 'string'
       ? tag.value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase() : tagValueKey(tag.value)]));
@@ -196,17 +196,13 @@ export function candidateEvidence(candidate: AssistantCandidate): Array<{ id: st
   });
   const tags = offer.tags.filter(isCanonicalProductTag).sort((a, b) => compareText(a.name, b.name)
     || compareText(tagValueKey(a.value), tagValueKey(b.value)));
-  const conflictingWarranty = tags.some(tag => tag.name === 'warranty'
-    && tags.some(other => other.name === tag.name && other.value !== tag.value));
-  const warranty = conflictingWarranty ? '资料存在冲突，请在商品详情核实' : purchaseWarrantyLabel(tags);
   const facts = [
     fact('price', `采集参考价为 ${offer.price ?? '未知'} ${offer.currency}，结算数量为 ${offer.settlementQuantity} 件；实际价格以商家为准。`),
     fact('availability', `采集于 ${offer.capturedAt}；采集时库存：${offer.inStock ? '有货' : '无货'}。同步存在时间差，实际价格与库存请向商家确认。`),
     ...(offer.spec.trim() ? [fact('spec', `商品规格与购买条件：${offer.spec}`)] : []),
     ...(isMembershipProduct(candidate.standardProduct) && offer.membershipKind ? [fact('membershipKind',
       `会员商品特性：${membershipKindLabel(offer.membershipKind)}。`)] : []),
-    ...(warranty ? [fact('warranty', `商家质保说明：${warranty}；具体限制以该报价的售后条款为准。`)] : []),
-    ...tags.filter(tag => tag.name !== 'warranty').map(tag => {
+    ...tags.map(tag => {
       const label = PURCHASE_GUIDE_FIELDS[tag.name]?.label ?? tag.name;
       return fact(`tag:${tag.name}:${tagValueKey(tag.value)}`, `${label}：${purchaseTagLabel(tag)}`);
     }),

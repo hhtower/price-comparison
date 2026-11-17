@@ -34,7 +34,7 @@ before(async () => {
 after(async () => { await db?.destroy(); if (schema) await admin.query(`drop schema "${schema}" cascade`); await admin?.end(); delete process.env.PG_SCHEMA; });
 async function fixture(count = 1) {
   const shop = await db.insertInto('shops').values({ platform: 'test', name: 'test', url: `https://test.invalid/${Math.random()}`, enabled: true }).returningAll().executeTakeFirstOrThrow();
-  const payload = { name: 'ChatGPT Free 成品账号', spec: '1个月', sourceData: {},
+  const payload = { name: 'ChatGPT Free 成品账号', spec: '1个月', sourceData: {}, warrantyEligible: false,
     shopSource: { url: shop.url, protocol: shop.protocol, platform: shop.platform } };
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   const products = [];
@@ -60,6 +60,73 @@ async function completeTagJob(jobId: bigint) {
  await db.updateTable('ai_job_input_members').set({status:'classified',output:jsonb({outcome:'empty',rejectedTags:[]})}).where('job_id','=',jobId).execute();
  await db.updateTable('ai_jobs').set({status:'succeeded',phase:'completed'}).where('id','=',jobId).execute();
 }
+
+test('nonmember tag jobs skip warranty regardless of membership-looking title', async () => {
+ const f = await fixture();
+ const job = await db.transaction().execute(tx => createTagJob(tx, { productIds: [f.inputId], model: 'mock' }));
+ const batch = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', job.id).executeTakeFirstOrThrow();
+ assert.equal((batch.reference_snapshot as any).tagStage, 'extract');
+ assert.ok((job.pipeline_versions as any).tagWarrantyPrompt);
+ assert.equal(batch.step, 'request');
+ assert.equal(batch.request_budget_used, 0);
+ await f.repo.prepareBatch(batch.id);
+ const inputs = await f.repo.getTagExtractionBatchInputs(batch.id);
+ assert.equal(inputs.stage, 'extract');
+ assert.equal(inputs.warrantyLabels, undefined);
+ assert.equal(inputs.proposals, undefined);
+});
+
+test('membership eligibility splits identical text from nonmembers and uses singleton warranty requests without a duration gate', async () => {
+ const f = await fixture(3);
+ await db.updateTable('products').set({ spec: '1小时',
+  content_fingerprint: productContentFingerprint({ ...f.payload, spec: '1小时', sourceCategory: '' }),
+ }).where('id', 'in', f.products.map(p => p.id)).execute();
+ const paid = await db.insertInto('standard_products').values({
+  canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus',
+  name: 'AI membership', verification_state: 'verified',
+ }).returning('id').executeTakeFirstOrThrow();
+ await db.updateTable('standard_product_members').set({ standard_product_id: paid.id })
+  .where('product_id', 'in', f.products.slice(0, 2).map(p => p.id)).execute();
+ const productIds = f.products.map(p => p.id);
+ const job = await db.transaction().execute(tx => createTagJob(tx, { productIds, model: 'mock' }));
+ const batches = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', job.id).execute();
+ assert.equal(batches.length, 2);
+ const warranty = batches.find(b => (b.reference_snapshot as any).tagStage === 'warranty')!;
+ const ordinary = batches.find(b => (b.reference_snapshot as any).tagStage === 'extract')!;
+ assert.deepEqual(warranty.product_ids, [String(f.inputId)]);
+ assert.equal(warranty.product_count, 2n);
+ assert.deepEqual(ordinary.product_ids, [String(f.products[2]!.id)]);
+ const request = await f.repo.getTagExtractionBatchInputs(warranty.id);
+ assert.equal(request.stage, 'warranty');
+ assert.equal((request.inputs[0]!.payload as any).warrantyEligible, true);
+ assert.equal(request.inputs[0]!.name, f.products[0]!.name, 'eligibility comes from identity, not the Free title');
+ await f.repo.prepareBatch(warranty.id);
+});
+
+for (const initiallyPaid of [false, true]) test(`identity scope change from ${initiallyPaid ? 'paid' : 'free'} invalidates completed coverage and all-pending selection`, async () => {
+ const f = await fixture();
+ const assignment = await db.selectFrom('standard_product_members').select('standard_product_id')
+  .where('product_id', '=', f.inputId).executeTakeFirstOrThrow();
+ await db.updateTable('standard_products').set({ canonical_tier: initiallyPaid ? 'plus' : 'free' })
+  .where('id', '=', assignment.standard_product_id).execute();
+ await db.updateTable('ai_jobs').set({ status: 'cancelled' }).execute();
+ const completed = await db.transaction().execute(tx => createTagJob(tx, { productIds: [f.inputId], model: 'mock' }));
+ await db.updateTable('ai_jobs').set({ status: 'succeeded', phase: 'completed' }).where('id', '=', completed.id).execute();
+ await db.updateTable('ai_job_input_members').set({ status: 'classified',
+  output: jsonb({ outcome: 'updated', rejectedTags: [] }),
+ }).where('job_id', '=', completed.id).execute();
+ const history = () => readAiTaskQueue(db, { jobType: 'tag_extraction', status: 'all', scopeShopId: f.products[0]!.shop_id });
+ assert.equal((await history()).summary.coveredProducts, 1);
+ await db.updateTable('standard_products').set({ canonical_tier: initiallyPaid ? 'free' : 'plus' })
+  .where('id', '=', assignment.standard_product_id).execute();
+ assert.equal((await history()).summary.coveredProducts, 0);
+ const pending = await createManualTagJob(db, { allPending: true, model: 'mock', requestId: randomUUID() });
+ await preparePending(pending.id);
+ const member = await db.selectFrom('ai_job_input_members').select('payload').where('job_id', '=', pending.id)
+  .where('product_id', '=', f.inputId).executeTakeFirstOrThrow();
+ assert.equal((member.payload as any).warrantyEligible, !initiallyPaid);
+ await completeTagJob(pending.id);
+});
 
 test('standardization status excludes a newer disabled tag job', async () => {
  const previous = process.env.AI_TAG_EXTRACTION_ENABLED;
@@ -245,7 +312,7 @@ test('all-pending and historical tag queue coverage use the latest current audit
    }
  }
  await db.deleteFrom('ai_job_input_members').where('job_id', '=', f.job.id).where('product_id', 'in', [ids[21]!, ids[24]!]).execute();
- await db.insertInto('product_tags').values(tagRows({ product_id: ids[21]!, name: 'warranty', value: 'covered' })).execute();
+ await db.insertInto('product_tags').values(tagRows({ product_id: ids[21]!, name: 'warranty_terms', value: 'covered' })).execute();
  for (const status of ['unfinished', 'attention', 'all']) {
    const queue = await readAiTaskQueue(db, { jobType: 'tag_extraction', scopeShopId: f.products[0]!.shop_id, status, limit: 1 });
    assert.equal(queue.summary.pendingProducts, status === 'unfinished' ? 2 : 14, status);
@@ -266,7 +333,7 @@ test('all-pending and historical tag queue coverage use the latest current audit
 });
 
 
-test('claimed tag batches keep their type and use the streaming tag protocol', async () => {
+test('claimed nonmember tag batches keep their type and use streaming general extraction', async () => {
  const f = await fixture();
  const job = await db.transaction().execute(tx => createTagJob(tx, { productIds: [f.inputId], model: 'mock' }));
  await db.updateTable('ai_jobs').set({ priority: 9999 }).where('id', '=', job.id).execute();
@@ -276,12 +343,14 @@ test('claimed tag batches keep their type and use the streaming tag protocol', a
  const call = createOpenAiModelCall(f.repo, { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock' }, async (_url, init) => {
    const sent = JSON.parse(String(init?.body));
    assert.equal(sent.stream, true);
-   assert.match(sent.messages[0].content, /extract buyer-facing product tags/);
+   assert.doesNotMatch(sent.messages[0].content, /"promises"/u);
    const content = JSON.stringify({ items: [{ id: String(f.inputId), tags: [] }] });
    return new Response([content.slice(0, 12), content.slice(12)].map((chunk, i) => `data: ${JSON.stringify({ choices: [{ delta: { content: chunk }, finish_reason: i ? 'stop' : null }] })}\n\n`).join('') + 'data: [DONE]\n\n');
  });
  const result = await call(claimed, new AbortController().signal);
+ assert.equal(result.tagExtractionStage, 'extract');
  assert.equal(result.tagExtractionItems?.[0]?.productId, f.inputId);
+ assert.deepEqual(result.tagExtractionItems?.[0]?.tags, []);
  await db.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', job.id).execute();
 });
 

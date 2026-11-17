@@ -219,7 +219,7 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
       await database.insertInto('product_tags').values([
         { name: 'duration', value: jsonb(30) }, { name: 'region', value: jsonb('jp') },
         { name: 'access_channel', value: jsonb('api') }, { name: 'supported_client', value: jsonb('sub2api') },
-        { name: 'bulk_purchase', value: jsonb(bulk) }, { name: 'warranty', value: jsonb('保订阅30天，封号不保') },
+        { name: 'bulk_purchase', value: jsonb(bulk) }, { name: 'warranty_terms', value: jsonb('保订阅30天，封号不保') },
       ].map(tag => ({ product_id: source.id, ...tag }))).execute();
       await database.insertInto('offers').values({
         product_id: source.id, price: '5.00', settlement_price: '5.00', currency: 'CNY',
@@ -237,7 +237,7 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
       'a different tag name remains a required constraint');
       assert.equal(offers[0]!.settlementQuantity, quantity, 'stale quantity must not default to one');
       assert.ok(offers[0]!.tags.some(tag => tag.name === 'duration' && tag.value === 30));
-      assert.ok(offers[0]!.tags.some(tag => tag.name === 'warranty' && tag.value === '保订阅30天，封号不保'));
+      assert.ok(offers[0]!.tags.some(tag => tag.name === 'warranty_terms' && tag.value === '保订阅30天，封号不保'));
       const standardProduct = await service.resolvePublicProductIdentity(identity);
       assert.ok(standardProduct);
       const needs = { purpose: null, platform: null, requiredTags, preferences: [],

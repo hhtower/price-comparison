@@ -11,6 +11,9 @@ test('an explicit scope review keeps the current item and rejects advertised fac
     sample.input, [true, false, false], true);
   assert.deepEqual(result.tags.map(({ name, value }) => ({ name, value })), [{ name: 'sms_verification', value: 'verified' }]);
   assert.deepEqual(result.rejectedTags.map(tag => tag.proposalIndex), [1, 2]);
+  assert.deepEqual(result.rejectedTags.map(({ name, value }) => ({ name, value })), [
+    { name: 'region', value: 'us' }, { name: 'duration', value: 30 },
+  ]);
   assert.deepEqual(result.reviewDecisions, [true, false, false]);
 });
 
@@ -20,4 +23,5 @@ test('scope interpretation belongs to review and is not recomputed from promotio
   const result = validateReviewedTagExtractionDecision(1n, tags, [], sample.input, [true, true], true);
   assert.deepEqual(result.tags, tags);
   assert.deepEqual(result.rejectedTags, []);
+  assert.deepEqual(result.reviewDecisions, [true, true]);
 });

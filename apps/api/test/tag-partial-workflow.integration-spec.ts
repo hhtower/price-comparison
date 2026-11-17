@@ -10,7 +10,7 @@ import { createTagJob, createProductTextReviewJob } from '../src/ai/tag-extracti
 import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
-import { mergeTagExtractionDecision, type TagExtractionDecision } from '../src/ai/tag-extraction-result.js';
+import { recordTagRepairAttempt, type TagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { CONSISTENCY_KEYS, DISCLOSURE_KEYS, type TextReview } from '../src/shops/shop-text-review.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool;
@@ -34,17 +34,17 @@ after(async () => {
 const candidate = (name: string, value: string | number, proposalIndex: number) => ({
   name, value, proposalIndex, evidence: [],
 });
-const refusedWarranty = () => ({
-  ...candidate('warranty', '质保30天', 1), reasonCode: 'review_rejected', reason: '标签复核未通过',
+const refusedClient = () => ({
+  ...candidate('supported_client', 'codex', 1), reasonCode: 'review_rejected', reason: 'Client support is not established',
 });
 async function fixture(kind: 'tag_extraction' | 'text_review' = 'tag_extraction') {
   const shop = await db.insertInto('shops').values({
     name: 'Partial test', platform: 'test', url: `https://partial.invalid/${randomUUID()}`,
   }).returning('id').executeTakeFirstOrThrow();
   const evidence = { name: 'Monthly account', spec: '1个月', sourceData: {
-    evidence: '仅保首登，封号不保',
+    evidence: '仅支持Sub2API，建议使用美区IP。',
     ...(kind === 'text_review' ? { ratingText: {
-      unitId: 'partial-listing', name: 'Monthly account', description: '仅保首登，封号不保', hash: 'b'.repeat(64),
+      unitId: 'partial-listing', name: 'Monthly account', description: '仅支持Sub2API，建议使用美区IP。', hash: 'b'.repeat(64),
     } } : {}),
   } };
   const product = await db.insertInto('products').values({
@@ -53,7 +53,7 @@ async function fixture(kind: 'tag_extraction' | 'text_review' = 'tag_extraction'
     normalized_key: 'partial', url: 'https://partial.invalid/product',
   }).returningAll().executeTakeFirstOrThrow();
   const standard = await db.insertInto('standard_products').values({
-    name: 'Monthly plan', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus',
+    name: 'Free account', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'free',
     verification_state: 'verified',
   }).returning('id').executeTakeFirstOrThrow();
   await db.insertInto('standard_product_members').values({
@@ -61,7 +61,7 @@ async function fixture(kind: 'tag_extraction' | 'text_review' = 'tag_extraction'
   }).execute();
   await db.insertInto('product_tags').values([
     { product_id: product.id, name: 'duration', value: jsonb(7) },
-    { product_id: product.id, name: 'warranty', value: jsonb('仅保首登，封号不保') },
+    { product_id: product.id, name: 'supported_client', value: jsonb('sub2api') },
   ]).execute();
   const job = await db.transaction().execute(tx => (kind === 'text_review' ? createProductTextReviewJob : createTagJob)(
     tx, { model: 'mock', productIds: [product.id] }));
@@ -78,10 +78,10 @@ async function fixture(kind: 'tag_extraction' | 'text_review' = 'tag_extraction'
     return { workerId: 'partial-worker', token, attempt: 1n };
   };
   const extraction: TagExtractionDecision = {
-    productId: product.id, tags: [candidate('duration', 30, 0), candidate('warranty', '质保30天', 1)], rejectedTags: [],
+    productId: product.id, tags: [candidate('duration', 30, 0), candidate('supported_client', 'codex', 1)], rejectedTags: [],
   };
   const review = {
-    productId: product.id, tags: [candidate('duration', 30, 0)], rejectedTags: [refusedWarranty()],
+    productId: product.id, tags: [candidate('duration', 30, 0)], rejectedTags: [refusedClient()],
     reviewed: true, reviewDecisions: [true, false], complete: true,
   };
   const firstReview = async () => {
@@ -107,29 +107,29 @@ test('a failed candidate schedules one repair and retains successful decisions i
   assert.equal(input.stage, 'repair');
   assert.deepEqual(input.previousDecisions?.[0]?.tags.map(tag => [tag.name, tag.value]), [['duration', 30]]);
   assert.deepEqual(await f.stored(), [
-    { name: 'duration', value: 7 }, { name: 'warranty', value: '仅保首登，封号不保' },
+    { name: 'duration', value: 7 }, { name: 'supported_client', value: 'sub2api' },
   ]);
 });
 
-test('the final review publishes partial success without deleting a failed dimension', async () => {
+test('the final review publishes only successful current dimensions', async () => {
   const f = await fixture();
   await f.firstReview();
   const repair = await f.next();
   const repaired: TagExtractionDecision = {
-    productId: f.product.id, tags: [candidate('warranty', '质保30天', 0)], rejectedTags: [],
+    productId: f.product.id, tags: [candidate('duration', 30, 0), candidate('supported_client', 'codex', 1)], rejectedTags: [],
   };
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, repair.id, [repaired], {}, await f.claim(repair.id), 'repair');
   const review = await f.next();
-  const merged = mergeTagExtractionDecision(f.review, {
-    productId: f.product.id, tags: [], rejectedTags: [{ ...refusedWarranty(), proposalIndex: 0 }],
-    reviewed: true, reviewDecisions: [false], complete: true,
+  const merged = recordTagRepairAttempt(f.review, {
+    productId: f.product.id, tags: [candidate('duration', 30, 0)], rejectedTags: [refusedClient()],
+    reviewed: true, reviewDecisions: [true, false], reviewFeedback: 'Duration is supported; Codex support is not.', complete: true,
   });
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id, [merged], {}, await f.claim(review.id), 'review');
   const publication = await f.next();
   assert.equal(publication.step, 'publish');
   await f.repo.publishTagExtractionBatch(publication.id, await f.claim(publication.id));
   assert.deepEqual(await f.stored(), [
-    { name: 'duration', value: 30 }, { name: 'warranty', value: '仅保首登，封号不保' },
+    { name: 'duration', value: 30 },
   ]);
   const member = await db.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   assert.equal((member.output as any).outcome, 'partial_success');
@@ -137,29 +137,76 @@ test('the final review publishes partial success without deleting a failed dimen
   assert.equal((member.output as any).failedCount, 1);
   const audit = await f.repo.tagProductAudit(f.job.id, f.product.id);
   const reviewAudit = audit.batches.find((batch: any) => batch.id === String(review.id));
-  assert.deepEqual(reviewAudit.review_decisions, [false]);
-  assert.deepEqual((member.output as any).attempts.map((attempt: any) => attempt.reviewDecisions), [[true, false], [false]]);
+  assert.deepEqual(reviewAudit.review_decisions, [true, false]);
+  assert.equal((member.output as any).review.feedback, 'Duration is supported; Codex support is not.');
+  assert.deepEqual((member.output as any).attempts.map((attempt: any) => attempt.reviewDecisions), [[true, false], [true, false]]);
   assert.equal((await db.selectFrom('ai_jobs').select('status').where('id', '=', f.job.id).executeTakeFirstOrThrow()).status, 'ready_with_errors');
   assert.equal((await db.selectFrom('ai_job_batches').select(sql<number>`count(*)::int`.as('count'))
     .where('job_id', '=', f.job.id).executeTakeFirstOrThrow()).count, 4);
 });
 
-test('a terminal repair error still publishes earlier approved tags through a publication checkpoint', async () => {
+test('a terminal repair error never publishes accepted draft candidates with a rejected sibling', async () => {
   const f = await fixture();
-  await f.firstReview();
+  await db.insertInto('product_tags').values({ product_id: f.product.id, name: 'region', value: jsonb('jp') }).execute();
+  const before = await f.stored();
+  const proposals = [candidate('duration', 30, 0), candidate('supported_client', 'codex', 1),
+    candidate('access_channel', 'api', 2)];
+  const batch = await f.next();
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, batch.id,
+    [{ productId: f.product.id, tags: proposals, rejectedTags: [] }], {}, await f.claim(batch.id), 'extract');
+  const review = await f.next();
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id, [{
+    productId: f.product.id, tags: proposals.slice(0, 2),
+    rejectedTags: [{ ...proposals[2]!, reasonCode: 'review_rejected', reason: 'API support is not established' }],
+    reviewed: true, reviewDecisions: [true, true, false], complete: false,
+  }], {}, await f.claim(review.id), 'review');
   const repair = await f.next();
+  await db.updateTable('ai_job_batches').set({ status: 'failed', error_source: 'provider_terminal', error: 'mock terminal failure' })
+    .where('id', '=', repair.id).execute();
+  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, f.job.id));
+  assert.deepEqual(await f.stored(), before);
+  assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).where('step', '=', 'publish').execute()).length, 0);
+  const { output } = await db.selectFrom('ai_job_input_members').select('output')
+    .where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
+  assert.equal((output as any).outcome, 'failed');
+  assert.equal((output as any).successfulCount, 0);
+});
+
+for (const failedStage of ['repair', 'review'] as const) test(`failed full ${failedStage} cannot publish mistakenly approved first-round tags or create fallback batches`, async () => {
+  const f = await fixture();
+  const before = await f.stored();
+  const tags = [candidate('supported_client', 'codex', 0), candidate('access_channel', 'api', 1),
+    candidate('duration', 30, 2), candidate('region', 'us', 3)];
+  const extraction = await f.next();
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, extraction.id,
+    [{ productId: f.product.id, tags, rejectedTags: [] }], {}, await f.claim(extraction.id), 'extract');
+  const review = await f.next();
+  await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id, [{
+    productId: f.product.id, tags: tags.slice(0, 3),
+    rejectedTags: [{ ...tags[3]!, reasonCode: 'review_rejected', reason: '地区不符' }],
+    reviewed: true, reviewDecisions: [true, true, true, false], reviewFeedback: '重查地区。', complete: true,
+  }], {}, await f.claim(review.id), 'review');
+  const repair = await f.next();
+  let failed = repair;
+  if (failedStage === 'review') {
+    await f.repo.checkpointTagExtractionBatchDecision(f.job.id, repair.id,
+      [{ productId: f.product.id, tags: [candidate('duration', 30, 0)], rejectedTags: [] }],
+      {}, await f.claim(repair.id), 'repair');
+    failed = await f.next();
+  }
+  const batchCount = (await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length;
   await db.updateTable('ai_job_batches').set({
     status: 'failed', error_source: 'provider_terminal', error: 'mock terminal failure',
-  }).where('id', '=', repair.id).execute();
+  }).where('id', '=', failed.id).execute();
   await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, f.job.id));
-  const publication = await f.next();
-  assert.equal(publication.step, 'publish');
-  await f.repo.publishTagExtractionBatch(publication.id, await f.claim(publication.id));
-  assert.deepEqual(await f.stored(), [
-    { name: 'duration', value: 30 }, { name: 'warranty', value: '仅保首登，封号不保' },
-  ]);
+  assert.deepEqual(await f.stored(), before);
+  const batches = await db.selectFrom('ai_job_batches').select(['id', 'step', 'status']).where('job_id', '=', f.job.id).execute();
+  assert.equal(batches.length, batchCount);
+  assert.ok(batches.every(batch => batch.step !== 'publish' && batch.status !== 'queued'));
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
-  assert.equal((member.output as any).outcome, 'partial_success');
+  assert.equal((member.output as any).outcome, 'failed');
+  assert.deepEqual((member.output as any).acceptedTags, []);
+  assert.deepEqual((member.output as any).after, before);
 });
 
 test('a verified complete empty result clears old tags without a repair', async () => {
@@ -198,7 +245,7 @@ test('reviewed tags without the frozen shop source cannot be published', async (
   assert.equal((member.output as any).reasonCode, 'source_changed');
 });
 
-test('partial publication preserves every existing fact exactly beyond the audit size limit', async () => {
+test('partial publication writes the current accepted set without merging a large persisted set', async () => {
   const f = await fixture();
   const oldClients = Array.from({ length: 200 }, (_, index) => ({
     name: 'supported_client', value: index === 0 ? 'https://client.invalid/?mode=web' : `old-client-${index}`,
@@ -216,11 +263,11 @@ test('partial publication preserves every existing fact exactly beyond the audit
       reviewDecisions: newClients.map(() => true) }], {}, await f.claim(batch.id), 'review');
   await f.repo.publishTagExtractionBatch(batch.id, await f.claim(batch.id));
   const stored = await f.stored();
-  assert.equal(stored.length, 302);
-  for (const tag of oldClients) assert.ok(stored.some(saved => saved.name === tag.name && saved.value === tag.value));
+  assert.equal(stored.length, 100);
+  for (const tag of newClients) assert.ok(stored.some(saved => saved.name === tag.name && saved.value === tag.value));
   const member = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   assert.equal((member.output as any).outcome, 'partial_success');
-  assert.equal((member.output as any).after.length, 256);
+  assert.equal((member.output as any).after.length, 100);
 });
 
 test('text review publishes independently in one request and leaves product labels unchanged', async () => {
@@ -255,6 +302,6 @@ test('cancelled repair publication cannot write even previously approved tags', 
   await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, repair.id,
     [{ productId: f.product.id, tags: [], rejectedTags: [] }], {}, await f.claim(repair.id), 'repair'), /cannot checkpoint/u);
   assert.deepEqual(await f.stored(), [
-    { name: 'duration', value: 7 }, { name: 'warranty', value: '仅保首登，封号不保' },
+    { name: 'duration', value: 7 }, { name: 'supported_client', value: 'sub2api' },
   ]);
 });

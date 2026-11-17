@@ -78,7 +78,8 @@ const metadata = (value, keys) => versions(Object.fromEntries(keys.filter(key =>
 const batchStage = batch => batch.reference_snapshot?.tagStage ?? batch.stage;
 const batchStageTitle = batch => batchStage(batch) === 'review'
   ? Number(batch.tagRepairRound ?? batch.reference_snapshot?.tagRepairRound) > 0 ? '修正复核' : '复核'
-  : batchStage(batch) === 'repair' ? '修正提取' : batchStage(batch) === 'extract' ? '提取' : '阶段未记录';
+  : batchStage(batch) === 'repair' ? '修正提取' : batchStage(batch) === 'extract' ? '提取'
+    : batchStage(batch) === 'warranty' ? '质保判定' : '阶段未记录';
 function Completeness({ value }) {
   return typeof value === 'boolean' ? <p>完整性：{value ? '完整' : '不完整'}</p> : null;
 }
@@ -216,7 +217,7 @@ function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行
           ['文案审查', `${Number(progress.requests?.succeededBatches || 0)} 批已完成`],
           ['保存审查结果', `${Number(progress.publication?.queuedUnits || 0)} 份待保存`],
         ] : [
-          [feature ? '识别分类' : `提取${noun}`, `${Number(stages.extractionCompleted || 0)} 批已提取`],
+          [feature ? '识别分类' : '提取标签', `${Number(stages.extractionCompleted || 0)} 批已提取`],
           ['LLM 二元复核', [
             `${Number(stages.reviewCompleted || 0)} 批已完成`,
             stages.reviewQueued > 0 ? `${stages.reviewQueued} 批排队` : null,
@@ -255,6 +256,7 @@ function Audit({ data, noun = '标签' }) {
     {text ? null : feature ? <MembershipClassification value={output?.classification} proposedKind={output?.proposedMembershipKind} reviewed={output?.review?.mode === 'membership_binary' ? output.review.decision ?? output.classificationReviewed : output?.classificationReviewed} />
       : <p>{recordedVotes ? `逐${noun}二元复核 · 通过 ${recordedVotes.filter(vote => vote).length} · 拒绝 ${recordedVotes.filter(vote => !vote).length}` : hasReviewVotes ? `逐${noun}二元复核：已保存原始判定${!output ? '，发布尚未完成' : ''}` : 'LLM 复核未记录'}</p>}
     {!feature && !text && output?.review?.mode === 'per_tag_binary' ? <p>商品原始投票：{recordedVotes ? JSON.stringify(recordedVotes) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
+    {!feature && !text && output?.review?.mode === 'per_tag_binary' && typeof output.review.feedback === 'string' && output.review.feedback.trim() ? <p>复核意见：{output.review.feedback}</p> : null}
     {!output && (hasReviewVotes || ['queued', 'processing'].includes(data.member?.status)) ? <p>发布尚未完成，不能视为已写入。</p> : ['skipped', 'failed', 'cancelled'].includes(output?.outcome) && !output?.diff?.length ? <p>发布结果：{OUTCOMES[output.outcome]}，本次未写入商品{noun}；程序采纳候选不代表发布成功。</p> : null}
     <p>内容版本：{data.member?.content_version ?? '未记录'} · 修订：{data.member?.standardization_revision ?? '未记录'}</p>
     <p>输入指纹：{data.member?.fingerprint ?? output?.versions?.fingerprint ?? '未记录'}</p>
@@ -606,13 +608,13 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
       {!dialog.allPending ? <button type="button" disabled={busy || !enabled} onClick={() => run(() => makePreview())}>预览{noun}范围</button> : null}
       {preview ? <>
         <p>模型：{preview.model}</p>
-        <Metrics values={{ 选定商品: preview.counts.selected, 缺失商品: preview.counts.missing, 受保护商品: preview.counts.protected, 可处理商品: preview.counts.eligible, 超限商品: preview.counts.oversized, 唯一输入: preview.counts.uniqueInputs, [text ? '审查批次' : '初始提取批次']: preview.counts.requestBatches, [text ? '预计模型调用' : '预计模型调用（正常两阶段）']: preview.counts.requestBatches == null ? null : preview.counts.requestBatches * (text ? 1 : 2) }} />
+        <Metrics values={{ 选定商品: preview.counts.selected, 缺失商品: preview.counts.missing, 受保护商品: preview.counts.protected, 可处理商品: preview.counts.eligible, 超限商品: preview.counts.oversized, 唯一输入: preview.counts.uniqueInputs, [text ? '审查批次' : '初始提取批次']: preview.counts.requestBatches, [text || feature ? '预计模型调用' : '普通标签预计调用']: preview.counts.requestBatches == null ? null : preview.counts.requestBatches * (text ? 1 : 2) }} />
       </> : null}
       {dialog.allPending || preview ? <>
-        <p className="ai-field-help">{text ? '文案审查可能消耗模型额度或产生费用。' : '提取与复核两阶段均可能消耗模型额度或产生费用。'}</p>
+        <p className="ai-field-help">模型调用可能消耗额度或产生费用。</p>
         <details><summary>调用与重试说明</summary>
-        {text ? <p>每批文案通常调用模型 1 次，完成后保存审查结果；拆批及重试可能增加调用次数。</p> : <p>提取 LLM → 复核 LLM → {feature ? '保存分类。每批可包含多个商品，每件商品只提出一个分类（成品号、代充、租号或短期），复核逐商品只判 YES/NO，不纠正或补充分类。' : '原子发布。每批可包含多个商品及其多个候选标签，复核逐标签只判 YES/NO，不纠正或补充标签。'}每个初始批次通常调用模型 2 次（一次提取、一次批量复核），提取和复核两个阶段均可能产生费用；拆批及重试可能增加调用次数。</p>}
-        {!text && !feature ? <p>未通过或有遗漏时最多修正一轮并再次复核，可能增加 2 次模型调用。成功标签可以独立写入，失败维度可能保留旧值，实际变化以商品写入差异为准。</p> : null}
+        <p>{text ? '每批文案通常调用模型 1 次。' : feature ? '识别分类 → 复核，每批通常调用模型 2 次。' : '普通标签提取 → 复核，每批通常调用模型 2 次。AI 会员另按每件商品单独调用质保判定；非 AI 会员不发起质保请求。'}拆批及重试可能增加调用次数。</p>
+        {!text && !feature ? <p>未通过或有遗漏时最多修正一轮并再次复核，可能增加 2 次调用。实际写入以商品结果为准。</p> : null}
         {dialog.allPending ? <p>资料和流水线版本未变化时，已完成的{text ? '文案审查' : feature ? '分类' : '部分采纳及待复核'}结果不会自动重新入队。</p> : null}
         </details>
         <label className="tag-charge-confirmation"><input type="checkbox" checked={ack} disabled={busy} onChange={event => setAck(event.target.checked)} />我确认可能消耗模型额度或产生费用</label>

@@ -128,7 +128,7 @@ async function runWorker(repository: AiRepository, limits: Record<string, string
 
 for (const [limit, overrides] of [
   ['bytes', { AI_REQUEST_MAX_BYTES: '1' }],
-  ['context including output reserve', { AI_REQUEST_MAX_CONTEXT_TOKENS: '32769' }],
+  ['context including output reserve', { AI_REQUEST_MAX_CONTEXT_TOKENS: '8193', AI_REQUEST_OUTPUT_RESERVE_TOKENS: '8192' }],
 ] as const) {
   test(`tag preparation rejects excessive complete request ${limit} without reserving a send`, async t => {
     configureLimits(t, overrides);
@@ -138,7 +138,7 @@ for (const [limit, overrides] of [
     });
     const batch = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', f.batch.id).executeTakeFirstOrThrow();
     assert.equal(batch.request_budget_used, 0);
-    assert.equal(batch.reference_snapshot, null);
+    assert.deepEqual(batch.reference_snapshot, f.batch.reference_snapshot);
     assert.equal(await runWorker(f.repository, overrides), 0);
     const failed = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', f.batch.id).executeTakeFirstOrThrow();
     assert.equal(failed.status, 'failed');
@@ -176,9 +176,13 @@ for (const [limit, overrides] of [
   });
 }
 
-for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request estimate describes the sent full frozen payload and model options`, async t => {
+for (const stage of ['warranty', 'extract', 'review'] as const) test(`saved ${stage} request estimate describes the sent full frozen payload and model options`, async t => {
   configureLimits(t);
   const f = await (stage === 'review' ? reviewFixture() : fixture());
+  if (stage === 'extract') await db.updateTable('ai_job_batches').set({
+    reference_snapshot: jsonb({ ...(f.batch.reference_snapshot as object), tagStage: 'extract' }),
+  }).where('id', '=', f.batch.id).execute();
+  assert.equal((await f.repository.getTagExtractionBatchInputs(f.batch.id)).stage, stage);
   await f.repository.prepareBatch(f.batch.id);
   const prepared = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', f.batch.id).executeTakeFirstOrThrow();
   assert.ok(prepared.request_estimate, 'complete tag request must retain its size estimate');
@@ -192,8 +196,11 @@ for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request
     body = JSON.parse(String(init?.body));
     return new Response(`data: ${JSON.stringify({
       id: 'budget-response', model: 'glm-5.3',
-      choices: [{ delta: { content: JSON.stringify({ items: [{ id: String(f.product.id),
-        ...(stage === 'review' ? { accepted: [true], complete: true } : { tags: [] }),
+      choices: [{ delta: { content: JSON.stringify(stage === 'warranty'
+        ? { subscription_warranty: null, subscription_warranty_t: null, usage_warranty: null, usage_warranty_t: null }
+        : { items: [{ id: String(f.product.id),
+        ...(stage === 'review' ? { feedback: '', accepted: [true], complete: true }
+          : { tags: [] }),
       }] }) }, finish_reason: 'stop' }],
     })}\n\ndata: [DONE]\n\n`);
   });
@@ -201,16 +208,20 @@ for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request
   const result = await execute();
   assert.deepEqual(result.tagExtractionItems, [{ productId: f.product.id,
     tags: stage === 'review' ? [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }] : [],
-    rejectedTags: [], ...(stage === 'review' ? { reviewed: true, reviewDecisions: [true], complete: true } : {}),
+    rejectedTags: [], ...(stage === 'review' ? { reviewed: true, reviewDecisions: [true], reviewFeedback: '', complete: true } : {}),
+    ...(stage === 'warranty' ? { warrantyLabels: {
+      subscription_warranty: null, subscription_warranty_t: null, usage_warranty: null, usage_warranty_t: null,
+    } } : {}),
   }]);
   assert.ok(body);
   const estimate = prepared.request_estimate as Record<string, number>;
   assert.equal(estimate.requestBytes, Buffer.byteLength(JSON.stringify(body)));
-  assert.equal(estimate.outputReserveTokens, 32768);
-  assert.equal(estimate.estimatedTotalTokens, estimate.estimatedInputTokens! + 32768);
+  const outputTokens = stage === 'warranty' ? 8192 : 32768;
+  assert.equal(estimate.outputReserveTokens, outputTokens);
+  assert.equal(estimate.estimatedTotalTokens, estimate.estimatedInputTokens! + outputTokens);
   assert.equal(body.model, 'glm-5.3');
   assert.equal(body.stream, true);
-  assert.equal(body.max_tokens, 32768);
+  assert.equal(body.max_tokens, outputTokens);
   assert.equal(body.reasoning_effort, 'low');
   const expectedInput = {
     id: String(f.product.id), name: 'ChatGPT Plus account', spec: '1 month',
@@ -225,11 +236,11 @@ for (const stage of ['extract', 'review'] as const) test(`saved ${stage} request
     }]);
     assert.equal((frozen.payload as Record<string, unknown>).frozenOrigin, 'original-catalog');
     assert.ok((frozen.payload as Record<string, unknown>).shopSource);
-    assert.deepEqual(sentPayload.proposals, { items: [{ id: String(f.product.id), tags: [
+    assert.deepEqual(sentPayload.proposals, { items: [{ id: String(f.product.id), candidateCount: 1, tags: [
       { name: 'duration', value: 30 },
     ] }] });
     assert.deepEqual(prepared.reference_snapshot, f.batch.reference_snapshot);
-  } else assert.deepEqual(sentPayload, [expectedInput]);
+  } else assert.deepEqual(sentPayload, stage === 'warranty' ? { inputs: [expectedInput] } : [expectedInput]);
   await f.repository.prepareBatch(f.batch.id);
   assert.deepEqual((await db.selectFrom('ai_job_batches').select('request_estimate').where('id', '=', f.batch.id).executeTakeFirstOrThrow()).request_estimate, prepared.request_estimate);
 });
@@ -283,6 +294,25 @@ test('tag review keeps a fitting batch together despite captured shop text', asy
   assert.equal(batches.length, 1);
   assert.equal((batches[0]!.product_ids as string[]).length, 9);
   assert.equal(batches[0]!.request_budget_used, 0);
+});
+
+test('review feedback output budget splits whole inputs before any request reservation', async t => {
+  configureLimits(t, { AI_REQUEST_OUTPUT_RESERVE_TOKENS: '2048' });
+  const f = await reviewFixture(3);
+  const original = await f.repository.getTagExtractionBatchInputs(f.batch.id);
+  await f.repository.prepareBatch(f.batch.id);
+  const batches = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id)
+    .where('round', '=', 1).orderBy('batch_index').execute();
+  assert.deepEqual(batches.map(batch => (batch.product_ids as string[]).length), [1, 1, 1]);
+  assert.deepEqual(batches.flatMap(batch => batch.product_ids as string[]), original.inputs.map(input => String(input.productId)));
+  for (const batch of batches) {
+    assert.equal(batch.request_budget_used, 0);
+    assert.equal((batch.reference_snapshot as any).extractionBatchId, (f.batch.reference_snapshot as any).extractionBatchId);
+    const restored = await f.repository.getTagExtractionBatchInputs(batch.id);
+    assert.deepEqual(restored.proposals?.items, original.proposals!.items.filter(item => item.id === String(restored.inputs[0]!.productId)));
+    await f.repository.prepareBatch(batch.id);
+  }
+  assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).where('round', '=', 1).execute()).length, 3);
 });
 
 for (const dimension of ['bytes', 'context'] as const) test(`review preparation splits complete requests by ${dimension} before reservation, atomically and idempotently`, async t => {

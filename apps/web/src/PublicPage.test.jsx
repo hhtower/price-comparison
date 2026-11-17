@@ -561,11 +561,11 @@ describe('PublicPage', () => {
   test('turns purchase intent into removable chips and keeps manual filters while editing keywords', async () => {
     const user = userEvent.setup();
     const calls = [];
-    const quote = { productId: '1', shopId: '1', name: 'Plus 报价', shop: '店铺', price: '12.00', currency: 'CNY', productUrl: 'https://example.com/1', capturedAt: '2026-09-25T08:00:00Z', tags: [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: 'covered' }] };
+    const quote = { productId: '1', shopId: '1', name: 'Plus 报价', shop: '店铺', price: '12.00', currency: 'CNY', productUrl: 'https://example.com/1', capturedAt: '2026-09-25T08:00:00Z', tags: [{ name: 'sms_verification', value: 'verified' }, { name: 'subscription_warranty', value: '质保 12 天' }] };
     vi.stubGlobal('fetch', vi.fn(async input => {
       if (String(input) === '/api/analytics/collect') return new Response(null, { status: 204 });
     calls.push(new URL(input, 'http://localhost'));
-      return jsonResponse({ total: 1, offerTotal: 1, platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 1 }, { name: 'warranty', value: 'covered', priority: 1 }], items: [{ id: 'plus', name: 'ChatGPT Plus', platform: 'openai', offers: [quote] }] });
+      return jsonResponse({ total: 1, offerTotal: 1, platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 1 }, { name: 'subscription_warranty', value: '质保 12 天', priority: 1 }], items: [{ id: 'plus', name: 'ChatGPT Plus', platform: 'openai', offers: [quote] }] });
     }));
     render(<PublicPage />);
     await screen.findByRole('heading', { name: /ChatGPT Plus/ });
@@ -588,25 +588,25 @@ describe('PublicPage', () => {
   test('shows readable purchase conditions in the drawer and renders offer facts', async () => {
     const user = userEvent.setup();
     const calls = [];
-    const quote = { productId: '1', shopId: '1', name: 'Plus 报价', shop: '店铺', price: '12.00', currency: 'CNY', productUrl: 'https://example.com/1', capturedAt: '2026-09-25T08:00:00Z', tags: [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: 'covered' }, { name: 'access_channel', value: 'web' }] };
+    const quote = { productId: '1', shopId: '1', name: 'Plus 报价', shop: '店铺', price: '12.00', currency: 'CNY', productUrl: 'https://example.com/1', capturedAt: '2026-09-25T08:00:00Z', tags: [{ name: 'sms_verification', value: 'verified' }, { name: 'subscription_warranty', value: '质保 12 天' }, { name: 'access_channel', value: 'web' }] };
     vi.stubGlobal('fetch', vi.fn(async input => {
       const url = new URL(input, 'http://localhost');
     if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
       calls.push(url);
-      return jsonResponse({ total: 1, offerTotal: 1, platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 8 }, { name: 'sms_verification', value: 'unverified', priority: 2 }, { name: 'warranty', value: 'covered', priority: 4 }], items: [{ id: 'plus', name: 'ChatGPT Plus', platform: 'openai', offers: [quote] }], appliedQuery: { text: url.searchParams.get('q') || '', tags: [] } });
+      return jsonResponse({ total: 1, offerTotal: 1, platformFacets: ['openai'], tagFacets: [{ name: 'sms_verification', value: 'verified', priority: 8 }, { name: 'sms_verification', value: 'unverified', priority: 2 }, { name: 'subscription_warranty', value: '质保 12 天', priority: 4 }], items: [{ id: 'plus', name: 'ChatGPT Plus', platform: 'openai', offers: [quote] }], appliedQuery: { text: url.searchParams.get('q') || '', tags: [] } });
     }));
     render(<PublicPage />);
     await screen.findByRole('heading', { name: /ChatGPT Plus/ });
     await user.click(screen.getByRole('button', { name: 'ChatGPT Plus' }));
     const facts = within(screen.getByLabelText('商品标签'));
     expect(facts.getByText('已接码')).toBeInTheDocument();
-    expect(facts.getByText('covered')).toBeInTheDocument();
+    expect(facts.getByText('质保 12 天')).toBeInTheDocument();
     expect(facts.queryByText('网页')).not.toBeInTheDocument();
     expect(facts.queryByText(/有质保|未注明/)).not.toBeInTheDocument();
     await user.click(facts.getByRole('button', { name: '查看全部商品条件，另有 1 项' }));
     const details = screen.getByRole('dialog', { name: 'Plus 报价' });
     expect(within(details).getByText('网页')).toBeVisible();
-    expect(within(details).getByText('covered')).toBeVisible();
+    expect(within(details).getByText('质保 12 天')).toBeVisible();
     await user.click(within(details).getByRole('button', { name: '确认', exact: true }));
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('checkbox', { name: /已接码/ }));
@@ -864,9 +864,9 @@ test('filters one standard product card by all selected tags', async () => {
       platformFacets: ['ChatGPT', 'Gemini'],
       tagFacets: [
         { name: 'bulk_purchase', value: 'supported' },
-        { name: 'warranty', value: '保订阅25天' },
+        { name: 'subscription_warranty', value: '质保 12 天' },
       ],
-      items: [{ id: 'chatgpt-plus', name: 'ChatGPT Plus', platform: 'ChatGPT', offers: [{ productId: 1, shopId: 1, name: '原始报价名', productUrl: 'https://example.com/1', shop: '店铺 A', price: 10, inStock: true, tags: [{ name: 'bulk_purchase', value: 'supported' }, { name: 'warranty', value: '保订阅25天' }] }] }],
+      items: [{ id: 'chatgpt-plus', name: 'ChatGPT Plus', platform: 'ChatGPT', offers: [{ productId: 1, shopId: 1, name: '原始报价名', productUrl: 'https://example.com/1', shop: '店铺 A', price: 10, inStock: true, tags: [{ name: 'bulk_purchase', value: 'supported' }, { name: 'subscription_warranty', value: '质保 12 天' }] }] }],
     };
     vi.stubGlobal('fetch', vi.fn(async (input) => { if (String(input) === '/api/analytics/collect') return new Response(null, { status: 204 }); calls.push(String(input)); return jsonResponse(catalog); }));
     render(<PublicPage />);
@@ -876,21 +876,21 @@ test('filters one standard product card by all selected tags', async () => {
     expect(screen.queryByText('质保时长：质保25天')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('checkbox', { name: '批量购买：支持批量购买' }));
-    await user.click(screen.getByRole('checkbox', { name: '售后保障：保订阅25天' }));
+    await user.click(screen.getByRole('checkbox', { name: '订阅保障：质保 12 天' }));
     await user.click(screen.getByRole('button', { name: '应用筛选（2）' }));
     await waitFor(() => expect(calls.some(path => {
       const selected = new URL(path, 'http://localhost').searchParams.getAll('tag').map(value => JSON.parse(value));
-      return selected.length === 2 && selected.some(tag => tag.name === 'bulk_purchase' && tag.value === 'supported') && selected.some(tag => tag.name === 'warranty' && tag.value === '保订阅25天');
+      return selected.length === 2 && selected.some(tag => tag.name === 'bulk_purchase' && tag.value === 'supported') && selected.some(tag => tag.name === 'subscription_warranty' && tag.value === '质保 12 天');
     })).toBe(true));
     expect(screen.getByText('原始报价名')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Gemini / Google' }));
     await waitFor(() => expect(new URL(calls.at(-1), 'http://localhost').searchParams.get('platform')).toBe('google'));
     const switched = new URL(calls.at(-1), 'http://localhost').searchParams;
-    expect(switched.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'warranty', value: '保订阅25天' }]);
+    expect(switched.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'subscription_warranty', value: '质保 12 天' }]);
     expect(switched.has('warrantyDaysMin')).toBe(false);
     await user.click(screen.getByRole('button', { name: '筛选（2）' }));
     expect(screen.getByRole('checkbox', { name: '批量购买：支持批量购买' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: '售后保障：保订阅25天' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: '订阅保障：质保 12 天' })).toBeChecked();
   });
 
   test('shows the price disclaimer and lets users report a specific offer', async () => {

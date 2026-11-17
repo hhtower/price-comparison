@@ -72,9 +72,11 @@ test('release gate accepts removing a baseline-only hallucinated field',()=>{
  assert.equal(passesTagReleaseGate(evaluateTagFacts(gold,gold),baseline),true);
 });
 
-test('synthetic references cover all collection groups',()=>{
+test('synthetic references cover all general tag collection groups',()=>{
  const real=fixture.samples.filter((sample:any)=>sample.provenance.kind==='synthetic-control');
  const groups=new Set(real.flatMap((sample:any)=>sample.expected.map((tag:any)=>PURCHASE_GUIDE_FIELDS[tag.name].collectionGroup)));
- assert.deepEqual([...groups].sort(),[...new Set(Object.values(PURCHASE_GUIDE_FIELDS).map(field=>field.collectionGroup))].sort());
- assert.match(fixture.annotationScope,/not independent human/);
+ assert.deepEqual([...groups].sort(),[...new Set(Object.entries(PURCHASE_GUIDE_FIELDS)
+  .filter(([name])=>!['subscription_warranty','usage_warranty'].includes(name))
+  .map(([,field])=>field.collectionGroup))].sort());
+ assert.match(fixture.annotationScope,/not independent human/i);
 });

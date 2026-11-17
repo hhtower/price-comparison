@@ -4,7 +4,7 @@ import { parseTagExtractionResponse } from '../src/ai/tag-extraction-request.js'
 import { validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { tagReviewSemanticControls } from './fixtures/tag-review-semantic-controls.js';
 
-test('semantic reference cases remain current-protocol inputs with explicit mock review labels', () => {
+test('general semantic reference candidates retain their corresponding mock review votes', () => {
   assert.equal(new Set(tagReviewSemanticControls.map(sample => sample.id)).size, tagReviewSemanticControls.length);
   for (const sample of tagReviewSemanticControls) {
     const parsed = parseTagExtractionResponse(JSON.stringify({ items: [{ id: '1', tags: sample.tags }] }));
@@ -20,11 +20,11 @@ test('semantic reference cases remain current-protocol inputs with explicit mock
   }
 });
 
-test('program validation does not override true model votes using warranty or evidence wording', () => {
-  for (const value of ['none', 'covered', '不享受质保', '质保已过期', '售后联系商家', '保订阅30天']) {
-    const tag = { name: 'warranty', value, evidence: [], proposalIndex: 0 };
+test('program validation does not reinterpret general model votes from source wording', () => {
+  for (const evidence of ['Supports Codex', 'Client support is unspecified', 'Codex requires a separate purchase']) {
+    const tag = { name: 'supported_client', value: 'codex', evidence: [], proposalIndex: 0 };
     const result = validateReviewedTagExtractionDecision(1n, [tag], [],
-      { name: '商品', sourceData: { evidence: '保订阅30天，封号不保。必须提交开箱视频。' } }, [true], true);
+      { name: '商品', sourceData: { evidence } }, [true], true);
     assert.deepEqual(result.tags, [tag]);
     assert.deepEqual(result.rejectedTags, []);
   }

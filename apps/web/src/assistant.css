@@ -76,7 +76,6 @@
 .assistant-page .offer-tag-details-groups ul{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px}
 .assistant-page .offer-tag-details-groups li{font-size:12px;font-weight:500;line-height:1.7}
 .assistant-page .offer-tag-details-groups li+li{margin:0;padding:0;border:0}
-.assistant-page .offer-tag-details-groups li:is([data-field="usage_restriction"],[data-field="warranty_terms"]){width:100%}
 .assistant-page .offer-tag-details-actions{padding:10px 18px}
 .assistant-page .assistant-detail-merchant-link{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 12px;border:1px solid #cfe2ef;border-radius:8px;background:#eef6fb;color:#427b9b;font-size:13px;text-decoration:none}
 .assistant-page .assistant-detail-merchant-link:hover{background:#e3f0f8}

@@ -16,7 +16,7 @@ export default function PurchaseTagEditor({ tag, onChange, index = 1 }) {
       onChange({ name, value: name === 'duration' ? 30 : '' });
     }}>
       <option value="">选择标签</option>
-      {PURCHASE_ATTRIBUTE_DEFINITIONS.map(field => <option key={field.name} value={field.name}>{field.label}</option>)}
+      {Object.entries(PURCHASE_GUIDE_FIELDS).map(([name, field]) => <option key={name} value={name}>{field.label}</option>)}
     </select>
     <div className="purchase-tag-editor-value">{tag.name === 'duration' ? <>
       <select aria-label={`期限限定 ${index}`} value={kind} onChange={event => {
@@ -29,7 +29,7 @@ export default function PurchaseTagEditor({ tag, onChange, index = 1 }) {
     </> : rule?.values ? <select aria-label={`标签值 ${index}`} required value={tag.value} onChange={event => onChange({ ...tag, value: event.target.value })}>
       <option value="">选择标签值</option>
       {rule.values.map(value => <option key={value} value={value}>{purchaseTagLabel({ name: tag.name, value })}</option>)}
-    </select> : <input aria-label={`标签值 ${index}`} required value={typeof tag.value === 'string' ? tag.value : ''} maxLength={250} list={definition?.values.length ? `tag-values-${tag.name}-${index}` : undefined} placeholder={tag.name === 'warranty' ? '完整保障说明，保留期限、范围和免责' : '标签值'} onChange={event => onChange({ ...tag, value: event.target.value })} />}
+    </select> : <input aria-label={`标签值 ${index}`} required value={typeof tag.value === 'string' ? tag.value : ''} maxLength={250} list={definition?.values.length ? `tag-values-${tag.name}-${index}` : undefined} placeholder={['subscription_warranty', 'usage_warranty'].includes(tag.name) ? `质保 X 小时 / 质保 X 天 / ${tag.name === 'usage_warranty' ? '首登 / ' : ''}质保（期限未注明）` : '标签值'} onChange={event => onChange({ ...tag, value: event.target.value })} />}
     {!rule?.values && definition?.values.length > 0 && tag.name !== 'duration' ? <datalist id={`tag-values-${tag.name}-${index}`}>{definition.values.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</datalist> : null}</div>
   </>;
 }

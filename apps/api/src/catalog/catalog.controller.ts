@@ -4,7 +4,7 @@ import { DomainValidationError } from '../common/errors.js';
 
 function catalogFilters(query: Record<string, unknown>): CatalogQueryInput {
   if ('warrantyDaysMin' in query) {
-    throw new DomainValidationError('INVALID_FILTER', '质保天数筛选已移除，请使用售后保障说明');
+    throw new DomainValidationError('INVALID_FILTER', '质保天数筛选已移除，请使用订阅保障或使用保障标签');
   }
   return {
     standardProductId: query.standardProductId,

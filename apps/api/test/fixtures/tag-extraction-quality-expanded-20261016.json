@@ -1,6 +1,6 @@
 {
-  "version": "tag-eval-seven-dimensions-20261113-v2",
-  "annotationScope": "AI-authored synthetic diagnostic cases; not independent human labels or a representative production holdout. No production data or credentials.",
+  "version": "tag-eval-general-20261117-v4",
+  "annotationScope": "AI-authored synthetic diagnostic cases for general tags only; warranty extraction has its own four-field tests. Not independent human labels or a representative production holdout. No production data or credentials.",
   "officialSource": "https://developers.openai.com/api/docs/guides/evaluation-best-practices",
   "samples": [
     {
@@ -974,14 +974,7 @@
           "evidence": "保订阅30天,封号不保"
         }
       },
-      "expected": [
-        {
-          "name": "warranty",
-          "value": "保订阅30天，封号不保",
-          "path": "sourceData.evidence",
-          "quote": "保订阅30天,封号不保"
-        }
-      ]
+      "expected": []
     },
     {
       "id": "1104",
@@ -1117,6 +1110,66 @@
           "quote": "不可覆盖现有订阅"
         }
       ]
+    },
+    {
+      "id": "2001",
+      "split": "diagnostic",
+      "caseGroup": "订阅保障",
+      "scenario": "订阅与首登分开",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-11-14",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "2001",
+        "name": "商品",
+        "spec": "",
+        "sourceData": {
+          "evidence": "充值后质保订阅30天，交付后5分钟内保首登，封号不保，掉订阅按剩余天数退款。"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "2002",
+      "split": "diagnostic",
+      "caseGroup": "使用保障",
+      "scenario": "封号与订阅期限不同",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-11-14",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "2002",
+        "name": "商品",
+        "spec": "",
+        "sourceData": {
+          "evidence": "订阅质保30天，封号仅保7天；买家违规操作不保。"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "2003",
+      "split": "diagnostic",
+      "caseGroup": "使用保障",
+      "scenario": "同义首登统一短值",
+      "provenance": {
+        "kind": "synthetic-control",
+        "createdAt": "2026-11-14",
+        "redaction": "Authored from scratch; no production data or credentials."
+      },
+      "input": {
+        "id": "2003",
+        "name": "商品",
+        "spec": "",
+        "sourceData": {
+          "evidence": "仅质保首次登录，后续使用无售后。"
+        }
+      },
+      "expected": []
     }
   ]
 }

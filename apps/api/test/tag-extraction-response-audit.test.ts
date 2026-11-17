@@ -120,8 +120,8 @@ test('review rejection counts measure affected items while preserving accepted f
     { name: 'another-private-response', value: 'yes' },
   ];
     const content = JSON.stringify({ items: [
-      { id: '11', accepted: [true, false, false], complete: true },
-      { id: '12', accepted: [], complete: true },
+      { id: '11', feedback: '', accepted: [true, false, false], complete: true },
+      { id: '12', feedback: '', accepted: [], complete: true },
     ] });
     const state = setup(content, 'stop', false, false, tags);
     await state.run();
@@ -145,6 +145,9 @@ for (const [name, content, phase] of [
   ['root keys', '{"items":[],"private-response":true}', 'schema'],
   ['tag fields', '{"items":[{"id":"11","tags":[{"name":"duration","value":[]}]}]}', 'schema'],
   ['extra tag keys', '{"items":[{"id":"11","tags":[{"name":"duration","value":30,"extra":"private-response"}]}]}', 'schema'],
+  ...['subscription_warranty', 'usage_warranty', 'warranty_terms'].map(name => [
+    name, JSON.stringify({ items: [{ id: '11', tags: [{ name, value: 'private-response' }] }, { id: '12', tags: [] }] }), 'schema',
+  ] as const),
   ['duplicate IDs', '{"items":[{"id":"11","tags":[]},{"id":"11","tags":[]}]}', 'schema'],
   ['unknown IDs', '{"items":[{"id":"99","tags":[]}]}', 'schema'],
   ['unsafe IDs', '{"items":[{"id":"0","tags":[]}]}', 'schema'],

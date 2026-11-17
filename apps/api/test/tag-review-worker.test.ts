@@ -8,7 +8,7 @@ const bill = { name: 'supported_client', value: 'codex' };
 const twoFactor = { name: 'region', value: 'us' };
 const duration = { name: 'duration', value: 30 };
 const proposals = { items: [{ id: '11', tags: [bill, twoFactor] }, { id: '12', tags: [duration] }] };
-const review = { items: [{ id: '12', accepted: [false], complete: false }, { id: '11', accepted: [true, false], complete: true }] };
+const review = { items: [{ id: '12', feedback: '缺少期限依据。', accepted: [false], complete: false }, { id: '11', feedback: '地区仅为网络建议。', accepted: [true, false], complete: true }] };
 const job = { id: 7n, row: { job_id: 3n, job_type: 'tag_extraction', step: 'request' } };
 
 function setup(content = JSON.stringify(review), finish: string | null = 'stop', timeout = 1000, hang = false, shopText?: unknown, candidates = proposals, jobType = 'tag_extraction', stage = 'review', previousDecisions?: any[], sourceEvidence = '建议使用美区IP。\n支持Codex。') {
@@ -29,15 +29,20 @@ function setup(content = JSON.stringify(review), finish: string | null = 'stop',
     sends++;
     const body = JSON.parse(String(init?.body));
     assert.equal(body.stream, true);
-    if (jobType === 'tag_extraction' && stage === 'review') assert.deepEqual(JSON.parse(body.messages[1].content).proposals, candidates);
+    if (jobType === 'tag_extraction' && stage === 'review') assert.deepEqual(JSON.parse(body.messages[1].content).proposals,
+      { items: candidates.items.map(item => ({ ...item, candidateCount: item.tags.length })) });
     const sent = JSON.parse(body.messages[1].content);
     if (jobType === 'text_review' && shopText !== undefined) assert.deepEqual(sent[0].shopText, shopText);
     if (jobType === 'tag_extraction' && stage === 'review') {
+      assert.equal(sent.previousDecisions, undefined);
       assert.equal(Object.hasOwn(sent.inputs[0], 'shopText'), false);
       assert.equal(sent.inputs[0].sourceData.evidence, sourceEvidence);
     }
     if (hang) return new Response(new ReadableStream({
-      start(controller) { init?.signal?.addEventListener('abort', () => controller.error(init.signal!.reason), { once: true }); },
+      start(controller) {
+        if (content) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`));
+        init?.signal?.addEventListener('abort', () => controller.error(init.signal!.reason), { once: true });
+      },
     }));
     const bytes = new TextEncoder().encode([
       `data: ${JSON.stringify({ choices: [{ delta: { content: content.slice(0, 5) } }] })}\n\n`,
@@ -68,47 +73,22 @@ test('one review request judges several products and labels, preserving true can
   assert.equal(byId.get(11n)!.rejectedTags[0]!.proposalIndex, 1);
   assert.equal(byId.get(11n)!.complete, true);
   assert.equal(byId.get(12n)!.complete, false);
+  assert.equal(byId.get(11n)!.reviewFeedback, '地区仅为网络建议。');
   assert.equal(Object.hasOwn(byId.get(11n)!, 'textReview'), false);
-});
-
-for (const [label, value, accepted] of [
-  ['approved handling without warranty keywords', '交付后一小时内无法使用可联系处理;封禁不退', true],
-  ['rejected identical handling', '交付后一小时内无法使用可联系处理;封禁不退', false],
-  ['mock-approved no-return limitation', '不退不换', true],
-  ['mock-approved one-time limitation', '一次性', true],
-] as const) test(`streamed warranty review follows the model vote: ${label}`, async () => {
-  // Deliberately approving limitations checks that code does not override semantics, not model accuracy.
-  const candidates = { items: [{ id: '11', tags: [{ name: 'warranty', value }] }, { id: '12', tags: [] }] };
-  const state = setup(JSON.stringify({ items: [
-    { id: '11', accepted: [accepted], complete: true }, { id: '12', accepted: [], complete: true },
-  ] }), 'stop', 1000, false, undefined, candidates, 'tag_extraction', 'review', undefined, value);
-  const result = await state.call(job, new AbortController().signal);
-  assert.equal(state.sends(), 1);
-  assert.equal(result.tagExtractionStage, 'review');
-  const decision = result.tagExtractionItems!.find(item => item.productId === 11n)!;
-  const tag = { name: 'warranty', value, evidence: [], proposalIndex: 0 };
-  assert.deepEqual(decision.reviewDecisions, [accepted]);
-  assert.equal(decision.reviewed, true);
-  assert.equal(decision.complete, true);
-  assert.deepEqual(decision.tags, accepted ? [tag] : []);
-  if (accepted) assert.deepEqual(decision.rejectedTags, []);
-  else {
-    assert.equal(decision.rejectedTags.length, 1);
-    const { reason, ...rejected } = decision.rejectedTags[0]!;
-    assert.deepEqual(rejected, { ...tag, reasonCode: 'review_rejected' });
-    assert.ok(reason);
-  }
 });
 
 for (const [name, content] of [
   ['invalid JSON', '{"items":'],
-  ['missing completeness', JSON.stringify({ items: [{ id: '11', accepted: [true, false] }, review.items[0]] })],
+  ['missing feedback', JSON.stringify({ items: [{ id: '11', accepted: [true, false], complete: true }, review.items[0]] })],
+  ['non-string feedback', JSON.stringify({ items: [{ ...review.items[1], feedback: null }, review.items[0]] })],
+  ['oversized feedback', JSON.stringify({ items: [{ ...review.items[1], feedback: 'x'.repeat(1001) }, review.items[0]] })],
+  ['missing completeness', JSON.stringify({ items: [{ id: '11', feedback: '', accepted: [true, false] }, review.items[0]] })],
   ['added tags', JSON.stringify({ items: [{ ...review.items[1], tags: [duration] }, review.items[0]] })],
   ['missing products', JSON.stringify({ items: [review.items[0]] })],
-  ['unknown products', JSON.stringify({ items: [{ id: '99', accepted: [true], complete: true }, review.items[1]] })],
-  ['missing label votes', JSON.stringify({ items: [review.items[0], { id: '11', accepted: [true], complete: true }] })],
-  ['extra label votes', JSON.stringify({ items: [review.items[0], { ...review.items[1], accepted: [true, false, true] }] })],
-  ['non-boolean votes', JSON.stringify({ items: [review.items[0], { ...review.items[1], accepted: ['yes', false] }] })],
+  ['unknown products', JSON.stringify({ items: [{ id: '99', feedback: '', accepted: [true], complete: true }, review.items[1]] })],
+  ['missing label votes', JSON.stringify({ items: [review.items[0], { id: '11', feedback: '', accepted: [true], complete: true }] })],
+  ['extra label votes', JSON.stringify({ items: [review.items[0], { ...review.items[1], feedback: '', accepted: [true, false, true] }] })],
+  ['non-boolean votes', JSON.stringify({ items: [review.items[0], { ...review.items[1], feedback: '', accepted: ['yes', false] }] })],
   ['duplicate IDs', JSON.stringify({ items: [review.items[0], review.items[0]] })],
   ['coupled text review', JSON.stringify({ items: [review.items[0], { ...review.items[1], textReview: null }] })],
 ]) {
@@ -197,11 +177,12 @@ test('missing, nullable, nonboolean and verbose text reviews reject the entire c
   assert.equal(absentSource.sends(), 0);
 });
 
-test('batch review timeout and cancellation stop the shared stream without resending', async () => {
-  const timeout = setup('', 'stop', 20, true);
+test('batch review timeout and cancellation discard partial feedback without resending', async () => {
+  const partialFeedback = '{"items":[{"id":"11","feedback":"尚未完成原文核对';
+  const timeout = setup(partialFeedback, 'stop', 20, true);
   await assert.rejects(timeout.call(job, new AbortController().signal), /timed out/u);
   assert.equal(timeout.sends(), 1);
-  const cancelled = setup('', 'stop', 1000, true);
+  const cancelled = setup(partialFeedback, 'stop', 1000, true);
   const controller = new AbortController();
   const result = cancelled.call(job, controller.signal);
   const timer = setTimeout(() => controller.abort(new Error('cancel review')), 20);
@@ -229,21 +210,24 @@ for (const jobType of ['tag_extraction', 'text_review']) test(jobType + ' extrac
   assert.equal(cancelled.sends(), 1);
 });
 
-test('repair generation emits only new candidates and review merges previous successes without revoting', async () => {
+test('repair replaces the full decision and keeps previous feedback only as draft and audit', async () => {
   const previous = [{ productId: 11n, tags: [{ name: 'supported_client', value: 'codex', evidence: [], proposalIndex: 0 }],
     rejectedTags: [{ name: 'region', value: 'us', evidence: [], proposalIndex: 1, reasonCode: 'review_rejected', reason: 'Rejected' }],
-    reviewed: true, reviewDecisions: [true, false], complete: false }];
+    reviewed: true, reviewDecisions: [true, false], reviewFeedback: '重新核对工具支持与期限。', complete: false }];
   const candidates = { items: [{ id: '11', tags: [{ name: 'duration', value: 30 }] }, { id: '12', tags: [] }] };
   const extracted = await setup(JSON.stringify(candidates), 'stop', 1000, false, undefined, candidates, 'tag_extraction', 'repair', previous)
     .call(job, new AbortController().signal);
   assert.equal(extracted.tagExtractionStage, 'repair');
   assert.deepEqual(extracted.tagExtractionItems![0]!.tags.map(tag => tag.name), ['duration']);
-  const result = await setup(JSON.stringify({ items: [{ id: '11', accepted: [true], complete: true }, { id: '12', accepted: [], complete: true }] }),
+  const result = await setup(JSON.stringify({ items: [{ id: '11', feedback: '本轮仅期限有依据。', accepted: [true], complete: true }, { id: '12', feedback: '', accepted: [], complete: true }] }),
     'stop', 1000, false, undefined, candidates, 'tag_extraction', 'review', previous).call(job, new AbortController().signal);
   const merged = result.tagExtractionItems![0]!;
-  assert.deepEqual(merged.tags.map(tag => tag.name), ['supported_client', 'duration']);
+  assert.deepEqual(merged.tags.map(tag => tag.name), ['duration']);
+  assert.deepEqual(merged.reviewDecisions, [true]);
+  assert.equal(merged.reviewFeedback, '本轮仅期限有依据。');
   assert.equal(merged.complete, true);
   assert.equal(merged.attempts!.length, 2);
+  assert.deepEqual(merged.attempts!.map(attempt => attempt.reviewFeedback), ['重新核对工具支持与期限。', '本轮仅期限有依据。']);
 });
 
 test('streamed generation and all-true review preserve a valid sibling when a candidate fails business validation', async () => {
@@ -263,7 +247,7 @@ test('streamed generation and all-true review preserve a valid sibling when a ca
       id: String(item.productId), tags: item.tags.map(({ name, value }) => ({ name, value })),
     })) };
     const review = setup(JSON.stringify({ items: [
-      { id: '11', accepted: [true, true], complete: true }, { id: '12', accepted: [], complete: true },
+      { id: '11', feedback: '', accepted: [true, true], complete: true }, { id: '12', feedback: '', accepted: [], complete: true },
     ] }), 'stop', 1000, false, undefined, candidates);
     const result = await review.call(job, new AbortController().signal);
     assert.equal(review.sends(), 1);

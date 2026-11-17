@@ -90,15 +90,15 @@ test.each(['warrantyDaysMin=30', 'tag=' + encodeURIComponent(JSON.stringify({ na
   expect(screen.queryByRole('slider')).not.toBeInTheDocument();
 });
 
-test('groups tools with access channels and keeps warranty descriptions as ordinary filters', async () => {
-  const warranty = '购买后1小时内仅保首登，封号不保';
-  const requests = await openFilters([{ name: 'region', value: 'us' }, { name: 'access_channel', value: 'web' }, { name: 'supported_client', value: 'codex' }, { name: 'warranty', value: warranty }, { name: 'bulk_purchase', value: 'supported' }]);
+test('groups tools with access channels and filters short coverage separately from terms', async () => {
+  const warranty = '质保 12 天';
+  const requests = await openFilters([{ name: 'region', value: 'us' }, { name: 'access_channel', value: 'web' }, { name: 'supported_client', value: 'codex' }, { name: 'subscription_warranty', value: warranty }, { name: 'warranty_terms', value: '封号不保，退款扣手续费' }, { name: 'bulk_purchase', value: 'supported' }]);
   const usage = within(screen.getByRole('group', { name: '使用入口/支持工具' }));
   expect(usage.getAllByRole('checkbox')).toHaveLength(2);
-  fireEvent.click(screen.getByRole('checkbox', { name: '售后保障：' + warranty }));
+  fireEvent.click(screen.getByRole('checkbox', { name: '订阅保障：' + warranty }));
   fireEvent.click(screen.getByRole('checkbox', { name: '批量购买：支持批量购买' }));
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（2）' }));
-  await waitFor(() => expect(requests.at(-1).searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'warranty', value: warranty }]));
+  await waitFor(() => expect(requests.at(-1).searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'subscription_warranty', value: warranty }]));
   expect(requests.every(url => !url.searchParams.has('warrantyDaysMin'))).toBe(true);
 });
 

@@ -2104,7 +2104,7 @@
     },
     {
       "id": "complete-warranty",
-      "text": "必须保订阅30天，封号不保",
+      "text": "必须订阅保障30天",
       "initialNeeds": {
         "purpose": null,
         "platform": null,
@@ -2117,15 +2117,15 @@
         "patch": {
           "requiredTags": [
             {
-              "name": "warranty",
-              "value": "保订阅30天，封号不保"
+              "name": "subscription_warranty",
+              "value": "订阅保障30天"
             }
           ]
         },
         "evidence": [
           {
             "field": "requiredTags",
-            "quote": "必须保订阅30天，封号不保"
+            "quote": "必须订阅保障30天"
           }
         ],
         "question": null,
@@ -2137,8 +2137,8 @@
         "budget": null,
         "requiredTags": [
           {
-            "name": "warranty",
-            "value": "保订阅30天，封号不保"
+            "name": "subscription_warranty",
+            "value": "订阅保障30天"
           }
         ],
         "preferences": []

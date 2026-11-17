@@ -207,7 +207,10 @@ test('required tags and offer snapshots use the same typed canonical validation'
     { name: 'duration', value: 0 }, { name: 'duration', value: -1 }, { name: 'duration', value: Infinity },
     { name: 'duration', value: { kind: 'range', min: 60, max: 30 } },
     { name: 'duration', value: { kind: 'min', days: 30, unit: 'day' } },
-    { name: 'warranty', value: '' }, { name: 'warranty', value: 'x'.repeat(251) }, { name: 'warranty_days', value: '30' },
+    { name: 'warranty_terms', value: '' }, { name: 'warranty_terms', value: 'x'.repeat(251) }, { name: 'warranty_days', value: '30' },
+    { name: 'warranty_terms', value: '保订阅30天，封号不保' },
+    { name: 'subscription_warranty', value: '首登' }, { name: 'usage_warranty', value: '首登保障' },
+    { name: 'subscription_warranty', value: '质保 0 天' }, { name: 'usage_warranty', value: '质保 1e309 天' },
     { name: 'subscription_override', value: '有' }, { name: 'delivery', value: 'account' },
     { name: 'bulk_purchase', value: 'unknown' },
   ]) {
@@ -215,11 +218,22 @@ test('required tags and offer snapshots use the same typed canonical validation'
     const offer = { name: 'Quote', shop: 'Shop', spec: '', productUrl: '', tags: [tag] };
     assert.throws(() => validateAssistantReply({ ...reply(), cards: [{ ...card, offer }] }));
   }
-  for (const value of ['到手一小时内无法使用可联系处理', 'covered', '无质保']) {
-    const tags = [{ name: 'warranty', value }];
-    assert.deepEqual(validateNeedsPatch({ requiredTags: tags }).requiredTags, tags);
-    const offer = { name: 'Quote', shop: 'Shop', spec: '', productUrl: '', tags };
-    assert.deepEqual(validateAssistantReply({ ...reply(), cards: [{ ...card, offer }] }).cards[0]?.offer?.tags, tags);
+  for (const name of ['subscription_warranty', 'usage_warranty']) {
+    for (const value of ['质保 2.5 小时', '质保 12 天', '质保（期限未注明）', ...(name === 'usage_warranty' ? ['首登'] : [])]) {
+      const tags = [{ name, value }];
+      assert.deepEqual(validateNeedsPatch({ requiredTags: tags }).requiredTags, tags);
+      const offer = { name: 'Quote', shop: 'Shop', spec: '', productUrl: '', tags };
+      assert.deepEqual(validateAssistantReply({ ...reply(), cards: [{ ...card, offer }] }).cards[0]?.offer?.tags, tags);
+    }
+    assert.throws(() => validateNeedsPatch({ requiredTags: [
+      { name, value: '质保 2 天' }, { name, value: '质保 12 天' },
+    ] }), /conflicting tags/u);
+    for (const value of ['到手一小时内无法使用可联系处理', 'covered', '无质保']) {
+      const tags = [{ name, value }];
+      assert.throws(() => validateNeedsPatch({ requiredTags: tags }));
+      const offer = { name: 'Quote', shop: 'Shop', spec: '', productUrl: '', tags };
+      assert.throws(() => validateAssistantReply({ ...reply(), cards: [{ ...card, offer }] }));
+    }
   }
   const original = { ...emptyShoppingNeeds(), requiredTags: [{ name: 'duration', value: { kind: 'min' as const, days: 30 } }] };
   const patched = applyNeedsPatch(original, {});

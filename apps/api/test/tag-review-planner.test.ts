@@ -12,14 +12,14 @@ function fixture(count: number, withText = true) {
 }
 const limits = readStandardizationRequestLimits({});
 
-test('tag reviews no longer reserve fourteen text judgments per product', () => {
+test('tag reviews reserve feedback for every product without adding text judgments', () => {
   const request = fixture(32);
   const before = JSON.stringify(request);
   const inputEstimate = estimateStandardizationRequest(buildTagReviewRequest(request.inputs, request.proposals, request.model), limits);
   assert.ok(inputEstimate.requestBytes < limits.maxRequestBytes);
   assert.ok(inputEstimate.estimatedTotalTokens < limits.maxContextTokens);
   const groups = planTagReviewRequests(request, limits);
-  assert.equal(groups.length, 1);
+  assert.deepEqual(groups.map(group => group.request.inputs.length), [20, 12]);
   assert.ok(groups.every(group => !group.oversized));
   assert.deepEqual(groups.flatMap(group => group.request.inputs.map(input => input.id)), request.inputs.map(input => input.id));
   for (const group of groups) assert.deepEqual(group.request.proposals.items.map(item => item.id), group.request.inputs.map(input => input.id));
@@ -30,8 +30,9 @@ test('shop text does not affect tag-only output budgeting', () => {
   const request = fixture(12);
   const small = planTagReviewRequests(request, { ...limits, outputReserveTokens: 8192 });
   const normal = planTagReviewRequests(request, limits);
-  assert.equal(small.length, normal.length);
-  assert.equal(planTagReviewRequests(fixture(32, false), limits).length, 1);
+  assert.deepEqual(small.map(group => group.request.inputs.length), [5, 5, 2]);
+  assert.equal(normal.length, 1);
+  assert.deepEqual(planTagReviewRequests(fixture(32, false), limits).map(group => group.request.inputs.length), [20, 12]);
 });
 
 test('boolean text review preserves full frozen text and exact request estimates in one batch', () => {
@@ -93,15 +94,14 @@ test('boolean vectors still split when the response budget is exhausted', () => 
 });
 
 
-test('review grouping filters previous accepted context by the grouped product IDs', () => {
+test('review grouping uses only current proposals and exact outbound estimates', () => {
   const request = fixture(3);
-  const previousDecisions = request.inputs.map(input => ({ productId: BigInt(input.id),
-    tags: [{ name: 'duration', value: 30, evidence: [] }], rejectedTags: [], complete: false }));
-  const groups = planTagReviewRequests({ ...request, previousDecisions }, { ...limits, outputReserveTokens: 64 });
+  const groups = planTagReviewRequests(request, { ...limits, outputReserveTokens: 64 });
   assert.equal(groups.length, 3);
   for (const group of groups) {
-    assert.deepEqual(group.request.previousDecisions?.map(item => String(item.productId)), group.request.inputs.map(input => input.id));
-    const built = buildTagReviewRequest(group.request.inputs, group.request.proposals, 'mock', group.request.previousDecisions);
+    assert.deepEqual(group.request.proposals.items.map(item => item.id), group.request.inputs.map(input => input.id));
+    const built = buildTagReviewRequest(group.request.inputs, group.request.proposals, 'mock');
+    assert.equal(JSON.parse(built.messages[1]!.content).previousDecisions, undefined);
     assert.equal(group.estimate.requestBytes, estimateStandardizationRequest(built, { ...limits, outputReserveTokens: 64 }).requestBytes);
   }
 });

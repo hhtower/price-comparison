@@ -1105,6 +1105,7 @@ function ProductManagement({ setMessage }) {
         <form className="dialog-body" onSubmit={saveTags}>
           <div className="dialog-header"><h2 id="tag-editor-title">编辑商品标签</h2><button type="button" aria-label="关闭" onClick={() => setTagEditor(null)}>×</button></div>
           <p className="admin-message">{tagEditor?.product?.name}</p>
+          <p className="admin-message">质保标签仅用于 AI 会员。订阅保障与使用保障分别填写“质保 X 小时”“质保 X 天”或“质保（期限未注明）”；使用保障也可填“首登”。没有明确保障时不添加。</p>
           {tagEditor?.error && <p role="alert" className="admin-message">{tagEditor.error}</p>}
           <div className="tag-editor-list">
             {(tagEditor?.items || []).map((tag, index) => <div key={index} className="tag-editor-row">

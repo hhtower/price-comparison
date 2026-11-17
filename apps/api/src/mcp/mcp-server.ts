@@ -4,7 +4,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import type { McpServer as McpServerInstance, CallToolResult } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { MEMBERSHIP_GROUPS } from '@price-comparison/catalog/membership-policy';
-import { isCanonicalProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
+import { isFilterableProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 import { MAX_DURATION_DAYS } from '@price-comparison/catalog/purchase-attributes';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { McpAccess } from './mcp-access.js';
@@ -20,7 +20,7 @@ const currency = z.string().regex(/^[A-Z]{3}$/u);
 const money = z.string().regex(/^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$/u);
 const days = z.number().positive().max(MAX_DURATION_DAYS);
 const tag = z.strictObject({
-  name: z.enum(Object.keys(PRODUCT_TAG_RULES) as [string, ...string[]]),
+  name: z.enum(Object.keys(PRODUCT_TAG_RULES).filter(name => PRODUCT_TAG_RULES[name]!.filterable !== false) as [string, ...string[]]),
   value: z.union([
     z.string().trim().min(1).max(250),
     days,
@@ -28,7 +28,7 @@ const tag = z.strictObject({
     z.strictObject({ kind: z.enum(['min', 'max', 'approx']), days }),
     z.strictObject({ kind: z.literal('permanent') }),
   ]),
-}).refine(isCanonicalProductTag, 'Invalid tag field or value');
+}).refine(isFilterableProductTag, 'Invalid tag field or value');
 const filters = {
   currency: currency.optional(),
   priceMin: money.optional(),

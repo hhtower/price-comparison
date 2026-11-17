@@ -27,13 +27,11 @@ test('tag prompt examples use the same sparse canonical protocol as worker respo
   assert.deepEqual(response.items.map(item => item.tags.map(tag => [tag.name, tag.value])), [
     [['duration', 30], ['subscription_override', '无']],
     [['supported_client', 'sub2api']],
-    [['warranty', '交付后一小时内无法使用可联系处理;封禁不退']],
     [],
     [['duration', 360]],
     [['bulk_purchase', 'bundle']],
-    [],
   ]);
-  assert.notEqual(inputs[4]!.name, inputs[4]!.spec, 'example distinguishes general title from selected SKU');
+  assert.notEqual(inputs[3]!.name, inputs[3]!.spec, 'example distinguishes general title from selected SKU');
 
 });
 
@@ -45,30 +43,37 @@ test('tag JSON contract rejects structural corruption and duplicate product IDs'
     { items: [{ id: '1', tags: [] }, { id: '1', tags: [] }] },
   ]) assert.throws(() => parseTagExtractionResponse(JSON.stringify(payload)));
 });
-test('compact context preserves every shared field, applicability and canonical constraint', () => {
-  const built = buildTagExtractionRequest([], 'deepseek-flash');
+test('compact context preserves only general fields with their applicability and canonical constraints', () => {
+  const built = buildTagExtractionRequest([], 'mock');
+  assert.equal(built.model, 'mock');
   assert.deepEqual(built.responseFormat, { type: 'json_object' });
   const prompt = built.messages[0]!.content;
   const groups = JSON.parse(prompt.match(/<tag_vocabulary>\n([\s\S]*?)\n<\/tag_vocabulary>/u)![1]!);
   const fields = groups.flatMap((group: { appliesTo: string; fields: object[] }) =>
     group.fields.map(field => ({ ...field, appliesTo: group.appliesTo })));
   assert.deepEqual(fields.sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name)),
-    Object.entries(PURCHASE_GUIDE_FIELDS).map(([name, field]) => ({ name, meaning: field.label, appliesTo: field.appliesTo, ...field.rule }))
+    Object.entries(PURCHASE_GUIDE_FIELDS)
+      .filter(([name]) => !['subscription_warranty', 'usage_warranty', 'warranty_terms'].includes(name))
+      .map(([name, field]) => ({ name, meaning: field.label, appliesTo: field.appliesTo, ...field.rule }))
       .sort((a, b) => a.name.localeCompare(b.name)));
-  assert.ok(prompt.length < 18000, 'retain the full vocabulary and complete warranty conditions within the compact context budget');
-  assert.equal(fields.length, 8);
-  assert.ok(prompt.length < 7500);
+  assert.deepEqual(groups, tagRequests.TAG_SCHEMA);
+  assert.ok(prompt.length < 10000, 'keep the general vocabulary and rules compact');
+  assert.equal(fields.length, 7);
+  assert.doesNotMatch(prompt, /subscription_warranty|usage_warranty|warranty_terms|warrantyEvidence/u);
 });
 
-test('product-scoped prompt expires v5 while retaining the per-tag protocol', () => {
-  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261114-v11');
-  assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261114-v7');
-  assert.equal(TAG_EXTRACTION_PROTOCOL_VERSION, 'tag-json-typed-values-20261114-v4');
+test('general prompt and protocol expire snapshots that included warranty extraction', () => {
+  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261117-v17');
+  assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261117-v13');
+  assert.equal(TAG_EXTRACTION_PROTOCOL_VERSION, 'tag-json-typed-values-20261117-v7');
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261015-v5' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261025-v7' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-object-closed-v1' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261114-v10' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagReviewPrompt: 'tag-review-20261114-v6' }), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261115-v16' }), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagReviewPrompt: 'tag-review-20261115-v12' }), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-typed-values-20261115-v6' }), false);
 });
 
 
@@ -113,15 +118,14 @@ test('generation still rejects malformed, oversized and unsupported wire values 
   assert.throws(() => parseTagExtractionResponse('{"items":[{"id":"1","tags":[{"name":"duration","value":1e400}]}]}'));
 });
 
-test('request and parser leave warranty meaning to the model without rewriting the source or proposed wording', () => {
+test('general requests preserve raw source conditions while responses reject every warranty field', () => {
   const inputs = [{ id: '1', name: '账号', description: '一次性商品，不退不换。\n交付后一小时内无法使用可联系处理;封禁不退',
     sourceData: { details: '须在交付后一小时内联系，核实后处理。', warranty_info: '封禁不退' } }];
   const before = structuredClone(inputs);
   assert.deepEqual(JSON.parse(buildTagExtractionRequest(inputs, 'mock').messages[1]!.content), before);
-  // This checks transport responsibility, not whether any of these candidates deserve approval.
-  for (const value of ['交付后一小时内无法使用可联系处理;封禁不退', '不退不换', '一次性', '无售后', 'unknown']) {
-    const output = { items: [{ id: '1', tags: [{ name: 'warranty', value }] }] };
-    assert.deepEqual(parseTagExtractionResponse(JSON.stringify(output)), output);
+  for (const name of ['subscription_warranty', 'usage_warranty', 'warranty_terms']) {
+    const output = { items: [{ id: '1', tags: [{ name: 'duration', value: 30 }, { name, value: 'source promise' }] }] };
+    assert.throws(() => parseTagExtractionResponse(JSON.stringify(output)), /invalid items or tags/u);
   }
   assert.deepEqual(inputs, before);
 });
@@ -130,7 +134,8 @@ test('tag projection preserves full raw conditions but excludes operational data
   const input = { id: '1', name: 'Account', spec: 'selected', category: 'AI', description: 'body\n'.repeat(5000),
     evidence: 'original evidence', details: { limitation: 'only selected SKU', price: 8 }, warranty: 'first login only; no ban cover',
     sourceData: { evidence: 'second original body', content: 'full content', warranty_info: 'within one hour',
-      selectedOptions: [{ name: 'duration', value: 'one month', stock: 4 }], price: 42, stock: 9, ratingText: { name: 'rating' } },
+      selectedOptions: [{ name: 'duration', value: 'one month', stock: 4, access_token: 'secret' }],
+      price: 42, stock: 9, ratingText: { name: 'rating' }, 'API-Key': 'secret', authorization: 'secret' },
     shopText: { name: 'rating' }, taskId: 'task', price: 99, inventory: 10 };
   const before = structuredClone(input);
   assert.equal(typeof tagRequests.projectTagInput, 'function');
@@ -145,7 +150,7 @@ test('tag projection preserves full raw conditions but excludes operational data
   assert.equal(sent.sourceData.warranty_info, 'within one hour');
   assert.deepEqual(sent.sourceData.selectedOptions, [{ name: 'duration', value: 'one month' }]);
   for (const key of ['shopText', 'taskId', 'price', 'inventory']) assert.equal(Object.hasOwn(sent, key), false);
-  for (const key of ['price', 'stock', 'ratingText']) assert.equal(Object.hasOwn(sent.sourceData, key), false);
+  for (const key of ['price', 'stock', 'ratingText', 'API-Key', 'authorization']) assert.equal(Object.hasOwn(sent.sourceData, key), false);
   const featureLines = JSON.parse(buildMembershipFeatureRequest([input], 'mock').messages[1]!.content).inputs[0].lines;
   for (const text of ['second original body', 'full content', 'within one hour', 'one month']) {
     assert(featureLines.some((line: { text: string }) => line.text === text));

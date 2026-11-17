@@ -6,7 +6,8 @@ import {
 import {
   ASSISTANT_LIMITS, emptyShoppingNeeds, isTurnTerminal, validateAssistantReply,
 } from '@price-comparison/catalog/assistant-contract';
-import { normalizePurchaseTag, purchaseTagLabel, purchaseWarrantyLabel } from '@price-comparison/catalog/purchase-attributes';
+import { normalizePurchaseTag, purchaseTagLabel } from '@price-comparison/catalog/purchase-attributes';
+import { isFilterableProductTag } from '@price-comparison/catalog/product-tag-policy';
 import Brand from './Brand.jsx';
 import { assistantApi, ASSISTANT_SERVICE_ERROR } from './assistant-api.js';
 import { trackUsage } from './analytics.js';
@@ -34,7 +35,7 @@ function needsLabels(needs) {
     needs.platform,
     needs.product,
     ...needs.requiredTags.map(tag => displayPurchaseTagText(tag)),
-    (Object.hasOwn(needs, 'warrantyDaysMin') || needs.preferences.some(preference => !PREFERENCES[preference]) || needs.requiredTags.some(tag => !normalizePurchaseTag(tag).length)) && '旧筛选条件已失效，请重新说明需求',
+    (Object.hasOwn(needs, 'warrantyDaysMin') || needs.preferences.some(preference => !PREFERENCES[preference]) || needs.requiredTags.some(tag => !isFilterableProductTag(tag))) && '旧筛选条件已失效，请重新说明需求',
     ...needs.preferences.map(preference => PREFERENCES[preference]),
   ].filter(Boolean);
 }
@@ -126,19 +127,19 @@ function QuoteCard({ card, catalog }) {
   const facts = offerConditions(offer);
   const summary = facts.filter(fact => ['sms_verification', 'region', 'duration'].includes(fact.name))
     .map(fact => displayPurchaseTagText(fact, fact.value)).join(' · ');
-  const warranty = purchaseWarrantyLabel(offer.tags || []);
   const channel = facts.filter(fact => ['access_channel', 'supported_client'].includes(fact.name)).map(fact => displayPurchaseTagText(fact, fact.value)).join(' / ');
   const conditions = facts.filter(fact => ['bulk_purchase', 'settlement_quantity', 'subscription_override'].includes(fact.name));
-  const rows = [['使用入口/支持工具', channel], ['售后保障', warranty], ['购买条件', conditions.map(fact => displayPurchaseTagText(fact, fact.value)).join('；')]].filter(([, value]) => value);
+  const coverage = ['subscription_warranty', 'usage_warranty'].map(name => [
+    name === 'subscription_warranty' ? '订阅保障' : '使用保障',
+    facts.filter(fact => fact.name === name).map(fact => fact.value).join('；'),
+  ]);
+  const rows = [['使用入口/支持工具', channel], ...coverage, ['购买条件', conditions.map(fact => displayPurchaseTagText(fact, fact.value)).join('；')]].filter(([, value]) => value);
   const representedNotes = new Set(facts.flatMap(fact => [fact.value, displayPurchaseTagText(fact, fact.value),
     `${fact.label}：${fact.value}`, `${fact.label}：${displayPurchaseTagText(fact, fact.value)}`]));
   for (const tag of offer.tags.flatMap(normalizePurchaseTag)) {
     const fact = facts.find(fact => fact.name === tag.name);
     if (!fact) continue;
     representedNotes.add(`${fact.label}：${purchaseTagLabel(tag)}`);
-  }
-  if (purchaseWarrantyLabel(offer.tags)) {
-    representedNotes.add(`商家质保说明：${purchaseWarrantyLabel(offer.tags)}；具体限制以该报价的售后条款为准。`);
   }
   representedNotes.add('报价、库存与完整售后条款请在商品详情核对。');
   for (const note of ['售后保障：有质保', '售后保障：无质保', '售后保障：质保未说明', '保障范围：范围未说明',

@@ -13,7 +13,7 @@ import { bumpCatalogVersion, CatalogVersionRepository } from '../src/catalog/cat
 import { createCache } from '../src/cache/cache.js';
 import { ProductsRepository } from '../src/products/products.repository.js';
 import { assertCatalogPlan } from './fixtures/catalog-plan.js';
-import { isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
+import { isCanonicalProductTag, isFilterableProductTag } from '@price-comparison/catalog/product-tag-policy';
 import { tagValueKey, type PurchaseTag, PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
 import { defaultQuotePolicy } from '../src/catalog/quote-policy.js';
 import { mergeShopObservation } from '../src/shops/shop-rating.js';
@@ -102,7 +102,7 @@ describe('catalog SQL read model', () => {
     ]).execute();
     await database.insertInto('product_tags').values([
       { product_id: productOne, name: 'supported_client', value: jsonb('red') },
-      { product_id: productOne, name: 'warranty', value: jsonb('仅保首登1小时') },
+      { product_id: productOne, name: 'usage_warranty', value: jsonb('首登') },
       { product_id: productTwo, name: 'supported_client', value: jsonb('red') },
     ]).execute();
     await database.insertInto('offers').values([
@@ -918,7 +918,7 @@ describe('catalog SQL read model', () => {
       })));
       const facts = details.flatMap(page => page.items.flatMap(item =>
         item.detail!.entries.flatMap(entry => ('offer' in entry ? entry.offer : entry).tags)));
-      const expected = [...facts.filter(isCanonicalProductTag), ...query.tags];
+      const expected = [...facts.filter(isFilterableProductTag), ...query.tags];
       const keys = (tags: readonly PurchaseTag[]) => [...new Set(tags.map(tag => tag.name + ':' + tagValueKey(tag.value)))].sort();
       const result = await service.getFacets(input);
       assert.deepEqual(keys(result.tagFacets), keys(expected));
@@ -1212,7 +1212,7 @@ describe('catalog SQL read model', () => {
     const next = await readPublished({ platform: 'other', tags: [], limit: 1, cursor: first.nextCursor });
     assert.deepEqual(next.items.map(item => item.id), [standardTwo.toString()]);
     assert.equal(next.nextCursor, undefined);
-    const tagged = await readPublished({ platform: 'other', search: 'widget', tags: [{ name: 'warranty', value: '仅保首登1小时' }], limit: 20 });
+    const tagged = await readPublished({ platform: 'other', search: 'widget', tags: [{ name: 'usage_warranty', value: '首登' }], limit: 20 });
     assert.deepEqual(tagged.items.map(item => item.id), [standardOne.toString()]);
   });
 
@@ -1234,7 +1234,7 @@ describe('catalog SQL read model', () => {
     const detail = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 10 });
     assert.equal(detail.items.length, 1);
     assert.equal(detail.items[0]?.detail?.entries.length, 8);
-    const filtered = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', tag: { name: 'warranty', value: '仅保首登1小时' } });
+    const filtered = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', tag: { name: 'usage_warranty', value: '首登' } });
     assert.deepEqual(filtered.items[0]?.detail?.entries.map(entry => (entry as { productId: string }).productId), [String(productOne)]);
   });
 
@@ -1254,7 +1254,7 @@ describe('catalog SQL read model', () => {
     const options = await repository.facets({ tags: [] });
     assert.ok(options.tagFacets.some(tag => tag.name === 'region' && tag.value === 'us'));
     assert.ok(!options.tagFacets.some(tag => tag.value === '100刀' || tag.value === 'account_password_backup_email_2fa'));
-    assert.ok(options.tagFacets.some(tag => tag.name === 'warranty' && tag.value === '保订阅30天，封号不保'));
+    assert.ok(options.tagFacets.some(tag => tag.name === 'subscription_warranty' && tag.value === '质保 30 天'));
     const filtered = await readPublished({ tags: [{ name: 'region', value: 'us' }], limit: 20 });
     assert.equal(filtered.offerTotal, 2);
     const selectedOptions = await repository.facets({ tags: [{ name: 'region', value: 'us' }] });
@@ -1287,7 +1287,7 @@ describe('catalog SQL read model', () => {
     await addOfferHistory();
     for (const query of [
       { tags: [], limit: 1 },
-      { tags: [{ name: 'warranty', value: 'covered' }], limit: 1 },
+      { tags: [{ name: 'subscription_warranty', value: '质保 30 天' }], limit: 1 },
       { search: 'verified', tags: [], limit: 1 },
     ]) {
       const plan: any = await repository.explain(query);
@@ -1442,7 +1442,7 @@ describe('catalog SQL read model', () => {
       const cursor = await compare(query);
       if (cursor) await compare({ ...query, cursor });
     }
-    await compare({ tags: [{ name: 'warranty', value: 'covered' }], limit: 1 });
+    await compare({ tags: [{ name: 'subscription_warranty', value: '质保 30 天' }], limit: 1 });
     await addOfferHistory();
     const plan: any = await repository.explain({ tags: [], limit: 1 });
     assertCatalogPlan(plan);
@@ -1571,25 +1571,25 @@ describe('catalog SQL read model', () => {
 
   async function addPurchaseChoices() {
     await database.updateTable('standard_products').set({ name: 'ChatGPT Plus', platform: 'openai', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus' }).where('id', '=', standardOne).execute();
-    const noWarranty = await addSku(shopOne, 'no-warranty', '1.00', [{ name: 'sms_verification', value: 'unverified' }, { name: 'warranty', value: '无质保' }, { name: 'region', value: 'us' }]);
-    const covered30 = await addSku(shopOne, 'covered-30', '30.00', [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: '保订阅30天，封号不保' }, { name: 'region', value: 'us' }]);
-    const covered7 = await addSku(shopOne, 'covered-7', '7.00', [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: '保首登7天' }, { name: 'region', value: 'ph' }]);
-    const firstLogin = await addSku(shopOne, 'first-login', '2.00', [{ name: 'sms_verification', value: 'verified' }, { name: 'warranty', value: '购买后1小时内仅保首登' }]);
+    const noWarranty = await addSku(shopOne, 'no-warranty', '1.00', [{ name: 'sms_verification', value: 'unverified' }, { name: 'region', value: 'us' }]);
+    const covered30 = await addSku(shopOne, 'covered-30', '30.00', [{ name: 'sms_verification', value: 'verified' }, { name: 'subscription_warranty', value: '质保 30 天' }, { name: 'region', value: 'us' }]);
+    const covered7 = await addSku(shopOne, 'covered-7', '7.00', [{ name: 'sms_verification', value: 'verified' }, { name: 'usage_warranty', value: '质保 7 天' }, { name: 'region', value: 'ph' }]);
+    const firstLogin = await addSku(shopOne, 'first-login', '2.00', [{ name: 'sms_verification', value: 'verified' }, { name: 'usage_warranty', value: '首登' }]);
     return { noWarranty, covered30, covered7, firstLogin };
   }
 
   test('purchase intent filters the same SKU before calculating prices and counts', async () => {
     const { covered30 } = await addPurchaseChoices();
     const service = new CatalogService(repository, createCache({ ttl: 30_000 }));
-    const result = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, q: 'ChatGPT Plus 已接码', tags: [{ name: 'warranty', value: '保订阅30天，封号不保' }] });
+    const result = await service.getCatalog({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, q: 'ChatGPT Plus 已接码', tags: [{ name: 'subscription_warranty', value: '质保 30 天' }] });
     assert.equal(result.total, 1);
     assert.equal(result.offerTotal, 1);
     assert.equal(result.items[0]?.minPrice, '30.00');
     assert.deepEqual(detailOffers(result.items[0]!).map(offer => offer.productId), [String(covered30)]);
-    assert.ok(result.items[0]?.offers[0]?.tags.some(tag => tag.name === 'warranty' && tag.value === '保订阅30天，封号不保'));
+    assert.ok(result.items[0]?.offers[0]?.tags.some(tag => tag.name === 'subscription_warranty' && tag.value === '质保 30 天'));
     for (const detailKind of ['offers', 'shops'] as const) {
       const paged = await service.getCatalog({ standardProductId: String(standardOne), detailKind, detailPageSize: 50,
-        q: 'ChatGPT Plus 已接码', tag: [{ name: 'region', value: 'us' }, { name: 'warranty', value: '保订阅30天，封号不保' }] });
+        q: 'ChatGPT Plus 已接码', tag: [{ name: 'region', value: 'us' }, { name: 'subscription_warranty', value: '质保 30 天' }] });
       assert.equal(paged.items[0]?.detail?.total, 1);
       assert.equal(paged.items[0]?.minPrice, '30.00');
       assert.deepEqual(paged.items[0]?.detail?.entries.map(entry => 'offer' in entry ? entry.offer.productId : entry.productId), [String(covered30)]);
@@ -1601,7 +1601,7 @@ describe('catalog SQL read model', () => {
     const result = await readPublished({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'region', value: 'us' }, { name: 'region', value: 'ph' }, { name: 'sms_verification', value: 'verified' }], limit: 20 });
     assert.deepEqual(detailOffers(result.items[0]!).map(offer => offer.productId), [covered7, covered30].map(String));
     assert.equal(result.items[0]?.minPrice, '7.00');
-    const impossible = await readPublished({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'sms_verification', value: 'unverified' }, { name: 'warranty', value: '保订阅30天，封号不保' }], limit: 20 });
+    const impossible = await readPublished({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [{ name: 'sms_verification', value: 'unverified' }, { name: 'subscription_warranty', value: '质保 30 天' }], limit: 20 });
     assert.equal(impossible.total, 0);
   });
 
@@ -1623,14 +1623,19 @@ describe('catalog SQL read model', () => {
     }
   });
 
-  test('saved warranty text appears without a second semantic judgment in catalog reads', async () => {
-    const { noWarranty, firstLogin } = await addPurchaseChoices();
+  test('catalog reads preserve canonical warranty values and omit absent or retired warranties', async () => {
+    const { noWarranty, covered30, covered7, firstLogin } = await addPurchaseChoices();
+    await database.insertInto('product_tags').values({
+      product_id: noWarranty, name: 'warranty_terms', value: jsonb('无质保'),
+    }).execute();
     const result = await readPublished({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [], limit: 20 });
     const offers = detailOffers(result.items[0]!);
-    assert.deepEqual(offers.find(offer => offer.productId === String(noWarranty))!.tags.filter(tag => tag.name === 'warranty'),
-      [{ name: 'warranty', value: '无质保' }]);
-    assert.deepEqual(offers.find(offer => offer.productId === String(firstLogin))!.tags.filter(tag => tag.name === 'warranty'),
-      [{ name: 'warranty', value: '购买后1小时内仅保首登' }]);
+    const warrantyTags = (id: bigint) => offers.find(offer => offer.productId === String(id))!.tags
+      .filter(tag => ['subscription_warranty', 'usage_warranty', 'warranty_terms'].includes(tag.name));
+    assert.deepEqual(warrantyTags(noWarranty), []);
+    assert.deepEqual(warrantyTags(covered30), [{ name: 'subscription_warranty', value: '质保 30 天' }]);
+    assert.deepEqual(warrantyTags(covered7), [{ name: 'usage_warranty', value: '质保 7 天' }]);
+    assert.deepEqual(warrantyTags(firstLogin), [{ name: 'usage_warranty', value: '首登' }]);
   });
 
   test('raw listing text stays searchable but never supplies inferred purchase tags', async () => {
@@ -1749,7 +1754,7 @@ describe('catalog SQL read model', () => {
     }
     const page = await readPublished({ tags: [], limit: 20 });
     assert.deepEqual(page.items[0]?.offers.map(offer => offer.productId), [productOne.toString()]);
-    assert.deepEqual((await repository.facets({ tags: [] })).tagFacets, [{ name: 'supported_client', value: 'red', priority: 2 }, { name: 'warranty', value: '仅保首登1小时', priority: 1 }]);
+    assert.deepEqual((await repository.facets({ tags: [] })).tagFacets, [{ name: 'supported_client', value: 'red', priority: 2 }, { name: 'usage_warranty', value: '首登', priority: 1 }]);
     for (const detailKind of ['offers', 'shops'] as const) {
       const detail = await readPublished({ standardProductId: String(standardOne), detailKind, detailPage: 0, detailPageSize: 2, tags: [], limit: 20 });
       assert.equal(detail.items[0]?.productCount, 1);
@@ -1775,9 +1780,9 @@ describe('catalog SQL read model', () => {
     assert.deepEqual(page.items[0]?.offers.map(offer => offer.productId), [String(productTwo)]);
     assert.equal(page.nextCursor, undefined);
     assert.deepEqual((await repository.facets({ tags: [] })).tagFacets, [{ name: 'supported_client', value: 'red', priority: 1 }]);
-    const filtered = await readPublished({ tags: [{ name: 'warranty', value: '仅保首登1小时' }], limit: 20 });
+    const filtered = await readPublished({ tags: [{ name: 'usage_warranty', value: '首登' }], limit: 20 });
     assert.deepEqual(filtered.items, []);
-    assert.deepEqual((await repository.facets({ tags: [{ name: 'warranty', value: '仅保首登1小时' }] })).tagFacets, [{ name: 'supported_client', value: 'red', priority: 1 }, { name: 'warranty', value: '仅保首登1小时', priority: 0 }]);
+    assert.deepEqual((await repository.facets({ tags: [{ name: 'usage_warranty', value: '首登' }] })).tagFacets, [{ name: 'supported_client', value: 'red', priority: 1 }, { name: 'usage_warranty', value: '首登', priority: 0 }]);
   });
 
   test('selects latest visible offer and excludes stale/out-of-stock products', async () => {
@@ -1788,7 +1793,7 @@ describe('catalog SQL read model', () => {
   });
 
   test('requires every requested tag through SQL EXISTS intersection', async () => {
-    const page = await readPublished({ tags: [{ name: 'supported_client', value: 'red' }, { name: 'warranty', value: '仅保首登1小时' }], limit: 20 });
+    const page = await readPublished({ tags: [{ name: 'supported_client', value: 'red' }, { name: 'usage_warranty', value: '首登' }], limit: 20 });
     assert.deepEqual(page.items.map((item) => item.name), ['Widget One']);
   });
 

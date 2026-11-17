@@ -31,9 +31,10 @@ test('guide opens the matching glossary group before scrolling to field and grou
   expect(delivery.scrollIntoView).toHaveBeenCalledOnce();
   expect(delivery).toBeVisible();
   expect(delivery.closest('details')).toHaveAttribute('open');
-  window.history.replaceState({}, '', '/guide#guide-warranty');
+  window.history.replaceState({}, '', '/guide#guide-usage_warranty');
   window.dispatchEvent(new HashChangeEvent('hashchange'));
-  expect(container.querySelector('#guide-warranty')).toHaveAttribute('open');
+  expect(container.querySelector('#guide-usage_warranty')).toHaveAttribute('open');
+  expect(container.querySelector('#guide-warranty_terms')).toBeNull();
   expect(container.querySelector('#guide-scenarios').tagName).toBe('H2');
 });
 

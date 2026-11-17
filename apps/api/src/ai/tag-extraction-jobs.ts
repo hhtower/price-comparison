@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { sql, type Kysely, type Transaction } from 'kysely';
+import { sql, type Kysely, type Transaction, type RawBuilder } from 'kysely';
 import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
 import { isAttributeJobType, jsonb, type AttributeJobType as AttributeJobKind, type DatabaseSchema, type JsonValue } from '../database/types.js';
 import { readAiBatchLimits } from '../config/env.js';
@@ -20,9 +20,10 @@ type Db = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 export interface TagJobScope { allPending?: boolean; productIds?: readonly bigint[]; scopeShopId?: bigint; retryOfJobId?: bigint }
 export interface TagJobRequest extends TagJobScope { model: string; requestId: string; previewDigest?: string }
 const MAX_SCOPE = 500;
-export function currentTagMemberSource(member: 'm' | 'newer') {
+export function currentTagMemberSource(member: 'm' | 'newer', warrantyEligible?: RawBuilder<boolean>) {
   const payload = sql.ref(`${member}.payload`);
-  return sql<boolean>`${payload}->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)`;
+  return sql<boolean>`${payload}->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)
+    ${warrantyEligible ? sql`and ${payload}->'warrantyEligible'=to_jsonb(coalesce(${warrantyEligible},false))` : sql``}`;
 }
 function canonicalScope(input: TagJobScope) {
   if ((input.allPending !== undefined && input.allPending !== true) || Number(input.productIds !== undefined) + Number(input.scopeShopId !== undefined) + Number(input.allPending === true) !== 1 || (input.allPending && input.retryOfJobId !== undefined)) throw new DomainValidationError('AI_TAG_SCOPE_REQUIRED', '请选择全部未完成、商品或店铺范围');
@@ -63,7 +64,7 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
         from ai_job_input_members m join ai_jobs j on j.id=m.job_id
         where m.product_id=p.id and j.job_type=${kind}
           and m.content_version=p.content_version and m.standardization_revision=p.standardization_revision and m.fingerprint=p.content_fingerprint
-          and ${kind === 'tag_extraction' ? currentTagMemberSource('m')
+          and ${kind === 'tag_extraction' ? currentTagMemberSource('m', aiMembership)
             : sql<boolean>`m.payload->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)`}
           and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
         order by j.id desc limit 1
@@ -84,13 +85,14 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
     && readCurrentMembershipFeatures(product.membership_features, product))).map(product => {
     const payload = buildExtractionPayload({id:String(product.id),name:product.name,sourceName:product.source_name,description:product.source_description || undefined,spec:product.spec,category:product.source_category,sourceData:product.source_data});
     if (kind === 'membership_features') delete payload.shopText;
+    if (kind === 'tag_extraction') payload.warrantyEligible = !!product.ai_membership;
     payload.shopSource = { url: product.shop_url, protocol: product.shop_protocol, platform: product.shop_platform };
     const fingerprint = product.content_fingerprint;
     const text = kind === 'membership_features' ? null : readTextEvidence(payload);
     const storedText = kind === 'text_review' && input.allPending ? prepareTextReview(product) : null;
     const textCurrent = storedText?.source.url === product.shop_url && storedText.source.protocol === product.shop_protocol
       && storedText.source.platform === product.shop_platform;
-    const inputKey = JSON.stringify([fingerprint,extractionContextKey(payload),text ? [text.name,text.description,text.hash] : null]);
+    const inputKey = JSON.stringify([fingerprint,payload.warrantyEligible,extractionContextKey(payload),text ? [text.name,text.description,text.hash] : null]);
     return {product,payload,fingerprint,inputKey,...estimateInputSize(payload), protected: !!(product.deleted_at || product.shop_deleted_at || !product.enabled || product.standardization_locked || product.manual || product.human
       || !product.published || (kind === 'membership_features' && !product.ai_membership)
       || (kind === 'text_review' && (!text || textCurrent)))};
@@ -104,9 +106,14 @@ function plan(sized: Awaited<ReturnType<typeof selection>>['sized'], kind: Attri
   const limits = readAiBatchLimits();
   if (kind === 'membership_features') limits.maxItems = Math.min(limits.maxItems, MEMBERSHIP_FEATURE_MAX_ITEMS);
   // shortcut: bulk scopes use published identities instead of fuzzy similarity above 1,000 inputs; refine only if refusal isolation needs it.
-  const batches = kind === 'tag_extraction' && inputs.length > 1_000
-    ? planBulkStandardizationBatches(inputs,limits)
-    : planIndependentStandardizationBatches(inputs,limits);
+  const warrantyInputs = kind === 'tag_extraction' ? inputs.filter(input => input.payload.warrantyEligible === true) : [];
+  const ordinaryInputs = kind === 'tag_extraction' ? inputs.filter(input => input.payload.warrantyEligible !== true) : inputs;
+  const batches = [
+    ...planIndependentStandardizationBatches(warrantyInputs, { ...limits, maxItems: 1 }),
+    ...(kind === 'tag_extraction' && ordinaryInputs.length > 1_000
+      ? planBulkStandardizationBatches(ordinaryInputs, limits)
+      : planIndependentStandardizationBatches(ordinaryInputs, limits)),
+  ];
   const planned = new Set(batches.flatMap(b=>b.productIds.map(String)));
   return {representatives,batches,planned};
 }
@@ -259,6 +266,7 @@ async function persistAttributeJob(tx:Transaction<DatabaseSchema>,input:TagJobIn
     return {job_id:job.id,input_id:inputId,product_id:item.product.id,...member,payload:jsonb(item.payload),status:oversized?'unclassified':'queued',retry_source_job_id:input.retryOfJobId??null,reason_code:oversized?'input_too_large':null,output:oversized?jsonb({...buildTagExtractionOutcome({productId:inputId,tags:[],rejectedTags:[]},[],{outcome:'failed',reasonCode:'input_too_large'}),versions:tagExtractionVersions(member,job.pipeline_versions)} as unknown as JsonValue):null};
   })).execute();
   const memberCounts=new Map<bigint,number>();
+  const warrantyInputIds = new Set(inputs.filter(item => item.payload.warrantyEligible === true).map(item => item.product.id));
   for(const item of active) {
     const id=representatives.get(item.inputKey)!.product.id;
     memberCounts.set(id,(memberCounts.get(id)??0)+1);
@@ -266,6 +274,11 @@ async function persistAttributeJob(tx:Transaction<DatabaseSchema>,input:TagJobIn
   for(let offset=0;offset<batches.length;offset+=MAX_SCOPE) await tx.insertInto('ai_job_batches').values(batches.slice(offset,offset+MAX_SCOPE).map((batch,index)=>({
     job_id:job.id,batch_index:BigInt(offset+index),product_ids:jsonb(batch.productIds.map(String)),product_count:BigInt(batch.productIds.reduce((count,id)=>count+memberCounts.get(id)!,0)),
     input_bytes:BigInt(batch.inputBytes),estimated_tokens:BigInt(batch.estimatedTokens),status:'queued' as const,round:0,step:'request' as const,request_budget_limit:2,
+    ...(kind === 'tag_extraction' ? { reference_snapshot: jsonb({
+      tagStage: warrantyInputIds.has(batch.productIds[0]!) ? 'warranty' : 'extract', strategyVersion: 'bounded-candidate-v1', catalogVersion: '0',
+      inputs: batch.productIds.map(id => ({ id: String(id), candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } })),
+      candidates: [],
+    }) } : {}),
   }))).execute();
   await incrementJobProgress(tx,{jobId:job.id});
   return job;

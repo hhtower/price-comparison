@@ -261,7 +261,7 @@ test('MCP accepts typed tag values and advertises only current fields', async t 
   assert.equal('warrantyDaysMin' in schema.properties, false);
   assert.deepEqual([...schema.properties.tags.items.properties.name.enum].sort(), [
     'access_channel', 'bulk_purchase', 'duration', 'region', 'sms_verification',
-    'subscription_override', 'supported_client', 'warranty',
+    'subscription_override', 'subscription_warranty', 'supported_client', 'usage_warranty',
   ]);
   for (const value of [0.5, 30, { kind: 'range', min: 30, max: 90 }, { kind: 'min', days: 30 },
     { kind: 'max', days: 90 }, { kind: 'approx', days: 30 }, { kind: 'permanent' }]) {
@@ -271,18 +271,19 @@ test('MCP accepts typed tag values and advertises only current fields', async t 
   }
   for (const tags of [
     [{ name: 'bulk_purchase', value: 'supported' }], [{ name: 'bulk_purchase', value: 'required' }],
-    [{ name: 'bulk_purchase', value: 'bundle' }], [{ name: 'warranty', value: '保订阅30天，封号不保' }],
-    [{ name: 'warranty', value: '到手无法使用可联系处理' }], [{ name: 'warranty', value: 'none' }],
-    [{ name: 'warranty', value: 'covered' }],
+    [{ name: 'bulk_purchase', value: 'bundle' }], [{ name: 'subscription_warranty', value: '订阅保障30天' }],
+    [{ name: 'usage_warranty', value: '仅保首登' }], [{ name: 'usage_warranty', value: '封号保障7天' }],
   ]) assert.equal((await call('get_product_offers', { standardProductId: '1', tags })).json().result.isError, undefined);
   const count = queries.length;
   for (const args of [
     { warrantyDaysMin: 30 },
     ...[
       { name: 'delivery', value: 'account' }, { name: 'warranty_days', value: '30' },
+      { name: 'warranty', value: '保订阅30天' }, { name: 'warranty_terms', value: '完整保障条款' },
+      { name: 'subscription_warranty', value: '字'.repeat(251) },
       { name: 'duration', value: '30 days' }, { name: 'duration', value: { kind: 'range', min: 90, max: 30 } },
       { name: 'duration', value: { kind: 'min', days: 30, unit: 'days' } },
-      { name: 'region', value: 30 }, { name: 'warranty', value: '' }, { name: 'warranty', value: 'x'.repeat(251) },
+      { name: 'region', value: 30 }, { name: 'warranty_terms', value: '' }, { name: 'warranty_terms', value: 'x'.repeat(251) },
       { name: 'subscription_override', value: '有' }, { name: 'bulk_purchase', value: 'yes' },
     ].map(tag => ({ tags: [tag] })),
   ]) {

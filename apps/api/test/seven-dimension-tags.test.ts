@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PRODUCT_TAG_RULES, isCanonicalProductTag, normalizeProductTag } from '@price-comparison/catalog/product-tag-policy';
-import { normalizePurchaseTag, parseCatalogSearch, purchaseTagLabel, purchaseWarrantyLabel } from '@price-comparison/catalog/purchase-attributes';
+import { normalizePurchaseTag, parseCatalogSearch, purchaseTagLabel } from '@price-comparison/catalog/purchase-attributes';
 import * as attributes from '@price-comparison/catalog/purchase-attributes';
 
-test('only the eight keys of seven buying dimensions are accepted', () => {
+test('buying dimensions use only current keys without supporting terms', () => {
   assert.deepEqual(Object.keys(PRODUCT_TAG_RULES).sort(), [
     'sms_verification', 'region', 'duration', 'access_channel', 'supported_client',
-    'subscription_override', 'bulk_purchase', 'warranty',
+    'subscription_override', 'bulk_purchase', 'subscription_warranty', 'usage_warranty',
   ].sort());
-  for (const name of ['access', 'delivery', 'payment_region', 'warranty_days', '2fa', 'renewable']) {
+  for (const name of ['access', 'delivery', 'payment_region', 'warranty_days', 'warranty_terms', '2fa', 'renewable']) {
     assert.deepEqual(normalizePurchaseTag({ name, value: '有' }), []);
   }
   assert.equal(isCanonicalProductTag({ name: 'subscription_override', value: '有' }), false);
@@ -47,27 +47,29 @@ test('region, bulk and warranty normalize without recreating retired fields', ()
   assert.equal(purchaseTagLabel({ name: 'bulk_purchase', value: 'supported' }), '支持批量购买');
   assert.equal(purchaseTagLabel({ name: 'bulk_purchase', value: 'required' }), '需批量购买');
   assert.equal(purchaseTagLabel({ name: 'bulk_purchase', value: 'bundle' }), '打包出售');
-  assert.equal(purchaseWarrantyLabel([{ name: 'warranty', value: '购买后1小时内仅保首登；封号不保' }]), '购买后1小时内仅保首登；封号不保');
-  assert.equal(isCanonicalProductTag({ name: 'warranty', value: '仅保首登1小时，后续无售后' }), true);
-  assert.equal(isCanonicalProductTag({ name: 'warranty', value: '质保30天，质保到期后不再免费换货' }), true);
+  assert.equal(purchaseTagLabel({ name: 'usage_warranty', value: '首登' }), '首登');
+  assert.equal(isCanonicalProductTag({ name: 'warranty_terms', value: '仅保首登1小时，后续无售后' }), false);
+  assert.equal(isCanonicalProductTag({ name: 'usage_warranty', value: '质保30天，质保到期后不再免费换货' }), false);
 });
 
-test('text tags are validated structurally and displayed without guessing their meaning', () => {
-  for (const value of [
-    '到手1小时内无法使用可联系处理；超过1小时不售后；登录后封禁不退款不换号',
-    '密码或2FA错误可联系处理；账号被封禁不处理',
-    '一个月内掉订阅但账号未封可按天售后',
-    '卡密一次性，不退不换', '不享受质保', '质保已过期', 'unknown',
-    'El vendedor ayuda si no funciona al recibirlo.',
-  ]) {
-    const fact = { name: 'warranty', value };
-    assert.equal(isCanonicalProductTag(fact), true, value);
-    assert.deepEqual(normalizeProductTag(fact), [fact]);
-    assert.equal(purchaseWarrantyLabel([fact]), value);
+test('warranty formats are single-value and validated mechanically without interpreting wording', () => {
+  for (const name of ['subscription_warranty', 'usage_warranty']) {
+    assert.notEqual(PRODUCT_TAG_RULES[name].multiple, true);
+    for (const value of ['质保 48 小时', '质保 0.125 小时', '质保 1.3333 天', '质保 1e+21 天', '质保（期限未注明）']) {
+      const fact = { name, value };
+      assert.equal(isCanonicalProductTag(fact), true, value);
+      assert.deepEqual(normalizeProductTag(fact), [fact]);
+      assert.equal(purchaseTagLabel(fact), value);
+    }
+    for (const value of [
+      '', ' ', '质保30天', '首登保障', 'unknown', 'covered', '无售后', '有质保', '质保 0 天',
+      '质保 -1 天', '质保 1e309 天', '质保 Infinity 天', '质保 NaN 天', '质保 60 分钟',
+      '质保 1 月', ' 质保 1 天', '质保 1 天 ', '质保 1 天；封号不保', 'x'.repeat(251), 30, true, null, {},
+    ]) assert.equal(isCanonicalProductTag({ name, value }), false, JSON.stringify(value));
   }
-  for (const value of ['', ' ', ' leading', 'trailing ', 'x'.repeat(251), 30, true, null, {}]) {
-    assert.equal(isCanonicalProductTag({ name: 'warranty', value }), false);
-  }
+  assert.equal(isCanonicalProductTag({ name: 'usage_warranty', value: '首登' }), true);
+  assert.equal(isCanonicalProductTag({ name: 'subscription_warranty', value: '首登' }), false);
+  assert.equal('purchaseWarrantyTerms' in attributes, false);
 });
 
 test('search uses numeric durations without treating warranty or redemption deadlines as use periods', () => {

@@ -181,7 +181,7 @@ test('explicit purchase filters override inferred same-dimension conditions', ()
 });
 
 test('invalid purchase filters fail closed rather than silently broadening search', () => {
-  for (const tag of ['not-json', 'null', JSON.stringify({ name: 'warranty', value: null })]) {
+  for (const tag of ['not-json', 'null', JSON.stringify({ name: 'warranty_terms', value: null })]) {
     assert.throws(() => normalizeCatalogQuery({ tag }), { code: 'INVALID_FILTER' });
   }
   for (const warrantyDaysMin of [-1, 0, 1.5, Number.NaN, 36501]) {

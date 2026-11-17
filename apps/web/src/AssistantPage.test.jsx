@@ -353,7 +353,7 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
     detailPath: '/products/42', reasons: ['商家提供代充'], caveats: ['请核对售后范围'], evidenceIds: ['e1'],
     offer: { name: `Plus 代充方案${index + 1}`, shop: `测试店铺${index + 1}`, spec: '一个月',
       productUrl: `https://shop.invalid/items/${id}`, tags: [{ name: 'subscription_override', value: '无' },
-        { name: 'warranty', value: '保订阅30天，封号不保' }] },
+        { name: 'subscription_warranty', value: '质保 12 天' }] },
   }));
   const result = { ...reply, kind: 'recommendation', text: '优先有质保、代充的报价', options: [], cards };
   render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1,
@@ -367,7 +367,7 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
     const dialog = screen.getByRole('dialog', { name: cards[index].offer.name });
     expect(dialog).toHaveTextContent(cards[index].offer.shop);
     expect(dialog).toHaveTextContent(`¥${cards[index].price}`);
-    expect(dialog).toHaveTextContent('保订阅');
+    expect(dialog).toHaveTextContent('质保 12 天');
     expect(within(dialog).getByRole('link', { name: '前往商家核对报价' })).toHaveAttribute('href', cards[index].offer.productUrl);
     expect(within(dialog).queryByRole('button', { name: '举报此报价' })).not.toBeInTheDocument();
     fireEvent.keyDown(dialog, { key: 'Escape' });
@@ -376,44 +376,44 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
   }
 });
 
-test('quote cards preserve complete warranty and bulk conditions for ordinary products', async () => {
+test('quote cards preserve membership warranty and bulk conditions', async () => {
   const warranty = '需半价资格号，保订阅30天，掉订阅按剩余天数退款，封号不保';
-  await renderReferenceCards([], [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [
-    { name: 'duration', value: 30 }, { name: 'warranty', value: warranty }, { name: 'bulk_purchase', value: 'supported' },
+  await renderReferenceCards([], [{ ...referenceCard, offer: { ...referenceCard.offer, spec: warranty, tags: [
+    { name: 'duration', value: 30 }, { name: 'subscription_warranty', value: '质保 12 天' },
+    { name: 'usage_warranty', value: '首登' }, { name: 'bulk_purchase', value: 'supported' },
   ] } }]);
   const article = screen.getByRole('heading', { name: referenceCard.title }).closest('article');
   expect(article).toHaveTextContent('1个月');
   fireEvent.click(within(article).getByText('购买须知'));
   const notes = article.querySelector('.assistant-purchase-notes');
-  expect(notes).toHaveTextContent('售后保障：' + warranty);
+  expect(notes).toHaveTextContent('订阅保障：质保 12 天');
+  expect(notes).toHaveTextContent('使用保障：首登');
+  expect(notes).not.toHaveTextContent(warranty);
   expect(notes).toHaveTextContent('购买条件：支持批量购买');
   expect(notes).not.toHaveTextContent('件起购');
   fireEvent.click(within(article).getByRole('button', { name: '查看报价详情' }));
-  expect(within(screen.getByRole('dialog')).getAllByText(warranty)).toHaveLength(1);
+  expect(within(screen.getByRole('dialog')).getAllByText(warranty, { exact: false })).toHaveLength(1);
 });
 
-test.each(['购买后1小时内仅保首登', '保订阅30天，封号不保', '激活后24小时内仅保首次接码'])('shows complete warranty promise: %s', async value => {
-  await renderReferenceCards([], [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'warranty', value }] } }]);
-  fireEvent.click(screen.getByText('购买须知'));
-  expect(screen.getByText(value)).toBeVisible();
+test.each(['质保 2.5 小时', '质保 12 天', '首登', '质保（期限未注明）'])('shows canonical warranty value: %s', async value => {
+  await renderReferenceCards([], [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'usage_warranty', value }] } }]);
+  fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
+  expect(within(screen.getByRole('dialog')).getByText(value)).toBeVisible();
 });
 
-test.each(['none', 'unknown', 'covered', '首次进入遇到异常，请提交截图，我们会重新发放一份'])('saved warranty text %s renders verbatim without generated labels', async value => {
+test.each(['none', 'unknown', 'covered', '首次进入遇到异常，请提交截图，我们会重新发放一份'])('retired warranty text %s invalidates saved conditions without fallback', async value => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
-  const card = { ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'warranty', value }] } };
+  const card = { ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'warranty_terms', value }] } };
   render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(),
     turns: [{ ...done, reply: { ...reply, text: '历史选择依据', kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
-  expect(await screen.findByText('历史选择依据')).not.toHaveTextContent('历史推荐条件已失效');
-  fireEvent.click(await screen.findByText('购买须知'));
-  expect(screen.getByText(value, { exact: true })).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
-  expect(within(screen.getByRole('dialog')).getByText(value, { exact: true })).toBeVisible();
-  expect(screen.queryByText(/无售后|有质保|质保未说明/)).not.toBeInTheDocument();
+  expect(await screen.findByText(/历史选择依据/)).toHaveTextContent('历史推荐条件已失效');
+  expect(screen.queryByText(value, { exact: true })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '查看报价详情' })).not.toBeInTheDocument();
 });
 
 test.each([30, { days: 30 }])('malformed warranty %j preserves reply text with an invalid-conditions fallback', async value => {
   sessionStorage.setItem('shopping-assistant', JSON.stringify(credentials));
-  const card = { ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'warranty', value }] } };
+  const card = { ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'warranty_terms', value }] } };
   render(<AssistantPage api={mockApi({ readSession: vi.fn(async () => ({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(),
     turns: [{ ...done, reply: { ...reply, text: '原始选择依据', kind: 'recommendation', options: [], cards: [card] } }] })) })} />);
   expect(await screen.findByText(/原始选择依据/)).toHaveTextContent('历史推荐条件已失效');
@@ -427,13 +427,13 @@ test('quote details reuse cleaned merchant titles and facts, with the update tim
     caveats: ['报价、库存与完整售后条款请在商品详情核对。', extra],
     offer: { ...referenceCard.offer, name: '【现货秒发】Plus 两个月独享成品号', productUrl: 'https://shop.invalid/buy', tags: [
       { name: 'bulk_purchase', value: 'supported' }, { name: 'duration', value: 60 },
-      { name: 'warranty', value: '保订阅45天，封号按剩余质保时间退款' },
+      { name: 'subscription_warranty', value: '质保 12 天' },
     ] } };
   await renderReferenceCards([], [card]);
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
   const dialog = screen.getByRole('dialog', { name: 'Plus 两个月独享成品号' });
   expect(dialog).not.toHaveTextContent(/现货|秒发|购买内容：成品号|使用期限：2个月|质保天数：|保障窗口45天|下单前核对|采集于/);
-  expect(within(dialog).getAllByText('保订阅45天，封号按剩余质保时间退款')).toHaveLength(1);
+  expect(within(dialog).getAllByText('质保 12 天')).toHaveLength(1);
   expect(within(dialog).getAllByText('2个月')).toHaveLength(1);
   expect(dialog).toHaveTextContent(extra);
   expect(dialog).toHaveTextContent('封号按剩余质保时间退款');

@@ -19,9 +19,9 @@ test('a true label needs no citation or text review and ignores payload semantic
 });
 
 test('a false label stays in audit and cannot remove existing facts', () => {
-  const fact = tag('warranty', '质保30天');
-  const result = validateReviewedTagExtractionDecision(1n, [], [rejected(fact)], { sourceData: { evidence: '质保30天' } });
-  const before = [{ name: 'warranty', value: 'covered' }, { name: 'warranty_days', value: '7' }];
+  const fact = tag('duration', 30);
+  const result = validateReviewedTagExtractionDecision(1n, [], [rejected(fact)], { sourceData: { evidence: 'Token expires in 30 days' } });
+  const before = [{ name: 'region', value: 'us' }, { name: 'duration', value: 7 }];
   const output = buildTagExtractionOutcome(result, before);
   assert.deepEqual(result.tags, []);
   assert.deepEqual(result.rejectedTags, [rejected(fact)]);
@@ -30,10 +30,10 @@ test('a false label stays in audit and cannot remove existing facts', () => {
   assert.equal(output.outcome, 'failed');
 });
 
-test('one false warranty label does not veto another true label from the same product', () => {
-  const yes = tag('warranty', '仅保首登');
+test('one false label does not veto another true label from the same product', () => {
+  const yes = tag('supported_client', 'codex');
   const no = rejected(tag('duration', 30));
-  const result = validateReviewedTagExtractionDecision(1n, [yes], [no], { sourceData: { evidence: '仅保首登' } });
+  const result = validateReviewedTagExtractionDecision(1n, [yes], [no], { sourceData: { evidence: 'Supports Codex' } });
   assert.deepEqual(result.tags, [yes]);
   assert.deepEqual(result.rejectedTags, [no]);
 });
@@ -54,7 +54,6 @@ test('true votes retain vocabulary, typed numeric values, length and single-valu
     tag('duration', Number.NaN),
     tag('region', 'invalid'),
     tag('supported_client', 'c'.repeat(81)),
-    tag('warranty', '质保'.repeat(126)),
     tag('sms_verification', 'verified'),
     tag('sms_verification', 'unverified'),
   ], [], { sourceData: { evidence: '已接码' } });
@@ -64,10 +63,9 @@ test('true votes retain vocabulary, typed numeric values, length and single-valu
   ]));
 });
 
-test('the review model owns warranty and bulk semantics instead of payload regex vetoes', () => {
+test('the review model owns client and bulk semantics instead of payload regex vetoes', () => {
   for (const [fact, evidence] of [
-    [tag('warranty', '保订阅30天'), '保订阅30天，封号不保'],
-    [tag('warranty', '所有问题无条件包赔'), '所有问题无条件包赔'],
+    [tag('supported_client', 'codex'), 'Client support requires confirmation'],
     [tag('bulk_purchase', 'required'), '支持批量下单'],
   ] as const) {
     const result = validateReviewedTagExtractionDecision(1n, [fact], [], { sourceData: { evidence } });

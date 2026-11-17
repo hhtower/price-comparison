@@ -7,10 +7,10 @@ import { validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-
 
 test('synthetic references use the compact tag protocol while retaining cited ground truth', async () => {
   const fixture = JSON.parse(await readFile(new URL('./fixtures/tag-extraction-quality-expanded-20261016.json', import.meta.url), 'utf8'));
-  assert.equal(fixture.samples.length, 51);
-  assert.equal(new Set(fixture.samples.map((sample: any) => sample.id)).size, 51);
+  assert.equal(fixture.samples.length, 54);
+  assert.equal(new Set(fixture.samples.map((sample: any) => sample.id)).size, 54);
   const inputs = fixture.samples.map((sample: any) => JSON.stringify({ ...sample.input, id: undefined }));
-  assert.equal(new Set(inputs).size, 51);
+  assert.equal(new Set(inputs).size, 54);
   const response = { items: fixture.samples.map((sample: any) => ({
     id: sample.id, tags: sample.expected.map(({ name, value }: any) => ({ name, value })),
   })) };
@@ -27,7 +27,7 @@ test('synthetic references use the compact tag protocol while retaining cited gr
     }
   }
   const groups = new Set(fixture.samples.flatMap((sample: any) => sample.expected.map((tag: any) => PURCHASE_GUIDE_FIELDS[tag.name].collectionGroup)));
-  assert.equal(groups.size, 7);
+  assert.equal(groups.size, 6);
   assert.ok(fixture.samples.filter((sample: any) => !sample.expected.length).length >= 6);
   assert.match(fixture.annotationScope, /synthetic/);
 });

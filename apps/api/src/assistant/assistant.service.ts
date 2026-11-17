@@ -29,7 +29,7 @@ purpose、platform、product为非空字符串或null；purpose最多${ASSISTANT
 用户纠正套餐（如“我要的是plus”）时，结合已有平台和商品将product改为对应完整套餐名，保留其他要求；Plus、Go、Pro是不同套餐，不能互换。不确定属于哪个产品时先澄清。
 pagePlatform是页面筛选的默认平台，用户明确指定的平台或商品优先；未提及的已确认需求、预算、用途继续保留。budget为{amount:"金额字符串",currency:"三位大写币种",basis:"purchase或month"}或null；对象只含这三个字段。amount为非负十进制数字字符串，整数部分最多${ASSISTANT_LIMITS.amountIntegerMaxDigits}位，除0外无前导零，可带1至2位小数，总长最多${ASSISTANT_LIMITS.amountMaxChars}字符；不含符号、分隔符或币种，例如"80.00"。null表示用户明确撤销预算。
 requiredTags为[{name,value}]，最多${ASSISTANT_LIMITS.tagsMax}项，每项只有name和value。name必须符合商品标签词表；文本值最多${ASSISTANT_LIMITS.tagValueMaxChars}字符。duration精确值为有限正数天数，1个月=30、1年=365、12个月=360、12小时=0.5；限定用{kind:"range",min:天数,max:天数}、{kind:"min"|"max"|"approx",days:天数}或{kind:"permanent"}，不得输出期限字符串，不把范围或约数当精确期限。月预算仅匹配精确30天。
-标签只表达接码状态sms_verification、商品自身地区region、期限duration、入口access_channel和工具supported_client、不可覆盖subscription_override、批量bulk_purchase、售后说明warranty。地区、入口和工具可多选，同名标签的多个值按OR匹配、不同标签名按AND匹配；IP商品自身地区可用，账号的网络建议不能当账号地区。subscription_override只允许"无"。bulk_purchase取supported、required、bundle，支持批量不代表强制起购，标签不提供结算数量或总价。warranty为完整保障说明，保留期限、范围、起算点、免责和前提，不能推算天数筛选或长短排序；用户要求最低质保天数或更长质保时先说明只能查看完整条款并澄清，不能把要求默默忽略或变成精确文本匹配。
+标签只表达接码状态sms_verification、商品自身地区region、期限duration、入口access_channel和工具supported_client、不可覆盖subscription_override、批量bulk_purchase、订阅保障subscription_warranty、使用保障usage_warranty。同名标签的多个值按OR匹配、不同标签名按AND匹配；IP商品自身地区可用，账号的网络建议不能当账号地区。subscription_override只允许"无"。bulk_purchase取supported、required、bundle，支持批量不代表强制起购，标签不提供结算数量或总价。质保仅用于AI会员，两类分别使用“质保 X 小时”“质保 X 天”或“质保（期限未注明）”，使用保障还允许“首登”；无明确保障时省略，不能从会员分类或使用期限推断。两种保障不能互相替代，首登仅指首次登录，标签不是无条件承诺；免责、退款和申请条件请核对商家说明。不能推算天数范围筛选或长短排序；用户要求最低质保天数或更长质保时先说明需核对范围和完整条款并澄清，不能把要求默默忽略或变成精确文本匹配。
 不得重复同一name/value；仅${Object.entries(PRODUCT_TAG_RULES).filter(([, rule]) => rule.multiple).map(([name]) => name).join('、')}允许同名不同值。未提到字段保留，数组出现则整体替换，[]表示用户明确撤销，数组不能为null。
 product只放商品/套餐名，购买条件不能拼进product。AI会员的成品号=membershipKinds:["account"]，代充=membershipKinds:["top_up"]，租号、共享、合租=membershipKinds:["rental"]，短期=membershipKinds:["short_term"]，未分类=membershipKinds:["unclassified"]（报价暂无有效分类，并非第五种已审定类型）；明确全部类别或关闭新手范围时newcomer=false且membershipKinds=null。membershipKinds为account、top_up、rental、short_term、unclassified五个查询分组值的非空去重数组或null，newcomer为布尔值；仅用户明确选择时写入，否定租号、共享或合租不能转成选择rental；恢复默认时newcomer=true且membershipKinds=null。交付形式、独享共享、续费资格等未在词表中的条件只通过完整商品说明核实，不生成标签要求；不能以标签替代会员分类。
 例如“我现在有一个gpt账号了，想要找一个plus代充”：intent=recommend，product="ChatGPT Plus"，platform="openai"，membershipKinds=["top_up"]并保留已有条件。已有账号是用户现状，不是要买成品账号；未提及预算、时长、质保或独享，不得补设要求。
@@ -328,7 +328,7 @@ export class AssistantService {
 
   private card(candidate: AssistantCandidate, selection: ExplanationSelection): AssistantReply['cards'][number] {
     const evidence = candidateEvidence(candidate);
-    const warrantyFacts = evidence.filter(item => /^(?:商家质保说明|商家未明确质保|不保事项|售后条款)/u.test(item.text)).slice(0, 3);
+    const warrantyFacts = evidence.filter(item => /^(?:订阅保障|使用保障)：/u.test(item.text)).slice(0, 2);
     const capabilityFacts = evidence.filter(item => candidate.capabilityEvidence.some(source => source.statement === item.text)).slice(0, 1);
     const membershipFacts = evidence.filter(item => /^会员商品特性：/u.test(item.text));
     const reasonFacts = [...new Map([...membershipFacts, ...capabilityFacts,
@@ -344,7 +344,7 @@ export class AssistantService {
       caveats: [...new Set(warrantyFacts.map(item => item.text)),
         candidate.capabilityEvidence.length
           ? '功能依据官方套餐资料；实际使用入口、地区和账号条件请向商家确认。报价为采集参考，存在同步时间差；实际价格、库存与售后条款请向商家确认。'
-          : '报价、库存与完整售后条款请在商品详情核对。'],
+          : '保障标签不是无条件承诺；报价、库存与完整售后条款请向商家核对。'],
       evidenceIds: [...new Set([...reasonFacts, ...warrantyFacts].map(item => item.id))],
     };
   }
@@ -376,8 +376,12 @@ export class AssistantService {
   }
 
   private explainConcept(text: string): string | null {
+    if (/质保|售后|保障/u.test(text) && !/订阅保障|使用保障/u.test(text)) {
+      return `${PURCHASE_GUIDE_FIELDS.subscription_warranty.explanation}${PURCHASE_GUIDE_FIELDS.usage_warranty.explanation}`;
+    }
     const concepts: Array<[RegExp, string]> = [
-      [/质保|售后/u, 'warranty'], [/期限|时长|有效期/u, 'duration'], [/验证|接码/u, 'sms_verification'],
+      [/订阅保障/u, 'subscription_warranty'], [/使用保障/u, 'usage_warranty'],
+      [/期限|时长|有效期/u, 'duration'], [/验证|接码/u, 'sms_verification'],
       [/批量|起购|打包/u, 'bulk_purchase'], [/地区/u, 'region'], [/入口|工具/u, 'access_channel'],
     ];
     const field = concepts.find(([pattern]) => pattern.test(text))?.[1];

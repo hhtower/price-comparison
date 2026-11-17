@@ -4,7 +4,7 @@ export const PURCHASE_GUIDE_GROUPS = [
   { id: 'verification', label: '接码状态' }, { id: 'region', label: '地区' },
   { id: 'duration', label: '使用期限' }, { id: 'usage', label: '使用入口与支持工具' },
   { id: 'subscription', label: '覆盖现有订阅' }, { id: 'bulk', label: '批量购买' },
-  { id: 'warranty', label: '售后保障' },
+  { id: 'subscription_warranty', label: '订阅保障' }, { id: 'usage_warranty', label: '使用保障' },
 ] as const;
 type DisplayGroup = typeof PURCHASE_GUIDE_GROUPS[number]['id'];
 export interface PurchaseGuideField {
@@ -19,7 +19,8 @@ const definitions: Array<[string, string, DisplayGroup, string, string]> = [
   ['supported_client', '支持工具', 'usage', '明确支持软件或工具的商品', '原文明确支持的工具名称；支持不能扩展为仅支持。'],
   ['subscription_override', '覆盖现有订阅', 'subscription', '订阅充值商品', '仅明确不能覆盖现有订阅时显示不可覆盖订阅，未说明或允许覆盖时省略。'],
   ['bulk_purchase', '批量购买', 'bulk', '明确批量销售的商品', '区分支持批量、多件起购和固定打包，不由库存或价格推断，不代替实际结算数量。'],
-  ['warranty', '售后保障', 'warranty', '所有有明确保障的商品', '完整保留保障范围、期限、起算点及必要免责；无售后或未说明不展示，不从会员分类推断具体保障。'],
+  ['subscription_warranty', '订阅保障', 'subscription_warranty', 'AI 会员商品', '表示订阅权益的质保，显示为“质保 X 小时”“质保 X 天”或“质保（期限未注明）”。未明确保障时省略；不代表登录、封号或无条件赔付保障，具体条件请核对商家说明。'],
+  ['usage_warranty', '使用保障', 'usage_warranty', 'AI 会员商品', '表示账号或服务使用的质保，显示为“质保 X 小时”“质保 X 天”“首登”或“质保（期限未注明）”。首登仅指首次登录，未明确保障时省略；标签不是无条件承诺，具体条件请核对商家说明。'],
 ];
 export const PURCHASE_GUIDE_FIELDS: Readonly<Record<string, PurchaseGuideField>> = Object.fromEntries(definitions.map(([name, label, displayGroup, appliesTo, explanation], index) => [name, {
   label, explanation, appliesTo, displayGroup, collectionGroup: PURCHASE_GUIDE_GROUPS.find(g => g.id === displayGroup)!.label,
@@ -72,5 +73,5 @@ export const PURCHASE_GUIDE_CONTENT = {
   nextText: '搜索商品 → 选具体商家和规格 → 打开“商品说明”核对条件 → 比较符合需求的报价 → 点“去商家”确认后再下单。',
   caution: '本站汇总第三方报价，不参与交易或提供售后。价格、库存和条件可能变化，下单前以商家当前页面为准；报价有误可在该报价举报。',
   glossaryTitle: '有词看不懂？按需查这里',
-  glossaryIntroduction: '商品说明中的详细用词按下面 7 类收好，不用全部读完，点开需要的就行。',
+  glossaryIntroduction: '按需查看商品标签的含义；AI 会员的订阅保障与使用保障分别比较，免责和退款条件请核对商家说明。',
 } as const;

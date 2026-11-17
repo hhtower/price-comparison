@@ -102,7 +102,7 @@ test('display labels cannot supply missing feature evidence or enqueue classific
   const repo = new AdminRepository(db);
   await assert.rejects(repo.bindTags([current.id], '质保天数', '365'));
   await assert.rejects(repo.bindTags([current.id], 'membership_kind', 'account'));
-  await repo.bindTags([current.id], 'warranty', '保订阅365天');
+  await repo.bindTags([current.id], 'subscription_warranty', '质保 365 天');
   const after = await state(current.id);
   assert.equal(after.product.membership_features, null);
   assert.deepEqual(after.member, before.member);
@@ -112,7 +112,7 @@ test('display labels cannot supply missing feature evidence or enqueue classific
 test('adding warranty labels does not change features or split the shared identity', async () => {
   const account = await fixture(), current = await fixture({ shortTerm: true });
   const repo = new AdminRepository(db);
-  await repo.bindTags([current.id], 'warranty', '保订阅365天，封号不保');
+  await repo.bindTags([current.id], 'subscription_warranty', '质保 365 天');
   const after = await state(current.id);
   assert.equal(after.member.standard_product_id, current.standardId);
   assert.equal(after.member.publication_state, 'published');
@@ -178,7 +178,7 @@ test('display label edits preserve legacy human publication without inventing a 
     await tx.updateTable('standard_product_members').set({ assignment_source: 'human' }).where('product_id', '=', current.id).execute();
   });
   const repo = new AdminRepository(db);
-  await repo.bindTags([current.id], 'warranty', '购买后1小时内仅保首登');
+  await repo.bindTags([current.id], 'usage_warranty', '首登');
   const pending = await repo.listProducts({ pending: true, shopId: current.shop_id });
   assert.equal(pending.items.length, 0);
   const after = await state(current.id);

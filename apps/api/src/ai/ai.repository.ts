@@ -36,6 +36,7 @@ import { STANDARDIZATION_PROMPT_VERSION, readStandardizationRequestLimits, asser
 import { buildTagExtractionRequest, type TagExtractionInput, type TagExtractionResponse } from './tag-extraction-request.js';
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest, assertMembershipFeatureRefs } from './membership-feature-request.js';
 import { buildTagReviewRequest } from './tag-review-request.js';
+import { buildTagWarrantyRequest, parseWarrantyResponse, type WarrantyLabels } from './tag-warranty-request.js';
 import { buildProductTextReviewRequest } from './product-text-review-request.js';
 import { planTagReviewRequests } from './tag-review-planner.js';
 import { buildStandardizationReviewRequest, isReviewableStandardizationDecision, parseStandardizationReviewResponse, planStandardizationReviewRequests } from './standardization-review-request.js';
@@ -408,17 +409,19 @@ export class AiRepository {
       const limits = readStandardizationRequestLimits();
       const membershipFeatures = batch.job_type === 'membership_features';
       const textReview = batch.job_type === 'text_review';
+      if (stage === 'warranty' && !payloads.length) return;
       const buildReview = textReview
         ? (items: TagExtractionInput[], _candidates: TagExtractionResponse, selectedModel: string) => buildProductTextReviewRequest(items, selectedModel)
         : membershipFeatures ? buildMembershipFeatureReviewRequest
         : (items: TagExtractionInput[], candidates: TagExtractionResponse, selectedModel: string) =>
-          buildTagReviewRequest(items, candidates, selectedModel, previousDecisions);
+          buildTagReviewRequest(items, candidates, selectedModel);
       const request = batch.job_type === 'text_review' ? buildProductTextReviewRequest(payloads, model)
+        : stage === 'warranty' ? buildTagWarrantyRequest(payloads, model)
         : stage === 'review' ? buildReview(payloads, proposals!, model)
           : membershipFeatures ? buildMembershipFeatureRequest(payloads, model)
             : buildTagExtractionRequest(payloads, model, previousDecisions);
       if (stage === 'review' || textReview) {
-        const groups = planTagReviewRequests({ model, inputs: payloads, proposals: proposals ?? { items: [] }, membershipFeatures, textReview, previousDecisions }, limits);
+        const groups = planTagReviewRequests({ model, inputs: payloads, proposals: proposals ?? { items: [] }, membershipFeatures, textReview }, limits);
         const activeIds = new Set(payloads.map(input => input.id));
         if (groups[0]?.oversized && (batch.product_ids as string[]).some(id => !activeIds.has(id))) {
           // Unavailable inputs must reach reservation's skip guards before any oversized group fails.
@@ -619,13 +622,19 @@ export class AiRepository {
           .innerJoin('standard_products as s', 's.id', 'm.standard_product_id')
           .select(['m.product_id', 'm.assignment_source', 's.canonical_family', 's.canonical_product', 's.canonical_tier'])
           .where('m.product_id', 'in', productIds).where('m.publication_state', '=', 'published')
-          .$if(job.job_type === 'membership_features', q => q.where('s.verification_state', '=', 'verified').where('s.merged_into_id', 'is', null)).execute() : [];
+          .$if(job.job_type === 'membership_features' || job.job_type === 'tag_extraction',
+            q => q.where('s.verification_state', '=', 'verified').where('s.merged_into_id', 'is', null)).execute() : [];
         const manual = await readLatestManualDecisions(tx, productIds);
         for (const member of snapshots) {
           const product = sources.find(source => source.id === member.product_id);
           const assignment = assignments.find(row => row.product_id === member.product_id);
+          const warrantyEligible = member.payload && typeof member.payload === 'object' && !Array.isArray(member.payload)
+            && member.payload.warrantyEligible === true;
           const reasonCode = !product ? 'source_unavailable' : !assignment ? 'not_published' : assignment.assignment_source === 'human' ? 'human_assignment'
             : job.job_type === 'membership_features' && !isAiMembership({ family: assignment.canonical_family ?? '', product: assignment.canonical_product ?? '', tier: assignment.canonical_tier ?? '' }) ? 'not_ai_membership'
+            : job.job_type === 'tag_extraction' && warrantyEligible !== isAiMembership({
+              family: assignment.canonical_family ?? '', product: assignment.canonical_product ?? '', tier: assignment.canonical_tier ?? '',
+            }) ? 'revision_changed'
             : product.standardization_locked ? 'product_locked' : product.content_version !== member.content_version || productFingerprint(product) !== member.fingerprint ? 'source_changed'
             : product.standardization_revision !== member.standardization_revision ? 'revision_changed'
             : isManualDecisionForCurrentEvidence(manual.get(member.product_id), { content_version: product.content_version, content_fingerprint: productFingerprint(product) }) ? 'manual_decision' : null;
@@ -854,7 +863,7 @@ export class AiRepository {
   }
 
   /** Fetch product evidence for a tag_extraction batch (no candidate catalog needed). */
-  async getTagExtractionBatchInputs(batchId: bigint): Promise<{ jobId: bigint; model: string; stage: 'extract' | 'review' | 'repair'; proposals?: TagExtractionResponse; previousDecisions?: TagExtractionDecision[]; inputs: Array<{ productId: bigint; name: string; spec: string; sourceData: unknown; payload: JsonValue }> }> {
+  async getTagExtractionBatchInputs(batchId: bigint): Promise<{ jobId: bigint; model: string; stage: 'warranty' | 'extract' | 'review' | 'repair'; proposals?: TagExtractionResponse; previousDecisions?: TagExtractionDecision[]; warrantyLabels?: WarrantyLabels; inputs: Array<{ productId: bigint; name: string; spec: string; sourceData: unknown; payload: JsonValue }> }> {
     const batch = await this.database.selectFrom('ai_job_batches as b')
       .innerJoin('ai_jobs as j', 'j.id', 'b.job_id')
       .select(['b.job_id', 'b.product_ids', 'b.reference_snapshot', 'j.model', 'j.job_type', 'j.prompt_version', 'j.rule_version', 'j.pipeline_versions'])
@@ -874,9 +883,24 @@ export class AiRepository {
       .where('s.enabled', '=', true)
       .orderBy('p.id')
       .execute() : [];
-    const reference = batch.reference_snapshot as { tagStage?: string; extractionBatchId?: string; repairReviewBatchId?: string } | null;
-    const stage = reference?.tagStage === 'review' ? 'review' : reference?.tagStage === 'repair' ? 'repair' : 'extract';
+    const reference = batch.reference_snapshot as { tagStage?: string; extractionBatchId?: string; repairReviewBatchId?: string; warrantyBatchId?: string } | null;
+    const stage = reference?.tagStage === 'warranty' ? 'warranty' : reference?.tagStage === 'review' ? 'review' : reference?.tagStage === 'repair' ? 'repair' : 'extract';
+    if (stage === 'warranty' && batch.job_type !== 'tag_extraction') throw new Error('warranty requires a tag_extraction job');
     const activeInputs = new Set(products.map(product => String(product.input_id)));
+    let warrantyLabels: WarrantyLabels | undefined;
+    if (reference && Object.hasOwn(reference, 'warrantyBatchId')) {
+      if (batch.job_type !== 'tag_extraction' || stage === 'warranty' || typeof reference.warrantyBatchId !== 'string'
+        || !/^[1-9]\d*$/u.test(reference.warrantyBatchId)) throw new Error('warranty source is invalid');
+      const checkpoint = await this.database.selectFrom('ai_job_batches').select(['validated_decision', 'step', 'status', 'reference_snapshot'])
+        .where('id', '=', BigInt(reference.warrantyBatchId)).where('job_id', '=', batch.job_id).executeTakeFirstOrThrow();
+      const document = checkpoint.validated_decision as unknown as { items?: Array<{ productId: string; warrantyLabels?: unknown }> } | null;
+      if (checkpoint.step !== 'done' || checkpoint.status !== 'succeeded'
+        || (checkpoint.reference_snapshot as Record<string, JsonValue> | null)?.tagStage !== 'warranty'
+        || document?.items?.length !== 1 || productIds.length !== 1 || document.items[0]!.productId !== String(productIds[0])) {
+        throw new Error('warranty checkpoint is unavailable');
+      }
+      warrantyLabels = parseWarrantyResponse(JSON.stringify(document.items[0]!.warrantyLabels));
+    }
     let proposals: import('./tag-extraction-request.js').TagExtractionResponse | undefined;
     if (stage === 'review') {
       if (!reference?.extractionBatchId || !/^[1-9]\d*$/u.test(reference.extractionBatchId)) throw new Error('tag review source is invalid');
@@ -903,6 +927,7 @@ export class AiRepository {
         .map(item => ({ ...item, productId: BigInt(item.productId) }));
     }
     return { jobId: batch.job_id, model: batch.model, stage, ...(proposals ? { proposals } : {}),
+      ...(warrantyLabels ? { warrantyLabels } : {}),
       ...(previousDecisions ? { previousDecisions } : {}), inputs: [...new Map(products.map(p => [String(p.input_id), p])).values()].map(p => {
       const payload = p.payload as Record<string, JsonValue>;
       if (typeof payload.name !== 'string' || typeof payload.spec !== 'string') throw new Error('tag extraction evidence is not frozen');
@@ -943,7 +968,7 @@ export class AiRepository {
   }
 
   /** Checkpoint and confirm the frozen stage before queueing review or publication. */
-  async checkpointTagExtractionBatchDecision(jobId: bigint, batchId: bigint, items: TagExtractionDecision[], metadata: AiBatchResultMetadata = {}, claim?: { workerId?: string; attempt?: bigint; token?: string }, stage?: 'extract' | 'review' | 'repair'): Promise<void> {
+  async checkpointTagExtractionBatchDecision(jobId: bigint, batchId: bigint, items: TagExtractionDecision[], metadata: AiBatchResultMetadata = {}, claim?: { workerId?: string; attempt?: bigint; token?: string }, stage?: 'warranty' | 'extract' | 'review' | 'repair'): Promise<void> {
     await this.database.transaction().execute(async tx => {
       const job = await tx.selectFrom('ai_jobs').select(['status', 'pause_requested', 'cancel_requested', 'job_type', 'prompt_version', 'rule_version', 'pipeline_versions'])
         .where('id', '=', jobId).forUpdate().executeTakeFirstOrThrow();
@@ -955,12 +980,26 @@ export class AiRepository {
         || batch.claimed_by !== claim.workerId || batch.attempts !== claim.attempt || batch.claim_token !== claim.token
         || batch.lease_until === null || batch.lease_until <= new Date()) throw new Error('stale batch checkpoint claim');
       const reference = batch.reference_snapshot as Record<string, JsonValue> | null;
-      const expectedStage = reference?.tagStage === 'review' ? 'review' : reference?.tagStage === 'repair' ? 'repair' : 'extract';
+      const expectedStage = reference?.tagStage === 'warranty' ? 'warranty' : reference?.tagStage === 'review' ? 'review' : reference?.tagStage === 'repair' ? 'repair' : 'extract';
       if (stage !== expectedStage) throw new Error('tag checkpoint stage does not match frozen batch');
       if (batch.unknown_requests !== 0 || batch.request_budget_used - batch.confirmed_requests !== 1) throw new Error('tag checkpoint requires one unresolved request');
       const expected = new Set((batch.product_ids as unknown as string[]).map(String));
       if (items.length !== expected.size || new Set(items.map(item => String(item.productId))).size !== items.length
         || items.some(item => !expected.has(String(item.productId)))) throw new Error('tag extraction decision does not match batch inputs');
+      for (const item of items) if (item.warrantyLabels !== undefined) parseWarrantyResponse(JSON.stringify(item.warrantyLabels));
+      if (job.job_type === 'tag_extraction' && stage === 'review'
+        && items.some(item => (item.warrantyLabels !== undefined) !== (typeof reference?.warrantyBatchId === 'string'))) {
+        throw new Error('Reviewed warranty labels must match the frozen warranty stage');
+      }
+      if (stage === 'warranty') {
+        if (job.job_type !== 'tag_extraction' || items.length !== 1
+          || items.some(item => item.tags.length || item.rejectedTags.length)) throw new Error('Invalid warranty checkpoint');
+        parseWarrantyResponse(JSON.stringify(items[0]!.warrantyLabels));
+        const input = await tx.selectFrom('ai_job_inputs').select('payload').where('job_id', '=', jobId)
+          .where('input_id', '=', items[0]!.productId).executeTakeFirstOrThrow();
+        if (!input.payload || typeof input.payload !== 'object' || Array.isArray(input.payload)
+          || input.payload.warrantyEligible !== true) throw new Error('Warranty input is not an AI membership');
+      }
       if (job.job_type === 'membership_features') {
         const members = await tx.selectFrom('ai_job_input_members').select(['input_id', 'payload'])
           .where('job_id', '=', jobId).where('input_id', 'in', items.map(item => item.productId)).execute();
@@ -985,7 +1024,7 @@ export class AiRepository {
         && reference?.tagRepairRound !== 1
         ? items.filter(needsTagRepair) : [];
       const generatesReview = job.job_type !== 'text_review' && (stage === 'extract' || stage === 'repair');
-      const checkpointOnly = generatesReview || needsRepair.length > 0;
+      const checkpointOnly = stage === 'warranty' || generatesReview || needsRepair.length > 0;
       const document = { items: items.map(item => ({ ...item, productId: String(item.productId) })) };
       const completedAt = Date.now();
       const responseCompletedAt = metadata.responseMs != null && Number.isFinite(metadata.responseMs) ? new Date(completedAt) : null;
@@ -1029,7 +1068,9 @@ export class AiRepository {
             } : {}),
           }).execute();
         };
-        if (generatesReview) {
+        if (stage === 'warranty') {
+          await enqueue(items, { tagStage: 'extract', warrantyBatchId: String(batchId) });
+        } else if (generatesReview) {
           await enqueue(items, { tagStage: 'review', extractionBatchId: String(batchId) });
         } else {
           const repairIds = new Set(needsRepair.map(item => item.productId));
@@ -1091,7 +1132,7 @@ export class AiRepository {
         .innerJoin('standard_products as sp', 'sp.id', 'm.standard_product_id')
         .select(['m.product_id', 'm.assignment_source', 'm.standard_product_id', 'sp.canonical_family', 'sp.canonical_product', 'sp.canonical_tier'])
         .where('m.product_id', 'in', productIds).where('m.publication_state', '=', 'published')
-        .$if(featureTask, q => q.where('sp.verification_state', '=', 'verified').where('sp.merged_into_id', 'is', null)).execute() : [];
+        .where('sp.verification_state', '=', 'verified').where('sp.merged_into_id', 'is', null).execute() : [];
       const byInput = new Map(items.map(item => [item.productId, item]));
       // Revalidate the complete response against every frozen member before any writes.
       const decisions = new Map<bigint, TagExtractionDecision>(members.flatMap((member): Array<readonly [bigint, TagExtractionDecision]> => {
@@ -1113,8 +1154,13 @@ export class AiRepository {
         if (item.reviewed !== true || typeof item.complete !== 'boolean' || !Array.isArray(item.reviewDecisions)) {
           throw new Error('Reviewed tags and completeness are missing from publication');
         }
-        const validated = validateReviewedTagExtractionDecision(member.input_id, item.tags, item.rejectedTags, member.payload, item.reviewDecisions, item.complete);
-        return [[member.product_id, { ...validated, ...(item.attempts ? { attempts: item.attempts } : {}) }] as const];
+        const validated = validateReviewedTagExtractionDecision(member.input_id, item.tags, item.rejectedTags, member.payload, item.reviewDecisions, item.complete, item.reviewFeedback);
+        const eligible = member.payload && typeof member.payload === 'object' && !Array.isArray(member.payload)
+          && member.payload.warrantyEligible === true;
+        if (eligible !== (item.warrantyLabels !== undefined)) throw new Error('Warranty result does not match frozen membership scope');
+        const warrantyLabels = eligible ? parseWarrantyResponse(JSON.stringify(item.warrantyLabels)) : undefined;
+        return [[member.product_id, { ...validated, ...(warrantyLabels ? { warrantyLabels } : {}),
+          ...(item.attempts ? { attempts: item.attempts } : {}) }] as const];
       }));
       let changed = false;
       const inputFailures = new Map<bigint, string>();
@@ -1130,10 +1176,15 @@ export class AiRepository {
           && Object.keys(source).length === 3 && source.url === product?.shop_url
           && source.protocol === product?.shop_protocol && source.platform === product?.shop_platform;
         const previousFeatures = featureTask && product ? readCurrentMembershipFeatures(product.membership_features, product) : null;
+        const warrantyEligible = member.payload && typeof member.payload === 'object' && !Array.isArray(member.payload)
+          && member.payload.warrantyEligible === true;
         const before = featureTask || textTask ? []
           : await tx.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', member.product_id).orderBy('name').orderBy('value').execute();
         const skip = !product ? 'source_unavailable' : !membership ? 'not_published' : membership.assignment_source === 'human' ? 'human_assignment'
           : featureTask && !isAiMembership({ family: membership.canonical_family ?? '', product: membership.canonical_product ?? '', tier: membership.canonical_tier ?? '' }) ? 'not_ai_membership'
+          : !featureTask && !textTask && warrantyEligible !== isAiMembership({
+            family: membership.canonical_family ?? '', product: membership.canonical_product ?? '', tier: membership.canonical_tier ?? '',
+          }) ? 'revision_changed'
           : product.standardization_locked ? 'product_locked'
           : product.content_version !== member.content_version || productFingerprint(product) !== member.fingerprint ? 'source_changed'
           : text && (!sourceMatches || projectShopText(product.source_data)?.hash !== text.hash) ? 'text_review_source_changed'
@@ -1160,7 +1211,7 @@ export class AiRepository {
         }
         if (!featureTask && !textTask && !skip && decision && result.diff.length) {
           await tx.deleteFrom('product_tags').where('product_id', '=', member.product_id).execute();
-          const tags = resolveTagExtractionFacts(decision, before);
+          const tags = resolveTagExtractionFacts(decision);
           if (tags.length) await tx.insertInto('product_tags').values(tags.map(({ name, value }) => ({ product_id: member.product_id, name, value: jsonb(value) }))).execute();
           changed = true;
         }
@@ -1822,16 +1873,16 @@ export class AiRepository {
       'response_diagnostic', 'decision_hash', 'error_source', 'retry_class', 'error', 'reference_snapshot', 'validated_decision',
     ]).where('job_id', '=', jobId).where(sql<boolean>`product_ids @> ${jsonb([String(member.input_id)])}`).orderBy('batch_index').execute();
     const batches = rows.map(({ reference_snapshot, validated_decision, ...batch }) => {
-      const reference = reference_snapshot as { tagStage?: string; extractionBatchId?: string; tagRepairRound?: number; tagRepairFallback?: boolean } | null;
-      const stage = reference?.tagStage === 'review' ? 'review' : reference?.tagStage === 'repair' ? 'repair' : 'extract';
+      const reference = reference_snapshot as { tagStage?: string; extractionBatchId?: string; tagRepairRound?: number } | null;
+      const stage = reference?.tagStage === 'warranty' ? 'warranty' : reference?.tagStage === 'review' ? 'review' : reference?.tagStage === 'repair' ? 'repair' : 'extract';
       const document = validated_decision as unknown as {
-        items?: Array<{ productId: string; tags?: StandardizationTag[]; rejectedTags?: StandardizationTag[]; reviewDecisions?: unknown; attempts?: Array<{ reviewDecisions?: unknown }>; membershipKind?: JsonValue; classificationReviewed?: unknown }>;
+        items?: Array<{ productId: string; tags?: StandardizationTag[]; rejectedTags?: StandardizationTag[]; reviewDecisions?: unknown; reviewFeedback?: string; attempts?: Array<{ reviewDecisions?: unknown }>; membershipKind?: JsonValue; classificationReviewed?: unknown }>;
       } | null;
       const item = Array.isArray(document?.items) ? document.items.find(item => item?.productId === String(member.input_id)) : undefined;
       const votes = item?.attempts?.at(-1)?.reviewDecisions ?? item?.reviewDecisions;
       return { ...batch, error: batch.error ? sanitizeTagAuditText(batch.error) : null,
         request_estimate: redact(batch.request_estimate), response_diagnostic: redact(batch.response_diagnostic),
-        stage, tagRepairRound: reference?.tagRepairRound ?? 0, repairFallback: reference?.tagRepairFallback === true,
+        stage, tagRepairRound: reference?.tagRepairRound ?? 0,
         extraction_batch_id: reference?.extractionBatchId ?? null,
         ...(job.job_type === 'membership_features' ? {
           proposed_membership_kind: item?.membershipKind === undefined ? null : redact(item.membershipKind),
@@ -1843,7 +1894,8 @@ export class AiRepository {
             path: sanitizeTagAuditText(citation.path, 300), quote: sanitizeTagAuditText(citation.quote),
           })),
         })) : null,
-        review_decisions: stage === 'review' && Array.isArray(votes) && votes.every(vote => typeof vote === 'boolean') ? votes : null };
+        review_decisions: stage === 'review' && Array.isArray(votes) && votes.every(vote => typeof vote === 'boolean') ? votes : null,
+        ...(item?.reviewFeedback !== undefined ? { review_feedback: sanitizeTagAuditText(item.reviewFeedback) } : {}) };
     });
     return JSON.parse(JSON.stringify({job,member:{...member,payload:redact(member.payload),output:redact(member.output),outcome:(member.output as Record<string,JsonValue>|null)?.outcome??(['queued','processing'].includes(member.status)?member.status:'unrecorded')},batches},(_key,value)=>typeof value==='bigint'?String(value):value));
   }

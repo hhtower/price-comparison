@@ -37,7 +37,7 @@ async function fixture(count = 1) {
   for (const p of products) await db.insertInto('ai_job_input_members').values({ job_id: job.id, input_id: inputId, product_id: p.id, fingerprint, payload: jsonb(payload), content_version: 1n, standardization_revision: p.standardization_revision }).execute();
   const batch = await db.insertInto('ai_job_batches').values({ job_id: job.id, batch_index: 0n, product_ids: jsonb([String(inputId)]), product_count: BigInt(count), status: 'running', claimed_by: 'test', claim_token: 'claim', attempts: 1n, lease_until: new Date(Date.now()+60000), step: 'request', request_budget_limit: 2 }).returningAll().executeTakeFirstOrThrow();
   // Non-membership tags retain their existing partial-update semantics.
-  const standard = await db.insertInto('standard_products').values({ canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'free', name: 'test' }).returning('id').executeTakeFirstOrThrow();
+  const standard = await db.insertInto('standard_products').values({ canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'free', name: 'test', verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
   for (const p of products) await db.insertInto('standard_product_members').values({ product_id: p.id, standard_product_id: standard.id, assignment_source: 'ai', publication_state: 'published' }).execute();
   return { repo: new AiRepository(db), job, batch, products, inputId, payload };
 }
@@ -70,14 +70,14 @@ for (const invalid of ['unreviewed', 'missing_votes', 'non_boolean_votes', 'miss
   }
 }
 
-test('LLM-approved warranty prose publishes without citation or magic-word semantic checks', async () => {
+test('LLM-approved supported client publishes without a second semantic inference', async () => {
   const f = await fixture();
-  const value = '遇到问题可联系店家，按页面约定协商处理';
+  const value = 'codex';
   const decision = validateReviewedTagExtractionDecision(f.inputId,
-    [{ name: 'warranty', value, evidence: [], proposalIndex: 0 }], [], f.payload, [true], true);
+    [{ name: 'supported_client', value, evidence: [], proposalIndex: 0 }], [], f.payload, [true], true);
   await f.repo.persistTagExtractionBatchDecision(f.job.id, f.batch.id, [decision], {}, claim);
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).execute(),
-    [{ name: 'warranty', value }]);
+    [{ name: 'supported_client', value }]);
   const output = (await outputs(f.job.id))[0]!.output as any;
   assert.equal(output.outcome, 'updated');
   assert.deepEqual(output.review, { mode: 'per_tag_binary', decisions: [true] });

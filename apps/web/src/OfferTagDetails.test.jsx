@@ -4,10 +4,10 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import OfferTagDetails, { OfferFacts, offerConditions } from './OfferTagDetails.jsx';
 
 afterEach(() => window.history.replaceState({}, '', '/'));
-const offer = { productId: '9', shop: '甲店', name: '普通邮箱', spec: '10个一包；禁止改密', settlementQuantity: 5, tags: [
+const offer = { productId: '9', shop: '甲店', name: 'AI 会员账号', spec: '10个一包；禁止改密', settlementQuantity: 5, tags: [
   { name: 'region', value: 'us' }, { name: 'region', value: 'us' }, { name: 'region', value: 'jp' },
   { name: 'bulk_purchase', value: 'supported' }, { name: 'duration', value: 30 },
-  { name: 'warranty', value: '购买后1小时内仅保首登，封号不保' },
+  { name: 'usage_warranty', value: '首登' },
 ] };
 
 test('conditions deduplicate values while preserving multiple regions and actual settlement quantity', () => {
@@ -24,18 +24,19 @@ test.each(['supported', 'required', 'bundle'])('bulk %s never invents minimum qu
   expect(offerConditions({ tags, settlementQuantity: 5 }).find(fact => fact.name === 'settlement_quantity').value).toBe('5件起购');
 });
 
-test.each([1, 2])('the %s-tag summary prioritizes complete warranty and opens hidden conditions', limit => {
+test.each([1, 2])('the %s-tag summary prioritizes short coverage and opens full conditions', limit => {
   const onOpenDetails = vi.fn();
   render(<OfferFacts limit={limit} onOpenDetails={onOpenDetails} tags={offer.tags} />);
   const summary = screen.getByRole('group', { name: '商品标签' });
   expect(summary.querySelectorAll('span')).toHaveLength(limit);
-  expect(summary.querySelector('span')).toHaveAttribute('title', offer.tags.at(-1).value);
-  expect(summary.querySelector('span')).toHaveTextContent('购买后1小时内仅保首登，封号不保');
+  expect(summary.querySelector('span')).toHaveAttribute('title', '首登');
+  expect(summary.querySelector('span')).toHaveTextContent('首登');
+  expect(summary).not.toHaveTextContent('封号不保');
   fireEvent.click(within(summary).getByRole('button', { name: `查看全部商品条件，另有 ${5 - limit} 项` }));
   expect(onOpenDetails).toHaveBeenCalledOnce();
 });
 
-test('details retain actual SKU conditions, warranty on non-membership products, report action and keyboard focus', () => {
+test('details retain actual SKU conditions, membership warranty, report action and keyboard focus', () => {
   const opener = document.createElement('button'); document.body.append(opener); opener.focus();
   const close = vi.fn(); const report = vi.fn();
   const view = render(<OfferTagDetails offer={offer} item={{ name: '标准商品' }} onClose={close} onReport={report} />);
@@ -45,7 +46,9 @@ test('details retain actual SKU conditions, warranty on non-membership products,
   expect(dialog).toHaveTextContent('5件起购');
   expect(dialog).toHaveTextContent('支持批量购买');
   expect(within(dialog).getAllByText(offer.tags.at(-1).value, { exact: true })).toHaveLength(1);
-  for (const group of ['地区', '使用期限', '批量购买', '售后保障']) expect(within(dialog).getByRole('heading', { name: group })).toBeInTheDocument();
+  for (const group of ['地区', '使用期限', '批量购买', '使用保障']) expect(within(dialog).getByRole('heading', { name: group })).toBeInTheDocument();
+  expect(dialog).toHaveTextContent('标签不是无条件承诺');
+  expect(within(dialog).queryByRole('heading', { name: '保障条款' })).not.toBeInTheDocument();
   const first = within(dialog).getByRole('button', { name: '关闭商品说明' });
   const last = within(dialog).getByRole('button', { name: '确认', exact: true });
   last.focus(); fireEvent.keyDown(dialog, { key: 'Tab' }); expect(first).toHaveFocus();
@@ -63,22 +66,37 @@ test('access channels and tools share a group without adding exclusive support',
   expect(section).not.toHaveTextContent('仅支持');
 });
 
-test.each(['none', 'unknown', 'covered', '首次进入遇到异常，请提交截图，我们会重新发放一份'])('renders saved warranty %s verbatim alongside original sale conditions', value => {
-  const tags = [{ name: 'warranty', value }];
+test.each(['none', 'unknown', 'covered', '首次进入遇到异常，请提交截图，我们会重新发放一份'])('rejects retired terms %s without a detail or summary fallback', value => {
+  const tags = [{ name: 'warranty_terms', value }];
   const view = render(<OfferFacts tags={tags} />);
-  expect(view.container.querySelector('.offer-warranty')).toHaveTextContent(value);
-  expect(view.container.querySelector('.offer-warranty')).toHaveAttribute('title', value);
+  expect(view.container.querySelector('.offer-warranty')).toBeNull();
   expect(view.container.querySelector('button')).toBeNull();
   view.unmount();
   render(<OfferTagDetails offer={{ ...offer, tags, settlementQuantity: 1 }} item={{}} onClose={() => {}} />);
   expect(screen.getByRole('dialog')).toHaveTextContent('10个一包；禁止改密');
   expect(screen.getByRole('dialog')).not.toHaveTextContent(/无售后|有质保|无质保|未知|未说明/);
-  expect(within(screen.getByRole('dialog')).getByText(value, { exact: true })).toBeVisible();
-  expect(screen.queryByText('暂无商品条件信息')).not.toBeInTheDocument();
+  expect(within(screen.getByRole('dialog')).queryByText(value, { exact: true })).not.toBeInTheDocument();
+  expect(screen.getByText('暂无商品条件信息')).toBeInTheDocument();
 });
 
+test('independent coverage labels show only current fields without a retired terms button', () => {
+  const tags = [
+    { name: 'subscription_warranty', value: '质保 12 天' },
+    { name: 'usage_warranty', value: '首登' },
+    { name: 'warranty_terms', value: '订阅保30天，首登交付后5分钟内反馈；封号不保，退款扣手续费。' },
+  ];
+  const open = vi.fn();
+  const view = render(<OfferFacts tags={tags} onOpenDetails={open} />);
+  expect([...view.container.querySelectorAll('span')].map(item => item.textContent)).toEqual(['质保 12 天', '首登']);
+  expect(screen.queryByRole('button', { name: '保障条款' })).not.toBeInTheDocument();
+  expect(open).not.toHaveBeenCalled();
+  view.unmount();
+  render(<OfferTagDetails offer={{ ...offer, tags }} item={{}} onClose={() => {}} />);
+  for (const title of ['订阅保障', '使用保障']) expect(screen.getByRole('heading', { name: title })).toBeVisible();
+  expect(screen.getByRole('dialog')).not.toHaveTextContent('封号不保，退款扣手续费');
+});
 test('malformed warranty values leave an empty summary and preserve the original specification', () => {
-  const tags = [{ name: 'warranty', value: { days: 30 } }];
+  const tags = [{ name: 'warranty_terms', value: { days: 30 } }];
   const view = render(<OfferFacts tags={tags} />);
   expect(screen.queryByRole('group', { name: '商品标签' })).not.toBeInTheDocument();
   view.unmount();

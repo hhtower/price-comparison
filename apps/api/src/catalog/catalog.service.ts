@@ -3,7 +3,7 @@ import { CACHE, type Cache } from '../cache/cache.js';
 import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQuery, type CatalogSort, type CatalogTag, type PublicCatalogProduct, type PublicProductIdentity } from './catalog.repository.js';
 import { DomainValidationError } from '../common/errors.js';
 import { normalizePurchaseTag, parseCatalogSearch, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
-import { isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
+import { isFilterableProductTag } from '@price-comparison/catalog/product-tag-policy';
 import { normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
 import { MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 
@@ -37,7 +37,7 @@ export interface CatalogQueryInput {
 
 export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
   if ('warrantyDaysMin' in input) {
-    throw new DomainValidationError('INVALID_FILTER', '质保天数筛选已移除，请使用售后保障说明');
+    throw new DomainValidationError('INVALID_FILTER', '质保天数筛选已移除，请使用订阅保障或使用保障标签');
   }
   const kinds = input.membershipKinds ?? input.membershipKind;
   const membershipKinds = kinds === undefined ? undefined : Array.isArray(kinds) ? kinds : [kinds];
@@ -119,7 +119,7 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
       throw new DomainValidationError('INVALID_FILTER', '筛选条件必须包含有效属性和值');
     }
     const normalized = normalizePurchaseTag({ name: tag.name.trim(), value: tag.value as CatalogTag['value'] });
-    if (!normalized.length || !normalized.every(isCanonicalProductTag)) {
+    if (!normalized.length || !normalized.every(isFilterableProductTag)) {
       throw new DomainValidationError('INVALID_FILTER', '筛选条件包含已移除的属性或无效值');
     }
     return normalized;

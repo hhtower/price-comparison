@@ -27,7 +27,7 @@ test('compact duration JSON and reviewed results preserve numeric days and struc
   }
 });
 
-test('invalid duration values fail per candidate without discarding valid tags or the old duration', () => {
+test('invalid duration values fail per candidate while current valid tags can publish', () => {
   for (const value of ['30', '1 month', 0, -1, 36501, { kind: 'range', min: 30, max: 7 }]) {
     const parsed = parseTagExtractionResponse(JSON.stringify({ items: [{ id: '1', tags: [
       { name: 'region', value: 'us' }, { name: 'duration', value },
@@ -43,7 +43,7 @@ test('invalid duration values fail per candidate without discarding valid tags o
     assert.equal(result.outcome, 'partial_success');
     assert.equal(result.successfulCount, 1);
     assert.equal(result.failedCount, 1);
-    assert.deepEqual(result.after, [{ name: 'region', value: 'us' }, { name: 'duration', value: 360 }]);
+    assert.deepEqual(result.after, [{ name: 'region', value: 'us' }]);
   }
 });
 
@@ -53,6 +53,9 @@ test('mocked approval cannot bypass enum and tag-name constraints', () => {
     ['sms_verification', 'maybe', 'tag_value_invalid'],
     ['bulk_purchase', 'many', 'tag_value_invalid'],
     ['delivery', 'account', 'tag_name_unknown'],
+    ['subscription_warranty', '质保 30 天', 'tag_name_unknown'],
+    ['usage_warranty', '首登', 'tag_name_unknown'],
+    ['warranty_terms', 'source promise', 'tag_name_unknown'],
   ] as const) {
     const result = validateReviewedTagExtractionDecision(1n, [tag(name, value)], [], {}, [true], true);
     assert.deepEqual(result.tags, []);
@@ -64,7 +67,7 @@ test('mocked approval cannot bypass enum and tag-name constraints', () => {
 
 test('subjective decisions follow explicit mocked votes even when source wording differs', () => {
   const payload = { name: '商品', evidence: '具体情况请与我们联系' };
-  const candidate = tag('warranty', '首次进入遇到异常，请在六十分钟内提交截图，我们会重新发放一份');
+  const candidate = tag('supported_client', 'codex');
   const approved = validateReviewedTagExtractionDecision(1n, [candidate], [], payload, [true], true);
   assert.deepEqual(approved.tags, [candidate]);
   assert.deepEqual(approved.rejectedTags, []);
@@ -80,24 +83,26 @@ test('review matches products by ID and uses strict positional votes for every c
     { id: '2', tags: [{ name: 'duration', value: 30 }] },
   ] };
   const request = buildTagReviewRequest([{ id: '1', name: '美区日区' }, { id: '2', name: '月卡' }], proposals, 'mock');
-  assert.deepEqual(JSON.parse(request.messages[1]!.content).proposals, proposals);
+  assert.deepEqual(JSON.parse(request.messages[1]!.content).proposals, { items: [
+    { ...proposals.items[0], candidateCount: 3 }, { ...proposals.items[1], candidateCount: 1 },
+  ] });
   const output = { items: [
-    { id: '2', accepted: [false], complete: false },
-    { id: '1', accepted: [true, false, false], complete: true },
+    { id: '2', feedback: '', accepted: [false], complete: false },
+    { id: '1', feedback: '', accepted: [true, false, false], complete: true },
   ] };
   const parsed = parseTagReviewResponse(JSON.stringify(output));
   assert.deepEqual(parsed, output);
   assert.deepEqual(alignTagReviewDecisions(parsed.items[1]!, proposals.items[0]!), [true, false, false]);
   assert.deepEqual(alignTagReviewDecisions(parsed.items[0]!, proposals.items[1]!), [false]);
   for (const accepted of [[], [true], [true, false], [true, false, false, true]]) {
-    assert.throws(() => alignTagReviewDecisions({ id: '1', accepted, complete: true }, proposals.items[0]!));
+    assert.throws(() => alignTagReviewDecisions({ id: '1', feedback: '', accepted, complete: true }, proposals.items[0]!));
   }
-  assert.throws(() => alignTagReviewDecisions({ id: '2', accepted: [true, false, false], complete: true }, proposals.items[0]!));
+  assert.throws(() => alignTagReviewDecisions({ id: '2', feedback: '', accepted: [true, false, false], complete: true }, proposals.items[0]!));
   for (const item of [
-    { id: '1', accepted: ['true', false, false], complete: true },
-    { id: '1', accepted: [true, false, false], complete: 'true' },
-    { id: '1', accepted: [true, false, false] },
-    { id: '1', decisions: [{ tagId: '1:0', accepted: true }], textReview: null },
+    { id: '1', feedback: '', accepted: ['true', false, false], complete: true },
+    { id: '1', feedback: '', accepted: [true, false, false], complete: 'true' },
+    { id: '1', feedback: '', accepted: [true, false, false] },
+    { id: '1', decisions: [{ tagId: '1:0', feedback: '', accepted: true }], textReview: null },
   ]) {
     assert.throws(() => parseTagReviewResponse(JSON.stringify({ items: [item] })));
   }
@@ -150,8 +155,6 @@ const positives: Array<[string, StandardizationTag['value'], string]> = [
   ['subscription_override', '无', '不可覆盖现有订阅'],
   ['bulk_purchase', 'supported', '支持批量下单'], ['bulk_purchase', 'required', '10件起购'],
   ['bulk_purchase', 'bundle', '10个账号一包'],
-  ['warranty', '购买后1小时内仅保首登', '购买后1小时内仅保首登'],
-  ['warranty', '保订阅30天，封号不保', '保订阅30天，封号不保'],
 ];
 for (const [name, value, evidence] of positives) test(`model reference with mocked approval: ${name} ${evidence}`, () => {
   const proposed = [tag(name, value)];
@@ -173,15 +176,7 @@ const negatives: Array<[string, StandardizationTag['value'], string]> = [
   ['subscription_override', '有', '可覆盖订阅'], ['bulk_purchase', 'required', '支持批量下单'],
   ['bulk_purchase', 'bundle', '库存1000'], ['bulk_purchase', 'supported', '不支持批量下单'],
   ['access_channel', 'reverse_proxy', '禁止反代'], ['supported_client', 'sub2api', 'JSON格式'],
-  ['warranty', '质保30天', '仅保订阅30天，封号不保'], ['warranty', '保订阅30天', '保订阅30天，封号不保'],
-  ['warranty', 'covered', '质保30天'], ['warranty', 'none', '无售后'], ['delivery', 'account', '成品账号'],
-  ['warranty', '本商品不提供售后。', '本商品不提供售后。'],
-  ['warranty', '无售后，售出不退', '无售后，售出不退'],
-  ['warranty', '售后联系商家', '售后联系商家'],
-  ['warranty', '本商品不提供质保', '本商品不提供质保'],
-  ['warranty', '本商品不保订阅30天', '本商品不保订阅30天'],
-  ['warranty', '首登不保', '首登不保'],
-  ['warranty', '订阅不保', '订阅不保'],
+  ['delivery', 'account', '成品账号'],
 ];
 for (const [name, value, evidence] of negatives) test(`model reference with mocked rejection: ${name} ${evidence}`, () => {
   const rejected = { ...tag(name, value), reasonCode: 'review_rejected', reason: '' };
