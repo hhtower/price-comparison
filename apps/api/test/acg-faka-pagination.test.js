@@ -43,6 +43,36 @@ function observe() {
 
 const listCalls = net => net.calls.filter(url => url.pathname.endsWith('/commodity'));
 
+for (const second of [10, 'recommend']) {
+  test(`ACG merges complete overlapping categories 9 and ${second}`, async () => {
+    const net = network({ categories: [{ id: 9, commodity_count: 2 }, { id: second, commodity_count: 2 }], intercept: url => {
+      if (url.pathname.endsWith('/commodity')) return json(url.searchParams.get('categoryId') === '9' ? rows.slice(0, 2) : rows.slice(1, 3));
+    } }), events = observe();
+    const products = await crawl(null, shop, net.fetch, events.options);
+    assert.deepEqual(listCalls(net).map(url => url.searchParams.get('categoryId')), ['9', String(second)]);
+    assert.deepEqual(products.map(product => product.externalId), ['1', '2', '3']);
+    assert.equal(net.calls.filter(url => url.pathname.endsWith('/commodityDetail')).length, 3);
+    assert.deepEqual(events.stats, [{ unique: 3, duplicates: 1, categories: 2, categoryClaims: 4, flatTotal: null }]);
+    assert.equal(events.completed, 1);
+  });
+}
+
+test('ACG rejects conflicting availability across categories', async () => {
+  const net = network({ categories: [{ id: 9, commodity_count: 1 }, { id: 10, commodity_count: 1 }], intercept: url => {
+    if (url.pathname.endsWith('/commodity')) return json([{ ...listing(1), status: Number(url.searchParams.get('categoryId') === '10') }]);
+  } }), events = observe();
+  await assert.rejects(crawl(null, shop, net.fetch, events.options), /conflicting product status/);
+  assert.equal(events.completed, 0);
+});
+
+test('ACG rejects repeated IDs across pages of the same category', async () => {
+  const net = network({ categories: [{ id: 9, commodity_count: 13 }], intercept: url => {
+    if (url.pathname.endsWith('/commodity')) return json(url.searchParams.get('page') === '1' ? rows.slice(0, 12) : [listing(12)]);
+  } }), events = observe();
+  await assert.rejects(crawl(null, shop, net.fetch, events.options), /duplicate product ID/);
+  assert.equal(events.completed, 0);
+});
+
 for (const defaultLimit of [5, 20]) {
   test(`ACG category pagination covers every offset with server default limit ${defaultLimit}`, async () => {
     const net = network({ defaultLimit }), events = observe();
@@ -106,6 +136,7 @@ for (const [name, failure] of [
 }
 
 for (const categories of [
+  [{ id: 'unknown', commodity_count: 1 }],
   [{ id: 0, commodity_count: 1 }],
   [{ id: 9, commodity_count: '30' }],
   [{ id: 9, commodity_count: -1 }],
