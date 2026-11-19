@@ -32,6 +32,38 @@ function fixture({ total = '111.00', rate = '2.95', fixed = '0.00', quantity = 1
   return { products, calls, reports, fetchImpl, run: (options = {}) => platform.settle(fixtureShop, products, fetchImpl, { onSettlementResult: row => reports.push(row), ...options }) };
 }
 
+test('Next accepts a nonempty short list only as partial after every declared page', async () => {
+  const f = fixture();
+  let pages = [], partial = 0, stats;
+  const network = async (input, init) => {
+    const url = new URL(input), response = await f.fetchImpl(input, init);
+    if (!url.searchParams.has('page')) return response;
+    const page = Number(url.searchParams.get('page')), body = await response.json();
+    pages.push(page);
+    return Response.json({ ...body, data: page === 1 ? [] : body.data, pagination: { page, page_size: 12, total: 13, total_page: 2 } });
+  };
+  const result = await platform.crawl(null, shop, network, { settlementProductIds: new Set(), onPartialList: () => partial++, onListStats: value => { stats = value; } });
+  assert.deepEqual(pages, [1, 2]);
+  assert.deepEqual(result.map(row => row.externalId), ['1:2']);
+  assert.equal(partial, 1);
+  assert.equal(stats.flatTotal, 13);
+  assert.equal(stats.unique, 1);
+  assert.equal(stats.partial, true);
+  await assert.rejects(platform.crawl(null, shop, network), /pagination|incomplete snapshot/);
+});
+
+test('Next never accepts an empty, overfull or impossible partial snapshot', async () => {
+  for (const [total, pages, empty] of [[1, 1, true], [13, 1, false], [0, 0, false]]) {
+    const f = fixture();
+    await assert.rejects(platform.crawl(null, shop, async (input, init) => {
+      const response = await f.fetchImpl(input, init);
+      if (!new URL(input).search) return response;
+      const body = await response.json();
+      return Response.json({ ...body, data: empty ? [] : body.data, pagination: { page: 1, page_size: 12, total, total_page: pages } });
+    }, { onPartialList: () => assert.fail('unexpected partial success') }), /pagination|incomplete snapshot/);
+  }
+});
+
 test('Next binds all SKUs to raw localized parent title and complete bodies, preserving explicit emptiness', async () => {
   const { captureRatingText } = await import('../src/platforms/source-evidence.js');
   for (const content of [' <p>Full\n\nbody</p> ', '', undefined]) {

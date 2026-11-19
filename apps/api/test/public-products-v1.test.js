@@ -1,7 +1,43 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { probe } from '../src/platforms/public-products-v1.js';
+import { crawl, probe } from '../src/platforms/public-products-v1.js';
 import { buildSourceEvidence, captureRatingText } from '../src/platforms/source-evidence.js';
+
+test('probe accepts missing list SKUs only with a verified product detail', async () => {
+  const summary = { id: 1, slug: 'one', title: 'One' };
+  const skus = [{ id: 2, is_active: true, stock_status: 'in_stock', price_amount: '5', spec_values: {} }];
+  const run = detail => probe({ url: 'https://example.test' }, async input => Response.json({
+    status_code: 0, data: new URL(input).search ? [summary] : detail,
+    pagination: { page: 1, page_size: 12, total: 1, total_page: 1 },
+  }));
+  assert.deepEqual((await run({ ...summary, skus })).map(row => row.externalId), ['1:2']);
+  await assert.rejects(run(summary), /invalid product/);
+  await assert.rejects(run({ ...summary, skus, id: 3 }), /identity mismatch/);
+});
+
+test('missing SKU summaries use verified details and skip only confirmed omissions in partial sync', async () => {
+  const parents = [1, 2].map(id => ({ id, slug: `item-${id}`, title: `Item ${id}` }));
+  const sku = { id: 7, is_active: true, stock_status: 'in_stock', price_amount: '10', spec_values: {} };
+  const run = (details, options) => crawl(null, { url: 'https://example.test' }, async input => {
+    const url = new URL(input);
+    const data = url.search ? parents : details.find(item => url.pathname.endsWith(`/${item.slug}`));
+    return Response.json({ status_code: 0, data, pagination: { page: 1, page_size: 12, total: 2, total_page: 1 } });
+  }, { settlementProductIds: new Set(), ...options });
+  const complete = parents.map(parent => ({ ...parent, skus: [sku] }));
+  const mixed = [parents[0], complete[1]];
+  let partial = 0, stats;
+  const options = { onPartialList: () => partial++, onListStats: value => { stats = value; } };
+  assert.equal((await run(complete, options)).length, 2);
+  assert.equal(partial, 0);
+  assert.deepEqual((await run(mixed, options)).map(product => product.externalId), ['2:7']);
+  assert.equal(partial, 1);
+  assert.equal(stats.missingSkuProducts, 1);
+  await assert.rejects(run(mixed, {}), /invalid product/);
+  await assert.rejects(run(parents, options), /incomplete snapshot/);
+  await assert.rejects(run([{ ...parents[0], id: 3 }, complete[1]], options), /identity mismatch/);
+  await assert.rejects(run([{ ...parents[0], skus: {} }, complete[1]], options), /invalid product/);
+  assert.equal(partial, 1);
+});
 
 test('source evidence removes root spec aliases including inherited aliases', () => {
   assert.deepEqual(buildSourceEvidence({

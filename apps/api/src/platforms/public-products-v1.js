@@ -40,7 +40,7 @@ async function readJson(url, fetchImpl, signal) {
   return payload;
 }
 
-async function readPage(shop, page, fetchImpl, signal) {
+async function readPage(shop, page, fetchImpl, signal, allowPartial = false) {
   const url = new URL('/api/v1/public/products', shop.url);
   url.searchParams.set('page', String(page));
   url.searchParams.set('page_size', String(PAGE_SIZE));
@@ -50,23 +50,27 @@ async function readPage(shop, page, fetchImpl, signal) {
     || !Number.isSafeInteger(meta.page_size) || meta.page_size < 1
     || !Number.isSafeInteger(meta.total) || meta.total < 0
     || !Number.isSafeInteger(meta.total_page) || meta.total_page < 0 || meta.total_page > MAX_PAGES
-    || (meta.total > 0 && (meta.total_page < page || !payload.data.length))
+    || payload.data.length > meta.page_size
+    || (meta.total > 0 && (meta.total_page < page || (!allowPartial && !payload.data.length)))
     || (meta.total === 0 && (meta.total_page > 1 || payload.data.length > 0))) fail('invalid pagination');
-  for (const item of payload.data) validateProduct(item);
+  for (const item of payload.data) validateProduct(item, true);
   if (new Set(payload.data.map(item => String(item.id))).size !== payload.data.length) fail('duplicate product ID');
-  return { items: payload.data, total: meta.total, pages: meta.total_page };
+  return { items: payload.data, total: meta.total, pages: meta.total_page, pageSize: meta.page_size };
 }
 
-function validateProduct(item) {
+function validateProduct(item, allowMissingSkus = false) {
   if (!item || !validId(item.id) || typeof item.slug !== 'string' || !item.slug.trim()
-    || !localized(item.title) || !Array.isArray(item.skus) || !item.skus.length) fail('invalid product');
+    || !localized(item.title)) fail('invalid product');
+  if (allowMissingSkus && item.skus === undefined) return;
+  if (!Array.isArray(item.skus) || !item.skus.length) fail('invalid product');
 }
 
-async function readDetail(shop, listing, fetchImpl, signal) {
+async function readDetail(shop, listing, fetchImpl, signal, allowMissingSkus = false) {
   const url = new URL(`/api/v1/public/products/${encodeURIComponent(listing.slug)}`, shop.url);
   const { data } = await readJson(url.href, fetchImpl, signal);
-  validateProduct(data);
+  validateProduct(data, allowMissingSkus);
   if (String(data.id) !== String(listing.id) || data.slug !== listing.slug) fail('detail identity mismatch');
+  if (data.skus === undefined) return null;
   return normalizeProduct(data, shop);
 }
 
@@ -137,21 +141,27 @@ export async function probe(shop, fetchImpl = globalThis.fetch) {
 export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options = {}) {
   const result = [], seen = new Set(), slugs = new Set();
   const ratingUnits = [];
-  let expected;
+  let expected, missingSkuProducts = 0;
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const batch = await readPage(shop, page, fetchImpl, options.signal);
+    const batch = await readPage(shop, page, fetchImpl, options.signal, Boolean(options.onPartialList));
     expected ??= batch;
-    if (batch.total !== expected.total || batch.pages !== expected.pages) fail('pagination changed during crawl');
+    if (batch.total !== expected.total || batch.pages !== expected.pages || batch.pageSize !== expected.pageSize) fail('pagination changed during crawl');
+    if (batch.items.length > Math.max(0, batch.total - (page - 1) * batch.pageSize)) fail('invalid pagination');
     for (const item of batch.items) {
       if (seen.has(String(item.id)) || slugs.has(item.slug)) fail('duplicate product across pages');
       seen.add(String(item.id)); slugs.add(item.slug);
-      const rows = await readDetail(shop, item, fetchImpl, options.signal);
+      const rows = await readDetail(shop, item, fetchImpl, options.signal, Boolean(options.onPartialList) && item.skus === undefined);
+      if (rows === null) { missingSkuProducts++; continue; }
       result.push(...rows);
       ratingUnits.push(...rows.ratingUnits);
     }
     if (page >= batch.pages) {
-      if (seen.size !== batch.total) fail('incomplete snapshot');
       options.signal?.throwIfAborted();
+      if (seen.size !== batch.total || missingSkuProducts) {
+        if (!options.onPartialList || seen.size === missingSkuProducts || seen.size > batch.total || batch.pages !== Math.ceil(batch.total / batch.pageSize)) fail('incomplete snapshot');
+        options.onPartialList();
+        options.onListStats?.({ unique: seen.size, duplicates: 0, categories: null, categoryClaims: null, flatTotal: batch.total, partial: true, ...(missingSkuProducts ? { missingSkuProducts } : {}) });
+      }
       options.onListComplete?.();
       Object.defineProperty(result, 'ratingUnits', { value: ratingUnits });
       return settle(shop, result, fetchImpl, options, true);
