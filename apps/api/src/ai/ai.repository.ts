@@ -27,6 +27,7 @@ import { readLatestManualDecisions, isManualDecisionForCurrentEvidence, suppress
 import { loadCatalogAliases } from '../standardization/catalog-aliases.js';
 import { canonicalizeMatchText } from '../standardization/canonical-key.js';
 import { IDENTITY_POLICY_VERSION } from '../standardization/identity-policy.js';
+import { API_RELAY_EXCLUSION_CODE, API_RELAY_EXCLUSION_REASON, isExcludedApiRelay } from '../standardization/catalog-exclusion.js';
 import { assertCurrentPipeline, isCurrentPipeline, pipelineVersionSnapshot, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION, readStandardizationRequestLimits, assertStandardizationRequestFits } from './standardization-request.js';
 import { buildTagExtractionRequest, type TagExtractionInput, type TagExtractionResponse } from './tag-extraction-request.js';
@@ -49,7 +50,7 @@ import { readAiStandardizationRuntimeStatus } from './ai-standardization-feature
 import { unknownRequestReason } from './request-outcome.js';
 import { readAiConcurrency } from './ai-concurrency.js';
 import { currentManualDecision, readRetryPool, retryPoolQuery } from './ai-retry-pool.js';
-import { hasActiveStandardizationWork, hasCurrentStandardizationResult, hasManualIsolation, hasPublishedAssignment, productProcessingDisposition } from './product-standardization-state.js';
+import { hasActiveStandardizationWork, hasCurrentStandardizationResult, hasCurrentRelayExclusion, hasManualIsolation, hasPublishedAssignment, productProcessingDisposition } from './product-standardization-state.js';
 import { readAiTaskQueue, type TaskQueueFilter } from './ai-task-queue.js';
 import type { ResponseDiagnostic } from './response-audit.js';
 export interface CreateJobInput { model: string; batchSize?: number; scopeShopId?: bigint | null; sourceFetchRunId?: bigint | null; productIds?: readonly bigint[]; jobType?: 'incremental' | 'manual_full'; triggerEventId?: bigint | null; sourceEvents?: readonly { productId: bigint; eventId: bigint }[]; priority?: number; }
@@ -214,6 +215,11 @@ export class AiRepository {
         const decision = manualDecisions.get(product.id);
         return decision?.action !== 'exclude' || !isManualDecisionForCurrentEvidence(decision, { content_version: product.content_version, content_fingerprint: productFingerprint(product) });
       });
+      const relayIds = new Set(products.filter(product => isExcludedApiRelay(buildExtractionPayload({
+        id: String(product.id), name: product.name, sourceName: product.source_name,
+        description: product.source_description || undefined, spec: product.spec,
+        category: product.source_category, sourceData: product.source_data,
+      }), 'text')).map(product => product.id));
       const groups = new Map<string, typeof products>();
       for (const p of products) {
         const payload = buildExtractionPayload({ id: p.id.toString(), name: p.name, sourceName: p.source_name,
@@ -222,11 +228,12 @@ export class AiRepository {
         const group = groups.get(key) ?? []; group.push(p); groups.set(key, group);
       }
       const unique = [...groups.values()].map(members => ({ product: members[0]!, members, fingerprint: productFingerprint(members[0]!) }));
-      const needsModel = unique.length > 0;
+      const excludedCount = relayIds.size;
+      const needsModel = unique.some(item => !relayIds.has(item.product.id));
       const sourceEventByProduct = new Map(input.sourceEvents?.map(event => [event.productId, event.eventId]) ?? []);
       const job = await tx.insertInto('ai_jobs').values({
         status: needsModel ? 'queued' : 'succeeded', total: BigInt(products.length), model: input.model.trim(), auto_apply: true,
-        processed: 0n, unclassified: 0n,
+        processed: BigInt(excludedCount), unclassified: BigInt(excludedCount),
         job_type: input.jobType ?? 'manual_full', trigger_event_id: input.triggerEventId ?? null, priority: input.priority ?? 0,
         source_fetch_run_id: input.sourceFetchRunId ?? null,
         scope_shop_id: input.scopeShopId ?? null, prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION,
@@ -234,6 +241,7 @@ export class AiRepository {
         request_window_size: readAiConcurrency(), phase: needsModel ? 'standardizing' : 'completed', finished_at: needsModel ? null : sql`now()`,
       }).returningAll().executeTakeFirstOrThrow();
       await incrementJobProgress(tx, { jobId: job.id, ...extractionProgressDelta('initialize', products.length) });
+      if (excludedCount) await incrementJobProgress(tx, { jobId: job.id, queued: -excludedCount, processed: excludedCount, succeeded: excludedCount });
       if (unique.length) {
         const sized = unique.map(({ product: p, members, fingerprint }) => {
           const payload = buildExtractionPayload({ id: p.id.toString(), name: p.name, sourceName: p.source_name, description: p.source_description || undefined, spec: p.spec, category: p.source_category, sourceData: p.source_data as JsonValue });
@@ -248,8 +256,8 @@ export class AiRepository {
           await tx.insertInto('ai_job_inputs').values(chunk.map(({ product: p, fingerprint, payload, inputBytes, estimatedTokens }) => ({
             job_id: job.id, input_id: p.id, fingerprint, payload: jsonb(payload), input_bytes: BigInt(inputBytes),
             manual_decision_id: manualDecisions.get(p.id)?.id ?? null,
-            estimated_tokens: BigInt(estimatedTokens), status: 'queued' as const,
-            reason_code: null, round: 0, content_version: p.content_version,
+            estimated_tokens: BigInt(estimatedTokens), status: relayIds.has(p.id) ? 'succeeded' as const : 'queued' as const,
+            reason_code: relayIds.has(p.id) ? API_RELAY_EXCLUSION_CODE : null, round: 0, content_version: p.content_version,
           }))).execute();
         }
         const inputMembers = unique.flatMap(({ product: p, members }) => members.map((member) => {
@@ -257,8 +265,8 @@ export class AiRepository {
           return {
             job_id: job.id, input_id: p.id, product_id: member.id, standardization_revision: member.standardization_revision,
             content_version: member.content_version, fingerprint: productFingerprint(member), payload: jsonb(payload),
-            status: 'queued' as const,
-            reason_code: null,
+            status: relayIds.has(member.id) ? 'unclassified' as const : 'queued' as const,
+            reason_code: relayIds.has(member.id) ? API_RELAY_EXCLUSION_CODE : null,
           };
         }));
         for (const chunk of chunks(inputMembers)) await tx.insertInto('ai_job_input_members').values(chunk).execute();
@@ -277,8 +285,8 @@ export class AiRepository {
           await tx.insertInto('ai_standardization_executions').values(chunk.map(member => ({
             product_id: member.product_id, content_version: member.content_version, fingerprint: member.fingerprint,
             snapshot: member.payload, event_id: sourceEventByProduct.get(member.product_id) ?? null,
-            job_id: job.id, input_id: member.input_id, status: 'registered' as const,
-            completed_at: null,
+            job_id: job.id, input_id: member.input_id, status: relayIds.has(member.product_id) ? 'completed' as const : 'registered' as const,
+            completed_at: relayIds.has(member.product_id) ? sql<Date>`now()` : null,
           }))).onConflict(conflict => conflict.columns(['product_id', 'content_version', 'fingerprint']).doUpdateSet(eb => ({
             job_id: eb.ref('excluded.job_id'), input_id: eb.ref('excluded.input_id'), event_id: eb.ref('excluded.event_id'),
             snapshot: eb.ref('excluded.snapshot'), status: eb.ref('excluded.status'), completed_at: eb.ref('excluded.completed_at'),
@@ -290,9 +298,20 @@ export class AiRepository {
               and previous_member.standardization_revision = current_product.standardization_revision
               and previous_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb)`)).execute();
         }
+        for (const chunk of chunks(inputMembers.filter(member => relayIds.has(member.product_id)))) {
+          await tx.insertInto('ai_standardization_results').values(chunk.map(member => ({
+            job_id: job.id, product_id: member.product_id, batch_id: null, input_id: member.input_id,
+            content_version: member.content_version, fingerprint: member.fingerprint, status: 'unclassified' as const,
+            standard_product_id: null, tags: jsonb([]), evidence: jsonb([]),
+            reason_code: API_RELAY_EXCLUSION_CODE, reason: API_RELAY_EXCLUSION_REASON,
+            decision: jsonb({ id: String(member.input_id), status: 'unclassified', ruleIds: ['catalog_model_relay_excluded'],
+              evidence: [], reasonCode: API_RELAY_EXCLUSION_CODE, reason: API_RELAY_EXCLUSION_REASON }),
+            current_assignment_preserved: true, published_at: sql`now()`,
+          }))).execute();
+        }
         const limits = readAiBatchLimits();
         const maxItems = Math.min(limits.maxItems, batchSize);
-        const modelInputs = sized;
+        const modelInputs = sized.filter(item => !relayIds.has(item.product.id));
         const planned = planIndependentStandardizationBatches(modelInputs.map(x => ({ productId: x.product.id, payload: x.payload, inputBytes: x.inputBytes, estimatedTokens: x.estimatedTokens })), { ...limits, maxItems });
         const plannedIds = new Set(planned.flatMap((b) => b.productIds));
         const oversized = modelInputs.filter((x) => !plannedIds.has(x.product.id));
@@ -329,7 +348,7 @@ export class AiRepository {
             }))).onConflict(conflict => conflict.columns(['job_id', 'product_id']).doNothing()).execute();
           }
           await tx.updateTable('ai_standardization_executions').set({ status: 'completed', completed_at: sql`now()` }).where('job_id', '=', job.id).where('input_id', 'in', oversizedInputIds).execute();
-          await tx.updateTable('ai_jobs').set({ unclassified: BigInt(oversizedProductCount), status: planned.length ? 'queued' : 'ready_with_errors', finished_at: planned.length ? null : sql`now()` }).where('id', '=', job.id).execute();
+          await tx.updateTable('ai_jobs').set({ unclassified: BigInt(excludedCount + oversizedProductCount), status: planned.length ? 'queued' : 'ready_with_errors', finished_at: planned.length ? null : sql`now()` }).where('id', '=', job.id).execute();
           await incrementJobProgress(tx, { jobId: job.id, ...extractionProgressDelta('oversized', oversizedProductCount) });
         }
         const memberCounts = new Map(unique.map((item) => [item.product.id, item.members.length]));
@@ -1979,6 +1998,7 @@ export class AiRepository {
       left join ai_job_batches b on b.id=r.batch_id
       where p.deleted_at is null
         and not ${hasManualIsolation()}
+        and not ${hasCurrentRelayExclusion()}
         and not exists (
           select 1 from standard_product_members m
           join standard_products sp on sp.id=m.standard_product_id and sp.verification_state='verified' and sp.merged_into_id is null

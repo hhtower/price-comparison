@@ -1,6 +1,7 @@
 import { saleEvidenceView } from './sale-evidence.js';
 
 export const API_RELAY_EXCLUSION_REASON = '目录不收录模型中转站的 API 额度、余额、请求套餐或号池接口';
+export const API_RELAY_EXCLUSION_CODE = 'api_relay_excluded';
 
 const model = /codex|claude|openai|chatgpt|gemini|grok|deepseek|模型/iu;
 const account = /账号|账户|成品|订阅|会员|席位|账密|team|plus|pro|free/iu;

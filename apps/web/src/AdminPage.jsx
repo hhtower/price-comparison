@@ -16,7 +16,7 @@ import './admin.css';
 import './ai-workbench.css';
 
 const PAGE_SIZE = 10;
-const PROCESSING_DISPOSITIONS = { review_required: '需人工审核', retry_available: '处理失败，可重试', pending: '等待处理' };
+const PROCESSING_DISPOSITIONS = { review_required: '需人工审核', retry_available: '处理失败，可重试', pending: '等待处理', handled: '已排除' };
 const MEMBERSHIP_REASONS = {
   warranty_covers_subscription: '质保覆盖订阅周期', full_subscription_promise: '明确保障完整订阅期',
   duration_invalid_or_conflicting: '订阅周期不明确或存在冲突', warranty_invalid_or_conflicting: '保障证据不明确或存在冲突',

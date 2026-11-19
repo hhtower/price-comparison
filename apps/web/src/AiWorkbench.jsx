@@ -24,6 +24,7 @@ const REASONS = {
   unassigned: '当前未归类',
   source_changed: '商品资料已变化',
   unmatched: '未匹配已有标准',
+  api_relay_excluded: '模型中转商品不收录',
   input_too_large: '商品资料过长',
   publication_too_large: '结果内容过大',
   invalid_response: '模型结果格式异常',
@@ -44,7 +45,7 @@ const REASONS = {
 };
 function reasonTitle(code) { return REASONS[code] || '暂未完成分类'; }
 function unresolved(results) {
-  return Math.max(0, number(results?.unclassified));
+  return Math.max(0, number(results?.unclassified) - number(results?.unclassifiedReasons?.api_relay_excluded));
 }
 function taskStatus(job, progress) {
   return job?.status === 'succeeded' && unresolved(progress?.results ?? job) > 0
@@ -94,6 +95,7 @@ function ProgressOverview({ status }) {
   const total = number(progress.rawProductCount);
   const processed = Math.min(total, number(results.classified) + number(results.unclassified));
   const pending = unresolved(results);
+  const excluded = number(results.unclassifiedReasons?.api_relay_excluded);
   const percent = total ? processed / total * 100 : 0;
   const completed = status?.job?.status === 'succeeded';
   const stopped = ['failed', 'interrupted', 'cancelled', 'ready_with_errors'].includes(status?.job?.status);
@@ -107,6 +109,7 @@ function ProgressOverview({ status }) {
       <dl className="ai-standardization-summary">
         <Metric label="原始商品" value={progress.rawProductCount} />
         <Metric label="已分类" value={results.classified} />
+        {excluded > 0 ? <Metric label="已排除" value={excluded} /> : null}
         <Metric label="待处理" value={pending} />
         <Metric label="标准商品" value={results.standardProducts} />
         <Metric label="失败批次" value={requests.failedBatches} />

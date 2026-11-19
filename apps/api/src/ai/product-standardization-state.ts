@@ -2,10 +2,12 @@ import { sql } from 'kysely';
 import { unknownRequestReason } from './request-outcome.js';
 import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
 import type { EvidenceCitation } from './ai.schemas.js';
+import { API_RELAY_EXCLUSION_CODE } from '../standardization/catalog-exclusion.js';
 
 export const RETRYABLE_RESULT_REASONS = ['unmatched', 'request_outcome_unknown', 'invalid_response', 'provider_error', 'evidence_invalid', 'attribute_conflict', 'missing_id', 'result_not_saved'] as const;
 
-export function productProcessingDisposition(reasonCode: unknown): 'review_required' | 'retry_available' | 'pending' {
+export function productProcessingDisposition(reasonCode: unknown): 'review_required' | 'retry_available' | 'pending' | 'handled' {
+  if (reasonCode === API_RELAY_EXCLUSION_CODE) return 'handled';
   if (reasonCode === 'identity_conflict' || reasonCode === 'publication_blocked' || reasonCode === 'review_rejected' || reasonCode === 'manual_decision_preserved' || reasonCode === 'input_too_large') return 'review_required';
   if (RETRYABLE_RESULT_REASONS.some(reason => reason === reasonCode)) return 'retry_available';
   return 'pending';
@@ -75,8 +77,22 @@ export function hasManualIsolation(product = 'p') {
 
 export function productStandardizationOutcome(product = 'p') {
   return sql<'classified' | 'cannot_process' | null>`case when ${hasPublishedAssignment(product)} then 'classified'
-    when ${hasManualIsolation(product)} then 'cannot_process'
+    when ${hasManualIsolation(product)} or ${hasCurrentRelayExclusion(product)} then 'cannot_process'
     else null end`;
+}
+
+export function hasCurrentRelayExclusion(product = 'p') {
+  return sql<boolean>`coalesce((select r.reason_code = ${API_RELAY_EXCLUSION_CODE}
+    from ai_standardization_results r
+    join ai_job_input_members m on m.job_id = r.job_id and m.product_id = r.product_id
+    join ai_jobs j on j.id = r.job_id
+    where r.product_id = ${sql.ref(product + '.id')}
+      and j.prompt_version = ${PIPELINE_VERSIONS.prompt} and j.rule_version = ${STANDARDIZATION_POLICY_VERSION}
+      and j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+      and r.content_version = ${sql.ref(product + '.content_version')} and m.content_version = r.content_version
+      and r.fingerprint = ${sql.ref(product + '.content_fingerprint')} and m.fingerprint = r.fingerprint
+      and m.standardization_revision = ${sql.ref(product + '.standardization_revision')}
+    order by r.job_id desc limit 1), false)`;
 }
 
 export const hasActiveStandardizationWork = sql<boolean>`exists (select 1 from ai_job_input_members active

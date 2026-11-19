@@ -3,6 +3,7 @@ import type { DatabaseSchema } from '../database/types.js';
 import { unknownRequestReason } from './request-outcome.js';
 import { hasActiveStandardizationWork, RETRYABLE_RESULT_REASONS } from './product-standardization-state.js';
 import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
+import { API_RELAY_EXCLUSION_CODE } from '../standardization/catalog-exclusion.js';
 
 export const currentManualDecision = sql<boolean>`exists (
   select 1 from product_standardization_decisions d where d.product_id = p.id
@@ -20,6 +21,7 @@ export function currentUnclassifiedQuery(db: Kysely<DatabaseSchema>) {
     .innerJoin('ai_job_input_members as m', join => join.onRef('m.job_id', '=', 'r.job_id').onRef('m.product_id', '=', 'r.product_id'))
     .leftJoin('ai_job_batches as b', 'b.id', 'r.batch_id')
     .where('r.status', '=', 'unclassified')
+    .where(eb => eb.or([eb('r.reason_code', 'is', null), eb('r.reason_code', '!=', API_RELAY_EXCLUSION_CODE)]))
     .where('result_job.prompt_version', '=', PIPELINE_VERSIONS.prompt)
     .where('result_job.rule_version', '=', STANDARDIZATION_POLICY_VERSION)
     .where(sql<boolean>`result_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb`)

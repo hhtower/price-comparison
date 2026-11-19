@@ -22,6 +22,7 @@ import { StandardizationRepository } from '../src/standardization/standardizatio
 import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import { validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
+import { AdminRepository } from '../src/admin/admin.repository.js';
 
 describe('AI identity standardization publication', () => {
   let database: Kysely<DatabaseSchema>;
@@ -273,21 +274,39 @@ describe('AI identity standardization publication', () => {
     assert.deepEqual((result.decision as unknown as StandardizationDecision).ruleIds, []);
   });
 
-  test('relay-looking evidence is queued and only an explicit unmatched response reaches pending review', async () => {
+  test('model relay offers are excluded before model requests while ordinary offers still match candidates', async () => {
     const shop = await addShop();
-    for (const [name, standardProductId] of [['Codex API 中转充值 100刀', null], ['ChatGPT Plus 账号', String(plusId)]] as const) {
-      const source = await addProduct(shop.id, name);
-      const prepared = await createPreparedJob([source.id]);
-      assert.equal(prepared.job.processed, 0n);
-      assert.deepEqual(await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', prepared.job.id).execute(), []);
-      const request = await prepared.repository.getBatchRequest(prepared.batchId);
-      const response = parseStandardizationProtocolResponse({ items: [{ id: String(source.id), standardProductId,
-        evidence: [{ path: 'name', quote: name }] }] }, request.inputs.map(input => ({ id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds })));
-      await saveAndPublish(prepared, response);
-      assert.deepEqual(await database.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow(),
-        standardProductId === null ? { status: 'unclassified', reason_code: 'unmatched' } : { status: 'classified', reason_code: null });
-      assert.ok(await database.selectFrom('products').select('id').where('id', '=', source.id).executeTakeFirst());
-    }
+    const relay = await addProduct(shop.id, 'Codex API 中转充值 100刀');
+    const ordinary = await addProduct(shop.id, 'ChatGPT Plus 账号');
+    const prepared = await createPreparedJob([relay.id, ordinary.id]);
+    assert.equal(prepared.job.processed, 1n);
+    assert.equal(prepared.job.unclassified, 1n);
+    assert.deepEqual(await database.selectFrom('ai_standardization_results').select(['product_id', 'batch_id', 'reason_code'])
+      .where('job_id', '=', prepared.job.id).execute(),
+    [{ product_id: relay.id, batch_id: null, reason_code: 'api_relay_excluded' }]);
+    const request = await prepared.repository.getBatchRequest(prepared.batchId);
+    assert.deepEqual(request.inputs.map(input => input.productId), [ordinary.id]);
+    await saveAndPublish(prepared, { items: [classified(ordinary.id, plusId, 'ChatGPT Plus 账号')], missingIds: [] });
+    assert.ok(await database.selectFrom('products').select('id').where('id', '=', relay.id).executeTakeFirst());
+    assert.equal((await prepared.repository.listGlobalResults({ limit: 100 })).items.some(item => item.productId === String(relay.id)), false);
+    const pending = await new AdminRepository(database).listProducts({ pending: true, shopId: shop.id, limit: 100 });
+    assert.equal(pending.items.some(item => item.id === relay.id), false);
+    assert.equal((await prepared.repository.listRetryPool({ limit: 100 })).items.some(item => item.productId === String(relay.id)), false);
+    await database.updateTable('products').set({ content_version: sql`content_version + 1` }).where('id', '=', relay.id).execute();
+    const changed = await new AdminRepository(database).listProducts({ pending: true, shopId: shop.id, limit: 100 });
+    assert.equal(changed.items.some(item => item.id === relay.id), true);
+  });
+
+  test('an all-relay job completes locally without a model batch', async () => {
+    const shop = await addShop();
+    const relay = await addProduct(shop.id, 'Claude API 中转余额充值');
+    const repository = new AiRepository(database);
+    const job = await repository.createJob({ model: 'mock', productIds: [relay.id] });
+    assert.deepEqual(job.batches, []);
+    assert.equal(job.status, 'succeeded');
+    assert.equal(job.processed, 1n);
+    assert.equal((await database.selectFrom('ai_standardization_executions').select('status')
+      .where('job_id', '=', job.id).executeTakeFirstOrThrow()).status, 'completed');
   });
 
   test('deleted products and inactive shops are skipped before reserving an LLM request', async () => {
@@ -311,20 +330,20 @@ describe('AI identity standardization publication', () => {
     }
   });
 
-  test('publication preserves persistent locks and current manual decisions for relay-looking evidence', async () => {
+  test('local relay exclusions preserve persistent locks and current manual decisions', async () => {
     const shop = await addShop();
     for (const protection of ['lock', 'review'] as const) {
       const name = 'Codex API 中转充值 ' + protection;
       const source = await addProduct(shop.id, name);
-      const prepared = await createPreparedJob([source.id], false, [plusId]);
-      await saveDecision(prepared, { items: [classified(source.id, plusId, name)], missingIds: [] });
       if (protection === 'lock') await database.updateTable('products').set({ standardization_locked: true }).where('id', '=', source.id).execute();
       else await database.transaction().execute(tx => recordManualDecisions(tx, [source.id], { action: 'quarantine', standardProductId: null, reason: 'Preserve human review' }));
-      await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
-      await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' });
+      const before = await database.selectFrom('products').selectAll().where('id', '=', source.id).executeTakeFirstOrThrow();
+      const decisions = await database.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', source.id).execute();
+      const job = await new AiRepository(database).createJob({ model: 'mock', productIds: [source.id] });
+      assert.deepEqual(job.batches, []);
       assert.deepEqual(await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', source.id).execute(), []);
-      const result = await database.selectFrom('ai_standardization_results').select('status').where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow();
-      assert.equal(result.status, 'unclassified');
+      assert.deepEqual(await database.selectFrom('products').selectAll().where('id', '=', source.id).executeTakeFirstOrThrow(), before);
+      assert.deepEqual(await database.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', source.id).execute(), decisions);
     }
   });
 
@@ -347,7 +366,7 @@ describe('AI identity standardization publication', () => {
       const throwing = {
         createJob: async (input: Parameters<AiRepository['createJob']>[0], tx: Parameters<AiRepository['createJob']>[1]) => {
           const job = await real.createJob(input, tx);
-          assert.equal((await tx!.selectFrom('ai_job_batches').select('id').where('job_id', '=', job.id).execute()).length, 1);
+          assert.equal((await tx!.selectFrom('ai_job_batches').select('id').where('job_id', '=', job.id).execute()).length, 0);
           throw new Error('after registration before outbox acknowledgement');
         },
       } as unknown as AiRepository;
@@ -361,18 +380,18 @@ describe('AI identity standardization publication', () => {
       });
       assert.ok(created);
       assert.equal((await database.selectFrom('standardization_outbox').select('status').where('id', '=', outbox.id).executeTakeFirstOrThrow()).status, 'succeeded');
-      assert.deepEqual(await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', created.id).execute(), []);
-      assert.equal((await database.selectFrom('ai_job_batches').select('id').where('job_id', '=', created.id).execute()).length, 1);
+      assert.deepEqual(await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', created.id).execute(), [{ product_id: relay.id }]);
+      assert.equal((await database.selectFrom('ai_job_batches').select('id').where('job_id', '=', created.id).execute()).length, 0);
       const duplicate = await real.createJob({ model: 'mock', productIds: [relay.id], jobType: 'incremental' });
       assert.equal(duplicate.total, 0n);
-      assert.equal((await database.selectFrom('ai_standardization_results').select('job_id').where('product_id', '=', relay.id).execute()).length, 0);
+      assert.equal((await database.selectFrom('ai_standardization_results').select('job_id').where('product_id', '=', relay.id).execute()).length, 1);
     } finally {
       if (oldModel === undefined) delete process.env.AI_MODEL;
       else process.env.AI_MODEL = oldModel;
     }
   });
 
-  test('concurrent incremental registration queues one execution without inventing a business result', async () => {
+  test('concurrent incremental registration records a local relay exclusion once', async () => {
     const shop = await addShop();
     const relay = await addProduct(shop.id, '模型 API 中转充值 500美元');
     const jobs = await Promise.all([new AiRepository(database), new AiRepository(database)].map(repository =>
@@ -380,7 +399,7 @@ describe('AI identity standardization publication', () => {
     assert.deepEqual(jobs.map(job => Number(job.total)).sort(), [0, 1]);
     const results = await database.selectFrom('ai_standardization_results').select('job_id').where('product_id', '=', relay.id).execute();
     const executions = await database.selectFrom('ai_standardization_executions').select('job_id').where('product_id', '=', relay.id).execute();
-    assert.equal(results.length, 0);
+    assert.equal(results.length, 1);
     assert.deepEqual(executions, [{ job_id: jobs.find(job => job.total === 1n)!.id }]);
   });
 

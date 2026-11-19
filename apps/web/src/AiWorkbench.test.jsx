@@ -397,6 +397,22 @@ describe('AiWorkbench', () => {
     expect(screen.queryByRole('button', { name: '查看待处理商品' })).not.toBeInTheDocument();
   });
 
+  test('本地排除的中转商品显示为已排除，不计入待处理', async () => {
+    installFetch(url => {
+      if (url.pathname === '/api/admin/ai/status') return response({ ...status, progress: { ...progress,
+        results: { ...progress.results, unclassifiedReasons: { api_relay_excluded: 4 } } } });
+      if (url.pathname === '/api/admin/ai/task-queue') return response({ items: [] });
+      return response({}, 404);
+    });
+    render(<AiWorkbench shops={shops} />);
+    await userEvent.setup().click(screen.getByRole('tab', { name: '标准化' }));
+    const region = await screen.findByRole('region', { name: '任务运行概览' });
+    expect(region).toHaveTextContent('已排除4');
+    expect(region).toHaveTextContent('待处理0');
+    expect(region).toHaveTextContent('模型中转商品不收录 · 4 件');
+    expect(region).not.toHaveTextContent('有待处理商品');
+  });
+
   test('标准化记录用弹窗查看详情，关闭后保留筛选、分页与最新任务', async () => {
     const calls = installFetch(url => {
       if (url.pathname === '/api/admin/ai/status') return response(status);
