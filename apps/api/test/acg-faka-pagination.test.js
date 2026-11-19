@@ -43,6 +43,39 @@ function observe() {
 
 const listCalls = net => net.calls.filter(url => url.pathname.endsWith('/commodity'));
 
+test('ACG reconciles overlapping category pages only with a verified whole-category response', async () => {
+  for (const replacement of [rows.slice(0, 13), rows.slice(1, 14), rows.slice(0, 12), [...rows.slice(0, 12), rows[0]]]) {
+    const net = network({ categories: [{ id: 9, commodity_count: 13 }], intercept: url => {
+      if (!url.pathname.endsWith('/commodity')) return;
+      const data = url.searchParams.get('limit') === '13' ? replacement : url.searchParams.get('page') === '1' ? rows.slice(0, 12) : [rows[11]];
+      return Response.json({ code: 200, total: 13, data });
+    } }), events = observe();
+    const result = crawl(null, shop, net.fetch, events.options);
+    if (replacement.length === 13 && replacement[0].id === 1 && replacement[12].id === 13) {
+      assert.deepEqual((await result).map(item => item.externalId), rows.slice(0, 13).map(item => String(item.id)));
+      assert.equal(events.completed, 1);
+    } else {
+      await assert.rejects(result);
+      assert.equal(events.completed, 0);
+    }
+    assert.deepEqual(listCalls(net).map(url => url.searchParams.get('limit')), ['12', '12', '13']);
+  }
+});
+
+test('ACG accepts reported short categories only for a partial sync and reads every claimed page', async () => {
+  const net = network({ categories: [{ id: 1, commodity_count: 1 }, { id: 'recommend', commodity_count: 16 }], intercept: url => {
+    if (!url.pathname.endsWith('/commodity')) return;
+    if (url.searchParams.get('categoryId') === '1') return Response.json({ code: 200, total: 0, data: [] });
+    const data = url.searchParams.get('page') === '1' ? rows.slice(0, 11) : rows.slice(12, 16);
+    return Response.json({ code: 200, total: 16, data });
+  } }), events = observe();
+  let partial = false;
+  const result = await crawl(null, shop, net.fetch, { ...events.options, onPartialList: () => { partial = true; } });
+  assert.equal(partial, true);
+  assert.deepEqual(result.map(item => item.externalId), rows.slice(0, 16).filter(item => item.id !== 12).map(item => String(item.id)));
+  assert.equal(events.stats[0].categoryClaims, 17);
+});
+
 for (const second of [10, 'recommend']) {
   test(`ACG merges complete overlapping categories 9 and ${second}`, async () => {
     const net = network({ categories: [{ id: 9, commodity_count: 2 }, { id: second, commodity_count: 2 }], intercept: url => {
@@ -208,11 +241,13 @@ for (const categories of [[], [{ id: 9, commodity_count: 0 }]]) {
       const net = network({ categories, intercept: url =>
         url.pathname.endsWith('/commodity') ? Response.json({ code: 200, total, data: [] }) : undefined,
       }), events = observe();
-      assert.deepEqual(await crawl(null, shop, net.fetch, events.options), []);
+      const result = crawl(null, shop, net.fetch, { ...events.options, onPartialList: () => assert.fail('no usable rows') });
+      if (total) await assert.rejects(result, /incomplete flat pagination/);
+      else assert.deepEqual(await result, []);
       assert.deepEqual(listCalls(net).map(url => url.searchParams.get('page')), total === 0 ? ['1'] : ['1', '2', '3']);
       assert.ok(listCalls(net).every(url => !url.searchParams.has('categoryId')));
-      assert.equal(events.completed, 1);
-      assert.deepEqual(events.stats, [{ unique: 0, duplicates: 0, categories: 0, categoryClaims: 0, flatTotal: total }]);
+      assert.equal(events.completed, total ? 0 : 1);
+      assert.deepEqual(events.stats, total ? [] : [{ unique: 0, duplicates: 0, categories: 0, categoryClaims: 0, flatTotal: 0 }]);
     }
   });
 }

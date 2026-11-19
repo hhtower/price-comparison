@@ -639,6 +639,7 @@ describe('complete shop snapshot synchronization', () => {
     await database.updateTable('shops').set({ url: 'https://apiciyuan.top/', protocol: 'acg-faka' }).where('id', '=', s.id).execute();
     const listings = Array.from({ length: 30 }, (_, i) => ({ id: i + 1, name: `Snapshot P${i + 1}`, status: 1 }));
     let incomplete = false;
+    let reportTotal = false;
     const fetchImpl: typeof fetch = async input => {
       const url = new URL(String(input));
       const json = (data: unknown) => Response.json({ code: 200, data });
@@ -647,7 +648,8 @@ describe('complete shop snapshot synchronization', () => {
         const page = Number(url.searchParams.get('page'));
         const limit = Number(url.searchParams.get('limit'));
         assert.equal(limit, 12);
-        return json(incomplete && page === 2 ? [] : listings.slice((page - 1) * limit, page * limit));
+        const data = incomplete && page === 2 ? [] : listings.slice((page - 1) * limit, page * limit);
+        return reportTotal ? Response.json({ code: 200, data, total: 30 }) : json(data);
       }
       if (url.pathname.endsWith('/commodityDetail')) {
         const id = Number(url.searchParams.get('commodityId'));
@@ -655,7 +657,7 @@ describe('complete shop snapshot synchronization', () => {
           draft_status: 0, only_user: 0, purchase_count: 0, config: {}, description: '' });
       }
       if (url.pathname.endsWith('/stock')) return json({ stock: 1, stock_state: 1 });
-      if (url.pathname.endsWith('/valuation')) return json({ price: '10.00' });
+      if (url.pathname.endsWith('/valuation')) return json({ price: reportTotal ? '12.00' : '10.00' });
       if (url.pathname.endsWith('/pay')) return json([]);
       throw new Error('unexpected ACG endpoint');
     };
@@ -666,9 +668,25 @@ describe('complete shop snapshot synchronization', () => {
     const before = await database.selectFrom('products').selectAll().where('shop_id', '=', s.id).orderBy('id').execute();
     assert.equal(before.length, 30);
     incomplete = true;
+    reportTotal = true;
+    const job = await claim(s.id);
+    await handler(job);
+    const run = await database.selectFrom('fetch_runs').select(['status', 'item_count', 'crawl_metrics']).where('id', '=', job.id).executeTakeFirstOrThrow();
+    assert.equal(run.status, 'succeeded');
+    assert.equal(Number(run.item_count), 18);
+    assert.equal((run.crawl_metrics as { list: { partial: boolean } }).list.partial, true);
+    const offers = await database.selectFrom('products as p').innerJoin('offers as o', 'o.product_id', 'p.id')
+      .select(['p.external_id', 'p.deleted_at', 'o.is_stale', 'o.price']).where('p.shop_id', '=', s.id).execute();
+    assert.equal(offers.length, 30);
+    for (const offer of offers) {
+      assert.equal(offer.deleted_at, null);
+      assert.equal(offer.is_stale, false);
+      assert.equal(Number(offer.price), Number(offer.external_id) >= 13 && Number(offer.external_id) <= 24 ? 10 : 12);
+    }
+    reportTotal = false;
+    const afterPartial = await database.selectFrom('products').selectAll().where('shop_id', '=', s.id).orderBy('id').execute();
     await assert.rejects(handler(await claim(s.id)), /incomplete category pagination/);
-    assert.deepEqual(await database.selectFrom('products').selectAll().where('shop_id', '=', s.id).orderBy('id').execute(), before);
-    assert.ok(before.every(product => product.deleted_at === null));
+    assert.deepEqual(await database.selectFrom('products').selectAll().where('shop_id', '=', s.id).orderBy('id').execute(), afterPartial);
   });
 
   test('settlement retry drops changed source and product snapshots without issuing quote requests', async () => {

@@ -10,7 +10,7 @@ export type CrawlMetricsData = {
   durations: { list: number; settlement: number; transaction: number; rate_wait: number; proxy_wait: number; network: number; total: number };
   hosts: Record<string, CrawlHostMetrics>;
   /** acg-faka: 列表完成度(去重后条数与站点声称值),守卫放宽后不再静默缺数据。 */
-  list?: { unique: number; duplicates: number; categories: number | null; categoryClaims: number | null; flatTotal: number | null };
+  list?: { unique: number; duplicates: number; categories: number | null; categoryClaims: number | null; flatTotal: number | null; partial?: true };
 }
 
 /** Durable per-run counters, including attempts that preceded a successful retry. */

@@ -47,21 +47,21 @@ async function page(shop, current, fetchImpl, options) {
   return payload;
 }
 
-function validateListings(payload) {
-  if (!Array.isArray(payload?.data) || payload.data.length > PAGE_SIZE) fail('invalid pagination');
+function validateListings(payload, limit) {
+  if (!Array.isArray(payload?.data) || payload.data.length > limit) fail('invalid pagination');
   for (const item of payload.data) {
     if (!productId(item?.id) || typeof item.name !== 'string' || !item.name.trim() || ![0, 1].includes(item.status)) fail('invalid product');
   }
+  if (new Set(payload.data.map(item => item.id)).size !== payload.data.length) fail('duplicate product ID');
   return payload;
 }
 
-async function categoryPage(shop, categoryId, current, fetchImpl, options) {
-  const query = `categoryId=${categoryId}&page=${current}&limit=${PAGE_SIZE}`;
-  return validateListings(await read(shop, `/user/api/index/commodity?${query}`, fetchImpl, options));
+async function categoryPage(shop, categoryId, current, fetchImpl, options, limit = PAGE_SIZE) {
+  const query = `categoryId=${categoryId}&page=${current}&limit=${limit}`;
+  return validateListings(await read(shop, `/user/api/index/commodity?${query}`, fetchImpl, options), limit);
 }
 
 // A successful discovery with no populated categories uses the flat listing.
-// Callers persist the returned list as a complete snapshot, so listing failures must propagate.
 async function discoverListings(shop, fetchImpl, options) {
   const collected = new Map();
   const payload = await read(shop, '/user/api/index/data', fetchImpl, options);
@@ -71,22 +71,40 @@ async function discoverListings(shop, fetchImpl, options) {
   const active = payload.data.filter(cat => cat.commodity_count > 0);
   const categories = active.length, categoryClaims = active.reduce((sum, cat) => sum + cat.commodity_count, 0);
   let flatTotal = null, duplicates = 0;
+  let partial = false;
   for (const cat of active) {
-    const categoryIds = new Set();
+    let categoryItems = new Map();
+    let pageTotal, validTotals = true;
     for (let current = 1; current <= Math.ceil(cat.commodity_count / PAGE_SIZE); current++) {
       const batch = await categoryPage(shop, cat.id, current, fetchImpl, options);
-      if (batch.data.length > Math.min(PAGE_SIZE, cat.commodity_count - (current - 1) * PAGE_SIZE)) fail('invalid pagination');
-      for (const item of batch.data) {
-        if (categoryIds.has(item.id)) fail('duplicate product ID');
-        categoryIds.add(item.id);
-        const existing = collected.get(item.id);
-        if (existing) {
-          if (existing.status !== item.status) fail('conflicting product status');
-          duplicates++;
-        } else collected.set(item.id, item);
+      const offset = (current - 1) * PAGE_SIZE;
+      const expected = Math.min(PAGE_SIZE, cat.commodity_count - offset);
+      if (batch.data.length > expected) fail('invalid pagination');
+      if (current === 1) pageTotal = batch.total;
+      if (!Number.isSafeInteger(batch.total) || batch.total < 0 || batch.total > cat.commodity_count
+        || batch.total !== pageTotal || batch.data.length > Math.max(0, batch.total - offset)) validTotals = false;
+      if (batch.data.some(item => categoryItems.has(item.id))) {
+        if (!validTotals || pageTotal !== cat.commodity_count || pageTotal > 100) fail('duplicate product ID');
+        const whole = await categoryPage(shop, cat.id, 1, fetchImpl, options, pageTotal);
+        const verified = new Map(whole.data.map(item => [item.id, item]));
+        if (whole.total !== pageTotal || verified.size !== pageTotal || [...categoryItems.values(), ...batch.data]
+          .some(item => verified.get(item.id)?.status !== item.status)) fail('inconsistent category snapshot');
+        categoryItems = verified;
+        break;
       }
+      for (const item of batch.data) categoryItems.set(item.id, item);
     }
-    if (categoryIds.size !== cat.commodity_count) fail('incomplete category pagination');
+    if (categoryItems.size !== cat.commodity_count) {
+      if (!options.onPartialList || !validTotals) fail('incomplete category pagination');
+      partial = true;
+    }
+    for (const item of categoryItems.values()) {
+      const existing = collected.get(item.id);
+      if (existing) {
+        if (existing.status !== item.status) fail('conflicting product status');
+        duplicates++;
+      } else collected.set(item.id, item);
+    }
   }
   if (!active.length) {
     for (let current = 1; current <= MAX_PAGES; current++) {
@@ -101,8 +119,16 @@ async function discoverListings(shop, fetchImpl, options) {
       // Permission filtering can leave short or empty pages before the final advertised page.
       if (current >= Math.ceil(flatTotal / PAGE_SIZE)) break;
     }
+    if (collected.size !== flatTotal) {
+      if (!options.onPartialList || !collected.size) fail('incomplete flat pagination');
+      partial = true;
+    }
   }
-  options.onListStats?.({ unique: collected.size, duplicates, categories, categoryClaims, flatTotal });
+  if (partial) {
+    if (!collected.size) fail('incomplete category pagination');
+    options.onPartialList();
+  }
+  options.onListStats?.({ unique: collected.size, duplicates, categories, categoryClaims, flatTotal, ...(partial ? { partial: true } : {}) });
   return [...collected.values()];
 }
 

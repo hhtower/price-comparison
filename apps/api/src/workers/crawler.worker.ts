@@ -135,10 +135,12 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
         needsSettlementRefresh(item, previousById.get(String(item.externalId)), now(), ttlMs, quantity);
       const outcomes = new Map<string, SettlementResult>();
       let shopObservation: ShopObservation | undefined;
+      let partialList = false;
       listStarted = performance.now();
       const completeList = await adapter.crawl(undefined, shop, fetchImpl, {
         signal,
         onShopObservation: observation => { shopObservation = observation; },
+        onPartialList: () => { partialList = true; },
         // prism: the crawler egress cannot reach the FX feed; reuse the official-reference snapshot.
         ...(adapter.id === 'prism' ? { cnyPerUsd: await latestCnyPerUsd(database) } : {}),
         maxSettlementProducts: 5,
@@ -152,7 +154,7 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
         },
         onListStats: stats => { metrics.data.list = stats; },
       });
-      const manifest = buildRatingManifest(shop, adapter.id, completeList, Date.now());
+      const manifest = partialList ? null : buildRatingManifest(shop, adapter.id, completeList, Date.now());
       const crawled = completeList.filter(item => outcomes.get(String(item.externalId))?.reason !== 'product_unavailable');
       if (settlementStarted !== undefined) {
         metrics.data.durations.settlement += Math.round(performance.now() - settlementStarted);
@@ -207,13 +209,15 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
             && (outcomes.get(String(item.externalId))?.retryable === true
               || ['recently_verified', 'not_selected', 'deferred'].includes(outcomes.get(String(item.externalId))?.reason ?? '')),
         }));
-        await insertOffersInTransaction(transaction, shopId, offersInput);
+        await insertOffersInTransaction(transaction, shopId, offersInput, partialList);
         // Only a successful complete snapshot can retire missing listings; stock does not affect presence.
-        const presentProductIds = [...changes.productIds.values()].map(String);
-        const missing = await transaction.selectFrom('products').select('id')
-          .where('shop_id', '=', shopId).where('deleted_at', 'is', null)
-          .where(sql<boolean>`products.id <> all(${presentProductIds}::bigint[])`).execute();
-        await softDeleteProductNames(transaction, missing.map(row => row.id), 'crawler_missing');
+        if (!partialList) {
+          const presentProductIds = [...changes.productIds.values()].map(String);
+          const missing = await transaction.selectFrom('products').select('id')
+            .where('shop_id', '=', shopId).where('deleted_at', 'is', null)
+            .where(sql<boolean>`products.id <> all(${presentProductIds}::bigint[])`).execute();
+          await softDeleteProductNames(transaction, missing.map(row => row.id), 'crawler_missing');
+        }
         const changed = changes.changedProducts.length ? await transaction.selectFrom('products')
           .select(['id', 'shop_id', 'content_version', 'content_fingerprint', 'source_name', 'source_description', 'name', 'spec', 'source_category', 'source_data'])
           .where('id', 'in', changes.changedProducts).where('deleted_at', 'is', null).execute() : [];
@@ -311,7 +315,7 @@ async function insertOffersInTransaction(transaction: Kysely<DatabaseSchema>, sh
   settlementQuantity: number | null; settlementTotalAmount: string | null;
   settlementRefreshAt: Date | null;
   preserveSettlement: boolean;
-}[]): Promise<void> {
+}[], partialList: boolean): Promise<void> {
   const keys = input.map((offer) => offer.idempotencyKey);
   const preservedIds = input.filter(offer => offer.preserveSettlement).map(offer => String(offer.productId));
   const preserve = sql<boolean>`offers.product_id = any(${preservedIds}::bigint[]) and offers.price = excluded.price and offers.stock_available and excluded.stock_available and not offers.is_stale`;
@@ -337,6 +341,7 @@ async function insertOffersInTransaction(transaction: Kysely<DatabaseSchema>, sh
     settlement_total_amount: sql`case when ${preserve} and excluded.settlement_price is null then offers.settlement_total_amount else excluded.settlement_total_amount end`,
     settlement_refresh_at: ref('excluded.settlement_refresh_at'),
   }))).execute();
+  if (partialList) return;
   await transaction.updateTable('offers').set({ is_stale: true })
     .where('product_id', 'in', transaction.selectFrom('products').select('id').where('shop_id', '=', shopId))
     .$if(keys.length > 0, query => query.where('idempotency_key', 'not in', keys))

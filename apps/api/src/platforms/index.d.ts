@@ -44,8 +44,10 @@ export interface CrawlOptions {
   needsSettlement?: (product: CrawlProduct, quantity: number) => boolean;
   onSettlementResult?: (result: SettlementResult) => void;
   onListComplete?: () => void;
+  /** Opt in to updating observed products without retiring absent products or offers. */
+  onPartialList?: () => void;
   /** acg-faka: 列表完成度上报(去重条数/重复数/分类与平铺声称值),写入 crawl_metrics。 */
-  onListStats?: (stats: { unique: number; duplicates: number; categories: number | null; categoryClaims: number | null; flatTotal: number | null }) => void;
+  onListStats?: (stats: { unique: number; duplicates: number; categories: number | null; categoryClaims: number | null; flatTotal: number | null; partial?: true }) => void;
   /** prism: injected official-reference USD-per-CNY rate; falls back to fetching the FX feed. */
   cnyPerUsd?: string;
 }

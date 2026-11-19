@@ -285,7 +285,11 @@ test('acg-faka refresh sends original variant labels rather than normalized data
 });
 
 test('acg-faka follows total through short and empty permission-filtered pages', async () => {
-  const products = await run(api({ total: 25, pages: [[], [listing(18)], [listing(19)]] }));
+  const filtered = () => api({ total: 25, pages: [[], [listing(18)], [listing(19)]] });
+  await assert.rejects(run(filtered()), /incomplete flat pagination/);
+  let partial = false;
+  const products = await crawl(null, shop, filtered(), { onPartialList: () => { partial = true; } });
+  assert.equal(partial, true);
   assert.deepEqual(products.map(x => x.externalId), ['18', '19']);
   assert.deepEqual(await run(api({ total: 0, pages: [[]] })), []);
 });
@@ -308,10 +312,10 @@ test('acg-faka bounds flat pagination by the stable total and preserves list sta
     intercept: url => {
       if (url.pathname.endsWith('/commodity')) requests.push(Number(url.searchParams.get('page')));
     },
-  }), { onListStats: stats => reports.push(stats) });
+  }), { onPartialList() {}, onListStats: stats => reports.push(stats) });
   assert.deepEqual(products.map(product => product.externalId), ['17', '19']);
   assert.deepEqual(requests, [1, 2, 3]);
-  assert.deepEqual(reports, [{ unique: 2, duplicates: 0, categories: 0, categoryClaims: 0, flatTotal: 25 }]);
+  assert.deepEqual(reports, [{ unique: 2, duplicates: 0, categories: 0, categoryClaims: 0, flatTotal: 25, partial: true }]);
 });
 
 test('acg-faka rejects invalid totals and aggregate overflow without completing a list', async () => {
