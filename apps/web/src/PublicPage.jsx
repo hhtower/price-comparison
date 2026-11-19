@@ -40,6 +40,14 @@ const membershipWords = /成品号|代充|租号(?:\s*[（(]\s*(?:共享|合租)
 const membershipNegation = new RegExp(`(?:不(?:要|需要|想要?|接受|支持|提供|适合|能|是)?|没有|未明确|未说明|无需|禁止|非|是否|可能|或许|不确定)\\s*(?:是|为)?\\s*(?:${membershipWords.source})|(?:${membershipWords.source})\\s*(?:状态)?\\s*(?:不(?:要|支持|提供|可用|确定|保证)|未说明|未知)`, 'u');
 const membershipFilterLabel = kind => kind === 'rental' ? '租号（共享）' : membershipKindLabel(kind);
 
+function MembershipHint({ kind }) {
+  if (kind !== 'account' && kind !== 'top_up') return null;
+  return <>
+    <span className="membership-note">商家质保订阅</span>
+    <span aria-hidden="true"> · </span>
+  </>;
+}
+
 function membershipSearch(query, enabled) {
   const kinds = new Set();
   const text = enabled && !membershipNegation.test(query) ? query.replace(membershipWords, word => {
@@ -686,7 +694,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
     <Controls {...(standalone ? { className: 'product-detail-controls', id: 'catalog-quotes' } : {})}>
     {standalone ? <header className="product-page-heading"><a className="product-back-link" href={window.history.state?.catalogUrl || '/'} onClick={returnToCatalog}>返回商品列表</a><div className="product-page-title"><div className="product-page-category"><span className="platform-pill">{displayPlatform(detail.item.platform)}</span><span className="product-page-kind">{detail.item.kind}</span></div><h1><PlatformIcon platform={detail.item.platform} /><span>{title}</span></h1></div><span className="official-reference-slot" ref={referenceRef} /></header> : null}
     {state.invalidFilters && <p role="alert">部分旧筛选条件已失效，请重新选择。</p>}
-    <header className="dialog-header"><div>{state.shopId ? <button type="button" className="text-button" onClick={() => navigate(shopListState.current || { shopId: '', shopName: '', kind: 'shops' })}>← 返回商铺列表</button> : null}<h2 id="catalog-detail-title">{standalone ? label : title + ' · ' + label}{state.shopName ? ` · ${state.shopName}` : ''}</h2><p>{loading ? '…' : total} {countUnit}</p></div><div className="detail-header-actions">{comparison.length ? <button type="button" className="text-button" onClick={onOpenComparison}>对比（{comparison.length}）</button> : null}{standalone ? <div className="detail-kind-tabs" role="group" aria-label="报价视图"><button type="button" aria-pressed={!isShops} onClick={() => navigate({ kind: 'offers', shopId: '', shopName: '' })}>全部报价</button><button type="button" aria-pressed={isShops} onClick={() => navigate({ kind: 'shops', shopId: '', shopName: '' })}>按商铺</button></div> : <button type="button" aria-label={`关闭${label}详情`} onClick={onClose}>×</button>}</div></header>
+    <header className="dialog-header"><div>{state.shopId ? <button type="button" className="text-button" onClick={() => navigate(shopListState.current || { shopId: '', shopName: '', kind: 'shops' })}>← 返回商铺列表</button> : null}<h2 id="catalog-detail-title">{standalone ? label : title + ' · ' + label}{state.shopName ? ` · ${state.shopName}` : ''}</h2><p><MembershipHint kind={fixedMembershipKind} />{loading ? '…' : total} {countUnit}</p></div><div className="detail-header-actions">{comparison.length ? <button type="button" className="text-button" onClick={onOpenComparison}>对比（{comparison.length}）</button> : null}{standalone ? <div className="detail-kind-tabs" role="group" aria-label="报价视图"><button type="button" aria-pressed={!isShops} onClick={() => navigate({ kind: 'offers', shopId: '', shopName: '' })}>全部报价</button><button type="button" aria-pressed={isShops} onClick={() => navigate({ kind: 'shops', shopId: '', shopName: '' })}>按商铺</button></div> : <button type="button" aria-label={`关闭${label}详情`} onClick={onClose}>×</button>}</div></header>
     <div className="detail-query-panel" ref={toolbar} onKeyDown={event => {
       if (event.key === 'Escape' && filterOpen) { event.preventDefault(); event.stopPropagation(); setFilterOpen(false); }
     }}>
@@ -741,11 +749,12 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
   return (
     <article className="standard-product-card" aria-labelledby={titleId}>
       <header className="standard-product-header" data-expanded={expanded} onClick={event => {
-        if (!event.target.closest('a, button')) onToggle(`${item.id}:${kind || 'standard'}`);
+        if (!event.target.closest('a, button, .membership-note')) onToggle(`${item.id}:${kind || 'standard'}`);
       }}>
         <div className="product-heading">
           <h2 id={titleId}><button type="button" aria-label={membershipName(item, kind)} aria-expanded={expanded} aria-controls={offersId} onClick={() => onToggle(`${item.id}:${kind || 'standard'}`)}><PlatformIcon platform={item.platform} /><span>{membershipName(item, kind)}</span></button></h2>
           <p className="product-counts">
+            <MembershipHint kind={kind} />
             <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'shops', kind ? [kind] : [])}>{shopCount} 家商铺</button><span aria-hidden="true">·</span>
             <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'offers', kind ? [kind] : [])}>{productCount} 条报价</button><span aria-hidden="true">·</span>
             {updatedLabel === '更新时间未知' ? <span className="product-updated">{updatedLabel}</span> : <time className="product-updated" dateTime={latestCapturedAt} title={'最近采集：' + new Date(latestCapturedAt).toLocaleString('zh-CN')}>{updatedLabel}</time>}

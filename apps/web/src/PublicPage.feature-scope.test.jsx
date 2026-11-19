@@ -91,6 +91,18 @@ test.each(kinds.filter(kind => kind !== 'unclassified'))('%s cards, both dialogs
   const title = `ChatGPT GO · ${labels[group]}`;
   const link = await screen.findByRole('button', { name: `ChatGPT GO · ${labels[group]}` });
   const card = link.closest('article');
+  function checkHint(scope) {
+    const label = scope.queryByText('商家质保订阅');
+    if (!['account', 'top_up'].includes(kind)) {
+      expect(label).not.toBeInTheDocument();
+      return;
+    }
+    expect(label).toBeVisible();
+    expect(label.closest('button, a, [tabindex]')).toBeNull();
+    fireEvent.click(label);
+  }
+  checkHint(within(card));
+  expect(link).toHaveAttribute('aria-expanded', 'false');
   fireEvent.click(link);
   expect(card.querySelectorAll('.shop-offer')).toHaveLength(4);
   expect(card.querySelector('.standard-product-summary')).toHaveTextContent(`¥${values[0].price} 起`);
@@ -98,6 +110,7 @@ test.each(kinds.filter(kind => kind !== 'unclassified'))('%s cards, both dialogs
   fireEvent.click(within(card).getByRole('button', { name: `${values.length} 条报价` }));
   const dialog = await screen.findByRole('dialog', { name: `${title} · 报价` });
   const modal = within(dialog);
+  checkHint(modal);
   await modal.findByText(values[0].name, { selector: '.offer-name' });
   assertOnlyFeature(dialog, kind);
   expect(dialog.querySelector('.dialog-header p')).toHaveTextContent(`${values.length} 条报价`);
@@ -143,6 +156,7 @@ test.each(kinds.filter(kind => kind !== 'unclassified'))('%s cards, both dialogs
 
   fireEvent.click(within(card).getByRole('link', { name: `更多报价：${title}` }));
   await screen.findByRole('heading', { name: title, level: 1 });
+  checkHint(within(document.querySelector('.product-page-details')));
   await screen.findByText(values[0].name, { selector: '.offer-name' });
   assertOnlyFeature(document.querySelector('.product-page-details'), kind);
   await within(screen.getByRole('region', { name: '商品价格历史' })).findByText(`¥${Number(values[0].price) + 0.25}`, { selector: 'strong' });

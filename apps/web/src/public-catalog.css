@@ -202,7 +202,8 @@
 
 .compact-catalog .product-heading h2 { grid-column: 1; grid-row: 1; }
 .compact-catalog .product-heading .product-counts { grid-column: 1 / -1; grid-row: 2; margin: 0; }
-.compact-catalog .product-heading .product-active-tags { grid-column: 1 / -1; grid-row: 3; }
+.membership-note { color: #315d93; cursor: text; }
+.compact-catalog .product-heading .product-active-tags { grid-column: 1 / -1; }
 .product-estimate { margin-left: auto; color: #64748b; }
 
 .compact-catalog .standard-product-header h2 {
