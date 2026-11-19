@@ -127,6 +127,7 @@ describe('AiWorkbench', () => {
     expect(queues.length).toBeGreaterThan(0);
     expect(queues.every(call => call.search.includes('jobType=text_review'))).toBe(true);
     expect(queues.some(call => call.search.includes('status=all'))).toBe(true);
+    expect(queues.filter(call => call.search.includes('status=all')).every(call => call.search.includes('summary=total'))).toBe(true);
   });
 
   test('特性识别独立于标签开关，队列与记录按新任务类型读取', async () => {
@@ -478,6 +479,7 @@ describe('AiWorkbench', () => {
     expect(within(pagination).getByRole('button', { name: '下一页' })).toBeDisabled();
     const historyCalls = calls.filter(call => call.path === '/api/admin/ai/task-queue' && !call.search.includes('status=unfinished'));
     expect(historyCalls.every(call => new URLSearchParams(call.search).get('limit') === '10')).toBe(true);
+    expect(historyCalls.every(call => call.search.includes('summary=total'))).toBe(true);
     expect(historyCalls.at(-2).search).toContain('cursor=next-page');
     expect(historyCalls.at(-1).search).not.toContain('cursor=');
   });

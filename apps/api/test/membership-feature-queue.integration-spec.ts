@@ -53,6 +53,7 @@ async function task(f: Fixture, jobType: AiJobType, outcome?: string, productInd
     rule_version: IDENTITY_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')),
   }).returning('id').executeTakeFirstOrThrow();
   const payload = jsonb({ shopSource: { url: f.shop.url, protocol: f.shop.protocol, platform: f.shop.platform },
+    ...(jobType === 'tag_extraction' ? { warrantyEligible: true } : {}),
     ...(jobType === 'text_review' ? { shopText: projectShopText(product.source_data) } : {}) });
   await db.insertInto('ai_job_inputs').values({
     job_id: job.id, input_id: product.id, fingerprint: product.content_fingerprint, payload,
@@ -79,6 +80,32 @@ async function assign(f: Fixture, index: number, publicationState: 'published' |
   }).execute();
   return standard.id;
 }
+
+test('history pages preserve current row counts, filters and cursors without dashboard totals', async () => {
+  const f = await fixture(2);
+  await assign(f, 0, 'published');
+  await assign(f, 1, 'published');
+  await task(f, 'membership_features', 'review');
+  await task(f, 'membership_features', 'updated');
+  await task(f, 'membership_features', 'review', 1);
+  await task(f, 'membership_features');
+  for (const status of ['all', 'attention', 'unfinished']) {
+    let cursor: string | undefined;
+    do {
+      const input = { jobType: 'membership_features', status, scopeShopId: f.shop.id, limit: 1, cursor };
+      const full = await readAiTaskQueue(db, input);
+      const list = await readAiTaskQueue(db, { ...input, totalOnly: true });
+      assert.deepEqual(list, { ...full, summary: { total: full.summary.total } });
+      cursor = list.nextCursor ?? undefined;
+    } while (cursor);
+  }
+  for (const jobType of ['incremental', 'tag_extraction', 'text_review'] as const) {
+    await task(f, jobType, 'updated');
+    const input = { jobType, status: 'all', scopeShopId: f.shop.id };
+    const full = await readAiTaskQueue(db, input);
+    assert.deepEqual(await readAiTaskQueue(db, { ...input, totalOnly: true }), { ...full, summary: { total: full.summary.total } });
+  }
+});
 
 test('feature queue admits only published verified AI identities and protects manual work', async () => {
   const f = await fixture(11);

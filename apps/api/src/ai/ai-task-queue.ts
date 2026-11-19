@@ -10,7 +10,7 @@ import { currentManualDecision, currentUnclassifiedQuery } from './ai-retry-pool
 import { BUSINESS_REFUSAL_REASONS } from './product-standardization-state.js';
 import { currentTagMemberSource } from './tag-extraction-jobs.js';
 
-export interface TaskQueueFilter extends PageRequest { status?: string; jobType?: string; scopeShopId?: bigint }
+export interface TaskQueueFilter extends PageRequest { status?: string; jobType?: string; scopeShopId?: bigint; totalOnly?: boolean }
 const unfinished = sql<boolean>`j.status in ('queued', 'running', 'paused', 'ready')`;
 const currentPending = (scopeShopId?: bigint) => sql<bigint>`(select count(distinct m.product_id) from ai_job_input_members m
   join products p on p.id = m.product_id join shops s on s.id = p.shop_id
@@ -67,19 +67,19 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
   const [rows, totals, pending, reasons] = await Promise.all([
     query.execute(),
     sql<Record<string, string | number | bigint>>`
-      select count(*) as total, count(*) filter (where ${unfinished}) as unfinished,
+      select count(*) as total ${input.totalOnly ? sql`` : sql`, count(*) filter (where ${unfinished}) as unfinished,
         count(*) filter (where j.status = 'queued') as queued,
         count(*) filter (where j.status = 'running') as running,
         count(*) filter (where j.status in ('paused', 'ready')) as paused,
         count(*) filter (where ${attention}) as attention,
-        coalesce(sum(${scopedPending}) filter (where ${unfinished}), 0) as pending_products
+        coalesce(sum(${scopedPending}) filter (where ${unfinished}), 0) as pending_products`}
       from ai_jobs j where ${typeScope} and ${configCurrent} and ${statusScope}
     `.execute(db),
-    sql<{ count: bigint }>`select count(distinct o.product_id) as count from standardization_outbox o
+    input.totalOnly ? undefined : sql<{ count: bigint }>`select count(distinct o.product_id) as count from standardization_outbox o
       join product_change_events e on e.id = o.event_id join products p on p.id = o.product_id join shops s on s.id = p.shop_id
       where ${input.scopeShopId===undefined?sql`true`:sql`p.shop_id=${input.scopeShopId}`} and ${filter==='attention'?sql`false`:sql`true`} and o.status in ('queued', 'running') and e.content_version = p.content_version
         and p.deleted_at is null and s.deleted_at is null and s.enabled = true`.execute(db),
-    currentUnclassifiedQuery(db).where(productScope).innerJoin('ai_jobs as j','j.id','r.job_id').where(typeScope).where(configCurrent).where(statusScope).select([reasonClass.as('reason'), sql<number>`count(*)::int`.as('count')]).groupBy(reasonClass).execute(),
+    input.totalOnly ? [] : currentUnclassifiedQuery(db).where(productScope).innerJoin('ai_jobs as j','j.id','r.job_id').where(typeScope).where(configCurrent).where(statusScope).select([reasonClass.as('reason'), sql<number>`count(*)::int`.as('count')]).groupBy(reasonClass).execute(),
   ]);
   const result = buildCursorPage(rows, page.limit);
   const counts = totals.rows[0]!;
@@ -95,9 +95,9 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
       scopeShopId: row.scope_shop_id?.toString() ?? null, shopName: row.shop_name, createdAt: row.created_at, finishedAt: row.finished_at,
     })),
     nextCursor: result.nextCursor ?? null,
-    summary: { total: Number(counts.total), unfinished: Number(counts.unfinished), queued: Number(counts.queued),
+    summary: { total: Number(counts.total), ...(pending && { unfinished: Number(counts.unfinished), queued: Number(counts.queued),
       running: Number(counts.running), paused: Number(counts.paused), attention: Number(counts.attention),
-      pendingProducts: Number(counts.pending_products), pendingEvents: Number(pending.rows[0]!.count), currentReasons },
+      pendingProducts: Number(counts.pending_products), pendingEvents: Number(pending.rows[0]!.count), currentReasons }) },
   };
 }
 
@@ -134,8 +134,19 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
    and not exists(select 1 from standard_product_members a where a.product_id=p.id and a.assignment_source='human')
    and ${publication}`;
  const needsAttention=sql<boolean>`(status='failed' or current_attention>0 or (not configuration_current and status in ('queued','running','paused','ready')))`;
+ const pageFirst = input.totalOnly && status !== 'attention';
+ const pageWindow = sql`${page.afterId === undefined ? sql`` : sql`where id < ${page.afterId}`} order by id desc limit ${page.limit + 1}`;
+ const jobScope = sql`j.job_type=${input.jobType}
+   ${status==='unfinished'?sql`and ${unfinished} and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`:sql``}
+   ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or j.id in(select m.job_id from ai_job_input_members m join products p on p.id=m.product_id where p.shop_id=${input.scopeShopId}))`}`;
  const result=await sql<{items: Array<Record<string,unknown>>;summary: Record<string,unknown>}>`
- with ${status==='unfinished'?sql``:sql`eligible_products as (
+ with ${pageFirst ? sql`scoped_ids as not materialized (select j.id from ai_jobs j where ${jobScope}),
+ page_ids as (select id from scoped_ids ${pageWindow}),
+ page_members as materialized (
+   select m.job_id,m.product_id,m.status,m.output,m.reason_code,m.content_version,m.standardization_revision,m.fingerprint,m.payload
+   from page_ids j join ai_job_input_members m on m.job_id=j.id
+ ),` : sql``}
+ ${status==='unfinished'||input.totalOnly?sql``:sql`eligible_products as (
  select p.id from products p join shops s on s.id=p.shop_id
  where ${eligible}
  ),`} current_members as (
@@ -144,7 +155,7 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
     coalesce(m.output->>'reasonCode',m.reason_code,'unrecorded') reason,
     m.output is null output_missing,
     jsonb_array_length(coalesce(m.output->'rejectedTags','[]'::jsonb))>0 has_rejected
-  from ai_job_input_members m join ai_jobs j on j.id=m.job_id
+  from ${pageFirst ? sql`page_members` : sql`ai_job_input_members`} m join ai_jobs j on j.id=m.job_id
  ${status==='unfinished'?sql`
   where j.job_type=${input.jobType} and ${unfinished}
     and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION}
@@ -163,6 +174,8 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
    and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
    and ${eligible}
    and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type=${input.jobType} and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${IDENTITY_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`}
+ ${input.totalOnly ? sql`and (m.status in ('queued','processing') or m.output->>'outcome' in ('review','partial_success','failed')
+   or jsonb_array_length(coalesce(m.output->'rejectedTags','[]'::jsonb))>0)` : sql``}
  ), current_counts as (
   select job_id,
     count(*) filter(where status in ('queued','processing'))::int current_pending,
@@ -179,25 +192,23 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
     coalesce(c.current_pending,0) current_pending,coalesce(c.current_attention,0) current_attention,
     coalesce(c.covered_products,0) covered_products,coalesce(c.review_products,0) review_products,coalesce(c.failed_products,0) failed_products
   from ai_jobs j left join shops s on s.id=j.scope_shop_id
-    left join current_counts c on c.job_id=j.id where j.job_type=${input.jobType}
-   ${status==='unfinished'?sql`and ${unfinished}`:sql``}
-   ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or j.id in(select m.job_id from ai_job_input_members m join products p on p.id=m.product_id where p.shop_id=${input.scopeShopId}))`}
+    left join current_counts c on c.job_id=j.id where ${pageFirst ? sql`j.id in (select id from page_ids)` : jobScope}
  ), filtered as (select * from jobs where ${status==='unfinished'?sql`configuration_current and status in ('queued','running','paused','ready')`:status==='attention'?needsAttention:sql`true`}),
  page as (
   select j.*,
     (select count(*)::int from ai_job_input_members m where m.job_id=j.id) raw_count,
     (select count(*)::int from ai_job_inputs i where i.job_id=j.id) unique_count,
     (select count(*)::int from ai_job_input_members m where m.job_id=j.id and m.status not in ('queued','processing')) member_processed
-  from (select * from filtered where ${page.afterId===undefined?sql`true`:sql`id<${page.afterId}`} order by id desc limit ${page.limit+1}) j
+  from (select * from filtered ${pageFirst ? sql`` : pageWindow}) j
  )
  select coalesce((select jsonb_agg(jsonb_build_object('id',id::text,'status',status,'phase',phase,'total',raw_count,'processed',member_processed,'remaining',current_pending,'unclassified',current_attention,'model',model,'jobType',job_type,'parentIdentityJobId',parent_identity_job_id::text,'retryOfJobId',retry_of_job_id::text,'sourceFetchRunId',source_fetch_run_id::text,'scopeShopId',scope_shop_id::text,'shopName',shop_name,'uniqueInputCount',unique_count,'pipelineVersions',pipeline_versions,'configurationCurrent',configuration_current,'inputBytes',input_bytes::text,'estimatedTokens',estimated_tokens::text,'createdAt',created_at,'finishedAt',finished_at) order by id desc) from page),'[]'::jsonb) items,
- (select jsonb_build_object('total',count(*),'unfinished',count(*) filter(where status in ('queued','running','paused','ready')),'queued',count(*) filter(where status='queued'),'running',count(*) filter(where status='running'),'paused',count(*) filter(where status in ('paused','ready')),'attention',count(*) filter(where ${needsAttention}),'pendingProducts',${status==='unfinished'?sql`coalesce(sum(current_pending),0)`:sql`(select count(*) from eligible_products p
+ ${input.totalOnly ? sql`(select jsonb_build_object('total',count(*)) from ${pageFirst ? sql`scoped_ids` : sql`filtered`})` : sql`(select jsonb_build_object('total',count(*),'unfinished',count(*) filter(where status in ('queued','running','paused','ready')),'queued',count(*) filter(where status='queued'),'running',count(*) filter(where status='running'),'paused',count(*) filter(where status in ('paused','ready')),'attention',count(*) filter(where ${needsAttention}),'pendingProducts',${status==='unfinished'?sql`coalesce(sum(current_pending),0)`:sql`(select count(*) from eligible_products p
    where not exists(select 1 from current_members m where m.product_id=p.id and (
      (m.outcome in ('updated','unchanged','empty','review'))
      or (m.job_status in ('queued','running','paused','ready') and m.status in ('queued','processing')))))`},'pendingEvents',0,'currentReasons',(select coalesce(jsonb_object_agg(reason,n),'{}'::jsonb) from (select m.reason,count(*)::int n from current_members m where m.job_id in(select id from filtered) and m.status not in ('queued','processing') and (m.output_missing or m.outcome in ('review','partial_success','failed','skipped','cancelled') or m.has_rejected) group by m.reason) reasons),
  'coveredProducts',coalesce(sum(covered_products),0),
  'reviewProducts',coalesce(sum(review_products),0),
- 'failedProducts',coalesce(sum(failed_products),0)) from filtered) summary
+ 'failedProducts',coalesce(sum(failed_products),0)) from filtered)`} summary
  `.execute(db);
  const row=result.rows[0]!;
  const paged=buildCursorPage(row.items.map(i=>({...i,id:BigInt(String(i.id))})),page.limit);

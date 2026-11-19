@@ -238,14 +238,14 @@ export default function AiWorkbench({ shops, onProductsChanged }) {
 
   async function refreshView() {
     setError('');
-    await Promise.all([refreshJob(), loadQueue(), loadHistory(), loadCrawlerStatus()]);
+    await Promise.all([refreshJob(), loadQueue()]);
   }
 
   const loadHistory = useCallback(async (requestedPage = historyPageRef.current) => {
     const request = ++historyRequestRef.current;
     const cursor = historyCursorsRef.current[requestedPage - 1];
     if (requestedPage > 1 && !cursor) throw new Error('分页信息已变化，请刷新记录后重试。');
-    const query = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE), status: historyFilterRef.current });
+    const query = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE), status: historyFilterRef.current, summary: 'total' });
     if (cursor) query.set('cursor', cursor);
     const data = await requestJson('/api/admin/ai/task-queue?' + query);
     if (request !== historyRequestRef.current) return;
@@ -301,15 +301,15 @@ export default function AiWorkbench({ shops, onProductsChanged }) {
   useEffect(() => {
     if (!isStandardizationView) return undefined;
     let active = true;
-    Promise.all([loadHistory(), loadQueue()]).catch(reason => active && setError(reason.message));
+    (tab === 'history' ? loadHistory() : loadQueue()).catch(reason => active && setError(reason.message));
     return () => { active = false; queueRequestRef.current++; queuePendingRef.current = null; historyRequestRef.current++; };
-  }, [isStandardizationView, loadHistory, loadQueue]);
+  }, [tab, isStandardizationView, loadHistory, loadQueue]);
 
   useEffect(() => {
-    if (busy || !isStandardizationView) return undefined;
+    if (busy || tab !== 'task') return undefined;
     const timer = setInterval(() => { if (!document.hidden && queuePendingRef.current === null) void loadQueue(); }, 10000);
     return () => clearInterval(timer);
-  }, [busy, isStandardizationView, loadQueue]);
+  }, [busy, tab, loadQueue]);
 
   useEffect(() => {
     if (!taskOpen) return undefined;

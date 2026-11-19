@@ -334,6 +334,7 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
     queuePending.current = sequence;
     const cursor = isHistory ? queueCursors.current[requestedPage - 1] : null;
     const query = new URLSearchParams({ jobType: taskKind, status: filter, limit: isHistory ? String(PAGE_SIZE) : '1' });
+    if (isHistory) query.set('summary', 'total');
     if (isHistory && shop) query.set('scopeShopId', shop);
     if (cursor) query.set('cursor', cursor);
     try {

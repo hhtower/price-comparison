@@ -14,8 +14,8 @@ export class AiAdminController {
   constructor(@Inject(AiRepository) private readonly repository: AiRepository) {}
 
   @Get('status') async status() { return jsonSafe(await this.repository.adminStatus()); }
-  @Get('task-queue') taskQueue(@Query('limit') size?: string, @Query('cursor') cursor?: string, @Query('status') status?: string, @Query('jobType') jobType?: string, @Query('scopeShopId') scopeShopId?: string) {
-    return this.repository.adminTaskQueue({ limit: limit(size), cursor, status, jobType, scopeShopId:scopeShopId===undefined?undefined:parseId(scopeShopId,'scopeShopId') });
+  @Get('task-queue') taskQueue(@Query('limit') size?: string, @Query('cursor') cursor?: string, @Query('status') status?: string, @Query('jobType') jobType?: string, @Query('scopeShopId') scopeShopId?: string, @Query('summary') summary?: string) {
+    return this.repository.adminTaskQueue({ limit: limit(size), cursor, status, jobType, totalOnly: summary === 'total', scopeShopId:scopeShopId===undefined?undefined:parseId(scopeShopId,'scopeShopId') });
   }
   @Get('standard-products') globalStandardProducts(@Query('limit') size?: string, @Query('cursor') cursor?: string, @Query('q') query?: string, @Query('includeTotal') includeTotal?: string) {
     return this.repository.listGlobalStandardProducts({ limit: limit(size), cursor, query, includeTotal: includeTotal === 'true' });

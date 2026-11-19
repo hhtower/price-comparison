@@ -19,7 +19,8 @@ function fixture(rows: AdminRunHistoryRow[] = [], total = rows.length) {
     async acquireConnection(): Promise<any> {
       return { executeQuery: async (query: CompiledQuery) => {
         queries.push(query);
-        return { rows: query.sql.includes('count(*) as "total"') ? [{ total: String(total) }] : rows };
+        if (query.sql.startsWith('select count(*)')) return { rows: [{ total: String(total) }] };
+        return { rows: query.sql.includes('over ()') ? rows.map(item => ({ ...item, total: String(total) })) : rows };
       } };
     }
   }
@@ -41,6 +42,15 @@ test('run history orders by start time descending with ID as a stable tiebreaker
   } finally { await f.database.destroy(); }
 });
 
+test('short first page already proves the run history total', async () => {
+  const f = fixture([row(2n)]);
+  try {
+    const page = await new AdminRepository(f.database).listRunHistory({ page: 1, limit: 10 });
+    assert.equal(page.total, 1);
+    assert.equal(f.queries.length, 1);
+  } finally { await f.database.destroy(); }
+});
+
 test('run history page numbers include the filtered total and use the same start-time order', async () => {
   const f = fixture([row(2n)], 5);
   try {
@@ -50,12 +60,9 @@ test('run history page numbers include the filtered total and use the same start
     assert.equal(page.pageSize, 2);
     assert.deepEqual(page.items.map(item => item.id), [2n]);
     const dataQuery = f.queries.find(query => query.sql.includes('limit'))!;
-    const countQuery = f.queries.find(query => query.sql.includes('count(*)'))!;
     assert.match(dataQuery.sql, /order by "fetch_runs"\."started_at" desc, "fetch_runs"\."id" desc/u);
-    assert.deepEqual(dataQuery.parameters, [7n, 'failed', 2, 2]);
-    assert.match(countQuery.sql, /"fetch_runs"\."shop_id" = \$1 and "fetch_runs"\."status" = \$2/u);
-    assert.deepEqual(countQuery.parameters, [7n, 'failed']);
-    assert.doesNotMatch(countQuery.sql, /limit|offset|order by|join|shops/u);
+    assert.equal(f.queries.length, 1);
+    assert.deepEqual(dataQuery.parameters, [2, 2, 7n, 'failed', 7n, 'failed', 3, 2, 2]);
   } finally { await f.database.destroy(); }
 });
 
@@ -66,10 +73,9 @@ test('unfiltered run history counts only fetch runs so PostgreSQL can use an ind
     assert.equal(page.total, 1_280_000);
     assert.equal(page.items[0]!.shop_name, 'History');
     const dataQuery = f.queries.find(query => query.sql.includes('limit'))!;
-    const countQuery = f.queries.find(query => query.sql.includes('count(*)'))!;
     assert.match(dataQuery.sql, /left join "shops"/u);
-    assert.equal(countQuery.sql, 'select count(*) as "total" from "fetch_runs"');
-    assert.deepEqual(countQuery.parameters, []);
+    assert.match(dataQuery.sql, /else \(\(select count\(\*\) as "total" from "fetch_runs"\)\) end/u);
+    assert.equal(f.queries.length, 1);
   } finally { await f.database.destroy(); }
 });
 

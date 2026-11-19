@@ -447,11 +447,14 @@ export class AdminRepository {
       .limit(page.limit + 1);
 
     if (page.page !== undefined) {
-      const [items, count] = await Promise.all([
-        query.offset((page.page - 1) * page.limit).limit(page.limit).execute(),
-        runs.select(({ fn }) => fn.countAll<string>().as('total')).executeTakeFirstOrThrow(),
-      ]);
-      return { items, total: Number(count.total), page: page.page, pageSize: page.limit };
+      const offset = (page.page - 1) * page.limit;
+      const count = runs.select(({ fn }) => fn.countAll<string>().as('total'));
+      const rows = await this.database.selectFrom(query.offset(offset).as('window'))
+        .selectAll().select(sql<string>`case when count(*) over () <= ${page.limit}
+          then ${offset}::bigint + count(*) over () else (${count}) end`.as('total'))
+        .orderBy('started_at', 'desc').orderBy('id', 'desc').limit(page.limit).execute();
+      const total = rows[0]?.total ?? (offset ? (await count.executeTakeFirstOrThrow()).total : 0);
+      return { items: rows.map(({ total, ...item }) => item), total: Number(total), page: page.page, pageSize: page.limit };
     }
     if (page.afterId !== undefined) query = query.where(sql<boolean>`
       (fetch_runs.started_at, fetch_runs.id) < (select started_at, id from fetch_runs where id = ${page.afterId})`);
