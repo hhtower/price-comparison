@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAiWorker, createOpenAiModelCall } from '../src/ai/ai.worker.js';
+import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
 import type { ParsedStandardizationResponse } from '../src/ai/ai.schemas.js';
 import type { StandardizationRequest } from '../src/ai/standardization-request.js';
 import type { ClaimedJob } from '../src/jobs/jobs.repository.js';
 
-const proposals: ParsedStandardizationResponse = {
-  items: [{ id: '11', status: 'classified', identity: { kind: 'existing', standardProductId: '91' },
-    ruleIds: [], evidence: [{ path: 'name', quote: 'ChatGPT Plus' }], reasonCode: null, reason: 'Explicit plan' }],
-  identities: [], missingIds: [],
-};
+const proposals = parseStandardizationProtocolResponse({
+  items: [{ id: '11', standardProductId: '91', evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] }],
+}, [{ id: '11', candidateStandardProductIds: ['91'] }]);
 const request = {
   jobId: 3n, model: 'mock', stage: 'review' as const, proposals,
   candidates: [{ id: '91', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [] }],
@@ -37,7 +36,9 @@ test('review streaming returns an exact original identity or a fixed rejection w
       const sent = JSON.parse(String(init?.body));
       assert.equal(sent.stream, true);
       assert.match(sent.messages[0].content, /binary judge/);
-      assert.deepEqual(JSON.parse(sent.messages[1].content).proposals.items, proposals.items);
+      assert.deepEqual(JSON.parse(sent.messages[1].content).proposals.items, [
+        { id: '11', standardProductId: '91', evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] },
+      ]);
       return streamed(JSON.stringify({ items: [{ id: '11', approved }] }));
     });
     const result = await call(claimed, new AbortController().signal);
@@ -45,11 +46,13 @@ test('review streaming returns an exact original identity or a fixed rejection w
     assert.deepEqual(result.items[0]?.review, { approved });
     assert.deepEqual(result.items[0]?.identity, approved ? proposals.items[0]!.identity : undefined);
     assert.equal(result.items[0]?.reasonCode, approved ? null : 'review_rejected');
+    assert.deepEqual(result.items[0]?.evidence, proposals.items[0]!.evidence);
+    assert.equal(Object.hasOwn(result, 'identities'), false);
   }
 });
 
 test('review failures use one shared reservation and never checkpoint or publish incomplete decisions', async () => {
-  for (const scenario of ['invalid-json', 'wrong-bool', 'missing-id', 'truncated', 'no-finish', 'timeout', 'cancel'] as const) {
+  for (const scenario of ['invalid-json', 'wrong-bool', 'extra-field', 'missing-id', 'duplicate-id', 'truncated', 'no-finish', 'timeout', 'cancel'] as const) {
     const events: string[] = [];
     let controllerSignal: AbortSignal | undefined;
     const repository = {
@@ -75,6 +78,8 @@ test('review failures use one shared reservation and never checkpoint or publish
       }
       const content = scenario === 'invalid-json' ? '{broken'
         : scenario === 'wrong-bool' ? '{"items":[{"id":"11","approved":"true"}]}'
+        : scenario === 'extra-field' ? '{"items":[{"id":"11","approved":true,"reason":"model reason"}]}'
+        : scenario === 'duplicate-id' ? '{"items":[{"id":"11","approved":true},{"id":"11","approved":false}]}'
         : scenario === 'missing-id' ? '{"items":[]}' : '{"items":[{"id":"11","approved":true}]}';
       return streamed(content, scenario === 'truncated' ? 'length' : scenario === 'no-finish' ? null : 'stop', scenario !== 'no-finish');
     });
@@ -130,77 +135,84 @@ test('successful review checkpoints its vote and request outcome together withou
   assert.deepEqual(events, ['reserve', 'checkpoint', 'complete']);
 });
 
-test('generation keeps local parser and citation errors while review sends only the valid proposal', async () => {
+test('generation failures reject the whole batch without checkpoints, publication or missing-item retries', async () => {
   const frozen = {
     ...request, stage: 'generate' as const,
-    candidates: [request.candidates[0]!, ...['92', '93'].map(id => ({ ...request.candidates[0]!, id }))],
-    inputs: [11n, 12n, 13n, 14n].map(productId => ({
-      productId, payload: { name: 'ChatGPT Plus' },
-      candidateStandardProductIds: [productId === 11n ? '92' : productId === 12n ? '93' : '91'],
+    inputs: [11n, 12n].map(productId => ({
+      productId, payload: { name: 'ChatGPT Plus' }, candidateStandardProductIds: ['91'],
+      previousDecision: { reason: 'private old history' },
     })),
   };
-  const raw = (id: string, candidateRef: string) => ({
-    id, action: 'reuse_candidate', candidateRef, ruleIds: [],
-    evidence: [{ path: 'name', quote: 'ChatGPT Plus' }], reason: 'Explicit plan',
-  });
-  const generate = model(async (_url, init) => {
-    const sent = JSON.parse(String(init?.body));
-    assert.equal(sent.stream, true);
-    assert.match(sent.messages[0].content, /classify catalog offers/);
-    assert.deepEqual(JSON.parse(sent.messages[1].content).items.map((item: { id: string }) => item.id), ['11', '12', '13', '14']);
-    return streamed(JSON.stringify({ items: [
-      { ...raw('11', 'i1c1'), ruleIds: 'malformed' },
-      { ...raw('12', 'i2c1'), evidence: [{ path: 'name', quote: 'invented evidence' }] },
-      raw('13', 'i3c1'),
-    ] }));
-  }, frozen);
-  const generated = await generate(claimed, new AbortController().signal);
-  assert.equal(generated.standardizationStage, 'generate');
-  assert.deepEqual(generated.items.map(item => item.reasonCode), ['invalid_response', 'evidence_invalid', null]);
-  assert.deepEqual(generated.missingIds, ['14']);
-  assert.ok(generated.items.every(item => !Object.hasOwn(item, 'review')));
-  const before = structuredClone(generated);
-  for (const approved of [true, false]) {
-    const review = model(async (_url, init) => {
+  const item = (id: string) => ({ id, standardProductId: '91', evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] });
+  for (const scenario of ['schema', 'evidence', 'missing-id', 'candidate', 'history', 'timeout', 'cancel'] as const) {
+    const events: string[] = [];
+    let signal: AbortSignal | undefined;
+    const repository = {
+      prepareBatch: async () => {}, getBatchRequest: async () => frozen,
+      reserveBatchRequest: async () => { events.push('reserve'); return 'reserved'; },
+      recordBatchRequestOutcome: async (_id: bigint, outcome: string) => { events.push(outcome); },
+      persistBatchDecision: async () => { events.push('persist'); },
+      publishBatch: async () => { events.push('publish'); },
+    };
+    const call = createOpenAiModelCall(repository as never, environment, async (_url, init) => {
+      events.push('send'); signal = init?.signal ?? undefined;
       const sent = JSON.parse(String(init?.body));
       assert.equal(sent.stream, true);
-      assert.match(sent.messages[0].content, /binary judge/);
-      const body = JSON.parse(sent.messages[1].content);
-      assert.deepEqual(body.inputs.map((input: { id: string }) => input.id), ['13']);
-      assert.deepEqual(body.proposals.items, [generated.items[2]]);
-      assert.deepEqual(body.candidates, [request.candidates[0]]);
-      return streamed(JSON.stringify({ items: [{ id: '13', approved }] }));
-    }, { ...frozen, stage: 'review', proposals: generated });
-    const result = await review(claimed, new AbortController().signal);
-    assert.equal(result.standardizationStage, 'review');
-    assert.deepEqual(result.items.slice(0, 2), generated.items.slice(0, 2));
-    assert.ok(result.items.slice(0, 2).every(item => !Object.hasOwn(item, 'review')));
-    assert.deepEqual(result.items[2]!.review, { approved });
-    assert.equal(result.items[2]!.reasonCode, approved ? null : 'review_rejected');
-    assert.deepEqual(result.missingIds, ['14']);
+      assert.doesNotMatch(sent.messages[1].content, /private old history|historyContext|candidateRefs/);
+      if (scenario === 'timeout' || scenario === 'cancel') return new Response(new ReadableStream({
+        start(stream) {
+          stream.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ choices: [{ delta: { content: '{"items":[' } }] }) + '\n\n'));
+          signal!.addEventListener('abort', () => stream.error(signal!.reason), { once: true });
+        },
+      }));
+      const invalid = scenario === 'schema' ? { ...item('12'), ruleIds: [] }
+        : scenario === 'candidate' ? { ...item('12'), standardProductId: '999' }
+        : scenario === 'history' ? { ...item('12'), evidence: [{ path: 'historyContext.reason', quote: 'private old history' }] }
+        : { ...item('12'), evidence: [{ path: 'name', quote: 'invented evidence' }] };
+      return streamed(JSON.stringify({ items: scenario === 'missing-id' ? [item('11')] : [item('11'), invalid] }));
+    });
+    let next: ClaimedJob | null = claimed;
+    let settle!: () => void;
+    const settled = new Promise<void>(resolve => { settle = resolve; });
+    const worker = createAiWorker({
+      onSettled: () => settle(),
+      claimNext: async () => { const item = next; next = null; return item; }, heartbeat: async () => {},
+      complete: async () => { events.push('complete'); }, requeue: async () => { events.push('requeue'); },
+      fail: async (_kind: string, _id: bigint, _worker: string, _error: string, options: any) => {
+        events.push('fail'); assert.equal(options.retry, false);
+      },
+    } as never, { repository: repository as never, modelCall: call });
+    try {
+      await worker.runOnce();
+      if (scenario === 'cancel') {
+        while (!signal) await new Promise(resolve => setTimeout(resolve, 1));
+        worker.cancel(claimed.id);
+      }
+      await settled;
+      assert.deepEqual(events, ['reserve', 'send', scenario === 'timeout' || scenario === 'cancel' ? 'unknown' : 'confirmed',
+        scenario === 'cancel' ? 'requeue' : 'fail'], scenario);
+    } finally { await worker.stop(); }
   }
-  assert.deepEqual(generated, before);
 });
 
-test('review never revalidates or rewrites a frozen local error as a new evidence error', async () => {
-  const local: ParsedStandardizationResponse['items'][number] = {
-    id: '12', status: 'unclassified', reasonCode: 'invalid_response', reason: 'Original local parser error',
-    evidence: [{ path: 'missing.path', quote: 'unparsed source claim' }], ruleIds: [],
-    diagnostic: { stage: 'schema', code: 'invalid_type', itemId: '12' },
-  };
-  const frozen = {
-    ...request,
-    inputs: [...request.inputs, { productId: 12n, payload: { name: 'Local error input' }, candidateStandardProductIds: [] }],
-    proposals: { ...proposals, items: [...proposals.items, local] },
-  };
-  const call = model(async (_url, init) => {
-    const body = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
-    assert.deepEqual(body.inputs.map((input: { id: string }) => input.id), ['11']);
-    assert.deepEqual(body.proposals.items, proposals.items);
-    return streamed('{"items":[{"id":"11","approved":false}]}');
-  }, frozen);
-  const result = await call(claimed, new AbortController().signal);
-  assert.deepEqual(result.items[1], local);
-  assert.equal(Object.hasOwn(result.items[1]!, 'review'), false);
-  assert.equal(result.items[0]!.reasonCode, 'review_rejected');
+test('review judges unmatched proposals without creating identities and retains their evidence', async () => {
+  const unmatched = parseStandardizationProtocolResponse({
+    items: [{ id: '11', standardProductId: null, evidence: proposals.items[0]!.evidence }],
+  }, [{ id: '11', candidateStandardProductIds: ['91'] }]);
+  for (const approved of [true, false]) {
+    const call = model(async (_url, init) => {
+      const body = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      assert.deepEqual(body.inputs.map((input: { id: string }) => input.id), ['11']);
+      assert.deepEqual(body.proposals.items, [
+        { id: '11', standardProductId: null, evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] },
+      ]);
+      return streamed(JSON.stringify({ items: [{ id: '11', approved }] }));
+    }, { ...request, proposals: unmatched });
+    const result = await call(claimed, new AbortController().signal);
+    assert.equal(result.items[0]?.status, 'unclassified');
+    assert.equal(result.items[0]?.reasonCode, approved ? 'unmatched' : 'review_rejected');
+    assert.equal(result.items[0]?.identity, undefined);
+    assert.deepEqual(result.items[0]?.evidence, unmatched.items[0]!.evidence);
+    assert.deepEqual(result.items[0]?.review, { approved });
+  }
 });

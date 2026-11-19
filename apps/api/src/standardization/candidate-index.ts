@@ -7,6 +7,7 @@ export interface CandidateDocument {
   readonly product: string;
   readonly tier: string;
   readonly displayName?: string;
+  readonly definition?: string;
   readonly aliases: readonly string[];
 }
 

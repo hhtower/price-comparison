@@ -88,7 +88,7 @@ async function reviewFixture(count = 1, fanout = false) {
   const rows = await db.selectFrom('ai_job_input_members').select(['input_id', 'payload']).where('job_id', '=', f.job.id).orderBy('input_id').execute();
   const members = [...new Map(rows.map(member => [String(member.input_id), member])).values()];
   const reference = {
-    strategyVersion: 'evidence-canonical-candidate-v2', catalogVersion: '0', candidates: [],
+    strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', candidates: [],
     inputs: members.map(member => ({ id: String(member.input_id), candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } })),
   };
   await db.updateTable('ai_job_batches').set({

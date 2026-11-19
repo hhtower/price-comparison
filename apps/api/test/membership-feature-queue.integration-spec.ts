@@ -6,11 +6,10 @@ import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import { readAiTaskQueue } from '../src/ai/ai-task-queue.js';
-import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
+import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
 import { jsonb, type AiJobType, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { recordManualDecisions } from '../src/standardization/decision-history.js';
-import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
 import { captureRatingText } from '../src/platforms/source-evidence.js';
 import { projectShopText } from '../src/shops/shop-text-review.js';
 
@@ -50,7 +49,7 @@ async function task(f: Fixture, jobType: AiJobType, outcome?: string, productInd
   const job = await db.insertInto('ai_jobs').values({
     job_type: jobType, model: 'mock', status: outcome ? 'succeeded' : 'running', total: 1n,
     scope_shop_id: f.shop.id, prompt_version: STANDARDIZATION_PROMPT_VERSION,
-    rule_version: IDENTITY_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')),
+    rule_version: STANDARDIZATION_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')),
   }).returning('id').executeTakeFirstOrThrow();
   const payload = jsonb({ shopSource: { url: f.shop.url, protocol: f.shop.protocol, platform: f.shop.platform },
     ...(jobType === 'tag_extraction' ? { warrantyEligible: true } : {}),

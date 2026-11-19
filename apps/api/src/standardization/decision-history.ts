@@ -17,7 +17,7 @@ export async function readLatestManualDecisions(database: Kysely<DatabaseSchema>
 }
 
 export function isManualDecisionForCurrentEvidence(decision: ManualDecision | undefined, current: { content_version: bigint; content_fingerprint: string }): boolean {
-  return decision !== undefined && decision.content_version !== null && decision.content_fingerprint !== null
+  return decision !== undefined && decision.evidence_known && decision.content_version !== null && decision.content_fingerprint !== null
     && decision.content_version === current.content_version && decision.content_fingerprint === current.content_fingerprint;
 }
 

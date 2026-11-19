@@ -170,7 +170,7 @@ for (const kind of ['identity', 'membership_features', 'tag_extraction'] as cons
   });
 }
 
-test('identity keeps historical manual decisions separate without replacing the stored fingerprint', async () => {
+test('identity groups identical current evidence without using historical manual decisions', async () => {
   const products = [product(1n), product(2n), product(3n)];
   const f = fixture(products, [{
     id: 7n, product_id: 2n, action: 'assign', content_version: 0n,
@@ -179,9 +179,10 @@ test('identity keeps historical manual decisions separate without replacing the 
   }]);
   await new AiRepository(f.db).createJob({ model: 'mock', productIds: products.map(p => p.id) });
   const inputs = f.inserts.get('ai_job_inputs')!;
-  assert.deepEqual(inputs.map(row => [row.input_id, row.manual_decision_id]), [[1n, null], [2n, 7n]]);
+  assert.deepEqual(inputs.map(row => [row.input_id, row.manual_decision_id]), [[1n, null]]);
+  assert.ok(inputs.every(row => row.previous_decision === undefined));
   assert.ok(inputs.every(row => row.fingerprint === products[0]!.content_fingerprint));
-  assert.deepEqual(f.inserts.get('ai_job_input_members')!.map(row => [row.product_id, row.input_id]), [[1n, 1n], [3n, 1n], [2n, 2n]]);
+  assert.deepEqual(f.inserts.get('ai_job_input_members')!.map(row => [row.product_id, row.input_id]), [[1n, 1n], [2n, 1n], [3n, 1n]]);
 });
 
 test('tag preview changes when source content gets its updated stored fingerprint', async () => {

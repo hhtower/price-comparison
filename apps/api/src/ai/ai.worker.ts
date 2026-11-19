@@ -241,7 +241,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
             ? item.classificationReviewed === false : item.rejectedTags.length > 0).length;
           metadata.responseDiagnostic.code = metadata.responseDiagnostic.rejectedItemCount ? 'items_rejected'
             : items.length < inputs.length ? 'items_missing' : 'accepted';
-          return { items: [], identities: [], missingIds: [], metadata, tagExtractionItems: items, tagExtractionStage: stage };
+          return { items: [], missingIds: [], metadata, tagExtractionItems: items, tagExtractionStage: stage };
         } catch (error) {
           // The tag parser uses generic errors; classify JSON only on failure to avoid parsing successes twice.
           if (phase === 'schema') {
@@ -280,7 +280,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
         phase = 'evidence';
         result = stage === 'review' ? decisions : validateStandardizationEvidence(
           decisions,
-          request.inputs.map(input => ({ id: input.productId.toString(), payload: input.payload })), request.candidates, 'boundary',
+          request.inputs.map(input => ({ id: input.productId.toString(), payload: input.payload, candidateStandardProductIds: input.candidateStandardProductIds })), request.candidates,
         ) as StandardizationModelResult;
       } catch (error) {
         if (stage === 'review' && phase === 'schema') {

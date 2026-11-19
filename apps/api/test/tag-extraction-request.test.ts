@@ -7,10 +7,10 @@ import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-
 import { EVIDENCE_VALIDATION_VERSION, PIPELINE_VERSIONS, pipelineVersionSnapshot, isCurrentPipeline, assertCurrentPipeline } from '../src/ai/pipeline-versions.js';
 
 test('current validation accepts new tasks and expires previous validation snapshots', () => {
-  assert.equal(EVIDENCE_VALIDATION_VERSION, 'evidence-identity-publication-20261025-v11');
+  assert.equal(EVIDENCE_VALIDATION_VERSION, 'match-only-boundary-20261119-v1');
   const current = pipelineVersionSnapshot('mock');
   assert.equal(isCurrentPipeline(current), true);
-  const job = { prompt_version: PIPELINE_VERSIONS.prompt, rule_version: PIPELINE_VERSIONS.identityPolicy, pipeline_versions: current };
+  const job = { prompt_version: PIPELINE_VERSIONS.prompt, rule_version: PIPELINE_VERSIONS.standardizationPolicy, pipeline_versions: current };
   assert.doesNotThrow(() => assertCurrentPipeline(job));
   const previous = { ...PIPELINE_VERSIONS, validation: 'evidence-identity-publication-20261024-v9' };
   assert.equal(isCurrentPipeline(previous), false);

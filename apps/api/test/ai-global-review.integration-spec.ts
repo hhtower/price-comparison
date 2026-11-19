@@ -60,14 +60,14 @@ describe('global standard product review', () => {
 
   test('a different fingerprint cannot count as current results or active work at the same version', async () => {
     const p = await product('fingerprint cutover');
-    const jobId = await result(p.id, null, 'not_sellable');
+    const jobId = await result(p.id, null, 'unmatched');
     const state = () => db.selectFrom('products as p').select([
       hasCurrentStandardizationResult().as('handled'),
       hasActiveStandardizationWork.as('active'),
       productStandardizationOutcome().as('outcome'),
     ]).where('p.id', '=', p.id).executeTakeFirstOrThrow();
     assert.equal((await state()).handled, true);
-    assert.equal((await state()).outcome, 'cannot_process');
+    assert.equal((await state()).outcome, null);
     await db.updateTable('ai_jobs').set({ status: 'queued' }).where('id', '=', jobId).execute();
     assert.equal((await state()).active, true);
     await db.updateTable('products').set({ content_fingerprint: 'new-source-fingerprint' }).where('id', '=', p.id).execute();
@@ -169,12 +169,12 @@ describe('global standard product review', () => {
     const changed = await product('changed');
     const older = await result(a.id, null, 'request_outcome_unknown');
     const newer = await result(a.id, null, 'invalid_response');
-    await result(b.id, null, 'not_sellable');
-    await result(changed.id, null, 'insufficient_evidence');
+    await result(b.id, null, 'unmatched');
+    await result(changed.id, null, 'unmatched');
     await db.updateTable('products').set({ content_version: 2n, standardization_revision: 1n }).where('id', '=', changed.id).execute();
     await db.updateTable('ai_standardization_results').set({ published_at: sql`now() + interval '1 day'` }).where('job_id', '=', older).execute();
     const page = await repository.listGlobalResults({ limit: 2 });
-    assert.deepEqual(page.items.map(row => [row.productId, row.reasonCode]), [[String(a.id), 'invalid_response'], [String(b.id), 'not_sellable']]);
+    assert.deepEqual(page.items.map(row => [row.productId, row.reasonCode]), [[String(a.id), 'invalid_response'], [String(b.id), 'unmatched']]);
     assert.equal(page.items[0]?.sourceJobId, String(newer));
     const next = await repository.listGlobalResults({ limit: 2, cursor: page.nextCursor! });
     assert.deepEqual(next.items.map(row => [row.productId, row.reasonCode]), [[String(c.id), 'not_processed'], [String(changed.id), 'source_changed']]);
@@ -186,7 +186,7 @@ describe('global standard product review', () => {
     assert.ok(!(await repository.listGlobalResults({ limit: 100 })).items.some(row => row.productId === String(b.id)));
   });
 
-  test('manual isolation and exclusion leave pending until evidence changes or a later decision replaces them', async () => {
+  test('only current manual isolation and exclusion leave pending; historical membership needs an explicit review', async () => {
     const isolated = await product('reviewed isolation');
     const excluded = await product('reviewed exclusion');
     const legacy = await product('legacy manual isolation');
@@ -199,10 +199,12 @@ describe('global standard product review', () => {
     const ids = [isolated.id, excluded.id, legacy.id];
     const pending = () => db.selectFrom('products as p').select('id').where('id', 'in', ids)
       .where(productStandardizationOutcome('p'), 'is', null).orderBy('id').execute();
-    assert.deepEqual(await pending(), []);
-    assert.ok(!(await repository.listGlobalResults({ limit: 100 })).items.some(row => ids.map(String).includes(row.productId)));
-    await db.updateTable('products').set({ content_version: 2n, content_fingerprint: 'changed' }).where('id', '=', isolated.id).execute();
+    assert.deepEqual((await pending()).map(row => row.id), [legacy.id]);
+    assert.deepEqual((await repository.listGlobalResults({ limit: 100 })).items
+      .filter(row => ids.map(String).includes(row.productId)).map(row => row.productId), [String(legacy.id)]);
     await db.transaction().execute(tx => recordManualDecisions(tx, [legacy.id], { action: 'quarantine', standardProductId: target.id, reason: 'Review legacy evidence' }));
+    assert.deepEqual(await pending(), []);
+    await db.updateTable('products').set({ content_version: 2n, content_fingerprint: 'changed' }).where('id', '=', isolated.id).execute();
     await db.updateTable('products').set({ content_version: 2n, content_fingerprint: 'changed' }).where('id', '=', legacy.id).execute();
     await db.transaction().execute(tx => recordManualDecisions(tx, [excluded.id], { action: 'unbind', standardProductId: null, reason: 'Reopen review' }));
     assert.deepEqual((await pending()).map(row => row.id), [isolated.id, excluded.id, legacy.id]);

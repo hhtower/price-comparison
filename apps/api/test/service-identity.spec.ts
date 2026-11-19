@@ -4,7 +4,8 @@ import { normalizeIdentity, isValidCatalogIdentity, assessProductEvidence, ident
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 import { buildCandidateSearchQuery } from '../src/ai/adaptive-batching.js';
 import { BoundedCandidateIndex } from '../src/standardization/candidate-index.js';
-import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
+import { parseStandardizationProtocolResponse, StandardizationValidationError } from '../src/ai/ai.schemas.js';
+import { validateStandardizationEvidence } from '../src/ai/standardization-evidence.js';
 
 const groups = [
   { family: 'openai', product: 'codex_sms', aliases: ['codex_sms', 'openai_sms', 'chatgpt_sms', 'OpenAI SMS', 'sms'] },
@@ -105,13 +106,30 @@ test('SMS API delivery support does not turn phone verification inventory into A
   assert.equal(assessProductEvidence({ name: 'Codex API credits', evidence: '账号需要手机接码' }).kind, 'other');
 });
 
-test('model-created service descriptions normalize before canonical key construction', () => {
-  const evidence = [{ path: 'name', quote: 'OpenAI 手机接码服务' }];
-  const items = ['codex_sms', 'openai_sms', 'chatgpt_sms'].map((product, i) => ({ id: String(i + 1), action: 'create_identity',
-    identity: { family: 'openai', product, tier: 'standard', reason: 'Phone verification service', evidence },
-    ruleIds: [], evidence, reason: 'Phone verification service' }));
-  const parsed = parseStandardizationProtocolResponse({ items }, items.map(item => ({ id: item.id, candidateStandardProductIds: [], candidateRefs: {} })));
+test('service offers match an approved candidate without creating or normalizing identities', () => {
+  const candidate = { id: '91', family: 'openai', product: 'codex_sms', tier: 'standard',
+    aliases: ['OpenAI 手机接码服务', 'ChatGPT 手机接码服务', 'Codex 手机接码服务'] };
+  const inputs = candidate.aliases.map((name, index) => ({
+    id: String(index + 1), payload: { name }, candidateStandardProductIds: [candidate.id],
+  }));
+  const parsed = parseStandardizationProtocolResponse({ items: inputs.map(input => ({
+    id: input.id, standardProductId: candidate.id, evidence: [{ path: 'name', quote: input.payload.name }],
+  })) }, inputs);
+  assert.equal(validateStandardizationEvidence(parsed, inputs, [candidate]), parsed);
   assert.ok(parsed.items.every(item => item.status === 'classified'));
-  assert.equal(new Set(parsed.identities.map(identity => identity.canonicalKey)).size, 1);
-  assert.ok(parsed.identities.every(identity => identity.product === 'codex_sms'));
+  assert.deepEqual(parsed.items.map(item => item.identity), inputs.map(() => ({
+    kind: 'existing', standardProductId: candidate.id,
+  })));
+  assert.equal(Object.hasOwn(parsed, 'identities'), false);
+});
+
+test('model-created service identities are protocol errors even for valid service aliases', () => {
+  const evidence = [{ path: 'name', quote: 'OpenAI 手机接码服务' }];
+  for (const product of ['codex_sms', 'openai_sms', 'chatgpt_sms']) {
+    assert.throws(() => parseStandardizationProtocolResponse({ items: [{
+      id: '1', action: 'create_identity',
+      identity: { family: 'openai', product, tier: 'standard', reason: 'Phone verification service', evidence },
+      ruleIds: [], evidence, reason: 'Phone verification service',
+    }] }, [{ id: '1', candidateStandardProductIds: [] }]), StandardizationValidationError);
+  }
 });

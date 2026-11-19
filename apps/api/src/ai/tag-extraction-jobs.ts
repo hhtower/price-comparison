@@ -7,9 +7,8 @@ import { MEMBERSHIP_FEATURE_MAX_ITEMS } from './membership-feature-request.js';
 import { buildExtractionPayload, estimateInputSize, extractionContextKey } from './adaptive-batching.js';
 import { planBulkStandardizationBatches, planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { currentManualDecision } from './ai-retry-pool.js';
-import { PIPELINE_VERSIONS, pipelineVersionSnapshot } from './pipeline-versions.js';
+import { PIPELINE_VERSIONS, pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from './standardization-request.js';
-import { IDENTITY_POLICY_VERSION } from '../standardization/identity-policy.js';
 import { readAiConcurrency } from './ai-concurrency.js';
 import { incrementJobProgress } from './ai-progress.repository.js';
 import { buildTagExtractionOutcome, tagExtractionVersions } from './tag-extraction-result.js';
@@ -66,7 +65,7 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
           and m.content_version=p.content_version and m.standardization_revision=p.standardization_revision and m.fingerprint=p.content_fingerprint
           and ${kind === 'tag_extraction' ? currentTagMemberSource('m', aiMembership)
             : sql<boolean>`m.payload->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)`}
-          and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
+          and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${STANDARDIZATION_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
         order by j.id desc limit 1
       ),false)`);
   } else query = query.limit(MAX_SCOPE + 1);
@@ -178,14 +177,14 @@ async function enqueueAllPendingAttributeJob(db: Kysely<DatabaseSchema>, input: 
     const active=await tx.selectFrom('ai_jobs').selectAll().where('job_type','=',kind)
       .where('status','in',['queued','running','paused','ready'])
       .where(sql<boolean>`requested_scope @> '{"scope":{"allPending":true}}'::jsonb`)
-      .where('prompt_version','=',STANDARDIZATION_PROMPT_VERSION).where('rule_version','=',IDENTITY_POLICY_VERSION)
+      .where('prompt_version','=',STANDARDIZATION_PROMPT_VERSION).where('rule_version','=',STANDARDIZATION_POLICY_VERSION)
       .where(sql<boolean>`pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`).orderBy('id','desc').executeTakeFirst();
     if(active) {
       await tx.insertInto('ai_tag_job_requests').values({request_id:input.requestId.toLowerCase(),job_id:active.id}).execute();
       return active;
     }
     const job=await tx.insertInto('ai_jobs').values({job_type:kind,status:'queued',phase:'preparing',total:0n,model:input.model,
-      prompt_version:STANDARDIZATION_PROMPT_VERSION,rule_version:IDENTITY_POLICY_VERSION,pipeline_versions:jsonb(pipelineVersionSnapshot(input.model)),
+      prompt_version:STANDARDIZATION_PROMPT_VERSION,rule_version:STANDARDIZATION_POLICY_VERSION,pipeline_versions:jsonb(pipelineVersionSnapshot(input.model)),
       retry_request_id:input.requestId.toLowerCase(),requested_scope:jsonb({scope}),request_window_size:readAiConcurrency()}).returningAll().executeTakeFirstOrThrow();
     await tx.insertInto('ai_job_batches').values({job_id:job.id,batch_index:-1n,product_ids:jsonb([]),product_count:0n,status:'queued',step:'prepare'}).execute();
     await tx.insertInto('ai_tag_job_requests').values({request_id:input.requestId.toLowerCase(),job_id:job.id}).execute();
@@ -253,7 +252,7 @@ async function persistAttributeJob(tx:Transaction<DatabaseSchema>,input:TagJobIn
   if (!active.length) throw new DomainNotFoundError('AI_TAG_SCOPE_EMPTY','范围内没有可抽取商品');
   const values={status:batches.length?'queued' as const:'ready_with_errors' as const,phase:batches.length?'standardizing':'completed',total:BigInt(active.length),input_bytes:BigInt([...representatives.values()].reduce((n,i)=>n+i.inputBytes,0)),estimated_tokens:BigInt([...representatives.values()].reduce((n,i)=>n+i.estimatedTokens,0)),finished_at:batches.length?null:new Date()};
   const job=existingJobId===undefined
-    ? await tx.insertInto('ai_jobs').values({...values,job_type:kind,model:input.model,prompt_version:STANDARDIZATION_PROMPT_VERSION,rule_version:IDENTITY_POLICY_VERSION,pipeline_versions:jsonb(pipelineVersionSnapshot(input.model)),parent_identity_job_id:input.parentIdentityJobId??null,retry_of_job_id:input.retryOfJobId??null,retry_request_id:input.requestId??null,requested_scope:jsonb(input.requested??{}),scope_shop_id:input.scopeShopId??null,request_window_size:readAiConcurrency()}).returningAll().executeTakeFirstOrThrow()
+    ? await tx.insertInto('ai_jobs').values({...values,job_type:kind,model:input.model,prompt_version:STANDARDIZATION_PROMPT_VERSION,rule_version:STANDARDIZATION_POLICY_VERSION,pipeline_versions:jsonb(pipelineVersionSnapshot(input.model)),parent_identity_job_id:input.parentIdentityJobId??null,retry_of_job_id:input.retryOfJobId??null,retry_request_id:input.requestId??null,requested_scope:jsonb(input.requested??{}),scope_shop_id:input.scopeShopId??null,request_window_size:readAiConcurrency()}).returningAll().executeTakeFirstOrThrow()
     : await tx.updateTable('ai_jobs').set(values).where('id','=',existingJobId).returningAll().executeTakeFirstOrThrow();
   const inputs=[...representatives.values()];
   for(let offset=0;offset<inputs.length;offset+=MAX_SCOPE) await tx.insertInto('ai_job_inputs').values(inputs.slice(offset,offset+MAX_SCOPE).map(item=>{
@@ -275,7 +274,7 @@ async function persistAttributeJob(tx:Transaction<DatabaseSchema>,input:TagJobIn
     job_id:job.id,batch_index:BigInt(offset+index),product_ids:jsonb(batch.productIds.map(String)),product_count:BigInt(batch.productIds.reduce((count,id)=>count+memberCounts.get(id)!,0)),
     input_bytes:BigInt(batch.inputBytes),estimated_tokens:BigInt(batch.estimatedTokens),status:'queued' as const,round:0,step:'request' as const,request_budget_limit:2,
     ...(kind === 'tag_extraction' ? { reference_snapshot: jsonb({
-      tagStage: warrantyInputIds.has(batch.productIds[0]!) ? 'warranty' : 'extract', strategyVersion: 'bounded-candidate-v1', catalogVersion: '0',
+      tagStage: warrantyInputIds.has(batch.productIds[0]!) ? 'warranty' : 'extract', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0',
       inputs: batch.productIds.map(id => ({ id: String(id), candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } })),
       candidates: [],
     }) } : {}),

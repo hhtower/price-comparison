@@ -8,9 +8,8 @@ import { AiRepository } from '../src/ai/ai.repository.js';
 import type { DatabaseSchema } from '../src/database/types.js';
 import { jsonb } from '../src/database/types.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
-import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
+import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
-import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
 import { validateReviewedTagExtractionDecision, type TagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
@@ -31,7 +30,7 @@ async function fixture(count = 1) {
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   const products = [];
   for (let i=0;i<count;i++) products.push(await db.insertInto('products').values({ shop_id: shop.id, external_id: String(i), name: payload.name, spec: payload.spec, source_category: '', source_data: jsonb({}), normalized_key: `tag-${Math.random()}`, url: 'https://test.invalid/p', content_version: 1n, content_fingerprint: fingerprint }).returningAll().executeTakeFirstOrThrow());
-  const job = await db.insertInto('ai_jobs').values({ total: BigInt(count), model: 'mock', job_type: 'tag_extraction', status: 'running', phase: 'standardizing', prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: IDENTITY_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) }).returningAll().executeTakeFirstOrThrow();
+  const job = await db.insertInto('ai_jobs').values({ total: BigInt(count), model: 'mock', job_type: 'tag_extraction', status: 'running', phase: 'standardizing', prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) }).returningAll().executeTakeFirstOrThrow();
   const inputId = products[0]!.id;
   await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: inputId, fingerprint, payload: jsonb(payload), content_version: 1n, input_bytes: 100n, estimated_tokens: 100n }).execute();
   for (const p of products) await db.insertInto('ai_job_input_members').values({ job_id: job.id, input_id: inputId, product_id: p.id, fingerprint, payload: jsonb(payload), content_version: 1n, standardization_revision: p.standardization_revision }).execute();

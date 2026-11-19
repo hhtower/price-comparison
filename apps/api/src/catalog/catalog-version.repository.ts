@@ -5,7 +5,7 @@ import { CATALOG_CACHE_TTL_MS } from '../cache/cache.module.js';
 import { DATABASE } from '../database/database.providers.js';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../database/types.js';
 import type { CandidateDocument } from '../standardization/candidate-index.js';
-import { loadCandidateDisplayNames, loadCatalogAliasRows, loadCatalogAliases, relatedCatalogAliasOwners } from '../standardization/catalog-aliases.js';
+import { loadCatalogAliasRows, loadCatalogAliases, relatedCatalogAliasOwners } from '../standardization/catalog-aliases.js';
 
 export type CatalogDatabase = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 
@@ -72,23 +72,17 @@ export async function recordCandidateCatalogChanges(
     .select([
       'sp.id',
       'sp.name',
+      'sp.catalog_definition',
       'sp.canonical_family',
       'sp.canonical_product',
       'sp.canonical_tier',
       'sp.verification_state',
       'sp.merged_into_id',
-      sql<boolean>`exists (
-        select 1 from standard_product_members member join products p on p.id = member.product_id
-         where member.standard_product_id = sp.id
-           and member.publication_state = 'published'
-           and p.deleted_at is null
-      )`.as('has_published_member'),
     ])
     .where('sp.id', 'in', ids)
     .orderBy('sp.id')
     .execute();
   const aliases = await loadCatalogAliases(database, ids, aliasSnapshot);
-  const displayNames = await loadCandidateDisplayNames(database, standards);
   const aliasesByStandard = new Map<string, string[]>();
   for (const alias of aliases) {
     const key = alias.standard_product_id.toString();
@@ -103,7 +97,7 @@ export async function recordCandidateCatalogChanges(
       return { version: version.version, standard_product_id: id, operation: 'isolate' as const, document: null };
     }
     if (standard?.verification_state === 'verified' && standard.merged_into_id == null
-      && standard.has_published_member
+      && standard.catalog_definition?.trim()
       && standard.canonical_family
       && standard.canonical_product
       && standard.canonical_tier) {
@@ -112,7 +106,8 @@ export async function recordCandidateCatalogChanges(
         family: standard.canonical_family,
         product: standard.canonical_product,
         tier: standard.canonical_tier,
-        displayName: displayNames.get(id.toString()) ?? standard.name,
+        displayName: standard.name,
+        definition: standard.catalog_definition,
         aliases: aliasesByStandard.get(id.toString()) ?? [],
       };
       return {

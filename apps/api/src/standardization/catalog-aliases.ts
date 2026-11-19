@@ -20,29 +20,6 @@ export function normalizeCatalogAliases(values: readonly string[]): string[] {
   return [...unique.values()];
 }
 
-/** Published member names are display search hints, never confirmed aliases. */
-export async function loadCandidateDisplayNames(
-  database: CatalogDatabase,
-  standards: readonly { id: bigint; name: string }[],
-): Promise<Map<string, string>> {
-  if (!standards.length) return new Map();
-  // ponytail: sample 12 rows before dedup; page only if distinct-name recall needs it.
-  const rows = (await sql<{ standard_product_id: bigint; member_names: string[] }>`
-    select sp.id as standard_product_id, array(
-      select p.name from standard_product_members member join products p on p.id = member.product_id
-      where member.standard_product_id = sp.id and member.publication_state = 'published' and p.deleted_at is null
-      order by p.id limit 12
-    ) as member_names
-    from standard_products sp
-    where sp.id in (${sql.join(standards.map(row => row.id))})
-      and sp.verification_state = 'verified' and sp.merged_into_id is null
-  `.execute(database)).rows;
-  const namesByStandard = new Map(rows.map(row => [String(row.standard_product_id),
-    normalizeCatalogAliases(row.member_names).slice(0, 12)]));
-  return new Map(standards.map(row => [String(row.id),
-    [row.name, ...(namesByStandard.get(String(row.id)) ?? [])].join(' / ')]));
-}
-
 interface CatalogAliasRow {
   standard_product_id: bigint;
   aliases: string[];
@@ -53,7 +30,7 @@ export async function loadCatalogAliasRows(database: CatalogDatabase, ids?: read
   if (ids?.length === 0) return [];
   return (await sql<CatalogAliasRow>`
     select sp.id as standard_product_id, sp.aliases,
-      (sp.merged_into_id is null and sp.verification_state = 'verified') as active
+      (sp.merged_into_id is null and sp.verification_state = 'verified' and sp.catalog_definition is not null) as active
     from standard_products sp
     where sp.aliases <> '{}'::text[]
       -- Keep global ownership checks, but return no aliases when the targets have none.

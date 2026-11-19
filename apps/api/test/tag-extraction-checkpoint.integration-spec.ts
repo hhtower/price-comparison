@@ -11,9 +11,8 @@ import { recordTagRepairAttempt, validateReviewedTagExtractionDecision } from '.
 import type { WarrantyLabels } from '../src/ai/tag-warranty-request.js';
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { CONSISTENCY_KEYS, DISCLOSURE_KEYS, TEXT_REVIEW_VERSION, validateTextReview } from '../src/shops/shop-text-review.js';
-import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
+import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
-import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
@@ -65,7 +64,7 @@ async function fixture(count = 1, evidence?: string, stage: 'warranty' | 'extrac
   }))).returningAll().execute();
   const job = await db.insertInto('ai_jobs').values({
     total: BigInt(count), model: 'mock', job_type: 'tag_extraction', status: 'running',
-    prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: IDENTITY_POLICY_VERSION,
+    prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION,
     pipeline_versions: jsonb(pipelineVersionSnapshot('mock')),
   }).returning('id').executeTakeFirstOrThrow();
   const inputId = products[0]!.id;
@@ -88,7 +87,7 @@ async function fixture(count = 1, evidence?: string, stage: 'warranty' | 'extrac
     claim_token: claim.token, lease_until: new Date(Date.now() + 60000), request_budget_used: 1, request_budget_limit: 2,
     ...(stage === 'review' ? { reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1 }) } : {}),
     ...(stage === 'warranty' ? { reference_snapshot: jsonb({
-      tagStage: 'warranty', strategyVersion: 'bounded-candidate-v1', catalogVersion: '0', candidates: [],
+      tagStage: 'warranty', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', candidates: [],
       inputs: [{ id: String(inputId), candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } }],
     }) } : {}),
   }).returning('id').executeTakeFirstOrThrow();
@@ -1052,7 +1051,7 @@ test('extraction and review survive a product SQL failure with no model request 
       calls++;
       const { stage, proposals } = await f.repo.getTagExtractionBatchInputs(BigInt(claimed.id));
       if (stage === 'review') assert.equal(proposals?.items[0]?.id, String(f.inputId));
-      return { items: [], identities: [], missingIds: [], tagExtractionStage: stage,
+      return { items: [], missingIds: [], tagExtractionStage: stage,
         tagExtractionItems: [stage === 'review' ? { ...f.decision, reviewed: true, complete: true, rejectedTags: [] } : f.decision], metadata };
     },
   });

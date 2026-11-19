@@ -1,4 +1,5 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDeidentifiedReviewIndex, evaluateEvidenceReview } from '../src/standardization/review-evaluation.js';
@@ -18,25 +19,45 @@ async function protocolSmoke() {
   const request = { jobId: 1n, model: 'mock-offline', candidates: [{ id: '1', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [] }],
     inputs: [{ productId: 1n, fingerprint: 'a'.repeat(64), payload: { id: '1', name }, candidateStandardProductIds: ['1'], previousDecision: { contentVersion: '0', evidence: 'Old plan' } }] };
   let passed = 0;
-  for (const [candidateRef, citations, expected] of [
-    ['i1c1', evidence, 'classified'], ['i2c1', evidence, 'unclassified'],
-    ['i1c1', [{ path: 'historyContext.evidence', quote: 'Old plan' }], 'unclassified'],
-  ] as const) {
-    const body = JSON.stringify({ items: [{ id: '1', action: 'reuse_candidate', candidateRef, ruleIds: [], evidence: citations, reason: 'Synthetic protocol control' }] });
+  const matched = { id: '1', standardProductId: '1', evidence };
+  const controls = [
+    { response: { items: [matched] }, status: 'classified' },
+    { response: { items: [{ ...matched, standardProductId: null }] }, status: 'unclassified' },
+    { response: { items: [{ ...matched, standardProductId: '2' }] } },
+    { response: { items: [{ ...matched, evidence: [{ path: 'historyContext.evidence', quote: 'Old plan' }] }] } },
+    { response: { items: [{ ...matched, reason: 'Model explanation is not part of the protocol' }] } },
+    { response: { items: [] } },
+  ];
+  for (const control of controls) {
+    const body = JSON.stringify(control.response);
     const call = createOpenAiModelCall({ getBatchRequest: async () => request } as never,
       { AI_BASE_URL: 'https://offline.invalid/v1', AI_API_KEY: 'mock-only', AI_MODEL: 'mock-offline' }, async (_url, init) => {
         mockRequests++;
-        if (JSON.parse(String(init?.body)).stream !== true) throw new Error('Offline probe must use the shared streaming transport');
+        const sent = JSON.parse(String(init?.body));
+        assert.equal(sent.stream, true);
+        assert.doesNotMatch(sent.messages[1].content, /historyContext|Old plan|candidateRefs/);
         return new Response([
           { choices: [{ delta: { content: body.slice(0, 25) } }] },
           { choices: [{ delta: { content: body.slice(25) }, finish_reason: 'stop' }] },
         ].map(chunk => 'data: ' + JSON.stringify(chunk) + '\n\n').join('') + 'data: [DONE]\n\n');
       });
-    const response = await call({ id: 1n }, new AbortController().signal);
-    if (response.items[0]?.status !== expected) throw new Error('Offline protocol control failed');
+    if (control.status) {
+      const response = await call({ id: 1n }, new AbortController().signal);
+      assert.equal(response.items[0]?.status, control.status);
+      assert.equal(response.items[0]?.reasonCode, control.status === 'classified' ? null : 'unmatched');
+      assert.deepEqual(response.items[0]?.evidence, evidence);
+      assert.deepEqual(response.missingIds, []);
+      assert.equal(Object.hasOwn(response, 'identities'), false);
+    } else {
+      await assert.rejects(call({ id: 1n }, new AbortController().signal), (error: any) => {
+        assert.equal(error.retryClass, 'invalid_response');
+        assert.equal(error.requestOutcome, 'confirmed');
+        return true;
+      });
+    }
     passed++;
   }
-  return { mode: 'mock-contract-control', cases: 3, passed, mockRequests, providerRequests: 0, actualUsage: null, modelSemanticQuality: 'unknown' };
+  return { mode: 'mock-contract-control', cases: controls.length, passed, mockRequests, providerRequests: 0, actualUsage: null, modelSemanticQuality: 'unknown' };
 }
 
 async function main() {

@@ -23,8 +23,7 @@ const REASONS = {
   not_processed: '尚未处理',
   unassigned: '当前未归类',
   source_changed: '商品资料已变化',
-  insufficient_evidence: '商品信息不足',
-  not_sellable: '非售卖商品',
+  unmatched: '未匹配已有标准',
   input_too_large: '商品资料过长',
   publication_too_large: '结果内容过大',
   invalid_response: '模型结果格式异常',
@@ -39,18 +38,13 @@ const REASONS = {
   request_outcome_unknown: '模型请求结果未知',
   result_not_saved: '模型结果保存失败',
   publication_error: '结果应用失败',
-  missing_identity: '未识别商品身份',
   publication_blocked: '商品交付或目录需审核',
   job_cancelled: '任务已取消',
-  review_rejected: 'LLM 对该身份提议判定为否',
+  review_rejected: '标准匹配提议未通过复核',
 };
 function reasonTitle(code) { return REASONS[code] || '暂未完成分类'; }
-function cannotProcess(results) {
-  const reasons = results?.unclassifiedReasons || {};
-  return number(reasons.insufficient_evidence) + number(reasons.not_sellable);
-}
 function unresolved(results) {
-  return Math.max(0, number(results?.unclassified) - cannotProcess(results));
+  return Math.max(0, number(results?.unclassified));
 }
 function taskStatus(job, progress) {
   return job?.status === 'succeeded' && unresolved(progress?.results ?? job) > 0
@@ -99,7 +93,6 @@ function ProgressOverview({ status }) {
   const stages = progress.standardizationStages || {};
   const total = number(progress.rawProductCount);
   const processed = Math.min(total, number(results.classified) + number(results.unclassified));
-  const refused = cannotProcess(results);
   const pending = unresolved(results);
   const percent = total ? processed / total * 100 : 0;
   const completed = status?.job?.status === 'succeeded';
@@ -114,14 +107,13 @@ function ProgressOverview({ status }) {
       <dl className="ai-standardization-summary">
         <Metric label="原始商品" value={progress.rawProductCount} />
         <Metric label="已分类" value={results.classified} />
-        <Metric label="不能处理" value={refused} />
         <Metric label="待处理" value={pending} />
         <Metric label="标准商品" value={results.standardProducts} />
         <Metric label="失败批次" value={requests.failedBatches} />
       </dl>
       <ol className="ai-pipeline-stages" aria-label="标准化阶段">
         {[
-          ['生成身份提议', `${number(stages.generationCompleted)} 批已生成`],
+          ['匹配已有标准', `${number(stages.generationCompleted)} 批已生成`],
           ['LLM 二元复核', [
             `${number(stages.reviewCompleted)} 批已完成`,
             number(stages.reviewQueued) > 0 ? `${number(stages.reviewQueued)} 批排队` : null,

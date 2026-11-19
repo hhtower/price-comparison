@@ -18,13 +18,9 @@ for (const control of standardizationFlowControls) {
   test('current public-safe flow control: ' + control.id, async () => {
     const evaluate = await loadFlow();
     const row = evaluate([control], standardizationFlowCatalog).controls[0];
-    if (!control.inputBudgetBytes) {
-      assert.equal(Boolean(row.identityConflict.raw), control.expectedIdentityConflict ?? false, 'raw identity guard');
-      assert.equal(Boolean(row.identityConflict.text), control.expectedIdentityConflict ?? false, 'frozen identity guard');
-    }
-    assert.equal(Boolean(row.publicationConflict.raw), control.expectedPublicationConflict ?? false, 'raw publication guard');
-    assert.equal(Boolean(row.publicationConflict.text), control.expectedPublicationConflict ?? false, 'frozen publication guard');
-    assert.equal(row.protocolReasonCode, null, 'control proposal must be structurally valid');
+    assert.deepEqual(row.mockMatchReview, control.mockMatchReview);
+    assert.equal(row.protocolReasonCode, control.proposalIdentity ? null : 'unmatched');
+    assert.deepEqual(row.finalEvidence, [{ path: 'name', quote: control.name.normalize('NFKC') }], 'review retains literal frozen evidence');
     assert.equal(row.finalDisposition, control.expectedDisposition, 'actual final validator disposition');
     assert.deepEqual(row.finalTags, control.expectedTags ?? {}, 'mock review decisions pass through objective validation');
     if (control.expectedReasonCode) assert.equal(row.finalReasonCode, control.expectedReasonCode);
@@ -87,6 +83,30 @@ test('flow evaluation requires explicit mock votes and does not infer tag semant
   assert.equal(approved.metrics.modelSemanticQuality, 'unknown');
 });
 
+test('flow evaluation requires binary match review and never substitutes local semantic heuristics', async () => {
+  const evaluate = await loadFlow();
+  const control = standardizationFlowControls.find(row => row.id === 'team-tool-not-subscription')!;
+  assert.throws(() => evaluate([{ ...control, mockMatchReview: undefined }], standardizationFlowCatalog));
+  assert.throws(() => evaluate([{ ...control, mockMatchReview: { approved: 'true' } }], standardizationFlowCatalog));
+  const rejected = evaluate([control], standardizationFlowCatalog).controls[0];
+  assert.equal(rejected.finalDisposition, 'review');
+  assert.equal(rejected.finalReasonCode, 'review_rejected');
+  const approved = evaluate([{ ...control, mockMatchReview: { approved: true } }], standardizationFlowCatalog);
+  assert.equal(approved.controls[0].finalDisposition, 'release');
+  assert.equal(approved.controls[0].matchesExpected, false);
+  assert.equal(approved.metrics.finalErroneousRelease.value, 1);
+});
+
+test('flow evaluation keeps unmatched evidence without inventing a candidate or identity', async () => {
+  const evaluate = await loadFlow();
+  const control = standardizationFlowControls.find(row => row.id === 'unknown-full-evidence')!;
+  const row = evaluate([control], standardizationFlowCatalog).controls[0];
+  assert.equal(row.protocolReasonCode, 'unmatched');
+  assert.equal(row.finalReasonCode, 'unmatched');
+  assert.equal(row.finalIdentity, null);
+  assert.deepEqual(row.finalEvidence, [{ path: 'name', quote: control.name }]);
+});
+
 test('offline CLI reports current controls separately from historical mocked accuracy', () => {
   const result = spawnSync(process.execPath, ['--import', 'tsx', 'apps/api/scripts/evaluate-standardization.ts'], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
@@ -98,4 +118,7 @@ test('offline CLI reports current controls separately from historical mocked acc
   assert.equal(report.currentFlowControls.controls.length, standardizationFlowControls.length);
   assert.equal(report.currentFlowControls.metrics.modelProposalCorrectness.value, null);
   assert.match(report.metricRegression.purpose, /not production accuracy/u);
+  assert.equal(report.mockProtocol.passed, report.mockProtocol.cases);
+  assert.equal(report.mockProtocol.providerRequests, 0);
+  assert.ok(report.mockProtocol.cases >= 6, 'match, unmatched, schema, missing ID, candidate and citation controls');
 });

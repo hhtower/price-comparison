@@ -134,7 +134,7 @@ test('confirmed rate limiting keeps the shared request retry budget', async () =
 test('decision persistence failure after a confirmed response never resends the request', async () => {
   const state = service();
   const events: string[] = [];
-  const result = { identities: [], items: [], missingIds: [] };
+  const result = { items: [], missingIds: [] };
   const worker = createAiWorker({
     ...state,
     complete: async () => { events.push('complete'); },

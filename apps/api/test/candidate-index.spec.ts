@@ -5,6 +5,14 @@ import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.
 import { VersionedCandidateIndex, type CatalogIndexChange } from '../src/standardization/versioned-candidate-index.js';
 import * as batching from '../src/ai/adaptive-batching.js';
 
+test('changing only an approved definition updates the candidate snapshot', () => {
+  const candidate = { id: '91', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [], definition: 'Original scope' };
+  const index = VersionedCandidateIndex.build({ version: 1n, aliasPolicyVersion: 'test', documents: [candidate] });
+  index.applyChanges([{ version: 2n, standardProductId: '91', operation: 'upsert',
+    document: { ...candidate, definition: 'Corrected approved scope' } }], 2n);
+  assert.equal(index.search({ text: 'ChatGPT Plus' }).candidates[0]?.definition, 'Corrected approved scope');
+});
+
 test('Grok inventory evidence prioritizes its canonical account over mirrors and source JSON keys', () => {
   assert.equal(typeof batching.buildCandidateSearchQuery, 'function');
   const query = batching.buildCandidateSearchQuery({ id: '1', name: 'gro普号(库存)', spec: '',

@@ -4,6 +4,43 @@ import {
   normalizeProductEvidence,
   productContentFingerprint,
 } from '../src/standardization/fingerprint.js';
+import { parseStandardizationProtocolResponse, StandardizationValidationError } from '../src/ai/ai.schemas.js';
+import { validateStandardizationEvidence } from '../src/ai/standardization-evidence.js';
+import { parseStandardizationReviewResponse } from '../src/ai/standardization-review-request.js';
+
+test('match-only generation and review retain the frozen candidate ID and original evidence', () => {
+  const inputs = [{ id: '11', candidateStandardProductIds: ['91'] }, { id: '12', candidateStandardProductIds: [] }];
+  const payloads = [{ id: '11', payload: { name: 'ChatGPT Plus monthly US' } }, { id: '12', payload: { name: 'Unlisted plan' } }];
+  const candidates = [{ id: '91', displayName: 'ChatGPT Plus', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [],
+    definition: 'ChatGPT Plus subscriptions and accounts; excludes other ChatGPT plans.' }];
+  const parsed = parseStandardizationProtocolResponse({ items: [
+    { id: '11', standardProductId: '91', evidence: [{ path: 'name', quote: payloads[0]!.payload.name }] },
+    { id: '12', standardProductId: null, evidence: [{ path: 'name', quote: payloads[1]!.payload.name }] },
+  ] }, inputs);
+  const bounded = validateStandardizationEvidence(parsed, payloads.map((input, index) => ({
+    ...input, candidateStandardProductIds: inputs[index]!.candidateStandardProductIds,
+  })), candidates);
+  const reviewed = parseStandardizationReviewResponse('{"items":[{"id":"11","approved":true},{"id":"12","approved":true}]}', bounded);
+  assert.deepEqual(Object.keys(reviewed).sort(), ['items', 'missingIds']);
+  assert.deepEqual(reviewed.missingIds, []);
+  assert.deepEqual(reviewed.items[0]!.identity, { kind: 'existing', standardProductId: '91' });
+  assert.equal(reviewed.items[1]!.identity, undefined);
+  assert.equal(reviewed.items[1]!.reasonCode, 'unmatched');
+  assert.deepEqual(reviewed.items.map(item => item.evidence), parsed.items.map(item => item.evidence));
+  assert.ok(reviewed.items.every(item => item.review?.approved === true));
+});
+
+test('old actions, unfrozen candidates and missing fields or IDs are technical protocol failures', () => {
+  const inputs = [{ id: '11', candidateStandardProductIds: ['91'] }];
+  const evidence = [{ path: 'name', quote: 'ChatGPT Plus' }];
+  for (const response of [
+    { items: [{ id: '11', action: 'create_identity', identity: { family: 'openai', product: 'chatgpt', tier: 'plus' }, evidence }] },
+    { items: [{ id: '11', standardProductId: '92', evidence }] },
+    { items: [{ id: '11', standardProductId: null }] },
+    { items: [{ id: '11', evidence }] },
+    { items: [] },
+  ]) assert.throws(() => parseStandardizationProtocolResponse(response, inputs), StandardizationValidationError);
+});
 
 test('shop metadata does not split identical goods while category meaning and selected options remain evidence', () => {
   const listing = (id: number) => ({

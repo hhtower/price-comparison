@@ -2,11 +2,11 @@ import { buildCandidateSearchQuery, buildExtractionPayload, estimateInputSize, p
 import { tagValueKey } from '@price-comparison/catalog/purchase-attributes';
 import { parseStandardizationProtocolResponse, type StandardizationTag } from '../ai/ai.schemas.js';
 import { validateStandardizationEvidence } from '../ai/standardization-evidence.js';
+import { parseStandardizationReviewResponse } from '../ai/standardization-review-request.js';
 import { validateReviewedTagExtractionDecision } from '../ai/tag-extraction-result.js';
 import { BoundedCandidateIndex, type CandidateDocument } from './candidate-index.js';
 import { buildCanonicalStandardKey } from './canonical-key.js';
-import { identityEvidenceConflict, normalizeIdentity, type Identity } from './identity-policy.js';
-import { publicationEvidenceConflict } from './publication-evidence.js';
+import { normalizeIdentity, type Identity } from './identity-policy.js';
 import { evaluateStandardizationStages, type FlowDisposition, type FlowTagValues, type StandardizationStageObservation } from './review-evaluation.js';
 
 export interface StandardizationFlowControl {
@@ -17,11 +17,9 @@ export interface StandardizationFlowControl {
   readonly expectedIdentity: Identity | null;
   readonly expectedDisposition: FlowDisposition;
   readonly expectedTags?: FlowTagValues;
-  readonly expectedIdentityConflict?: boolean;
-  readonly expectedPublicationConflict?: boolean;
   readonly expectedReasonCode?: string;
-  readonly proposalIdentity: Identity;
-  readonly proposalAction?: 'create_identity' | 'reuse_candidate';
+  readonly proposalIdentity: Identity | null;
+  readonly mockMatchReview: { readonly approved: boolean };
   readonly proposalTags?: readonly Pick<StandardizationTag, 'name' | 'value'>[];
   readonly mockTagReview?: { readonly accepted: readonly boolean[]; readonly complete: boolean };
   readonly inputBudgetBytes?: number;
@@ -48,8 +46,7 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
     const candidates = index.search(query).candidates;
     const candidateTargetId = control.expectedIdentity ? catalog.find(candidate =>
       buildCanonicalStandardKey(candidate) === buildCanonicalStandardKey(control.expectedIdentity!))?.id : undefined;
-    const candidateRefs = Object.fromEntries(candidates.map((candidate, position) => ['i1c' + (position + 1), candidate.id]));
-    const evidence = [{ path: 'name', quote: control.name }];
+    const evidence = [{ path: 'name', quote: String(payload.name) }];
     const proposalTags = control.proposalTags ?? [];
     if (proposalTags.length && !control.mockTagReview) throw new Error('Tag controls require explicit mock review decisions');
     const votes = control.mockTagReview?.accepted ?? [];
@@ -58,30 +55,25 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
       tags.filter(tag => votes[tag.proposalIndex] !== true).map(tag => ({
         ...tag, reasonCode: 'review_rejected', reason: '模拟复核拒绝该标签',
       })), payload, votes, control.mockTagReview?.complete ?? true);
-    const proposedCandidate = candidates.find(candidate =>
-      buildCanonicalStandardKey(candidate) === buildCanonicalStandardKey(control.proposalIdentity));
-    const candidateRef = Object.keys(candidateRefs).find(ref => candidateRefs[ref] === proposedCandidate?.id);
-    const proposal = control.proposalAction === 'reuse_candidate'
-      ? { action: 'reuse_candidate', candidateRef: candidateRef ?? 'unrecalled' }
-      : { action: 'create_identity', identity: { ...control.proposalIdentity, reason: 'Synthetic identity probe', evidence } };
-    const parsed = parseStandardizationProtocolResponse({ items: [{
-      id: control.id, ...proposal, evidence, ruleIds: [], reason: 'Synthetic control, not model observation',
-    }] }, [{ id: control.id, candidateStandardProductIds: candidates.map(candidate => candidate.id), candidateRefs }]);
-    const validated = validateStandardizationEvidence(parsed, [{ id: control.id, payload }], candidates);
-    const decision = validated.items[0]!;
+    const proposedCandidate = control.proposalIdentity ? candidates.find(candidate =>
+      buildCanonicalStandardKey(candidate) === buildCanonicalStandardKey(control.proposalIdentity!)) : undefined;
+    if (control.proposalIdentity && !proposedCandidate) throw new Error(`Control proposal candidate was not recalled: ${control.id}`);
+    if (!control.mockMatchReview) throw new Error('Match controls require explicit mock review decisions');
+    const input = { id: '1', candidateStandardProductIds: candidates.map(candidate => candidate.id), payload };
+    const parsed = parseStandardizationProtocolResponse({ items: [
+      { id: input.id, standardProductId: proposedCandidate?.id ?? null, evidence },
+    ] }, [input]);
+    const validated = validateStandardizationEvidence(parsed, [input], candidates);
+    const reviewedMatch = parseStandardizationReviewResponse(JSON.stringify({
+      items: [{ id: input.id, ...control.mockMatchReview }],
+    }), validated);
+    const decision = reviewedMatch.items[0]!;
     const choice = decision.identity;
-    const chosen = choice?.kind === 'new' ? validated.identities.find(identity => identity.ref === choice.ref)
-      : choice?.kind === 'existing' ? candidates.find(candidate => candidate.id === choice.standardProductId) : undefined;
-    const identityConflict = {
-      raw: identityEvidenceConflict(control.proposalIdentity, raw),
-      text: identityEvidenceConflict(control.proposalIdentity, payload, 'text'),
-    };
-    const publicationConflict = { raw: publicationEvidenceConflict(raw), text: publicationEvidenceConflict(payload, 'text') };
+    const chosen = choice ? candidates.find(candidate => candidate.id === choice.standardProductId) : undefined;
     const size = estimateInputSize(payload);
     const planned = planAdaptiveBatches([{ productId: 1n, payload, ...size }], {
       maxItems: 1, maxInputBytes: control.inputBudgetBytes ?? Number.MAX_SAFE_INTEGER, maxInputTokens: Number.MAX_SAFE_INTEGER,
     }).length > 0;
-    // Publication guard results are observations only: the actual validator must enforce them.
     const finalDisposition: FlowDisposition = !planned || decision.status !== 'classified' ? 'review' : 'release';
     const finalIdentity = finalDisposition === 'release' && chosen ? normalizeIdentity(chosen) : null;
     const finalTags = finalDisposition === 'release' ? tagValues(reviewed.tags) : {};
@@ -89,8 +81,9 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
     const observation: StandardizationStageObservation = {
       id: control.id, proposalSource: 'synthetic-control', expectedIdentity: control.expectedIdentity,
       expectedDisposition: control.expectedDisposition, expectedTags: control.expectedTags ?? {},
-      proposedIdentity: normalizeIdentity(control.proposalIdentity), proposalDisposition: 'release',
-      proposedTags: tagValues(proposalTags), identityRejected: Boolean(identityConflict.text),
+      proposedIdentity: control.proposalIdentity ? normalizeIdentity(control.proposalIdentity) : null,
+      proposalDisposition: control.proposalIdentity ? 'release' : 'review',
+      proposedTags: tagValues(proposalTags), identityRejected: !decision.review!.approved,
       candidateTargetId, recalledCandidateIds: candidates.map(candidate => candidate.id),
       finalIdentity, finalDisposition, finalTags,
     };
@@ -101,16 +94,10 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
       && JSON.stringify(Object.entries(finalTags).sort()) === JSON.stringify(Object.entries(control.expectedTags ?? {}).sort())
       && (finalDisposition !== 'release' || (finalIdentity && buildCanonicalStandardKey(finalIdentity) === expectedIdentityKey))
       && (control.expectedReasonCode === undefined || finalReasonCode === control.expectedReasonCode)
-      && parsed.items[0]!.reasonCode === null
-      && (control.inputBudgetBytes || (
-        Boolean(identityConflict.raw) === (control.expectedIdentityConflict ?? false)
-        && Boolean(identityConflict.text) === (control.expectedIdentityConflict ?? false)))
-      && Boolean(publicationConflict.raw) === (control.expectedPublicationConflict ?? false)
-      && Boolean(publicationConflict.text) === (control.expectedPublicationConflict ?? false)
       && (candidateTargetId === undefined || observation.recalledCandidateIds!.includes(candidateTargetId))
       && (!control.inputBudgetBytes || (!planned && frozenEvidenceLength === control.body.length));
     return { ...observation, mockTagReview: { accepted: [...votes], complete: reviewed.complete },
-      soldObject: control.soldObject, identityConflict, publicationConflict,
+      mockMatchReview: { ...decision.review! }, soldObject: control.soldObject, finalEvidence: decision.evidence,
       protocolReasonCode: parsed.items[0]!.reasonCode, finalReasonCode, planned, frozenEvidenceLength,
       matchesExpected: Boolean(matchesExpected) };
   });
@@ -127,13 +114,13 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
   const released = rows.filter(row => row.finalDisposition === 'release');
   const tagValuesArray = (value: string | readonly string[] | undefined): readonly string[] => value === undefined ? [] : typeof value === 'string' ? [value] : value;
   return {
-    version: 'standardization-flow-controls-20261013-v3', mode: 'synthetic-pure-function-controls',
-    purpose: 'Hand-reviewed identities/publication labels with synthetic proposals and explicit mock tag-review votes; not production or model accuracy.',
+    version: 'standardization-flow-controls-20261119-v4', mode: 'synthetic-pure-function-controls',
+    purpose: 'Hand-reviewed candidate matches with synthetic proposals and explicit binary match/tag-review votes; not production or model accuracy.',
     providerRequests: 0, actualUsage: null, metrics: evaluateStandardizationStages(rows),
     metricDefinitions: {
       modelProposalCorrectness: 'Correct observed model dispositions, identities and tags / observed model proposals; no observations means null.',
       syntheticProposalCorrectness: 'Same comparison for deliberately generated control proposals only.',
-      identityRuleFalseRejection: 'Identity-guard rejections / correct-identity proposals on hand-labeled releasable products; publication holds are separate.',
+      identityRuleFalseRejection: 'Mock binary-review rejections / correct-identity proposals on hand-labeled releasable products.',
       candidateRecallMiss: 'Missing target / observed searches whose hand-reviewed identity exists in this control catalog.',
       finalErroneousRelease: 'Wrong identity, unsupported tags or hand-labeled blocked product / final pure-validator releases.',
     },
@@ -149,7 +136,7 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
     },
     limitations: [
       'No real model responses, provider usage, production distribution or production accuracy observed.',
-      'Tag semantics are supplied as mock review votes; the program checks objective constraints only.',
+      'Match and tag semantics are supplied as explicit mock review votes; the program checks objective constraints only.',
       'Candidate recall uses a small public-safe control catalog, not the production catalog or request-budget pruning.',
       'Final release means frozen pure-function validation only; no database, atomic publication, manual locks, outbox or retries exercised.',
       'Oversize control verifies full payload and batch-planner rejection under an explicit offline byte budget, not repository review routing.',

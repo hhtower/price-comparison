@@ -9,6 +9,7 @@ import { AdminRepository } from '../src/admin/admin.repository.js';
 import { CatalogRepository } from '../src/catalog/catalog.repository.js';
 import { loadCatalogAliases } from '../src/standardization/catalog-aliases.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
+import { publishNextCatalogChange } from '../src/catalog/catalog-projection.js';
 
 const schema = 'alias_storage_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
 let database: Kysely<DatabaseSchema>, admin: Pool, repository: AdminRepository, shopId: bigint;
@@ -33,7 +34,7 @@ after(async () => {
 
 async function standard(label: string) {
   const identity = { family: 'test', product: label, tier: 'standard' };
-  const row = await database.insertInto('standard_products').values({ name: label, platform: 'test', canonical_family: identity.family,
+  const row = await database.insertInto('standard_products').values({ name: label, catalog_definition: `Approved ${label} product`, platform: 'test', canonical_family: identity.family,
     canonical_product: label, canonical_tier: 'standard', standard_key: buildCanonicalStandardKey(identity), verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
   const product = await database.insertInto('products').values({ shop_id: shopId, external_id: label, name: label,
     normalized_key: label, url: 'https://aliases.invalid/' + label }).returning('id').executeTakeFirstOrThrow();
@@ -47,6 +48,7 @@ test('admin edits one alias field used by public search and AI candidates', asyn
   const updated = await repository.updateStandardProduct(id, { aliases: ['  小众名称  ', '小众 名称', 'Alternate Name'] });
   assert.deepEqual(updated?.aliases, ['小众名称', 'Alternate Name']);
   assert.deepEqual((await loadCatalogAliases(database, [id])).map(row => row.alias), ['小众名称', 'Alternate Name']);
+  while (await publishNextCatalogChange(database)) {}
   const catalog = new CatalogRepository(database);
   assert.deepEqual((await catalog.search({ search: '小众名称', tags: [], limit: 20 })).items.map(row => row.id), [String(id)]);
   await assert.rejects(repository.updateStandardProduct(id, { aliases: ['x'.repeat(81)] }), { code: 'STANDARD_PRODUCT_ALIASES_INVALID' });

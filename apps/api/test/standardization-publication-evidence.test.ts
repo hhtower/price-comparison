@@ -1,25 +1,20 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
 import { validateStandardizationEvidence } from '../src/ai/standardization-evidence.js';
 
-const input = { id: '1', name: 'ChatGPT Plus 账号 首登质保2小时', spec: '',
-  sourceData: { evidence: '<p>提供Plus账号密码2FA。</p><p>仅质保下单后1小时内首次登录。</p>' } };
-const evidence = [{ path: 'name', quote: input.name }];
-
-for (const action of ['create_identity', 'insufficient_evidence'] as const) {
-  test(`${action} on contradictory actual warranty promises remains publication review`, () => {
-    const choice = action === 'create_identity' ? { identity: {
-      family: 'openai', product: 'chatgpt', tier: 'plus', reason: 'Explicit account', evidence,
-    } } : {};
+const candidate = { id: '91', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [] };
+for (const standardProductId of ['91', null]) {
+  test(`boundary does not reinterpret warranty and delivery attributes for ${standardProductId ?? 'unmatched'}`, () => {
+    const payload = { name: 'ChatGPT Plus 账号 首登质保2小时',
+      sourceData: { evidence: '提供Plus账号密码2FA。仅质保下单后1小时内首次登录。' } };
+    const inputs = [{ id: '1', payload, candidateStandardProductIds: ['91'] }];
     const parsed = parseStandardizationProtocolResponse({ items: [{
-      id: '1', action, ...choice, ruleIds: [], evidence, reason: 'Source assertions',
-    }] }, [{ id: '1', candidateStandardProductIds: [], candidateRefs: {} }]);
-    const validated = validateStandardizationEvidence(parsed, [{ id: '1', payload: buildExtractionPayload(input) }], []);
-    assert.equal(validated.items[0]?.status, 'unclassified');
-    assert.equal(validated.items[0]?.reasonCode, 'publication_blocked');
-    assert.equal(validated.items[0]?.diagnostic?.stage, 'publication');
-    assert.deepEqual(validated.identities, []);
+      id: '1', standardProductId, evidence: [{ path: 'name', quote: payload.name }],
+    }] }, inputs);
+    const validated = validateStandardizationEvidence(parsed, inputs, [candidate]);
+    assert.equal(validated, parsed);
+    assert.equal(validated.items[0]!.reasonCode, standardProductId ? null : 'unmatched');
+    assert.equal(validated.items[0]!.diagnostic, undefined);
   });
 }

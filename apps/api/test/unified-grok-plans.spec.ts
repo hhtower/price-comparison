@@ -123,20 +123,27 @@ test('legacy names, menu ambiguity, gifts and prices cannot establish a unified 
     { name: 'X Premium+ 赠送SuperGrok，旧版不是最新三合一' }), null);
 });
 
-test('new and reused model identities must pass the same unified evidence guard', () => {
-  for (const name of ['Grok Premium 4x 月卡', 'X Premium 会员 附赠Grok']) {
-    const identity = { family: 'xai', product: 'grok', tier: 'premium' };
-    const input = { id: '1', name, spec: '' };
-    const payload = buildExtractionPayload(input);
+test('approved unified and legacy candidates pass citation boundaries without a local identity policy veto', () => {
+  for (const [name, family, product, tier] of [
+    ['Grok Premium 4x 月卡', 'xai', 'grok', 'premium'],
+    ['SuperGrok 旧版月付', 'xai', 'grok', 'supergrok'],
+    ['Grok Super 月订阅', 'xai', 'grok', 'supergrok'],
+    ['Grok Heavy 旧版', 'xai', 'grok', 'heavy'],
+    ['X Premium 旧版 1个月', 'x', 'premium_membership', 'premium'],
+    ['X Premium+ 旧版', 'x', 'premium_membership', 'premium_plus'],
+    ['Cursor Pro 旧版', 'cursor', 'cursor', 'pro'],
+  ] as const) {
+    const candidate = { id: '91', family, product, tier, aliases: [] };
+    const payload = buildExtractionPayload({ id: '1', name, spec: '' });
+    const inputs = [{ id: '1', payload, candidateStandardProductIds: [candidate.id] }];
     const evidence = [{ path: 'name', quote: name }];
-    for (const choice of [
-      { action: 'create_identity', identity: { ...identity, reason: '所选套餐', evidence } },
-      { action: 'reuse_candidate', candidateRef: 'i1c1' },
-    ]) {
-      const parsed = parseStandardizationProtocolResponse({ items: [{ id: '1', ...choice, ruleIds: [], evidence, reason: '所选套餐' }] },
-        [{ id: '1', candidateStandardProductIds: ['91'], candidateRefs: { i1c1: '91' } }]);
-      const result = validateStandardizationEvidence(parsed, [{ id: '1', payload }], [{ id: '91', ...identity, aliases: [] }]);
-      assert.equal(result.items[0]?.status === 'unclassified', name.startsWith('X '), name + ' ' + choice.action);
-    }
+    const parsed = parseStandardizationProtocolResponse({ items: [{
+      id: '1', standardProductId: candidate.id, evidence,
+    }] }, inputs);
+    assert.equal(validateStandardizationEvidence(parsed, inputs, [candidate]), parsed, name);
+    assert.equal(parsed.items[0]?.status, 'classified', name);
+    assert.equal(parsed.items[0]?.reasonCode, null, name);
+    assert.deepEqual(parsed.items[0]?.identity, { kind: 'existing', standardProductId: candidate.id }, name);
+    assert.equal(Object.hasOwn(parsed, 'identities'), false);
   }
 });

@@ -50,7 +50,7 @@ function fixture(rows: unknown[] = [claim], acknowledged: unknown[] = rows, curr
             ? []
             : [{standard_product_id:options.currentMembershipStandardProductId}]};
         }
-        if(query.sql.startsWith('select') && query.sql.includes('"standard_products"')) return {rows:[{id:4n,canonical_family:'openai',canonical_product:'chatgpt',canonical_tier:'pro_5x',standard_key:buildCanonicalStandardKey({family:'openai',product:'chatgpt',tier:'pro_5x'}),verification_state:'verified',has_published_member:options.candidateStandardHasPublishedMember ?? true}]};
+        if(query.sql.startsWith('select') && query.sql.includes('"standard_products"')) return {rows:[{id:4n,name:'ChatGPT Pro 5x',catalog_definition:'Approved ChatGPT Pro 5x subscription',canonical_family:'openai',canonical_product:'chatgpt',canonical_tier:'pro_5x',standard_key:buildCanonicalStandardKey({family:'openai',product:'chatgpt',tier:'pro_5x'}),verification_state:'verified',has_published_member:options.candidateStandardHasPublishedMember ?? true}]};
         if(query.sql.startsWith('select') && query.sql.includes('from "standardization_catalog_versions"')) return {rows:[{version:1n,alias_policy_version:'catalog-sms-20260919-v2'}]};
         if(query.sql.includes('update catalog_cache_versions')) {events.push('cache'); return {rows:[{version:2n}]};}
         if(query.sql.includes('update standardization_catalog_versions')) return {rows:[{version:2n,alias_policy_version:'catalog-sms-20260919-v2'}]};
@@ -241,7 +241,7 @@ test('assignment, withdrawal and tag edits advance revision and invalidate the c
       assert.ok(f.queries.some(query=>query.sql.includes('update standardization_catalog_versions')),action);
       const change=f.queries.find(query=>query.sql.startsWith('insert into "catalog_index_changes"'))!;
       assert.ok(change,action);
-      assert.ok(change.parameters.includes(action==='assignment'?'upsert':'delete'),action);
+      assert.ok(change.parameters.includes('upsert'),action);
     }
     await f.db.destroy();
   }

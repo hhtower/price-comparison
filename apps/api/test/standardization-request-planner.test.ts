@@ -34,7 +34,7 @@ test('eight short items sharing twenty candidates fit one default-budget request
   assert.ok(planned!.estimate.requestBytes < 50_000);
 });
 
-test('split requests rebuild complete local candidate mappings without dropping history or evidence', () => {
+test('split requests retain item candidate IDs and current evidence while excluding history', () => {
   const candidates = [1, 2, 3].map(id => ({ id: String(id), displayName: `Plan ${id}`, family: 'example', product: 'course', tier: 'standard', aliases: ['full alias'] }));
   const inputs = [1, 2].map(id => ({ productId: BigInt(id), payload: { name: `course ${id}`, evidence: '完整尾部证据' },
     previousDecision: { reason: `history ${id}` }, candidateStandardProductIds: [String(id + 1), '1'] }));
@@ -46,12 +46,14 @@ test('split requests rebuild complete local candidate mappings without dropping 
     assert.equal(group.oversized, false);
     const built = buildStandardizationRequest(group.request);
     const payload = JSON.parse(built.messages[1]!.content);
-    assert.deepEqual(payload.items[0].historyContext, inputs[index]!.previousDecision);
+    assert.equal(Object.hasOwn(payload.items[0], 'historyContext'), false);
+    assert.doesNotMatch(built.messages[1]!.content, /history \d/);
     assert.equal(payload.items[0].evidence, '完整尾部证据');
-    assert.deepEqual(payload.items[0].candidateRefs, { i1c1: 'c1', i1c2: 'c2' });
-    assert.equal(payload.candidates.c1.displayName, `Plan ${index + 2}`);
-    assert.equal(payload.candidates.c2.displayName, 'Plan 1');
-    assert.deepEqual(built.protocolInputs[0]?.candidateRefs, { i1c1: String(index + 2), i1c2: '1' });
+    assert.deepEqual(payload.items[0].candidateStandardProductIds, [String(index + 2), '1']);
+    assert.equal(Object.hasOwn(payload.items[0], 'candidateRefs'), false);
+    assert.equal(payload.candidates.find((candidate: { id: string }) => candidate.id === String(index + 2)).displayName, `Plan ${index + 2}`);
+    assert.equal(payload.candidates.find((candidate: { id: string }) => candidate.id === '1').displayName, 'Plan 1');
+    assert.deepEqual(built.protocolInputs, [{ id: String(index + 1), candidateStandardProductIds: [String(index + 2), '1'] }]);
   }
 });
 

@@ -7,18 +7,20 @@ import { migrateToLatest } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
 import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
-import type { ParsedStandardizationResponse, StandardizationDecision, StandardizationIdentity } from '../src/ai/ai.schemas.js';
-import type { DatabaseSchema } from '../src/database/types.js';
+import type { ParsedStandardizationResponse, StandardizationDecision } from '../src/ai/ai.schemas.js';
+import type { DatabaseSchema, JsonValue } from '../src/database/types.js';
 import { jsonb } from '../src/database/types.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
 import { DomainConflictError } from '../src/common/errors.js';
 import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
-import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
+import { STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
+import { CATALOG_ALIAS_VERSION } from '../src/standardization/catalog-aliases.js';
 import { recordManualDecisions } from '../src/standardization/decision-history.js';
 import { StandardizationRepository } from '../src/standardization/standardization.repository.js';
 import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
+import { validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
 
 describe('AI identity standardization publication', () => {
@@ -27,6 +29,8 @@ describe('AI identity standardization publication', () => {
   let admin: Pool;
   let schema = '';
   let sequence = 0;
+  let plusId: bigint;
+  const previousCatalogInterval = process.env.CATALOG_VERSION_BUMP_MIN_INTERVAL_MS;
 
   before(async () => {
     if (!process.env.TEST_DATABASE_URL) throw new Error('TEST_DATABASE_URL is required for AI integration tests');
@@ -34,9 +38,11 @@ describe('AI identity standardization publication', () => {
     admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`create schema "${schema}"`);
     process.env.PG_SCHEMA = schema;
+    process.env.CATALOG_VERSION_BUMP_MIN_INTERVAL_MS = '0';
     pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path="${schema}",public`, max: 12 });
     database = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({ pool }) });
     await migrateToLatest(database);
+    plusId = await seedStandard('ChatGPT Plus', 'openai', 'chatgpt', 'plus');
   });
 
   after(async () => {
@@ -44,6 +50,8 @@ describe('AI identity standardization publication', () => {
     if (admin && schema) await admin.query(`drop schema if exists "${schema}" cascade`);
     await admin?.end();
     delete process.env.PG_SCHEMA;
+    if (previousCatalogInterval === undefined) delete process.env.CATALOG_VERSION_BUMP_MIN_INTERVAL_MS;
+    else process.env.CATALOG_VERSION_BUMP_MIN_INTERVAL_MS = previousCatalogInterval;
   });
 
   async function addShop(enabled = true) {
@@ -54,7 +62,7 @@ describe('AI identity standardization publication', () => {
     }).returning('id').executeTakeFirstOrThrow();
   }
 
-  async function addProduct(shopId: bigint, name: string, spec = 'monthly', sourceData: Record<string, unknown> = { title: name, selected: spec }) {
+  async function addProduct(shopId: bigint, name: string, spec = 'monthly', sourceData: Record<string, JsonValue> = { title: name, selected: spec }) {
     sequence += 1;
     const fingerprint = productContentFingerprint({ name, spec, sourceCategory: '', sourceData });
     return database.insertInto('products').values({
@@ -64,22 +72,24 @@ describe('AI identity standardization publication', () => {
     }).returning(['id', 'content_version', 'content_fingerprint']).executeTakeFirstOrThrow();
   }
 
-  function identity(ref: string, family = 'openai', product = 'chatgpt', tier = 'plus', quote = 'ChatGPT Plus'): StandardizationIdentity {
-    const fields = { family, product, tier };
-    return { ref, ...fields, canonicalKey: buildCanonicalStandardKey(fields), reason: 'integration evidence', evidence: [{ path: 'name', quote }] };
+  async function seedStandard(name: string, family: string, product: string, tier: string, aliases: string[] = []) {
+    const row = await database.insertInto('standard_products').values({ catalog_definition: name + ': only this product and plan; duration and delivery are offer attributes.', name, canonical_family: family,
+      canonical_product: product, canonical_tier: tier, standard_key: buildCanonicalStandardKey({ family, product, tier }),
+      aliases, verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
+    await database.transaction().execute(tx => recordCandidateCatalogChanges(tx, [row.id], CATALOG_ALIAS_VERSION));
+    return row.id;
   }
 
-  function classified(id: bigint, ref: string, quote = 'ChatGPT Plus'): StandardizationDecision {
-    return {
-      id: id.toString(), status: 'classified', identity: { kind: 'new', ref, canonicalKey: identity(ref).canonicalKey },
-      ruleIds: ['integration'], evidence: [{ path: 'name', quote }], reasonCode: null, reason: 'classified',
-    };
+  function classified(id: bigint, standardProductId = plusId, quote = 'ChatGPT Plus'): StandardizationDecision {
+    return parseStandardizationProtocolResponse({ items: [{ id: String(id), standardProductId: String(standardProductId),
+      evidence: [{ path: 'name', quote }] }] }, [{ id: String(id), candidateStandardProductIds: [String(standardProductId)] }]).items[0]!;
   }
 
-  async function createPreparedJob(productIds: bigint[], withFeatures = false) {
+  async function createPreparedJob(productIds: bigint[], withFeatures = false, candidateIds?: bigint[]) {
     const repository = new AiRepository(database);
     const job = await repository.createJob({ model: `integration-${++sequence}`, productIds, batchSize: 32 });
     assert.equal(job.batches.length, 1);
+    assert.equal(job.rule_version, STANDARDIZATION_POLICY_VERSION);
     const batchId = job.batches[0]!.id;
     if (withFeatures) {
       const feature = await database.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', job.id)
@@ -100,6 +110,17 @@ describe('AI identity standardization publication', () => {
     }
     await claim(batchId, 'request', 1n, 'request-claim');
     await repository.prepareBatch(batchId);
+    if (candidateIds) {
+      const snapshot = await database.selectFrom('ai_job_batches').select('reference_snapshot').where('id', '=', batchId).executeTakeFirstOrThrow();
+      const reference = snapshot.reference_snapshot as any;
+      const standards = await database.selectFrom('standard_products').selectAll().where('id', 'in', candidateIds).execute();
+      assert.equal(standards.length, candidateIds.length);
+      reference.strategyVersion = 'approved-candidate-20261119-v1';
+      reference.candidates = standards.map(row => ({ id: String(row.id), family: row.canonical_family,
+        product: row.canonical_product, tier: row.canonical_tier, aliases: row.aliases, definition: row.catalog_definition, displayName: row.name }));
+      for (const input of reference.inputs) input.candidateStandardProductIds = candidateIds.map(String);
+      await database.updateTable('ai_job_batches').set({ reference_snapshot: jsonb(reference) }).where('id', '=', batchId).execute();
+    }
     await repository.reserveBatchRequest(batchId, { workerId: 'integration', attempt: 1n, token: 'request-claim' });
     return { repository, job, batchId };
   }
@@ -127,13 +148,14 @@ describe('AI identity standardization publication', () => {
     prepared: Awaited<ReturnType<typeof createPreparedJob>>,
     decision: ParsedStandardizationResponse,
     approve?: (proposal: StandardizationDecision) => boolean,
+    metadata?: Parameters<AiRepository['persistBatchDecision']>[3],
   ) {
-    await saveDecision(prepared, decision, approve);
+    await saveDecision(prepared, decision, approve, metadata);
     await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
     await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' });
   }
 
-  test('streamed fenced JSON is validated and reviewed before local publication', async () => {
+  test('streamed JSON is validated and reviewed before local publication', async () => {
     const shop = await addShop();
     const product = await addProduct(shop.id, 'ChatGPT Plus');
     const prepared = await createPreparedJob([product.id]);
@@ -147,18 +169,17 @@ describe('AI identity standardization publication', () => {
       assert.equal(sent.stream, true);
       assert.deepEqual(sent.response_format, { type: 'json_object' });
       const input = JSON.parse(sent.messages[1].content).items[0];
-      const content = `\`\`\`json\n${JSON.stringify({ items: [{
-        id: input.id, action: 'create_identity',
-        identity: { family: 'openai', product: 'chatgpt', tier: 'plus', evidence, reason: 'Explicit offer' },
-        evidence, ruleIds: [], reason: 'Explicit offer',
-      }] })}\n\`\`\``;
+      const content = JSON.stringify({ items: [{
+        id: input.id, standardProductId: String(plusId), evidence,
+      }] });
       const fragments = [content.slice(0, 4), content.slice(4, -2), content.slice(-2)];
       return new Response(fragments.map((part, index) =>
         `data: ${JSON.stringify({ choices: [{ delta: { content: part }, ...(index === fragments.length - 1 ? { finish_reason: 'stop' } : {}) }] })}\n\n`,
       ).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
     });
-    const decision = await call({ id: prepared.batchId }, new AbortController().signal);
-    await saveAndPublish(prepared, decision);
+    const { metadata, standardizationStage, items, missingIds } = await call({ id: prepared.batchId }, new AbortController().signal);
+    assert.equal(standardizationStage, 'generate');
+    await saveAndPublish(prepared, { items, missingIds }, undefined, metadata);
     const result = await database.selectFrom('ai_standardization_results').select(['status', 'reason_code', 'standard_product_id'])
       .where('job_id', '=', prepared.job.id).where('product_id', '=', product.id).executeTakeFirstOrThrow();
     const member = await database.selectFrom('standard_product_members').select('standard_product_id')
@@ -172,159 +193,101 @@ describe('AI identity standardization publication', () => {
     assert.deepEqual(batch, { status: 'succeeded', step: 'done', request_budget_used: 1, confirmed_requests: 1 });
   });
 
-  test('different service descriptions in independent batches reuse one provider identity', async () => {
+  test('independent service listings select the same explicitly admitted candidate without creating standards', async () => {
     const shop = await addShop();
-    for (const [family, canonicalProduct, aliases, names] of [
-      ['openai', 'codex_sms', ['openai_sms', 'chatgpt_sms'], ['OpenAI 手机接码服务', 'ChatGPT 手机接码服务']],
-      ['anthropic', 'claude_sms', ['anthropic_sms', 'claude_code_sms'], ['Anthropic 手机接码服务', 'Claude Code 手机接码服务']],
-      ['google', 'google_sms', ['google_sms', 'gemini_sms'], ['Google 手机接码服务', 'Gemini 手机接码服务']],
+    for (const [family, canonicalProduct, names] of [
+      ['openai', 'codex_sms', ['OpenAI 手机接码服务', 'ChatGPT 手机接码服务']],
+      ['anthropic', 'claude_sms', ['Anthropic 手机接码服务', 'Claude Code 手机接码服务']],
+      ['google', 'google_sms', ['Google 手机接码服务', 'Gemini 手机接码服务']],
     ] as const) {
-      const assigned: bigint[] = [];
-      for (const [index, alias] of aliases.entries()) {
-        const product = await addProduct(shop.id, names[index]!);
-        const prepared = await createPreparedJob([product.id]);
-        const evidence = [{ path: 'name', quote: names[index]! }];
-        const parsed = parseStandardizationProtocolResponse({ items: [{ id: String(product.id), action: 'create_identity',
-          identity: { family, product: alias, tier: 'standard', reason: 'Explicit SMS service', evidence },
-          ruleIds: [], evidence, reason: 'Explicit SMS service' }],
-        }, [{ id: String(product.id), candidateStandardProductIds: [], candidateRefs: {} }]);
-        await saveAndPublish(prepared, parsed);
-        assigned.push((await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', product.id).executeTakeFirstOrThrow()).standard_product_id);
+      const targetId = await seedStandard(names[0], family, canonicalProduct, 'standard', [...names]);
+      const before = await database.selectFrom('standard_products').select('id').orderBy('id').execute();
+      for (const name of names) {
+        const product = await addProduct(shop.id, name);
+        const prepared = await createPreparedJob([product.id], false, [targetId]);
+        await saveAndPublish(prepared, { items: [classified(product.id, targetId, name)], missingIds: [] });
+        assert.equal((await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', product.id).executeTakeFirstOrThrow()).standard_product_id, targetId);
       }
-      assert.equal(assigned[0], assigned[1]);
-      const standards = await database.selectFrom('standard_products').select(['id', 'name', 'canonical_product']).where('canonical_family', '=', family).where('canonical_product', 'in', [canonicalProduct, ...aliases]).where('merged_into_id', 'is', null).execute();
-      assert.equal(standards.length, 1);
-      assert.equal(standards[0]?.canonical_product, canonicalProduct);
-      assert.equal(standards[0]?.name, ({ openai: 'Codex', anthropic: 'Claude', google: 'Google' })[family] + ' 手机接码');
+      assert.deepEqual(await database.selectFrom('standard_products').select('id').orderBy('id').execute(), before);
     }
   });
 
-  test('binary review rejects non-SMS sale evidence for new and existing SMS identities', async () => {
-    const shop = await addShop();
-    for (const mode of ['new', 'existing'] as const) {
-      const name = `域名邮箱 接马 (二次码|OpenAI业务|${mode})`;
-      const product = await addProduct(shop.id, name);
-      const prepared = await createPreparedJob([product.id]);
-      const proposed = identity('bad-sms', 'openai', 'codex_sms', 'standard', name);
-      const standard = await database.selectFrom('standard_products').select('id').where('standard_key', '=', proposed.canonicalKey).executeTakeFirstOrThrow();
-      if (mode === 'existing') {
-        const snapshot = await database.selectFrom('ai_job_batches').select('reference_snapshot').where('id', '=', prepared.batchId).executeTakeFirstOrThrow();
-        const reference = snapshot.reference_snapshot as any;
-        reference.inputs[0].candidateStandardProductIds = [String(standard.id)];
-        reference.candidates = [{ id: String(standard.id), family: 'openai', product: 'codex_sms', tier: 'standard', aliases: [] }];
-        await database.updateTable('ai_job_batches').set({ reference_snapshot: jsonb(reference) }).where('id', '=', prepared.batchId).execute();
-      }
-      await saveAndPublish(prepared, { identities: mode === 'new' ? [proposed] : [], items: [{ ...classified(product.id, proposed.ref, name),
-        identity: mode === 'new' ? { kind: 'new', ref: proposed.ref, canonicalKey: proposed.canonicalKey } : { kind: 'existing', standardProductId: String(standard.id) },
-      }], missingIds: [] }, () => false);
-      assert.equal((await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', product.id).execute()).length, 0);
-      const result = await database.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow();
-      assert.deepEqual(result, { status: 'unclassified', reason_code: 'review_rejected' });
-    }
-  });
-
-  test('saved publication cannot bypass an identity policy upgrade', async () => {
-    const shop = await addShop();
-    const product = await addProduct(shop.id, 'Codex 手机接码服务 old policy');
+  test('fenced JSON is rejected without a compatibility unwrap or partial checkpoint', async () => {
+    const shop = await addShop(); const product = await addProduct(shop.id, 'ChatGPT Plus fenced response');
     const prepared = await createPreparedJob([product.id]);
-    const proposed = identity('old-sms', 'openai', 'codex_sms', 'standard', 'Codex 手机接码服务 old policy');
-    await saveDecision(prepared, { identities: [proposed], items: [{
-      ...classified(product.id, proposed.ref, 'Codex 手机接码服务 old policy'), identity: { kind: 'new', ref: proposed.ref, canonicalKey: proposed.canonicalKey },
-    }], missingIds: [] });
+    const content = '```json\n' + JSON.stringify({ items: [{
+      id: String(product.id), standardProductId: String(plusId), evidence: [{ path: 'name', quote: 'ChatGPT Plus' }],
+    }] }) + '\n```';
+    const call = createOpenAiModelCall(prepared.repository, {
+      AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock',
+    }, async () => new Response('data: ' + JSON.stringify({ choices: [{
+      delta: { content }, finish_reason: 'stop',
+    }] }) + '\n\ndata: [DONE]\n\n'));
+    await assert.rejects(call({ id: prepared.batchId }, new AbortController().signal), { retryClass: 'invalid_response' });
+    assert.equal((await database.selectFrom('ai_job_batches').select('validated_decision')
+      .where('id', '=', prepared.batchId).executeTakeFirstOrThrow()).validated_decision, null);
+    assert.deepEqual(await database.selectFrom('ai_standardization_results').select('product_id')
+      .where('job_id', '=', prepared.job.id).execute(), []);
+    await prepared.repository.cancelJob(prepared.job.id);
+  });
+
+  test('binary review rejects non-SMS evidence for a frozen existing SMS candidate', async () => {
+    const shop = await addShop();
+    const name = '域名邮箱 接马 (二次码|OpenAI业务)';
+    const product = await addProduct(shop.id, name);
+    const targetId = await seedStandard('SMS review target', 'sms-review', 'sms_service', 'standard');
+    const prepared = await createPreparedJob([product.id], false, [targetId]);
+    await saveAndPublish(prepared, { items: [classified(product.id, targetId, name)], missingIds: [] }, () => false);
+    assert.deepEqual(await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', product.id).execute(), []);
+    assert.deepEqual(await database.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow(),
+      { status: 'unclassified', reason_code: 'review_rejected' });
+  });
+
+  test('saved publication cannot bypass a task policy upgrade', async () => {
+    const shop = await addShop(); const product = await addProduct(shop.id, 'ChatGPT Plus old policy');
+    const prepared = await createPreparedJob([product.id]);
+    await saveDecision(prepared, { items: [classified(product.id)], missingIds: [] });
     await database.updateTable('ai_jobs').set({ rule_version: 'catalog-identity-20260925-v3' }).where('id', '=', prepared.job.id).execute();
     await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
     await assert.rejects(prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' }),
       error => error instanceof DomainConflictError && error.code === 'AI_POLICY_STALE');
-    assert.equal((await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', product.id).execute()).length, 0);
-    await prepared.repository.cancelJob(prepared.job.id);
+    assert.deepEqual(await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', product.id).execute(), []);
+    await database.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', prepared.job.id).execute();
   });
 
-  test('publication preserves the reviewed identity despite a larger same-name group', async () => {
-    const shop = await addShop();
-    const title = '微软邮箱长效 Outlook Hotmail OAuth2 双令牌';
-    const majority = await database.insertInto('standard_products').values({
-      name: 'microsoft / outlook / standard', canonical_family: 'microsoft', canonical_product: 'outlook',
-      canonical_tier: 'standard', verification_state: 'verified',
-    }).returning('id').executeTakeFirstOrThrow();
-    const minority = await database.insertInto('standard_products').values({
-      name: 'email / outlook_account / standard', canonical_family: 'email', canonical_product: 'outlook_account',
-      canonical_tier: 'standard', verification_state: 'verified',
-    }).returning('id').executeTakeFirstOrThrow();
-    for (const standardId of [majority.id, majority.id, majority.id, minority.id]) {
-      const peer = await addProduct(shop.id, title);
+  test('publication preserves the frozen reviewed target despite a larger same-name group', async () => {
+    const shop = await addShop(); const name = '微软邮箱长效 Outlook Hotmail OAuth2 双令牌';
+    const majorityId = await seedStandard('Microsoft Outlook', 'microsoft', 'outlook', 'standard');
+    const minorityId = await seedStandard('Outlook account', 'email', 'outlook_account', 'standard');
+    for (const standardId of [majorityId, majorityId, majorityId, minorityId]) {
+      const peer = await addProduct(shop.id, name);
       await database.insertInto('standard_product_members').values({ product_id: peer.id, standard_product_id: standardId, assignment_source: 'ai' }).execute();
     }
-    const source = await addProduct(shop.id, title);
-    const prepared = await createPreparedJob([source.id]);
-    const proposed = identity('outlook-alternative', 'email', 'receive_credits', 'standard', title);
-    await saveAndPublish(prepared, { identities: [proposed], items: [{ ...classified(source.id, proposed.ref, title),
-      identity: { kind: 'new', ref: proposed.ref, canonicalKey: proposed.canonicalKey },
-    }], missingIds: [] });
-    const membership = await database.selectFrom('standard_product_members').selectAll().where('product_id', '=', source.id).executeTakeFirstOrThrow();
-    assert.notEqual(membership.standard_product_id, majority.id);
+    const source = await addProduct(shop.id, name);
+    const prepared = await createPreparedJob([source.id], false, [majorityId, minorityId]);
+    await saveAndPublish(prepared, { items: [classified(source.id, minorityId, name)], missingIds: [] });
+    assert.equal((await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', source.id).executeTakeFirstOrThrow()).standard_product_id, minorityId);
     const result = await database.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow();
-    assert.equal(result.standard_product_id, membership.standard_product_id);
+    assert.equal(result.standard_product_id, minorityId);
     assert.equal((result.decision as unknown as StandardizationDecision).review?.approved, true);
-    assert.ok(!(result.decision as unknown as StandardizationDecision).ruleIds.includes('same_name_majority'));
-    const proposedRows = await database.selectFrom('standard_products').select('id').where('standard_key', '=', proposed.canonicalKey).execute();
-    assert.deepEqual(proposedRows, [{ id: membership.standard_product_id }]);
+    assert.deepEqual((result.decision as unknown as StandardizationDecision).ruleIds, []);
   });
 
-  test('high-confidence relays are excluded locally while weak signals enter the model queue', async () => {
+  test('relay-looking evidence is queued and only an explicit unmatched response reaches pending review', async () => {
     const shop = await addShop();
-    const relay = await addProduct(shop.id, 'Codex API 中转充值 100刀');
-    const account = await addProduct(shop.id, 'ChatGPT Plus 账号');
-    const ambiguous = await addProduct(shop.id, '100元余额卡', '', {
-      evidence: '实际交付模型 API 中转充值额度；服务端点：https://relay.invalid/v1',
-    });
-    const accountWithPolicyWarning = await addProduct(shop.id, '【正规实付】Super gro12个月年卡 全程质保订阅', '', {
-      evidence: '<p>Super Grok 12个月年卡全程质保订阅，使用买家自己的X账号开通。</p><p>账号封禁无售后：官方风控导致的账号封禁，99% 是由于违规使用（例如批量注册的号、暴力、</p><p>API中转、频繁切换节点或者发送敏感问题等等以及违法违规情况），因此封号不在质保范围。</p>',
-    });
-    const repository = new AiRepository(database);
-    const excluded = await repository.createJob({ model: 'mock', productIds: [relay.id] });
-    assert.equal(excluded.processed, 1n);
-    assert.equal(excluded.status, 'succeeded');
-    assert.deepEqual(excluded.batches, []);
-    assert.equal((await database.selectFrom('ai_standardization_results').select('reason_code')
-      .where('job_id', '=', excluded.id).executeTakeFirstOrThrow()).reason_code, 'not_sellable');
-    assert.equal((await database.selectFrom('ai_job_inputs').select('status')
-      .where('job_id', '=', excluded.id).executeTakeFirstOrThrow()).status, 'succeeded');
-    assert.equal((await database.selectFrom('ai_standardization_executions').select('status')
-      .where('job_id', '=', excluded.id).executeTakeFirstOrThrow()).status, 'completed');
-    const queued = await repository.createJob({ model: 'mock', productIds: [account.id, ambiguous.id, accountWithPolicyWarning.id] });
-    assert.equal(queued.total, 3n);
-    assert.equal(queued.processed, 1n);
-    assert.equal(queued.unclassified, 1n);
-    assert.equal(queued.status, 'queued');
-    assert.equal(queued.inputs.length, 3);
-    assert.equal(queued.batches.length, 2, 'independent sale objects use separate requests');
-    assert.deepEqual(queued.batches.flatMap(batch => batch.productIds), [account.id, accountWithPolicyWarning.id]);
-    const queuedMembers = await database.selectFrom('ai_job_input_members').select(['product_id', 'status'])
-      .where('job_id', '=', queued.id).execute();
-    assert.deepEqual(queuedMembers.map(row => [row.product_id, row.status]), [
-      [account.id, 'queued'], [ambiguous.id, 'unclassified'], [accountWithPolicyWarning.id, 'queued'],
-    ]);
-    const eligible = await repository.createJob({ model: 'mock', productIds: [accountWithPolicyWarning.id] });
-    assert.equal(eligible.total, 1n);
-    assert.equal(eligible.processed, 0n);
-    assert.equal(eligible.unclassified, 0n);
-    assert.equal(eligible.inputs.length, 1);
-    assert.equal(eligible.batches.length, 1);
-    const progress = await repository.getJobProgress(queued.id);
-    assert.equal(progress?.processed, '1');
-    assert.equal(progress?.results.unclassified, 1);
-    assert.equal(progress?.requests.totalBatches, 2);
-    const reviewed = await addProduct(shop.id, '已审核排除的模糊额度卡');
-    await database.transaction().execute(tx => recordManualDecisions(tx, [reviewed.id], { action: 'exclude', standardProductId: null, reason: '审核确认中转余额' }));
-    assert.equal((await repository.createJob({ model: 'mock', productIds: [reviewed.id] })).total, 0n);
-    const mixed = await repository.createJob({ model: 'mock', productIds: [relay.id, account.id] });
-    assert.equal(mixed.total, 2n);
-    assert.deepEqual(mixed.inputs.map(input => input.productId), [relay.id, account.id]);
-    assert.deepEqual(mixed.batches.flatMap(batch => batch.productIds), [account.id]);
-    assert.equal((await database.selectFrom('ai_standardization_results').select('product_id')
-      .where('job_id', '=', mixed.id).executeTakeFirstOrThrow()).product_id, relay.id);
-    await repository.cancelJob(queued.id);
-    await repository.cancelJob(mixed.id);
+    for (const [name, standardProductId] of [['Codex API 中转充值 100刀', null], ['ChatGPT Plus 账号', String(plusId)]] as const) {
+      const source = await addProduct(shop.id, name);
+      const prepared = await createPreparedJob([source.id]);
+      assert.equal(prepared.job.processed, 0n);
+      assert.deepEqual(await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', prepared.job.id).execute(), []);
+      const request = await prepared.repository.getBatchRequest(prepared.batchId);
+      const response = parseStandardizationProtocolResponse({ items: [{ id: String(source.id), standardProductId,
+        evidence: [{ path: 'name', quote: name }] }] }, request.inputs.map(input => ({ id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds })));
+      await saveAndPublish(prepared, response);
+      assert.deepEqual(await database.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow(),
+        standardProductId === null ? { status: 'unclassified', reason_code: 'unmatched' } : { status: 'classified', reason_code: null });
+      assert.ok(await database.selectFrom('products').select('id').where('id', '=', source.id).executeTakeFirst());
+    }
   });
 
   test('deleted products and inactive shops are skipped before reserving an LLM request', async () => {
@@ -348,30 +311,24 @@ describe('AI identity standardization publication', () => {
     }
   });
 
-  test('local relay exclusion does not override locked, reviewed or already published products', async () => {
+  test('publication preserves persistent locks and current manual decisions for relay-looking evidence', async () => {
     const shop = await addShop();
-    const locked = await addProduct(shop.id, 'Codex API 中转充值 100刀');
-    const reviewed = await addProduct(shop.id, 'Codex API 中转充值 200刀');
-    const published = await addProduct(shop.id, 'Codex API 中转充值 300刀');
-    await database.updateTable('products').set({ standardization_locked: true }).where('id', '=', locked.id).execute();
-    await database.transaction().execute(tx => recordManualDecisions(tx, [reviewed.id], {
-      action: 'quarantine', standardProductId: null, reason: 'Preserve human review',
-    }));
-    const standard = await database.insertInto('standard_products').values({
-      name: 'Reviewed product', canonical_family: 'fixture', canonical_product: 'approved', canonical_tier: 'standard',
-      verification_state: 'verified',
-    }).returning('id').executeTakeFirstOrThrow();
-    await database.insertInto('standard_product_members').values({
-      product_id: published.id, standard_product_id: standard.id, publication_state: 'published', assignment_source: 'human',
-    }).execute();
-    const job = await new AiRepository(database).createJob({ model: 'mock', productIds: [locked.id, reviewed.id, published.id] });
-    assert.equal(job.total, 0n);
-    assert.equal((await database.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', job.id).execute()).length, 0);
-    assert.equal((await database.selectFrom('standard_product_members').select('standard_product_id')
-      .where('product_id', '=', published.id).executeTakeFirstOrThrow()).standard_product_id, standard.id);
+    for (const protection of ['lock', 'review'] as const) {
+      const name = 'Codex API 中转充值 ' + protection;
+      const source = await addProduct(shop.id, name);
+      const prepared = await createPreparedJob([source.id], false, [plusId]);
+      await saveDecision(prepared, { items: [classified(source.id, plusId, name)], missingIds: [] });
+      if (protection === 'lock') await database.updateTable('products').set({ standardization_locked: true }).where('id', '=', source.id).execute();
+      else await database.transaction().execute(tx => recordManualDecisions(tx, [source.id], { action: 'quarantine', standardProductId: null, reason: 'Preserve human review' }));
+      await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
+      await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' });
+      assert.deepEqual(await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', source.id).execute(), []);
+      const result = await database.selectFrom('ai_standardization_results').select('status').where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow();
+      assert.equal(result.status, 'unclassified');
+    }
   });
 
-  test('incremental high-confidence relay exclusion records its result atomically with outbox consumption', async () => {
+  test('incremental registration is atomic with outbox consumption', async () => {
     const shop = await addShop();
     const relay = await addProduct(shop.id, '模型 API 中转充值 100美元');
     const event = await database.insertInto('product_change_events').values({
@@ -390,14 +347,13 @@ describe('AI identity standardization publication', () => {
       const throwing = {
         createJob: async (input: Parameters<AiRepository['createJob']>[0], tx: Parameters<AiRepository['createJob']>[1]) => {
           const job = await real.createJob(input, tx);
-          const result = await tx!.selectFrom('ai_standardization_results').select('reason_code').where('job_id', '=', job.id).executeTakeFirstOrThrow();
-          assert.equal(result.reason_code, 'not_sellable');
-          throw new Error('after local exclusion before outbox acknowledgement');
+          assert.equal((await tx!.selectFrom('ai_job_batches').select('id').where('job_id', '=', job.id).execute()).length, 1);
+          throw new Error('after registration before outbox acknowledgement');
         },
       } as unknown as AiRepository;
       await assert.rejects(new StandardizationRepository(database, throwing).createIncrementalJob({
         outbox: [outbox], workerId: 'exclusion-test', priority: 50,
-      }), /after local exclusion/);
+      }), /after registration/);
       assert.equal((await database.selectFrom('standardization_outbox').select('status').where('id', '=', outbox.id).executeTakeFirstOrThrow()).status, 'running');
       assert.equal((await database.selectFrom('ai_standardization_results').select('job_id').where('product_id', '=', relay.id).execute()).length, 0);
       const created = await new StandardizationRepository(database, real).createIncrementalJob({
@@ -405,18 +361,18 @@ describe('AI identity standardization publication', () => {
       });
       assert.ok(created);
       assert.equal((await database.selectFrom('standardization_outbox').select('status').where('id', '=', outbox.id).executeTakeFirstOrThrow()).status, 'succeeded');
-      assert.equal((await database.selectFrom('ai_standardization_results').select('reason_code').where('job_id', '=', created.id).executeTakeFirstOrThrow()).reason_code, 'not_sellable');
-      assert.equal((await database.selectFrom('ai_job_batches').select('id').where('job_id', '=', created.id).execute()).length, 0);
+      assert.deepEqual(await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', created.id).execute(), []);
+      assert.equal((await database.selectFrom('ai_job_batches').select('id').where('job_id', '=', created.id).execute()).length, 1);
       const duplicate = await real.createJob({ model: 'mock', productIds: [relay.id], jobType: 'incremental' });
       assert.equal(duplicate.total, 0n);
-      assert.equal((await database.selectFrom('ai_standardization_results').select('job_id').where('product_id', '=', relay.id).execute()).length, 1);
+      assert.equal((await database.selectFrom('ai_standardization_results').select('job_id').where('product_id', '=', relay.id).execute()).length, 0);
     } finally {
       if (oldModel === undefined) delete process.env.AI_MODEL;
       else process.env.AI_MODEL = oldModel;
     }
   });
 
-  test('concurrent incremental relay exclusion registers one current result and execution', async () => {
+  test('concurrent incremental registration queues one execution without inventing a business result', async () => {
     const shop = await addShop();
     const relay = await addProduct(shop.id, '模型 API 中转充值 500美元');
     const jobs = await Promise.all([new AiRepository(database), new AiRepository(database)].map(repository =>
@@ -424,8 +380,8 @@ describe('AI identity standardization publication', () => {
     assert.deepEqual(jobs.map(job => Number(job.total)).sort(), [0, 1]);
     const results = await database.selectFrom('ai_standardization_results').select('job_id').where('product_id', '=', relay.id).execute();
     const executions = await database.selectFrom('ai_standardization_executions').select('job_id').where('product_id', '=', relay.id).execute();
-    assert.equal(results.length, 1);
-    assert.deepEqual(executions, results);
+    assert.equal(results.length, 0);
+    assert.deepEqual(executions, [{ job_id: jobs.find(job => job.total === 1n)!.id }]);
   });
 
   test('binary rejection blocks contradictory first-login promises without creating a verified identity', async () => {
@@ -437,9 +393,8 @@ describe('AI identity standardization publication', () => {
       content_fingerprint: productContentFingerprint({ name: 'ChatGPT Plus 账号 首登质保2小时', spec: '1 month', sourceData }),
     }).where('id', '=', source.id).execute();
     const prepared = await createPreparedJob([source.id]);
-    const proposed = identity('business-conflict');
     const before = await database.selectFrom('standard_products').select('id').execute();
-    await saveAndPublish(prepared, { identities: [proposed], items: [classified(source.id, proposed.ref)], missingIds: [] }, () => false);
+    await saveAndPublish(prepared, { items: [classified(source.id, plusId)], missingIds: [] }, () => false);
     const result = await database.selectFrom('ai_standardization_results').selectAll()
       .where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow();
     assert.equal(result.status, 'unclassified');
@@ -449,69 +404,44 @@ describe('AI identity standardization publication', () => {
     assert.deepEqual(await database.selectFrom('standard_products').select('id').execute(), before);
   });
 
-  test('same-name majority cannot replace a shared reviewed identity for any product', async () => {
-    const shop = await addShop();
-    const name = '独立测试邮箱长效 OAuth2 账号';
-    const majority = await database.insertInto('standard_products').values({ name: 'netease 163 mail standard',
-      canonical_family: 'netease', canonical_product: '163_mail', canonical_tier: 'standard', verification_state: 'verified',
-    }).returning('id').executeTakeFirstOrThrow();
+  test('same-name majority cannot replace one frozen reviewed target across products', async () => {
+    const shop = await addShop(); const name = '独立测试邮箱长效 OAuth2 账号';
+    const majorityId = await seedStandard('Netease mail', 'netease', '163_mail', 'standard');
+    const selectedId = await seedStandard('Another mail account', 'another_vendor', 'mail_account', 'standard');
     for (let index = 0; index < 2; index++) {
       const peer = await addProduct(shop.id, name);
-      await database.insertInto('standard_product_members').values({ product_id: peer.id, standard_product_id: majority.id }).execute();
+      await database.insertInto('standard_product_members').values({ product_id: peer.id, standard_product_id: majorityId }).execute();
     }
-    const source = await addProduct(shop.id, name);
-    const unrelated = await addProduct(shop.id, `${name} 第二品牌`);
-    const prepared = await createPreparedJob([source.id, unrelated.id]);
-    const proposed = identity('shared-local-override', 'another_vendor', 'mail_account', 'standard', name);
-    await saveAndPublish(prepared, { identities: [proposed], items: [source, unrelated].map(product => ({
-      ...classified(product.id, proposed.ref, name), identity: { kind: 'new', ref: proposed.ref, canonicalKey: proposed.canonicalKey },
-    })), missingIds: [] });
-    const sourceMember = await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', source.id).executeTakeFirstOrThrow();
-    const unrelatedMember = await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', unrelated.id).executeTakeFirstOrThrow();
-    assert.notEqual(sourceMember.standard_product_id, majority.id);
-    const proposedStandard = await database.selectFrom('standard_products').select('id').where('standard_key', '=', proposed.canonicalKey).executeTakeFirstOrThrow();
-    assert.equal(unrelatedMember.standard_product_id, proposedStandard.id);
-    assert.equal(sourceMember.standard_product_id, proposedStandard.id);
-    assert.notEqual(unrelatedMember.standard_product_id, majority.id);
+    const source = await addProduct(shop.id, name), unrelated = await addProduct(shop.id, name + ' 第二品牌');
+    const prepared = await createPreparedJob([source.id, unrelated.id], false, [majorityId, selectedId]);
+    await saveAndPublish(prepared, { items: [source, unrelated].map(product => classified(product.id, selectedId, name)), missingIds: [] });
+    const members = await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', 'in', [source.id, unrelated.id]).execute();
+    assert.equal(members.length, 2); assert.ok(members.every(member => member.standard_product_id === selectedId));
   });
 
-  test('concurrent same-name publications retain their distinct reviewed identities', async () => {
-    const shop = await addShop();
-    const name = '并发测试 Example 邮箱账户完整名称';
-    const first = await addProduct(shop.id, name);
-    const second = await addProduct(shop.id, name);
-    const prepared = [await createPreparedJob([first.id]), await createPreparedJob([second.id])];
+  test('concurrent same-name publications retain their distinct frozen existing IDs', async () => {
+    const shop = await addShop(); const name = '并发测试 Example 邮箱账户完整名称';
+    const first = await addProduct(shop.id, name), second = await addProduct(shop.id, name);
+    const targets = [await seedStandard('Example mail zero', 'example', 'mail_0', 'standard'),
+      await seedStandard('Example mail one', 'example', 'mail_1', 'standard')];
+    const prepared = [await createPreparedJob([first.id], false, targets), await createPreparedJob([second.id], false, targets)];
     for (const [index, task] of prepared.entries()) {
-      const proposed = identity(`concurrent-${index}`, 'example', `mail_${index}`, 'standard', name);
-      await saveDecision(task, { identities: [proposed], items: [{
-        ...classified(task.job.inputs[0]!.productId, proposed.ref, name), identity: { kind: 'new', ref: proposed.ref, canonicalKey: proposed.canonicalKey },
-      }], missingIds: [] });
+      await saveDecision(task, { items: [classified(task.job.inputs[0]!.productId, targets[index]!, name)], missingIds: [] });
       await claim(task.batchId, 'publish', 2n, 'publish-claim');
     }
+    const before = await database.selectFrom('standard_products').select('id').orderBy('id').execute();
     await Promise.all(prepared.map(task => task.repository.publishBatch(task.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' })));
-    const memberships = await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', 'in', [first.id, second.id]).execute();
-    assert.equal(memberships.length, 2);
-    assert.equal(new Set(memberships.map(row => row.standard_product_id)).size, 2);
-    const proposedKeys = [0, 1].map(index => identity(`concurrent-${index}`, 'example', `mail_${index}`, 'standard').canonicalKey);
-    const proposedRows = await database.selectFrom('standard_products').select('id').where('standard_key', 'in', proposedKeys).execute();
-    assert.equal(proposedRows.length, 2);
-    assert.deepEqual(new Set(memberships.map(row => row.standard_product_id)), new Set(proposedRows.map(row => row.id)));
-    const assigned = await database.selectFrom('standard_product_members as m')
-      .innerJoin('standard_products as s', 's.id', 'm.standard_product_id')
-      .select(['m.product_id', 's.canonical_family', 's.canonical_product', 's.canonical_tier'])
-      .where('m.product_id', 'in', [first.id, second.id]).orderBy('m.product_id').execute();
-    assert.deepEqual(assigned, [
-      { product_id: first.id, canonical_family: 'example', canonical_product: 'mail_0', canonical_tier: 'standard' },
-      { product_id: second.id, canonical_family: 'example', canonical_product: 'mail_1', canonical_tier: 'standard' },
-    ]);
+    assert.deepEqual(await database.selectFrom('standard_product_members').select(['product_id', 'standard_product_id']).where('product_id', 'in', [first.id, second.id]).orderBy('product_id').execute(),
+      [{ product_id: first.id, standard_product_id: targets[0] }, { product_id: second.id, standard_product_id: targets[1] }]);
+    assert.deepEqual(await database.selectFrom('standard_products').select('id').orderBy('id').execute(), before);
   });
 
   test('Grok same-evidence listings deduplicate and reuse the canonical candidate across requests', async () => {
     const shop = await addShop();
     const source = await addProduct(shop.id, 'Grok 普号', '');
     const fields = { family: 'xai', product: 'grok', tier: 'free' };
-    const standard = await database.insertInto('standard_products').values({
-      name: 'xai / grok / free', standard_key: buildCanonicalStandardKey(fields),
+    const standard = await database.insertInto('standard_products').values({ catalog_definition: 'Explicit fixture admission: only the named product and plan; duration and delivery do not change identity.',
+      name: 'Grok 普通账号', aliases: ['gro普号(库存)'], standard_key: buildCanonicalStandardKey(fields),
       canonical_family: fields.family, canonical_product: fields.product, canonical_tier: fields.tier, verification_state: 'verified',
     }).returning('id').executeTakeFirstOrThrow();
     await database.insertInto('standard_product_members').values({ standard_product_id: standard.id, product_id: source.id, publication_state: 'published' }).execute();
@@ -531,10 +461,8 @@ describe('AI identity standardization publication', () => {
     const representative = request.inputs[0]!.productId;
     const evidence = [{ path: 'name', quote: 'gro普号(库存)' }];
     const parsed = parseStandardizationProtocolResponse({
-      items: [{ id: representative.toString(), action: 'create_identity',
-        identity: { family: 'x', product: 'grok', tier: 'free', reason: 'Grok free account', evidence },
-        ruleIds: [], evidence, reason: 'Grok free account' }],
-    }, [{ id: representative.toString(), candidateStandardProductIds: request.inputs[0]!.candidateStandardProductIds, candidateRefs: {} }]);
+      items: [{ id: representative.toString(), standardProductId: String(standard.id), evidence }],
+    }, [{ id: representative.toString(), candidateStandardProductIds: request.inputs[0]!.candidateStandardProductIds }]);
     await saveAndPublish(prepared, parsed);
     const members = await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', 'in', products).execute();
     assert.equal(members.length, 2);
@@ -542,54 +470,39 @@ describe('AI identity standardization publication', () => {
   });
 
   test('publication cannot resurrect a standard merged after candidate preparation', async () => {
-    for (const choice of ['existing', 'new'] as const) {
-      const shop = await addShop();
-      const fields = { family: `merge-test-${choice}`, product: 'account', tier: 'free' };
-      const source = await database.insertInto('standard_products').values({ name: `${fields.family} account free`,
-        canonical_family: fields.family, canonical_product: fields.product, canonical_tier: fields.tier,
-        standard_key: buildCanonicalStandardKey(fields), verification_state: 'verified',
-      }).returning('id').executeTakeFirstOrThrow();
-      const target = await database.insertInto('standard_products').values({ name: 'Manual merge target', verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
-      const member = await addProduct(shop.id, `${fields.family} account free`, 'old');
-      await database.insertInto('standard_product_members').values({ standard_product_id: source.id, product_id: member.id, publication_state: 'published' }).execute();
-      const probe = await addProduct(shop.id, `${fields.family} account free`, 'new');
-      const prepared = await createPreparedJob([probe.id]);
-      const request = await prepared.repository.getBatchRequest(prepared.batchId);
-      assert.ok(request.inputs[0]!.candidateStandardProductIds.includes(source.id.toString()));
-      const proposed = identity('merged', fields.family, fields.product, fields.tier, `${fields.family} account free`);
-      const item = { ...classified(probe.id, proposed.ref, `${fields.family} account free`), identity: choice === 'existing'
-        ? { kind: 'existing' as const, standardProductId: source.id.toString() }
-        : { kind: 'new' as const, ref: proposed.ref, canonicalKey: proposed.canonicalKey } };
-      await saveDecision(prepared, { identities: [proposed], items: [item], missingIds: [] });
-      await database.updateTable('standard_products').set({ merged_into_id: target.id, hidden: true }).where('id', '=', source.id).execute();
-      await database.updateTable('standard_product_members').set({ standard_product_id: target.id }).where('standard_product_id', '=', source.id).execute();
-      await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
-      await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' });
-      const result = await database.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', prepared.job.id).where('product_id', '=', probe.id).executeTakeFirstOrThrow();
-      assert.equal(result.status, 'unclassified');
-      assert.equal(result.reason_code, 'publication_blocked');
-    }
+    const shop = await addShop(); const name = 'Merged account free';
+    const sourceId = await seedStandard(name, 'merge-test', 'account', 'free');
+    const targetId = await seedStandard('Manual merge target', 'merge-target', 'account', 'standard');
+    const probe = await addProduct(shop.id, name);
+    const prepared = await createPreparedJob([probe.id], false, [sourceId]);
+    await saveDecision(prepared, { items: [classified(probe.id, sourceId, name)], missingIds: [] });
+    await database.updateTable('standard_products').set({ merged_into_id: targetId, hidden: true }).where('id', '=', sourceId).execute();
+    await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
+    await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' });
+    assert.deepEqual(await database.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow(),
+      { status: 'unclassified', reason_code: 'publication_blocked' });
+    assert.deepEqual(await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', probe.id).execute(), []);
   });
 
-  test('standards with only deleted members leave both full and incremental candidate indexes', async () => {
+  test('admitted standards remain candidates after all historical members are deleted', async () => {
     const shop = await addShop();
     const fields = { family: 'expired-mail', product: 'mail_account', tier: 'standard' };
-    const target = await database.insertInto('standard_products').values({ name: '已归档邮箱套餐', canonical_family: fields.family,
+    const target = await database.insertInto('standard_products').values({ catalog_definition: 'Explicit fixture admission: only the named product and plan; duration and delivery do not change identity.', name: '已归档邮箱套餐', canonical_family: fields.family,
       canonical_product: fields.product, canonical_tier: fields.tier, standard_key: buildCanonicalStandardKey(fields), verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
     const old = await addProduct(shop.id, '已归档邮箱套餐');
     await database.insertInto('standard_product_members').values({ product_id: old.id, standard_product_id: target.id, publication_state: 'published' }).execute();
     await database.updateTable('products').set({ deleted_at: new Date() }).where('id', '=', old.id).execute();
-    const change = await database.transaction().execute(tx => recordCandidateCatalogChanges(tx, [target.id], IDENTITY_POLICY_VERSION));
+    const change = await database.transaction().execute(tx => recordCandidateCatalogChanges(tx, [target.id], CATALOG_ALIAS_VERSION));
     const operation = await database.selectFrom('catalog_index_changes').select('operation').where('standard_product_id', '=', target.id).where('version', '=', change.version).executeTakeFirstOrThrow();
-    assert.equal(operation.operation, 'delete');
+    assert.equal(operation.operation, 'upsert');
     const probe = await addProduct(shop.id, '已归档邮箱套餐');
     const prepared = await createPreparedJob([probe.id]);
     const request = await prepared.repository.getBatchRequest(prepared.batchId);
-    assert.equal(request.inputs[0]!.candidateStandardProductIds.includes(target.id.toString()), false);
+    assert.equal(request.inputs[0]!.candidateStandardProductIds.includes(target.id.toString()), true);
     await prepared.repository.cancelJob(prepared.job.id);
   });
 
-  test('request windows follow configured concurrency for new jobs and both legacy claim paths', async () => {
+  test('request windows follow configured concurrency for new jobs and both claim paths', async () => {
     const previous = process.env.AI_CONCURRENCY;
     const repository = new AiRepository(database);
     const queue = new JobsRepository(database);
@@ -641,7 +554,7 @@ describe('AI identity standardization publication', () => {
     const product = await addProduct(shop.id, 'ChatGPT Plus interrupted publication');
     const prepared = await createPreparedJob([product.id]);
     await saveDecision(prepared, {
-      identities: [identity('resume')], items: [classified(prepared.job.inputs[0]!.productId, 'resume')], missingIds: [],
+      items: [classified(prepared.job.inputs[0]!.productId, plusId)], missingIds: [],
     });
     await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
     await prepared.repository.pauseJob(prepared.job.id);
@@ -676,19 +589,17 @@ describe('AI identity standardization publication', () => {
     });
   });
 
-  test('field-level validation reason reaches admin results without assigning the malformed item', async () => {
-    const shop = await addShop();
-    const product = await addProduct(shop.id, 'ChatGPT Plus malformed output');
-    const prepared = await createPreparedJob([product.id]);
-    const id = prepared.job.inputs[0]!.productId.toString();
-    const decision = parseStandardizationProtocolResponse({ items: [{
-      id, action: 'create_identity', ruleIds: [], evidence: [], reason: 'fixture', confidence: 1,
-    }] }, [{ id, candidateStandardProductIds: [], candidateRefs: {} }]);
-    await saveAndPublish(prepared, decision);
-    const page = await prepared.repository.listJobResults({ jobId: prepared.job.id, limit: 10 });
-    assert.match(String(page.items[0]?.reason), /缺少字段.*identity.*多余字段.*confidence/);
-    assert.equal((page.items[0]?.diagnostic as any)?.fieldPath, 'items[0].identity');
-    assert.equal((await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', product.id).execute()).length, 0);
+  test('old wire output throws a technical validation error and cannot assign or create a standard', async () => {
+    const shop = await addShop(); const product = await addProduct(shop.id, 'ChatGPT Plus malformed output');
+    const prepared = await createPreparedJob([product.id]); const id = String(product.id);
+    const before = await database.selectFrom('standard_products').select('id').orderBy('id').execute();
+    assert.throws(() => parseStandardizationProtocolResponse({ items: [{
+      id, action: 'create_identity', identity: { family: 'openai', product: 'chatgpt', tier: 'new' }, ruleIds: [], evidence: [],
+    }] }, [{ id, candidateStandardProductIds: [String(plusId)] }]), { reasonCode: 'invalid_response' });
+    assert.equal((await database.selectFrom('ai_job_batches').select('validated_decision').where('id', '=', prepared.batchId).executeTakeFirstOrThrow()).validated_decision, null);
+    assert.deepEqual(await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', product.id).execute(), []);
+    assert.deepEqual(await database.selectFrom('standard_products').select('id').orderBy('id').execute(), before);
+    await prepared.repository.cancelJob(prepared.job.id);
   });
 
   async function failUnknownJob(productIds: bigint[]) {
@@ -764,162 +675,92 @@ describe('AI identity standardization publication', () => {
       /stale batch response audit/);
   });
 
-  test('a saved mixed response retains bounded item diagnostics across publication', async () => {
+  test('one malformed streamed item rejects the whole response without a partial checkpoint', async () => {
     const shop = await addShop();
-    const first = await addProduct(shop.id, 'ChatGPT Plus audit first');
-    const second = await addProduct(shop.id, 'ChatGPT Plus audit second');
+    const first = await addProduct(shop.id, 'ChatGPT Plus audit first'), second = await addProduct(shop.id, 'ChatGPT Plus audit second');
     const prepared = await createPreparedJob([first.id, second.id]);
-    const generationBatchId = prepared.batchId;
-    const call = createOpenAiModelCall(prepared.repository, {
-      AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock',
-    }, async () => new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ items: [
-      { id: String(first.id), action: 'not_sellable', ruleIds: [], evidence: [], reason: 'not sold' },
-      { id: String(second.id), action: 'create_identity', ruleIds: [], evidence: [], reason: 'private reason',
-        identity: { family: 'openai', product: 'chatgpt', tier: null, reason: 'private', evidence: [] } },
-    ] }) }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`));
-    const result = await call({ id: prepared.batchId }, new AbortController().signal);
-    assert.equal(result.metadata!.responseDiagnostic!.rejectedItemCount, 1);
-    await saveDecision(prepared, result, undefined, result.metadata);
-    await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
-    await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' });
-    const batch = await database.selectFrom('ai_job_batches').select(['response_diagnostic', 'validated_decision'])
-      .where('id', '=', generationBatchId).executeTakeFirstOrThrow();
-    assert.equal((batch.response_diagnostic as any).issues[0].itemId, String(second.id));
-    assert.equal((batch.response_diagnostic as any).issues[0].code, 'invalid_type');
-    assert.doesNotMatch(JSON.stringify(batch.response_diagnostic), /private/);
-    assert.ok(batch.validated_decision);
+    const body = JSON.stringify({ items: [
+      { id: String(first.id), standardProductId: String(plusId), evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] },
+      { id: String(second.id), standardProductId: String(plusId), evidence: [] },
+    ] });
+    const call = createOpenAiModelCall(prepared.repository, { AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock' },
+      async () => new Response('data: ' + JSON.stringify({ choices: [{ delta: { content: body }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n'));
+    await assert.rejects(call({ id: prepared.batchId }, new AbortController().signal), { retryClass: 'invalid_response' });
+    assert.equal((await database.selectFrom('ai_job_batches').select('validated_decision').where('id', '=', prepared.batchId).executeTakeFirstOrThrow()).validated_decision, null);
+    assert.deepEqual(await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', prepared.job.id).execute(), []);
+    await prepared.repository.cancelJob(prepared.job.id);
   });
 
-  test('same-key refs retain their reviewed proposals and share one published standard identity', async () => {
+  test('multiple reviewed listings share one frozen existing standard without new identity mappings', async () => {
     const shop = await addShop();
-    const first = await addProduct(shop.id, 'ChatGPT Plus monthly');
-    const second = await addProduct(shop.id, 'OpenAI ChatGPT Plus one month');
+    const first = await addProduct(shop.id, 'ChatGPT Plus monthly'), second = await addProduct(shop.id, 'OpenAI ChatGPT Plus one month');
     const prepared = await createPreparedJob([first.id, second.id]);
-    const ids = prepared.job.inputs.map(input => input.productId);
-    const left = identity('left');
-    const right = identity('right');
-    await saveAndPublish(prepared, {
-      identities: [right, left],
-      items: [classified(ids[0]!, 'left'), classified(ids[1]!, 'right')],
-      missingIds: [],
-    });
-    const standards = await database.selectFrom('standard_products').select(['id', 'standard_key']).where('standard_key', '=', left.canonicalKey).execute();
-    assert.equal(standards.length, 1);
+    const before = await database.selectFrom('standard_products').select('id').orderBy('id').execute();
+    await saveAndPublish(prepared, { items: prepared.job.inputs.map(input => classified(input.productId)), missingIds: [] });
     const members = await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', 'in', [first.id, second.id]).execute();
-    assert.deepEqual(new Set(members.map(row => row.standard_product_id.toString())).size, 1);
-    const mappings = await database.selectFrom('ai_batch_identity_mappings').select(['identity_ref', 'standard_product_id']).where('batch_id', '=', prepared.batchId).execute();
-    assert.deepEqual(mappings.map(row => row.identity_ref).sort(), ['left', 'right']);
-    assert.ok(mappings.every(row => row.standard_product_id === standards[0]!.id));
+    assert.equal(members.length, 2); assert.ok(members.every(row => row.standard_product_id === plusId));
+    assert.deepEqual(await database.selectFrom('ai_batch_identity_mappings').select('identity_ref').where('batch_id', '=', prepared.batchId).execute(), []);
+    assert.deepEqual(await database.selectFrom('standard_products').select('id').orderBy('id').execute(), before);
   });
 
-  test('concurrent publications with one canonical key create one standard identity', async () => {
-    const firstShop = await addShop();
-    const secondShop = await addShop();
+  test('concurrent publications reuse one admitted ID without creating standards', async () => {
+    const firstShop = await addShop(), secondShop = await addShop();
     const first = await addProduct(firstShop.id, 'ChatGPT Plus first concurrent listing');
     const second = await addProduct(secondShop.id, 'ChatGPT Plus second concurrent listing');
-    const firstPrepared = await createPreparedJob([first.id]);
-    const secondPrepared = await createPreparedJob([second.id]);
-    const proposed = identity('concurrent');
-
-    for (const prepared of [firstPrepared, secondPrepared]) {
-      await saveDecision(prepared, {
-        identities: [proposed],
-        items: [classified(prepared.job.inputs[0]!.productId, proposed.ref)],
-        missingIds: [],
-      });
+    const tasks = [await createPreparedJob([first.id]), await createPreparedJob([second.id])];
+    for (const prepared of tasks) {
+      await saveDecision(prepared, { items: [classified(prepared.job.inputs[0]!.productId)], missingIds: [] });
       await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
     }
-
-    await Promise.all([
-      firstPrepared.repository.publishBatch(firstPrepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' }),
-      secondPrepared.repository.publishBatch(secondPrepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' }),
-    ]);
-
-    const standards = await database.selectFrom('standard_products')
-      .select('id')
-      .where('standard_key', '=', proposed.canonicalKey)
-      .execute();
-    assert.equal(standards.length, 1);
-    const results = await database.selectFrom('ai_standardization_results')
-      .select(['product_id', 'standard_product_id'])
-      .where('product_id', 'in', [first.id, second.id])
-      .execute();
-    assert.equal(results.length, 2);
-    assert.deepEqual(new Set(results.map(row => row.standard_product_id?.toString())).size, 1);
+    const before = await database.selectFrom('standard_products').select('id').orderBy('id').execute();
+    await Promise.all(tasks.map(task => task.repository.publishBatch(task.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' })));
+    const results = await database.selectFrom('ai_standardization_results').select('standard_product_id').where('product_id', 'in', [first.id, second.id]).execute();
+    assert.equal(results.length, 2); assert.ok(results.every(row => row.standard_product_id === plusId));
+    assert.deepEqual(await database.selectFrom('standard_products').select('id').orderBy('id').execute(), before);
   });
 
   test('rejects an existing standard ID that was not frozen for that input', async () => {
-    const shop = await addShop();
-    const source = await addProduct(shop.id, 'Unrelated product');
-    const standard = await database.insertInto('standard_products').values({
-      name: 'ChatGPT Pro', platform: 'openai', standard_key: identity('x', 'openai', 'chatgpt', 'pro').canonicalKey,
-      canonical_platform: 'openai', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'pro', verification_state: 'verified',
-    }).returning('id').executeTakeFirstOrThrow();
-    const prepared = await createPreparedJob([source.id]);
-    const item: StandardizationDecision = {
-      ...classified(prepared.job.inputs[0]!.productId, 'unused'),
-      identity: { kind: 'existing', standardProductId: standard.id.toString() },
-    };
-    await assert.rejects(prepared.repository.persistBatchDecision(prepared.job.id, prepared.batchId, { identities: [], items: [item], missingIds: [] }, {}, {
-      workerId: 'integration', attempt: 1n, token: 'request-claim',
-    }), /unfrozen candidate/i);
+    const shop = await addShop(); const source = await addProduct(shop.id, 'ChatGPT Plus unrelated candidate');
+    const targetId = await seedStandard('ChatGPT Pro', 'openai', 'chatgpt', 'pro');
+    const prepared = await createPreparedJob([source.id], false, [plusId]);
+    await assert.rejects(prepared.repository.persistBatchDecision(prepared.job.id, prepared.batchId,
+      { items: [classified(source.id, targetId)], missingIds: [] }, {}, { workerId: 'integration', attempt: 1n, token: 'request-claim' }),
+      /候选|unfrozen candidate/i);
     assert.equal(await database.selectFrom('ai_publication_units').select('id').where('batch_id', '=', prepared.batchId).executeTakeFirst(), undefined);
+    await prepared.repository.cancelJob(prepared.job.id);
   });
 
-  test('a legacy alias cannot redirect ChatGPT Plus to the Team identity', async () => {
-    const shop = await addShop();
-    const source = await addProduct(shop.id, 'ChatGPT Plus subscription');
-    const existing = await database.insertInto('standard_products').values({
-      name: 'OpenAI consumer subscription', platform: 'openai', standard_key: buildCanonicalStandardKey({ family: 'openai', product: 'chatgpt', tier: 'team' }),
-      canonical_platform: 'openai', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'team', verification_state: 'verified',
-    }).returning('id').executeTakeFirstOrThrow();
-    await database.updateTable('standard_products').set({ aliases: ['ChatGPT Plus'] }).where('id', '=', existing.id).execute();
-    const prepared = await createPreparedJob([source.id]);
-    const inputId = prepared.job.inputs[0]!.productId;
-    const proposedKey = identity('alias').canonicalKey;
-    await saveAndPublish(prepared, { identities: [identity('alias')], items: [classified(inputId, 'alias')], missingIds: [] });
-    const result = await database.selectFrom('ai_standardization_results').select('standard_product_id').where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow();
-    const plus = await database.selectFrom('standard_products').select('id').where('standard_key', '=', proposedKey).executeTakeFirstOrThrow();
-    assert.equal(result.standard_product_id, plus.id);
-    assert.notEqual(result.standard_product_id, existing.id);
-    assert.equal(Number((await database.selectFrom('standard_products').select(sql<number>`count(*)::int`.as('count')).where('standard_key', '=', proposedKey).executeTakeFirstOrThrow()).count), 1);
+  test('another standard alias cannot redirect the exact frozen matched ID', async () => {
+    const shop = await addShop(); const source = await addProduct(shop.id, 'ChatGPT Plus subscription');
+    const teamId = await seedStandard('OpenAI consumer subscription', 'openai', 'chatgpt', 'team', ['ChatGPT Plus']);
+    const prepared = await createPreparedJob([source.id], false, [plusId, teamId]);
+    await saveAndPublish(prepared, { items: [classified(source.id)], missingIds: [] });
+    assert.equal((await database.selectFrom('ai_standardization_results').select('standard_product_id').where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow()).standard_product_id, plusId);
   });
 
-  test('quarantined canonical identities remain publication-blocked after approval', async () => {
-    const shop = await addShop();
-    const source = await addProduct(shop.id, 'ChatGPT Pro 5x quarantined');
-    const proposed = identity('quarantine', 'openai', 'chatgpt', 'pro_5x', 'ChatGPT Pro 5x');
-    await database.insertInto('standard_products').values({
-      name: 'Quarantined', platform: 'openai', standard_key: proposed.canonicalKey,
-      canonical_platform: 'openai', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'pro_5x', verification_state: 'quarantined',
-    }).execute();
-    const prepared = await createPreparedJob([source.id]);
-    const item = classified(prepared.job.inputs[0]!.productId, proposed.ref, 'ChatGPT Pro 5x');
-    item.identity = {
-      kind: 'new',
-      ref: proposed.ref,
-      canonicalKey: proposed.canonicalKey,
-    };
-    await saveAndPublish(prepared, { identities: [proposed], items: [item], missingIds: [] });
-    const result = await database.selectFrom('ai_standardization_results').select(['status', 'reason_code', 'current_assignment_preserved']).where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow();
-    assert.deepEqual(result, { status: 'unclassified', reason_code: 'publication_blocked', current_assignment_preserved: true });
+  test('a frozen candidate quarantined after review remains publication-blocked', async () => {
+    const shop = await addShop(); const source = await addProduct(shop.id, 'ChatGPT Pro 5x quarantined');
+    const targetId = await seedStandard('ChatGPT Pro 5x', 'openai', 'chatgpt', 'pro_5x');
+    const prepared = await createPreparedJob([source.id], false, [targetId]);
+    await saveDecision(prepared, { items: [classified(source.id, targetId, 'ChatGPT Pro 5x')], missingIds: [] });
+    await database.updateTable('standard_products').set({ verification_state: 'quarantined' }).where('id', '=', targetId).execute();
+    await claim(prepared.batchId, 'publish', 2n, 'publish-claim');
+    await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' });
+    assert.deepEqual(await database.selectFrom('ai_standardization_results').select(['status', 'reason_code', 'current_assignment_preserved']).where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow(),
+      { status: 'unclassified', reason_code: 'publication_blocked', current_assignment_preserved: true });
   });
 
   test('replay after commit confirmation loss is idempotent and bumps catalog version once', async () => {
-    const shop = await addShop();
-    const source = await addProduct(shop.id, 'Claude Team annual');
-    const prepared = await createPreparedJob([source.id]);
-    const proposed = identity('claude', 'anthropic', 'claude', 'team', 'Claude Team annual');
-    const item = classified(prepared.job.inputs[0]!.productId, proposed.ref, 'Claude Team annual');
-    item.identity = { kind: 'new', ref: proposed.ref, canonicalKey: proposed.canonicalKey };
+    const shop = await addShop(); const source = await addProduct(shop.id, 'Claude Team annual');
+    const targetId = await seedStandard('Claude Team', 'anthropic', 'claude', 'team');
+    const prepared = await createPreparedJob([source.id], false, [targetId]);
     const before = (await database.selectFrom('catalog_cache_versions').select('version').where('id', '=', 1).executeTakeFirstOrThrow()).version;
-    await saveAndPublish(prepared, { identities: [proposed], items: [item], missingIds: [] });
+    await saveAndPublish(prepared, { items: [classified(source.id, targetId, 'Claude Team annual')], missingIds: [] });
     const after = (await database.selectFrom('catalog_cache_versions').select('version').where('id', '=', 1).executeTakeFirstOrThrow()).version;
     await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 2n, token: 'publish-claim' });
     const replayed = (await database.selectFrom('catalog_cache_versions').select('version').where('id', '=', 1).executeTakeFirstOrThrow()).version;
-    assert.equal(after, before + 1n);
-    assert.equal(replayed, after);
-    assert.equal(Number((await database.selectFrom('ai_standardization_results').select(sql<number>`count(*)::int`.as('count')).where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow()).count), 1);
+    assert.equal(after, before + 1n); assert.equal(replayed, after);
+    assert.equal((await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', prepared.job.id).execute()).length, 1);
   });
 
   test('source revision or shop invalidation prevents publication without losing a terminal result', async () => {
@@ -927,9 +768,8 @@ describe('AI identity standardization publication', () => {
       const shop = await addShop();
       const source = await addProduct(shop.id, `ChatGPT Plus ${invalidate}`);
       const prepared = await createPreparedJob([source.id]);
-      const proposed = identity(`invalid-${invalidate}`);
       await saveDecision(prepared, {
-        identities: [proposed], items: [classified(prepared.job.inputs[0]!.productId, proposed.ref)], missingIds: [],
+        items: [classified(prepared.job.inputs[0]!.productId, plusId)], missingIds: [],
       });
       if (invalidate === 'revision') await database.updateTable('products').set({ content_version: 2n }).where('id', '=', source.id).execute();
       else if (invalidate === 'manual') await database.updateTable('products').set({ standardization_revision: sql`standardization_revision + 1` }).where('id', '=', source.id).execute();
@@ -952,7 +792,7 @@ describe('AI identity standardization publication', () => {
         ...(changed ? { content_fingerprint: 'changed-source-hash' } : {}),
       }).where('id', '=', source.id).execute();
       await saveAndPublish(prepared, {
-        identities: [identity('legacy')], items: [classified(prepared.job.inputs[0]!.productId, 'legacy')], missingIds: [],
+        items: [classified(prepared.job.inputs[0]!.productId, plusId)], missingIds: [],
       });
       const result = await database.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow();
       assert.deepEqual(result, changed ? { status: 'unclassified', reason_code: 'source_changed' } : { status: 'classified', reason_code: null });
@@ -964,7 +804,7 @@ describe('AI identity standardization publication', () => {
     const source = await addProduct(shop.id, 'ChatGPT Plus recover');
     const unchanged = await addProduct(shop.id, 'ChatGPT Plus keep published');
     const prepared = await createPreparedJob([source.id, unchanged.id]);
-    await saveAndPublish(prepared, { identities: [identity('recover')], items: prepared.job.inputs.map(input => classified(input.productId, 'recover')), missingIds: [] });
+    await saveAndPublish(prepared, { items: prepared.job.inputs.map(input => classified(input.productId, plusId)), missingIds: [] });
     const preserved = await database.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', prepared.job.id).where('product_id', '=', unchanged.id).executeTakeFirstOrThrow();
     // Reproduce the persisted terminal state of the old empty-fingerprint bug.
     await database.deleteFrom('standard_product_members').where('product_id', '=', source.id).execute();
@@ -998,8 +838,7 @@ describe('AI identity standardization publication', () => {
     const first = await addProduct(firstShop.id, 'ChatGPT Plus first');
     const second = await addProduct(secondShop.id, 'ChatGPT Plus recovered');
     const prepared = await createPreparedJob([first.id, second.id]);
-    await saveDecision(prepared, { identities: [identity('partial-recovery')],
-      items: prepared.job.inputs.map(input => classified(input.productId, 'partial-recovery')), missingIds: [] });
+    await saveDecision(prepared, { items: prepared.job.inputs.map(input => classified(input.productId, plusId)), missingIds: [] });
     // Make only B unavailable after review, then restore its unchanged evidence for real reapplication.
     await database.updateTable('shops').set({ enabled: false }).where('id', '=', secondShop.id).execute();
     await claim(prepared.batchId, 'publish', 2n, 'partial-publish');
@@ -1055,31 +894,21 @@ describe('AI identity standardization publication', () => {
     for (const child of additional) assert.deepEqual(await members(child.id), [{ product_id: second.id }]);
   });
 
-  test('concurrent finalizers create only one bounded missing-id round', async () => {
-    const shop = await addShop();
-    const source = await addProduct(shop.id, 'ChatGPT Plus missing response');
-    const repository = new AiRepository(database);
-    const job = await repository.createJob({ model: `integration-${++sequence}`, productIds: [source.id], batchSize: 32 });
-    const batchId = job.batches[0]!.id;
-    await database.updateTable('ai_job_input_members').set({ status: 'unclassified', reason_code: 'missing_id' })
-      .where('job_id', '=', job.id).execute();
-    await database.updateTable('ai_job_inputs').set({ status: 'succeeded', reason_code: 'missing_id' })
-      .where('job_id', '=', job.id).execute();
-    await database.updateTable('ai_job_batches').set({ status: 'succeeded', step: 'done', finished_at: sql`now()` })
-      .where('id', '=', batchId).execute();
-
-    await Promise.all([
-      database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id)),
-      database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id)),
-    ]);
-
-    const retries = await database.selectFrom('ai_job_batches')
-      .select(['round', 'request_budget_limit', 'request_budget_used'])
-      .where('job_id', '=', job.id).where('round', '=', 1).execute();
-    assert.deepEqual(retries, [{ round: 1, request_budget_limit: 1, request_budget_used: 0 }]);
-    const member = await database.selectFrom('ai_job_input_members')
-      .select(['missing_reprocess_count', 'status', 'reason_code']).where('job_id', '=', job.id).executeTakeFirstOrThrow();
-    assert.deepEqual(member, { missing_reprocess_count: 1, status: 'queued', reason_code: null });
+  test('missing item is a technical failure and concurrent finalizers do not create missing-id rounds', async () => {
+    const shop = await addShop(); const source = await addProduct(shop.id, 'ChatGPT Plus missing response');
+    const prepared = await createPreparedJob([source.id]);
+    assert.throws(() => parseStandardizationProtocolResponse({ items: [] },
+      [{ id: String(source.id), candidateStandardProductIds: [String(plusId)] }]), { reasonCode: 'invalid_response' });
+    await assert.rejects(prepared.repository.persistBatchDecision(prepared.job.id, prepared.batchId,
+      { items: [], missingIds: [String(source.id)] }, {}, { workerId: 'integration', attempt: 1n, token: 'request-claim' }));
+    assert.equal((await database.selectFrom('ai_job_batches').select('validated_decision')
+      .where('id', '=', prepared.batchId).executeTakeFirstOrThrow()).validated_decision, null);
+    await new JobsRepository(database).fail('ai_batch', prepared.batchId, 'integration', 'missing input item', { retry: false, retryClass: 'invalid_response' });
+    await Promise.all([database.transaction().execute(tx => finalizeOrScheduleMissing(tx, prepared.job.id)),
+      database.transaction().execute(tx => finalizeOrScheduleMissing(tx, prepared.job.id))]);
+    assert.deepEqual(await database.selectFrom('ai_job_batches').select('round').where('job_id', '=', prepared.job.id).execute(), [{ round: 0 }]);
+    assert.deepEqual(await database.selectFrom('ai_job_input_members').select(['missing_reprocess_count', 'reason_code']).where('job_id', '=', prepared.job.id).execute(),
+      [{ missing_reprocess_count: 0, reason_code: 'invalid_response' }]);
   });
 
   test('unclassified result pages use numeric cursors without dropping or repeating products', async () => {
@@ -1088,8 +917,8 @@ describe('AI identity standardization publication', () => {
     const second = await addProduct(shop.id, 'Unknown listing second');
     const prepared = await createPreparedJob([first.id, second.id]);
     await saveAndPublish(prepared, {
-      identities: [], missingIds: [],
-      items: prepared.job.inputs.map(input => ({ id: input.productId.toString(), status: 'unclassified', ruleIds: [], evidence: [], reasonCode: 'insufficient_evidence', reason: 'No known identity' })),
+      missingIds: [],
+      items: prepared.job.inputs.map(input => ({ id: input.productId.toString(), status: 'unclassified', ruleIds: [], evidence: [{ path: 'name', quote: input.productId === first.id ? 'Unknown listing first' : 'Unknown listing second' }], reasonCode: 'unmatched', reason: '未匹配到已准入标准商品' })),
     });
     const page = await prepared.repository.listJobResults({ jobId: prepared.job.id, limit: 1 });
     assert.deepEqual(page.items.map(item => item.productId), [first.id.toString()]);
@@ -1107,10 +936,11 @@ describe('AI identity standardization publication', () => {
       ['Team 5X Gmail邮箱', '本商品为Team 5X成品账号，Gmail注册，账密2FA，能反代也能网页。', 'team_5x'],
     ] as const) {
       const source = await addProduct(shop.id, name, '', { evidence: body });
-      const prepared = await createPreparedJob([source.id], true);
+      const target = await database.selectFrom('standard_products').select('id').where('canonical_family', '=', 'openai').where('canonical_product', '=', 'chatgpt').where('canonical_tier', '=', tier).executeTakeFirst()
+        ?? { id: await seedStandard('ChatGPT ' + tier, 'openai', 'chatgpt', tier) };
+      const prepared = await createPreparedJob([source.id], true, [target.id]);
       const evidence = [{ path: 'name', quote: name }];
-      const response = JSON.stringify({ items: [{ id: String(source.id), action: 'create_identity',
-        identity: { family: 'openai', product: 'chatgpt', tier, reason: '实际账号', evidence }, evidence, ruleIds: [], reason: '已开通账号' }] });
+      const response = JSON.stringify({ items: [{ id: String(source.id), standardProductId: String(target.id), evidence }] });
       const call = createOpenAiModelCall(prepared.repository, { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock-only', AI_MODEL: 'mock' },
         async (_url, init) => {
           assert.equal(JSON.parse(String(init?.body)).stream, true);
@@ -1118,9 +948,10 @@ describe('AI identity standardization publication', () => {
             { choices: [{ delta: { content: response.slice(31) }, finish_reason: 'stop' }] }]
             .map(chunk => 'data: ' + JSON.stringify(chunk) + '\n\n').join('') + 'data: [DONE]\n\n');
         });
-      const decision = await call({ id: prepared.batchId } as never, new AbortController().signal);
-      assert.equal(decision.items[0]?.status, 'classified');
-      await saveAndPublish(prepared, decision);
+      const { metadata, standardizationStage, items, missingIds } = await call({ id: prepared.batchId } as never, new AbortController().signal);
+      assert.equal(standardizationStage, 'generate');
+      assert.equal(items[0]?.status, 'classified');
+      await saveAndPublish(prepared, { items, missingIds }, undefined, metadata);
       const member = await database.selectFrom('standard_product_members').selectAll().where('product_id', '=', source.id).executeTakeFirstOrThrow();
       assert.equal(member.publication_state, 'published');
       const standard = await database.selectFrom('standard_products').select(['canonical_tier', 'service_evidence']).where('id', '=', member.standard_product_id).executeTakeFirstOrThrow();
@@ -1131,8 +962,13 @@ describe('AI identity standardization publication', () => {
       await claim(tagBatch.id, 'request', 1n, 'membership-tags');
       await prepared.repository.prepareBatch(tagBatch.id);
       assert.equal(await prepared.repository.reserveBatchRequest(tagBatch.id), 'reserved');
+      const tagInput = (await prepared.repository.getTagExtractionBatchInputs(tagBatch.id)).inputs[0]!;
+      const reviewedTags = validateReviewedTagExtractionDecision(source.id, [], [], tagInput.payload, [], true);
+      if ((tagInput.payload as { warrantyEligible?: boolean }).warrantyEligible) reviewedTags.warrantyLabels = {
+        subscription_warranty: null, subscription_warranty_t: null, usage_warranty: null, usage_warranty_t: null,
+      };
       await prepared.repository.persistTagExtractionBatchDecision(tagJob.id, tagBatch.id,
-        [{ productId: source.id, tags: [], rejectedTags: [] }], {},
+        [reviewedTags], {},
         { workerId: 'integration', attempt: 1n, token: 'membership-tags' });
       const published = await database.selectFrom('standard_product_members as m').innerJoin('standard_products as s', 's.id', 'm.standard_product_id')
         .select(['m.publication_state', 's.id']).where('m.product_id', '=', source.id).executeTakeFirstOrThrow();
@@ -1144,8 +980,8 @@ describe('AI identity standardization publication', () => {
     for (const drift of ['evidence', 'fingerprint', 'manual', 'unchanged', 'failed'] as const) {
       const shop = await addShop(); const source = await addProduct(shop.id, `ChatGPT Plus 成品账号 ${drift}`);
       await database.insertInto('product_tags').values(tagRows({ product_id: source.id, name: 'usage_restriction', value: '人工保留限制' })).execute();
-      const prepared = await createPreparedJob([source.id], true); const proposed = identity('tag-parent');
-      await saveAndPublish(prepared, { identities: [proposed], items: [classified(source.id, proposed.ref)], missingIds: [] });
+      const prepared = await createPreparedJob([source.id], true);
+      await saveAndPublish(prepared, { items: [classified(source.id, plusId)], missingIds: [] });
       assert.deepEqual(await database.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', source.id).execute(),
         [{ name: 'usage_restriction', value: '人工保留限制' }]);
       const result = await database.selectFrom('ai_standardization_results').select('decision').where('job_id', '=', prepared.job.id).executeTakeFirstOrThrow();
@@ -1155,6 +991,12 @@ describe('AI identity standardization publication', () => {
       await claim(batch.id, 'request', 1n, 'tag-claim');
       const frozen = await prepared.repository.getTagExtractionBatchInputs(batch.id);
       assert.equal(frozen.inputs[0]?.name, `ChatGPT Plus 成品账号 ${drift}`);
+      const reviewedTags = validateReviewedTagExtractionDecision(source.id,
+        [{ name: 'duration', value: 30, proposalIndex: 0, evidence: [{ path: 'spec', quote: 'monthly' }] }],
+        [], frozen.inputs[0]!.payload, [true], true);
+      if ((frozen.inputs[0]!.payload as { warrantyEligible?: boolean }).warrantyEligible) reviewedTags.warrantyLabels = {
+        subscription_warranty: null, subscription_warranty_t: null, usage_warranty: null, usage_warranty_t: null,
+      };
       if (drift === 'manual') await database.transaction().execute(tx => recordManualDecisions(tx, [source.id], { action: 'quarantine', standardProductId: null, reason: '新人工审核' }));
       else if (drift === 'evidence') await database.updateTable('products').set({ content_version: 2n, standardization_revision: 9n }).where('id', '=', source.id).execute();
       else if (drift === 'fingerprint') {
@@ -1181,7 +1023,7 @@ describe('AI identity standardization publication', () => {
           await assert.rejects(prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id,
             [{ productId: source.id + 1000000n, tags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: 'monthly' }] }], rejectedTags: [] }], {}, { workerId: 'integration', attempt: 1n, token: 'tag-claim' }), /does not match/);
         }
-        await prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id, [{ productId: source.id, tags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: 'monthly' }] }], rejectedTags: [] }], {}, { workerId: 'integration', attempt: 1n, token: 'tag-claim' });
+        await prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id, [reviewedTags], {}, { workerId: 'integration', attempt: 1n, token: 'tag-claim' });
       }
       assert.deepEqual((await database.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', source.id).orderBy('name').execute()),
         drift === 'unchanged' ? [{ name: 'duration', value: 30 }] : [{ name: 'usage_restriction', value: '人工保留限制' }]);

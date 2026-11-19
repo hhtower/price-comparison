@@ -1,13 +1,11 @@
-import { PIPELINE_VERSIONS } from './pipeline-versions.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from './standardization-request.js';
-import { IDENTITY_POLICY_VERSION } from '../standardization/identity-policy.js';
 import { isAttributeJobType, jsonb, type AttributeJobType } from '../database/types.js';
 import { sql, type Kysely } from 'kysely';
 import { DomainValidationError } from '../common/errors.js';
 import { buildCursorPage, normalizePageRequest, type PageRequest } from '../common/pagination.js';
 import type { DatabaseSchema } from '../database/types.js';
 import { currentManualDecision, currentUnclassifiedQuery } from './ai-retry-pool.js';
-import { BUSINESS_REFUSAL_REASONS } from './product-standardization-state.js';
 import { currentTagMemberSource } from './tag-extraction-jobs.js';
 
 export interface TaskQueueFilter extends PageRequest { status?: string; jobType?: string; scopeShopId?: bigint; totalOnly?: boolean }
@@ -21,11 +19,13 @@ const currentPending = (scopeShopId?: bigint) => sql<bigint>`(select count(disti
     and not ${currentManualDecision}
     and not exists (select 1 from standard_product_members assignment
       join standard_products standard on standard.id = assignment.standard_product_id
-      where assignment.product_id = p.id and (assignment.assignment_source = 'human'
-        or (assignment.publication_state = 'published' and standard.verification_state = 'verified' and standard.merged_into_id is null)))
+      where assignment.product_id = p.id and assignment.publication_state = 'published'
+        and standard.verification_state = 'verified' and standard.merged_into_id is null)
     and not exists (select 1 from ai_job_input_members newer join ai_jobs newer_job on newer_job.id = newer.job_id
       where newer.product_id = p.id and newer.job_id > m.job_id and newer.content_version = p.content_version
         and newer.standardization_revision = p.standardization_revision
+        and newer_job.prompt_version = ${STANDARDIZATION_PROMPT_VERSION} and newer_job.rule_version = ${STANDARDIZATION_POLICY_VERSION}
+        and newer_job.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
         and newer_job.job_type not in ('tag_extraction', 'membership_features', 'text_review')))`;
 
 /** Job history stays available; attention and pending counts project current product state. */
@@ -39,19 +39,16 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
   const processed = sql<bigint>`greatest(j.processed, (select count(*) from ai_standardization_results r where r.job_id = j.id))`;
   const productScope = input.scopeShopId === undefined ? sql<boolean>`true` : sql<boolean>`p.shop_id = ${input.scopeShopId}`;
   const scopedPending = currentPending(input.scopeShopId);
-  const current = currentUnclassifiedQuery(db).where(productScope).where(sql<boolean>`r.job_id = j.id`)
-    .where(eb => eb.or([eb('r.reason_code', 'is', null), eb('r.reason_code', 'not in', BUSINESS_REFUSAL_REASONS)]));
+  const current = currentUnclassifiedQuery(db).where(productScope).where(sql<boolean>`r.job_id = j.id`);
   const attention = sql<boolean>`exists (${current.select(sql<number>`1`.as('present'))})`;
   const currentCount = current.select(sql<bigint>`count(*)`.as('count'));
   const reasonClass = sql<string>`case
     when r.reason_code = 'provider_policy_rejection' then 'provider_policy_rejection'
-    when r.reason_code in ('insufficient_evidence', 'missing_identity') then 'insufficient_evidence'
-    when r.reason_code = 'not_sellable' then 'not_sellable'
     when r.reason_code in ('evidence_invalid', 'attribute_conflict', 'identity_conflict', 'publication_blocked', 'input_too_large', 'review_rejected') then r.reason_code
     when r.reason_code in ('provider_error', 'invalid_response', 'request_outcome_unknown', 'result_not_saved', 'publication_error', 'publication_too_large') then 'technical_failure'
     else 'other_unclassified' end`;
   // Version-expired jobs can never run again; the board only lists jobs on the current pipeline.
-  const configCurrent=sql<boolean>`j.prompt_version = ${STANDARDIZATION_PROMPT_VERSION} and j.rule_version = ${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`;
+  const configCurrent=sql<boolean>`j.prompt_version = ${STANDARDIZATION_PROMPT_VERSION} and j.rule_version = ${STANDARDIZATION_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`;
   const typeScope=sql<boolean>`j.job_type not in ('tag_extraction', 'membership_features', 'text_review') ${input.jobType==='incremental'||input.jobType==='manual_full'||input.jobType==='calibration'?sql`and j.job_type=${input.jobType}`:sql``} ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or exists(select 1 from ai_job_input_members scope_member join products scope_product on scope_product.id=scope_member.product_id where scope_member.job_id=j.id and scope_product.shop_id=${input.scopeShopId}))`}`;
   const statusScope=filter==='unfinished'?unfinished:filter==='attention'?attention:sql<boolean>`true`;
   let query = db.selectFrom('ai_jobs as j').leftJoin('shops as s', 's.id', 'j.scope_shop_id')
@@ -84,7 +81,6 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
   const result = buildCursorPage(rows, page.limit);
   const counts = totals.rows[0]!;
   const currentReasons: Record<string, number> = { technical_failure: 0, provider_policy_rejection: 0,
-    insufficient_evidence: 0, not_sellable: 0,
     evidence_invalid: 0, attribute_conflict: 0, identity_conflict: 0, publication_blocked: 0, review_rejected: 0, other_unclassified: 0 };
   for (const row of reasons) currentReasons[row.reason] = (currentReasons[row.reason] ?? 0) + Number(row.count);
   return {
@@ -137,7 +133,7 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
  const pageFirst = input.totalOnly && status !== 'attention';
  const pageWindow = sql`${page.afterId === undefined ? sql`` : sql`where id < ${page.afterId}`} order by id desc limit ${page.limit + 1}`;
  const jobScope = sql`j.job_type=${input.jobType}
-   ${status==='unfinished'?sql`and ${unfinished} and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`:sql``}
+   ${status==='unfinished'?sql`and ${unfinished} and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${STANDARDIZATION_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`:sql``}
    ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or j.id in(select m.job_id from ai_job_input_members m join products p on p.id=m.product_id where p.shop_id=${input.scopeShopId}))`}`;
  const result=await sql<{items: Array<Record<string,unknown>>;summary: Record<string,unknown>}>`
  with ${pageFirst ? sql`scoped_ids as not materialized (select j.id from ai_jobs j where ${jobScope}),
@@ -158,7 +154,7 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
   from ${pageFirst ? sql`page_members` : sql`ai_job_input_members`} m join ai_jobs j on j.id=m.job_id
  ${status==='unfinished'?sql`
   where j.job_type=${input.jobType} and ${unfinished}
-    and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION}
+    and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${STANDARDIZATION_POLICY_VERSION}
     and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
     ${input.jobType==='membership_features'?sql`and exists(
       select 1 from products p join shops s on s.id=p.shop_id
@@ -171,9 +167,9 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
   where j.job_type=${input.jobType} and m.content_version=p.content_version
    and m.standardization_revision=p.standardization_revision and m.fingerprint=p.content_fingerprint
    and ${currentSource('m')}
-   and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
+   and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${STANDARDIZATION_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
    and ${eligible}
-   and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type=${input.jobType} and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${IDENTITY_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`}
+   and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type=${input.jobType} and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentSource('newer')} and nj.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and nj.rule_version=${STANDARDIZATION_POLICY_VERSION} and nj.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`}
  ${input.totalOnly ? sql`and (m.status in ('queued','processing') or m.output->>'outcome' in ('review','partial_success','failed')
    or jsonb_array_length(coalesce(m.output->'rejectedTags','[]'::jsonb))>0)` : sql``}
  ), current_counts as (
@@ -187,7 +183,7 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
  ), jobs as (
   select j.id,j.status,j.phase,j.model,j.job_type,j.parent_identity_job_id,j.retry_of_job_id,j.source_fetch_run_id,
     j.scope_shop_id,j.pipeline_versions,j.input_bytes,j.estimated_tokens,j.created_at,j.finished_at,s.name shop_name,
-    coalesce(j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${IDENTITY_POLICY_VERSION}
+    coalesce(j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${STANDARDIZATION_POLICY_VERSION}
       and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)},false) configuration_current,
     coalesce(c.current_pending,0) current_pending,coalesce(c.current_attention,0) current_attention,
     coalesce(c.covered_products,0) covered_products,coalesce(c.review_products,0) review_products,coalesce(c.failed_products,0) failed_products

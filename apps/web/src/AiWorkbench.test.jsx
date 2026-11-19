@@ -13,7 +13,7 @@ const progress = {
   version: '7', rawProductCount: 12, uniqueInputCount: 9, processed: 12,
   requests: { totalBatches: 3, queuedBatches: 0, runningBatches: 0, succeededBatches: 2, failedBatches: 1, cancelledBatches: 0, confirmed: 2, unknown: 1, budgetUsed: 3, budgetLimit: 4 },
   publication: { totalUnits: 4, queuedUnits: 0, runningUnits: 0, succeededUnits: 3, blockedUnits: 1, failedUnits: 0, cancelledUnits: 0, publishedMembers: 8, pendingMembers: 1 },
-  results: { classified: 8, unclassified: 4, unclassifiedReasons: { missing_identity: 3, publication_blocked: 1 }, standardProducts: 2 },
+  results: { classified: 8, unclassified: 4, unclassifiedReasons: { unmatched: 3, publication_blocked: 1 }, standardProducts: 2 },
   missing: { scheduledInputs: 3, reprocessedInputs: 3 },
 };
 const job = { id: '8', status: 'succeeded', model: 'test-model', scopeShopId: '1', promptVersion: 'identity-v1', createdAt: '2026-09-20T08:00:00Z', finishedAt: '2026-09-20T08:01:00Z' };
@@ -254,7 +254,7 @@ describe('AiWorkbench', () => {
     expect(within(region).getByRole('progressbar', { name: '商品处理进度' })).toHaveAttribute('value', '12');
     expect(within(region).queryByText('运行详情')).not.toBeInTheDocument();
     expect(within(region).queryByText('唯一输入')).not.toBeInTheDocument();
-    expect(within(region).getByText(/未识别商品身份/)).toBeVisible();
+    expect(within(region).getByText(/未匹配已有标准/)).toBeVisible();
   });
 
   test('失败批次可查看结构化诊断，历史缺失不伪装为已记录', async () => {
@@ -380,18 +380,20 @@ describe('AiWorkbench', () => {
     for (const reason of ['商品证据引用无效 · 2 件', '商品属性与证据冲突 · 3 件', '标准商品身份冲突 · 4 件', '商品交付或目录需审核 · 5 件']) expect(region).toHaveTextContent(reason);
   });
 
-  test('明确不能处理的商品不显示为待人工处理或任务异常', async () => {
+  test('未匹配商品显示为待处理，保留现有处理入口', async () => {
     installFetch(url => {
       if (url.pathname === '/api/admin/ai/status') return response({ ...status, progress: { ...progress,
-        results: { ...progress.results, unclassifiedReasons: { not_sellable: 1, insufficient_evidence: 3 } } } });
+        results: { ...progress.results, unclassifiedReasons: { unmatched: 4 } } } });
       if (url.pathname === '/api/admin/ai/task-queue') return response({ items: [] });
       return response({}, 404);
     });
     render(<AiWorkbench shops={shops} />);
     await userEvent.setup().click(screen.getByRole('tab', { name: '标准化' }));
     const region = await screen.findByRole('region', { name: '任务运行概览' });
-    expect(region).toHaveTextContent('不能处理4');
-    expect(region).not.toHaveTextContent('有待处理商品');
+    expect(region).toHaveTextContent('待处理4');
+    expect(region).toHaveTextContent('未匹配已有标准 · 4 件');
+    expect(region).toHaveTextContent('有待处理商品');
+    expect(region).not.toHaveTextContent('不能处理');
     expect(screen.queryByRole('button', { name: '查看待处理商品' })).not.toBeInTheDocument();
   });
 
@@ -667,7 +669,7 @@ describe('AiWorkbench', () => {
     const region = await screen.findByRole('region', { name: '任务运行概览' });
     expect(region).toHaveTextContent('原始商品12');
     expect(region).toHaveTextContent('已分类8');
-    expect(region).toHaveTextContent('不能处理0');
+    expect(region).not.toHaveTextContent('不能处理');
     expect(region).toHaveTextContent('待处理4');
     expect(region).toHaveTextContent('标准商品2');
     expect(region).toHaveTextContent('失败批次1');
@@ -675,7 +677,7 @@ describe('AiWorkbench', () => {
       expect(within(region).queryByText(label)).not.toBeInTheDocument();
     }
     expect(within(region).getByRole('list', { name: '标准化阶段' })).toBeVisible();
-    expect(within(region).getAllByRole('term')).toHaveLength(6);
+    expect(within(region).getAllByRole('term')).toHaveLength(5);
   });
 
   test('成功任务没有运行详情或空的诊断区域', async () => {
@@ -729,7 +731,7 @@ describe('AiWorkbench', () => {
     const pipeline = await screen.findByRole('list', { name: '标准化阶段' });
     const steps = within(pipeline).getAllByRole('listitem');
     expect(steps).toHaveLength(3);
-    expect(steps[0]).toHaveTextContent(`生成身份提议${stages.generationCompleted} 批已生成`);
+    expect(steps[0]).toHaveTextContent(`匹配已有标准${stages.generationCompleted} 批已生成`);
     expect(steps[1]).toHaveTextContent(`LLM 二元复核${stages.reviewCompleted || 0} 批已完成`);
     expect(steps[2]).toHaveTextContent(`本地发布${stages.publicationQueued || 0} 批待发布`);
     if (phase == null) {
@@ -756,9 +758,9 @@ describe('AiWorkbench', () => {
     render(<AiWorkbench shops={shops} />);
     await userEvent.setup().click(screen.getByRole('tab', { name: '标准化' }));
     const region = await screen.findByRole('region', { name: '任务运行概览' });
-    expect(region).toHaveTextContent('LLM 对该身份提议判定为否 · 1 件');
+    expect(region).toHaveTextContent('标准匹配提议未通过复核 · 1 件');
     expect(region).toHaveTextContent('待处理1');
-    expect(region).toHaveTextContent('不能处理0');
+    expect(region).not.toHaveTextContent('不能处理');
   });
 
   test('暂停和恢复任务使用生命周期接口', async () => {

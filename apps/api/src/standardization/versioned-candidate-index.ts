@@ -415,6 +415,7 @@ export class VersionedCandidateIndex {
   }
 
   get version(): bigint { return this.#version; }
+  get documentCount(): number { return this.#activeDocuments.size; }
 
   getDocument(id: string): CandidateDocument | undefined {
     return this.#activeDocuments.get(id)?.document;

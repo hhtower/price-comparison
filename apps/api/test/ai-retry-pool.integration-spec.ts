@@ -10,6 +10,8 @@ import { AdminRepository } from '../src/admin/admin.repository.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
+import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
+import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
 
 describe('global AI retry pool', () => {
   let db: Kysely<DatabaseSchema>;
@@ -188,6 +190,12 @@ describe('global AI retry pool', () => {
   });
 
   test('successful retry leaves the pool and preserves a trace to the source result', async () => {
+    const standard = await db.insertInto('standard_products').values({
+      name: 'ChatGPT Plus', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus',
+      catalog_definition: 'ChatGPT Plus official subscription',
+      verification_state: 'verified',
+    }).returning('id').executeTakeFirstOrThrow();
+    await recordCandidateCatalogChanges(db, [standard.id], IDENTITY_POLICY_VERSION);
     const [id] = await products(1);
     const name = 'ChatGPT Plus account';
     const sourceData = { evidence: 'delivered ChatGPT Plus account' };
@@ -203,10 +211,12 @@ describe('global AI retry pool', () => {
     await repository.prepareBatch(batch.id);
     await repository.reserveBatchRequest(batch.id, claim);
     const evidence = [{ path: 'name', quote: 'ChatGPT Plus account' }];
+    const request = await repository.getBatchRequest(batch.id);
+    const standardProductId = request.inputs[0]!.candidateStandardProductIds[0]!;
+    assert.ok(standardProductId);
     batch.id = await saveStandardizationThroughReview(db, repository, {
       jobId: retry.id, batchId: batch.id, claim, decision: {
-        identities: [{ ref: 'i', family: 'openai', product: 'chatgpt', tier: 'plus', canonicalKey: 'openai|chatgpt|plus', reason: 'fixture', evidence }],
-        items: [{ id: String(id), status: 'classified', identity: { kind: 'new', ref: 'i', canonicalKey: 'openai|chatgpt|plus' }, ruleIds: [], evidence, reasonCode: null, reason: 'fixture' }], missingIds: [],
+        items: [{ id: String(id), status: 'classified', identity: { kind: 'existing', standardProductId }, ruleIds: [], evidence, reasonCode: null, reason: '匹配已准入标准商品' }], missingIds: [],
       },
     });
     await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'test', lease_until: new Date(Date.now() + 60000) }).where('id', '=', batch.id).execute();
@@ -229,7 +239,7 @@ describe('global AI retry pool', () => {
     assert.equal(current?.processingDisposition, 'review_required');
   });
 
-  test('business refusals are terminal while technical failures and missing publications remain pending', async () => {
+  test('old model refusals cannot close pending products while technical failures keep retry controls', async () => {
     const ids = await products(5);
     const job = await failed(ids.slice(0, 4));
     await setReason(job.id, ids[0]!, 'not_sellable');
@@ -239,13 +249,13 @@ describe('global AI retry pool', () => {
     await db.updateTable('ai_standardization_results').set({ status: 'classified', standard_product_id: standard.id, reason_code: null }).where('job_id', '=', job.id).where('product_id', '=', ids[3]!).execute();
     const admin = new AdminRepository(db);
     const pending = await admin.listProducts({ pending: true, limit: 100 });
-    assert.deepEqual(pending.items.filter(row => ids.includes(row.id)).map(row => row.id), ids.slice(2));
+    assert.deepEqual(pending.items.filter(row => ids.includes(row.id)).map(row => row.id), ids);
     assert.equal(pending.items.find(row => row.id === ids[2])?.processing_summary?.reasonCode, 'evidence_invalid');
     assert.equal(pending.items.find(row => row.id === ids[2])?.processing_summary?.processingDisposition, 'retry_available');
     assert.equal(pending.items.find(row => row.id === ids[3])?.processing_summary?.reasonCode, 'unassigned');
     assert.equal(pending.items.find(row => row.id === ids[4])?.processing_summary?.reasonCode, 'not_processed');
     const completed = await admin.listProducts({ pending: false, limit: 100 });
-    assert.deepEqual(completed.items.filter(row => ids.includes(row.id)).map(row => row.id), ids.slice(0, 2));
+    assert.deepEqual(completed.items.filter(row => ids.includes(row.id)).map(row => row.id), []);
     assert.ok((await list()).items.some(row => row.productId === String(ids[2])));
     // Old refusals cannot hide changed evidence or a newer technical failure.
     await db.updateTable('products').set({ standardization_revision: 1n }).where('id', '=', ids[0]!).execute();

@@ -21,6 +21,7 @@ import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.
 import { buildMembershipFeatures, readCurrentMembershipFeatures } from '../src/standardization/membership-classification.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { parseStandardizationReviewResponse } from '../src/ai/standardization-review-request.js';
+import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
 import { ProductsRepository } from '../src/products/products.repository.js';
 import { JobsRepository, type ClaimedJob } from '../src/jobs/jobs.repository.js';
 import { ShopsRepository } from '../src/shops/shops.repository.js';
@@ -58,10 +59,18 @@ async function fixture(name = 'ChatGPT Plus 成品账号 质保28天') {
   const identity = { family: 'openai', product: 'chatgpt', tier: 'plus' };
   const key = buildCanonicalStandardKey(identity);
   let standard = await db.selectFrom('standard_products').select('id').where('standard_key', '=', key).executeTakeFirst();
-  standard ??= await db.insertInto('standard_products').values({
+  standard ??= await db.insertInto('standard_products').values({ catalog_definition: 'Explicit fixture admission: only the named product and plan; duration and delivery do not change identity.',
     name: 'ChatGPT Plus', canonical_family: identity.family, canonical_product: identity.product,
     canonical_tier: identity.tier, standard_key: key, verification_state: 'verified',
   }).returning('id').executeTakeFirstOrThrow();
+  const free = { family: 'openai', product: 'chatgpt', tier: 'free' };
+  const freeKey = buildCanonicalStandardKey(free);
+  if (!await db.selectFrom('standard_products').select('id').where('standard_key', '=', freeKey).executeTakeFirst()) {
+    await db.insertInto('standard_products').values({ catalog_definition: 'Explicit fixture admission: only the named product and plan; duration and delivery do not change identity.',
+      name: 'ChatGPT Free', canonical_family: free.family, canonical_product: free.product,
+      canonical_tier: free.tier, standard_key: freeKey, verification_state: 'verified',
+    }).execute();
+  }
   await db.insertInto('standard_product_members').values({ product_id: product.id, standard_product_id: standard.id,
     assignment_source: 'ai', publication_state: 'published' }).execute();
   return { product, baseId: standard.id, repo: new AiRepository(db) };
@@ -118,10 +127,13 @@ async function publishIdentity(f: Awaited<ReturnType<typeof fixture>>, existingJ
   assert.deepEqual(await children(), [], 'identity extraction must not schedule attribute jobs');
   const evidence = [{ path: 'name', quote: product.name }];
   const identity = { family: 'openai', product: 'chatgpt', tier: options.tier ?? 'plus' };
-  await repo.persistBatchDecision(job.id, batchId,
-    { identities: [{ ...identity, ref: 'plus', canonicalKey: buildCanonicalStandardKey(identity), evidence, reason: 'same identity' }],
-      items: [{ id: String(product.id), status: 'classified', identity: { kind: 'new', ref: 'plus', canonicalKey: buildCanonicalStandardKey(identity) },
-        evidence, ruleIds: [], reason: 'same identity', reasonCode: null }], missingIds: [] }, {}, claim, 'generate');
+  const target = await db.selectFrom('standard_products').select('id')
+    .where('standard_key', '=', buildCanonicalStandardKey(identity)).executeTakeFirstOrThrow();
+  const generationRequest = await repo.getBatchRequest(batchId);
+  assert.ok(generationRequest.inputs[0]!.candidateStandardProductIds.includes(String(target.id)));
+  const proposal = parseStandardizationProtocolResponse({ items: [{ id: String(product.id), standardProductId: String(target.id), evidence }] },
+    generationRequest.inputs.map(input => ({ id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds })));
+  await repo.persistBatchDecision(job.id, batchId, proposal, {}, claim, 'generate');
   assert.deepEqual(await children(), [], 'identity generation checkpoint must not schedule attribute jobs');
   const review = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', job.id)
     .where('id', '!=', batchId).executeTakeFirstOrThrow();
@@ -373,6 +385,9 @@ test('post-publication tags cannot overwrite the approved membership snapshot or
     .where('job_type', '=', 'tag_extraction').executeTakeFirstOrThrow();
   const task = await featureTask(product.id, child.id);
   const reviewed = validateReviewedTagExtractionDecision(task.input.input_id, [], [], task.input.payload, [], true);
+  if ((task.input.payload as { warrantyEligible?: boolean }).warrantyEligible) reviewed.warrantyLabels = {
+    subscription_warranty: null, subscription_warranty_t: null, usage_warranty: 28, usage_warranty_t: 'day',
+  };
   await f.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id, [reviewed], {}, task.claim);
   assert.deepEqual((await db.selectFrom('products').select('membership_features')
     .where('id', '=', product.id).executeTakeFirstOrThrow()).membership_features, product.membership_features);
@@ -565,7 +580,7 @@ for (const stage of ['reservation', 'publication'] as const) {
         await db.updateTable('standard_product_members').set({ publication_state: 'provisional' })
           .where('product_id', '=', f.product.id).execute();
       } else {
-        const standard = await db.insertInto('standard_products').values({
+        const standard = await db.insertInto('standard_products').values({ catalog_definition: 'Explicit fixture admission: only the named product and plan; duration and delivery do not change identity.',
           name: invalidation === 'non_ai' ? 'Unrelated course' : 'ChatGPT Plus',
           canonical_family: invalidation === 'non_ai' ? 'course' : 'openai',
           canonical_product: invalidation === 'non_ai' ? `lesson_${randomUUID()}` : 'chatgpt',
@@ -693,7 +708,7 @@ for (const path of ['fetch', 'batch', 'update'] as const) {
       if (state === 'unassigned' || state === 'features_only') {
         await db.deleteFrom('standard_product_members').where('product_id', '=', f.product.id).execute();
       } else if (state === 'other_member') {
-        const other = await db.insertInto('standard_products').values({ name: 'ordinary product',
+        const other = await db.insertInto('standard_products').values({ catalog_definition: 'Explicit fixture admission: only the named product and plan; duration and delivery do not change identity.', name: 'ordinary product',
           standard_key: randomUUID(), canonical_family: 'test', canonical_product: 'ordinary', canonical_tier: 'basic' })
           .returning('id').executeTakeFirstOrThrow();
         await db.updateTable('standard_product_members').set({ standard_product_id: other.id })

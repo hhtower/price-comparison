@@ -7,9 +7,9 @@ import { jsonb, type DatabaseSchema, type JsonValue } from '../database/types.js
 import { readAiBatchLimits } from '../config/env.js';
 import { planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { unknownRequestReason } from './request-outcome.js';
-import type { ParsedStandardizationResponse, StandardizationDecision } from './ai.schemas.js';
-import { isReviewableStandardizationDecision } from './standardization-review-request.js';
 import { readAiStandardizationFeatures } from './ai-standardization-features.js';
+import { assertCurrentPipeline, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
+import { readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
 
 function chunks<T>(items: readonly T[], size: number): T[][] {
   const result: T[][] = [];
@@ -43,14 +43,13 @@ async function materializeFailedBatch(
   const inputIds = (batch.product_ids as string[]).map(BigInt);
   if (!inputIds.length) return;
   const job = await tx.selectFrom('ai_jobs').select(['job_type', 'pipeline_versions']).where('id', '=', jobId).executeTakeFirstOrThrow();
-  const reference = batch.reference_snapshot as { standardizationStage?: string; generationBatchId?: string } | null | undefined;
+  const reference = batch.reference_snapshot as { standardizationStage?: string } | null | undefined;
   const review = !isAttributeJobType(job.job_type) && reference?.standardizationStage === 'review';
   const members = await tx.selectFrom('ai_job_input_members')
     .select(['input_id', 'product_id', 'content_version', 'fingerprint', 'standardization_revision'])
     .where('job_id', '=', jobId)
     .where('input_id', 'in', inputIds)
     .where('status', 'not in', ['classified', 'unclassified', 'cancelled'])
-    // An attached missing input may already be queued for its generation retry.
     .$if(review, query => query.where(sql<boolean>`not exists (select 1 from ai_standardization_results r
       where r.job_id = ${jobId} and r.product_id = ai_job_input_members.product_id and r.batch_id = ${batch.id})`))
     .orderBy('product_id')
@@ -69,27 +68,10 @@ async function materializeFailedBatch(
     }
     return;
   }
-  const preserved = new Map<bigint, StandardizationDecision>();
-  if (review) {
-    if (!reference?.generationBatchId || !/^[1-9]\d*$/u.test(reference.generationBatchId)) throw new Error('standardization review source is invalid');
-    const generation = await tx.selectFrom('ai_job_batches').select(['validated_decision', 'step', 'status'])
-      .where('id', '=', BigInt(reference.generationBatchId)).where('job_id', '=', jobId).executeTakeFirstOrThrow();
-    if (generation.step !== 'done' || generation.status !== 'succeeded' || !generation.validated_decision) throw new Error('standardization generation checkpoint is unavailable');
-    const document = generation.validated_decision as unknown as ParsedStandardizationResponse;
-    const items = new Map(document.items.map(item => [item.id, item]));
-    const missing = new Set(document.missingIds);
-    for (const inputId of new Set(members.map(member => member.input_id))) {
-      const id = String(inputId), item = items.get(id);
-      if (missing.has(id)) preserved.set(inputId, {
-        id, status: 'unclassified', ruleIds: [], evidence: [], reasonCode: 'missing_id', reason: '模型响应未包含该商品',
-      });
-      else if (item && !isReviewableStandardizationDecision(item)) preserved.set(inputId, item);
-    }
-  }
-  const decision = (inputId: bigint) => jsonb((preserved.get(inputId) ?? {
+  const decision = (inputId: bigint) => jsonb({
     id: inputId.toString(), status: 'unclassified', ruleIds: [], evidence: [],
     reasonCode: terminal.code, reason: terminal.reason,
-  }) as unknown as JsonValue);
+  });
   for (const batchMembers of chunks(members, 500)) {
     await tx.insertInto('ai_standardization_results').values(batchMembers.map(member => ({
       job_id: jobId,
@@ -101,9 +83,9 @@ async function materializeFailedBatch(
       status: 'unclassified' as const,
       standard_product_id: null,
       tags: jsonb([]),
-      evidence: jsonb((preserved.get(member.input_id)?.evidence ?? []) as unknown as JsonValue),
-      reason_code: preserved.get(member.input_id)?.reasonCode ?? terminal.code,
-      reason: preserved.get(member.input_id)?.reason ?? terminal.reason,
+      evidence: jsonb([]),
+      reason_code: terminal.code,
+      reason: terminal.reason,
       decision: decision(member.input_id),
       current_assignment_preserved: true,
       published_at: sql`now()`,
@@ -131,23 +113,16 @@ async function materializeFailedBatch(
     await tx.updateTable('ai_standardization_executions').set({ status: 'completed', completed_at: sql`now()` })
       .where('job_id', '=', jobId).where('product_id', 'in', productIds).execute();
   }
-  for (const [inputId, item] of preserved) {
-    await tx.updateTable('ai_job_inputs').set({
-      status: item.reasonCode === 'missing_id' ? 'succeeded' : 'failed', reason_code: item.reasonCode,
-      error: item.reasonCode === 'missing_id' ? null : item.reason,
-    }).where('job_id', '=', jobId).where('input_id', '=', inputId).execute();
-    await tx.updateTable('ai_job_input_members').set({ reason_code: item.reasonCode })
-      .where('job_id', '=', jobId).where('product_id', 'in', members.filter(member => member.input_id === inputId).map(member => member.product_id)).execute();
-  }
 }
 
-/** Finish an inactive standardization job or atomically create its only missing-ID retry round. */
+/** Finish inactive jobs; only attribute jobs retain their missing-ID retry round. */
 export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>, jobId: bigint): Promise<void> {
   const job = await tx.selectFrom('ai_jobs')
-    .select(['id', 'status', 'pause_requested', 'cancel_requested', 'configuration_blocked', 'job_type', 'pipeline_versions'])
+    .select(['id', 'status', 'pause_requested', 'cancel_requested', 'configuration_blocked', 'job_type', 'pipeline_versions', 'prompt_version', 'rule_version'])
     .where('id', '=', jobId).forUpdate().executeTakeFirstOrThrow();
   if (job.pause_requested || job.cancel_requested || job.configuration_blocked
     || ['paused', 'cancelled', 'failed', 'succeeded', 'ready_with_errors'].includes(job.status)) return;
+  assertCurrentPipeline(job);
 
   const failed = await tx.selectFrom('ai_job_batches')
     .select(['id', 'product_ids', 'error_source', 'error', 'reference_snapshot'])
@@ -158,7 +133,7 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
     .where('job_id', '=', jobId).where('status', 'in', ['queued', 'running']).executeTakeFirst();
   if (active) return;
 
-  const existingRoundOne = await tx.selectFrom('ai_job_batches').select('id')
+  const existingRoundOne = !isAttributeJobType(job.job_type) || await tx.selectFrom('ai_job_batches').select('id')
     .where('job_id', '=', jobId).where('round', '=', 1)
     .where(sql<boolean>`reference_snapshot->>'standardizationStage' is distinct from 'review'`).executeTakeFirst();
   const missingRows = existingRoundOne ? [] : await tx.selectFrom('ai_job_input_members as m')
@@ -189,7 +164,6 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
     const plannedIds = new Set(planned.flatMap(batch => batch.productIds.map(String)));
     const oversizedIds = inputIds.filter(id => !plannedIds.has(id.toString()));
     if (oversizedIds.length) {
-      const reason = '商品输入超过单次标准化安全预算';
       const oversizedSet = new Set(oversizedIds.map(String));
       for (const ids of chunks(oversizedIds, 500)) {
         await tx.updateTable('ai_job_inputs').set({
@@ -201,26 +175,7 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
       }
       const oversizedMembers = missingRows.filter(row => oversizedSet.has(row.input_id.toString()));
       for (const members of chunks(oversizedMembers, 500)) {
-        if (isAttributeJobType(job.job_type)) {
-          for (const member of members) await tx.updateTable('ai_job_input_members').set({ output: jsonb({ ...buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, [], { outcome: 'failed', reasonCode: 'input_too_large' }), versions: tagExtractionVersions(member, job.pipeline_versions) } as unknown as JsonValue) }).where('job_id', '=', jobId).where('product_id', '=', member.product_id).execute();
-          continue;
-        }
-        await tx.insertInto('ai_standardization_results').values(members.map(member => ({
-          job_id: jobId, product_id: member.product_id, batch_id: null, input_id: member.input_id,
-          content_version: member.content_version, fingerprint: member.fingerprint, status: 'unclassified' as const,
-          standard_product_id: null, tags: jsonb([]), evidence: jsonb([]),
-          reason_code: 'input_too_large', reason,
-          decision: jsonb({ id: member.input_id.toString(), status: 'unclassified', ruleIds: [], evidence: [], reasonCode: 'input_too_large', reason }),
-          current_assignment_preserved: true, published_at: sql`now()`,
-        }))).onConflict(conflict => conflict.columns(['job_id', 'product_id']).doUpdateSet(eb => ({
-          batch_id: null, input_id: eb.ref('excluded.input_id'), content_version: eb.ref('excluded.content_version'),
-          fingerprint: eb.ref('excluded.fingerprint'), status: eb.ref('excluded.status'), standard_product_id: null,
-          tags: eb.ref('excluded.tags'), evidence: eb.ref('excluded.evidence'), reason_code: eb.ref('excluded.reason_code'),
-          reason: eb.ref('excluded.reason'), decision: eb.ref('excluded.decision'), current_assignment_preserved: true,
-          published_at: sql`now()`,
-        }))).execute();
-        await tx.updateTable('ai_standardization_executions').set({ status: 'completed', completed_at: sql`now()` })
-          .where('job_id', '=', jobId).where('product_id', 'in', members.map(member => member.product_id)).execute();
+        for (const member of members) await tx.updateTable('ai_job_input_members').set({ output: jsonb({ ...buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, [], { outcome: 'failed', reasonCode: 'input_too_large' }), versions: tagExtractionVersions(member, job.pipeline_versions) } as unknown as JsonValue) }).where('job_id', '=', jobId).where('product_id', '=', member.product_id).execute();
       }
     }
     if (planned.length) {
@@ -290,7 +245,8 @@ async function scheduleAttributeJobs(tx: Transaction<DatabaseSchema>, sourceJobI
   const classifiedProducts = await tx.selectFrom('ai_standardization_results as r')
     .innerJoin('products as p', 'p.id', 'r.product_id')
     .innerJoin('shops as s', 's.id', 'p.shop_id')
-    .select(['p.id', 'p.name', 'p.spec', 'p.source_category', 'p.source_data', 'p.content_version', 'p.standardization_revision'])
+    .select(['p.id', 'p.membership_features', 'p.content_fingerprint', 'p.content_version', 'p.standardization_revision',
+      's.url as shop_url', 's.protocol as shop_protocol', 's.platform as shop_platform'])
     .where('r.job_id', '=', sourceJobId)
     .where('r.status', '=', 'classified')
     .whereRef('r.content_version', '=', 'p.content_version')
@@ -310,7 +266,8 @@ async function scheduleAttributeJobs(tx: Transaction<DatabaseSchema>, sourceJobI
       .whereRef('m.content_version', '=', 'p.content_version').whereRef('m.fingerprint', '=', 'p.content_fingerprint')
       .whereRef('m.standardization_revision', '=', 'p.standardization_revision').execute();
     const coveredIds = new Set(covered.map(member => member.product_id));
-    const productIds = classifiedProducts.filter(product => !coveredIds.has(product.id)).map(product => product.id);
+    const productIds = classifiedProducts.filter(product => !coveredIds.has(product.id)
+      && (kind !== 'membership_features' || !readCurrentMembershipFeatures(product.membership_features, product))).map(product => product.id);
     if (!productIds.length) continue;
     const create = kind === 'membership_features' ? createMembershipFeatureJob
       : kind === 'text_review' ? createProductTextReviewJob : createTagJob;
@@ -342,6 +299,8 @@ export async function recoverAbandonedStandardizationBatches(database: Kysely<Da
         and not (q.request_budget_used < q.request_budget_limit and q.unknown_requests = 0)
         and j.status not in ('paused', 'cancelled', 'failed', 'succeeded')
         and not j.pause_requested and not j.cancel_requested
+        and j.prompt_version = ${PIPELINE_VERSIONS.prompt} and j.rule_version = ${STANDARDIZATION_POLICY_VERSION}
+        and j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
       order by q.id
       limit ${limit}
     )
@@ -373,6 +332,9 @@ export async function recoverStandardizationFinalization(database: Kysely<Databa
     .where('j.pause_requested', '=', false)
     .where('j.cancel_requested', '=', false)
     .where('j.configuration_blocked', '=', false)
+    .where('j.prompt_version', '=', PIPELINE_VERSIONS.prompt)
+    .where('j.rule_version', '=', STANDARDIZATION_POLICY_VERSION)
+    .where(sql<boolean>`j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb`)
     .where(sql<boolean>`not exists (
       select 1 from ai_job_batches b where b.job_id = j.id and b.status in ('queued', 'running')
     )`)

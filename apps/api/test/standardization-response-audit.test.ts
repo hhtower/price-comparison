@@ -6,12 +6,12 @@ import { buildResponseAudit } from '../src/ai/response-audit.js';
 
 const job = { id: 7n, attempts: 1n, claimed_by: 'audit-worker', lease_until: new Date(Date.now() + 60000),
   row: { job_id: 3n, step: 'request', claim_token: 'audit-claim' } };
-const request = { jobId: 3n, model: 'mock', candidates: [], inputs: [
-  { productId: 11n, fingerprint: 'f'.repeat(64), payload: { name: 'ChatGPT Plus' }, candidateStandardProductIds: [] },
+const request = { jobId: 3n, model: 'mock', candidates: [
+  { id: '91', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [] },
+], inputs: [
+  { productId: 11n, fingerprint: 'f'.repeat(64), payload: { name: 'ChatGPT Plus' }, candidateStandardProductIds: ['91'] },
 ] };
-const item = { id: '11', action: 'create_identity', ruleIds: [], reason: 'Explicit listing',
-  evidence: [{ path: 'name', quote: 'ChatGPT Plus' }],
-  identity: { family: 'openai', product: 'chatgpt', tier: 'plus', reason: 'Explicit listing', evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] } };
+const item = { id: '11', standardProductId: '91', evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] };
 
 function setup(content: string, overrides: Record<string, unknown> = {}, finishReason: string | null = 'stop') {
   const outcomes: any[] = [], events: unknown[][] = [];
@@ -75,20 +75,18 @@ test('completed protocol failures retain bounded response provenance and no deci
   }
 });
 
-test('item-local schema and evidence rejections keep their safe coordinate summaries', async () => {
+test('item-local schema and evidence errors fail technically with safe coordinates and no decision', async () => {
   for (const candidate of [
-    { ...item, identity: { ...item.identity, tier: null } },
+    { ...item, standardProductId: 91 },
     { ...item, evidence: [{ path: 'name', quote: 'private-fabricated-quote' }] },
   ]) {
     const state = setup(JSON.stringify({ items: [candidate] }));
     try {
       await state.worker.runOnce();
-      for (let i = 0; i < 60 && !state.stats().complete; i++) await new Promise(resolve => setTimeout(resolve, 5));
-      assert.equal(state.stats().failed, 0);
-      assert.equal(state.stats().saved.items[0].status, 'unclassified');
-      const diagnostic = state.stats().saved.metadata.responseDiagnostic;
-      assert.equal(state.outcomes.length, 0, 'successful generation confirms atomically with its checkpoint');
-      assert.equal(diagnostic.rejectedItemCount, 1);
+      for (let i = 0; i < 60 && !state.stats().failed; i++) await new Promise(resolve => setTimeout(resolve, 5));
+      assert.equal(state.stats().failed, 1);
+      assert.equal(state.stats().saved, undefined);
+      const diagnostic = state.outcomes[0][2].responseDiagnostic;
       assert.equal(diagnostic.issues[0].itemId, '11');
       assert.ok(diagnostic.issues[0].fieldPath);
       assert.doesNotMatch(JSON.stringify(diagnostic), /private-fabricated-quote/);
@@ -133,7 +131,7 @@ test('large rejection summaries cap details and exclude proposed identities and 
     content: 'private-response-body', finishReason: 'stop', firstContentMs: 1, responseMs: 2, toolCalls: [],
     usage: null, responseModel: 'mock', responseModels: ['mock'], responseId: 'resp', chunkCount: 2, contentChunks: 1,
   }, 1000, 'evidence', {
-    identities: [], missingIds: [],
+    missingIds: [],
     items: Array.from({ length: 1000 }, (_, i) => ({
       id: String(i + 1), status: 'unclassified', ruleIds: [], evidence: [], reasonCode: 'invalid_response',
       reason: 'private-response-value', diagnostic: { stage: 'schema', code: 'invalid_type',
@@ -149,10 +147,12 @@ test('large rejection summaries cap details and exclude proposed identities and 
 test('evidence summaries use generated response coordinates instead of the model citation path', async () => {
   const state = setup(JSON.stringify({ items: [{ ...item, evidence: [{ path: 'customer-private-value-493827', quote: 'ChatGPT Plus' }] }] }));
   try {
-    const result = await state.modelCall(job, new AbortController().signal);
-    const diagnostic = result.metadata!.responseDiagnostic!;
-    assert.equal(diagnostic.issues[0]!.fieldPath, 'evidence[0].path');
-    assert.doesNotMatch(JSON.stringify(diagnostic), /customer-private-value/);
+    await assert.rejects(state.modelCall(job, new AbortController().signal), (error: any) => {
+      const diagnostic = error.responseMetadata.responseDiagnostic;
+      assert.equal(diagnostic.issues[0]!.fieldPath, 'items[0].evidence[0].path');
+      assert.doesNotMatch(JSON.stringify(diagnostic), /customer-private-value/);
+      return true;
+    });
   } finally { await state.worker.stop(); }
 });
 
@@ -161,7 +161,7 @@ test('issue count and multibyte payloads obey the serialized diagnostic byte bud
     content: '{}', finishReason: 'stop', firstContentMs: 1, responseMs: 2, toolCalls: [], usage: null,
     responseModel: 'mock', responseModels: ['mock'], responseId: 'resp', chunkCount: 1, contentChunks: 1,
   }, 21, 'evidence', {
-    identities: [], missingIds: [],
+    missingIds: [],
     items: Array.from({ length: 21 }, (_, i) => ({
       id: String(i + 1), status: 'unclassified', ruleIds: [], evidence: [], reasonCode: 'evidence_invalid', reason: 'unsupported',
       diagnostic: { stage: 'identity', code: 'identity_conflict', fieldPath: '字'.repeat(250) },

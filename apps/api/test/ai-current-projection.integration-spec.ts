@@ -7,9 +7,8 @@ import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { readAiTaskQueue } from '../src/ai/ai-task-queue.js';
 import { readRetryPool } from '../src/ai/ai-retry-pool.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
-import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
+import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
-import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 
 describe('current evidence queue projection', () => {
@@ -31,7 +30,7 @@ describe('current evidence queue projection', () => {
       content_fingerprint: productContentFingerprint({ name, spec: '' }) }).returningAll().executeTakeFirstOrThrow();
     const job = await db.insertInto('ai_jobs').values({
       status: 'succeeded', total: 1n, processed: 1n, unclassified: 1n, model: 'mock',
-      prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: IDENTITY_POLICY_VERSION,
+      prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION,
       pipeline_versions: jsonb(pipelineVersionSnapshot('mock')),
     }).returning('id').executeTakeFirstOrThrow();
     await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: product.id, fingerprint: product.content_fingerprint, payload: jsonb({ name }), status: 'succeeded', input_bytes: 1n, estimated_tokens: 1n, content_version: 1n }).execute();
@@ -54,19 +53,18 @@ describe('current evidence queue projection', () => {
     assert.equal(queue.summary.attention, 1);
   });
 
-  test('current reasons distinguish policy, missing evidence and nonsellable decisions', async () => {
+  test('current reasons keep unmatched work pending separately from technical and provider failures', async () => {
     await result('policy', 'provider_policy_rejection');
-    await result('missing', 'insufficient_evidence');
-    await result('notice', 'not_sellable');
+    await result('unmatched', 'unmatched');
     const queue = await readAiTaskQueue(db, { status: 'all', limit: 100 });
-    assert.deepEqual(queue.summary.currentReasons, { technical_failure: 1, provider_policy_rejection: 1, insufficient_evidence: 1, not_sellable: 1, evidence_invalid: 0, attribute_conflict: 0, identity_conflict: 0, publication_blocked: 0, review_rejected: 0, other_unclassified: 0 });
-    assert.equal((await readRetryPool(db, { limit: 100 })).total, 1, 'policy refusals are not an automatic replay pool');
+    assert.deepEqual(queue.summary.currentReasons, { technical_failure: 1, provider_policy_rejection: 1, evidence_invalid: 0, attribute_conflict: 0, identity_conflict: 0, publication_blocked: 0, review_rejected: 0, other_unclassified: 1 });
+    assert.equal((await readRetryPool(db, { limit: 100 })).total, 2, 'unmatched and technical failure remain available for explicit retry');
   });
 
   test('manual isolation still protects current evidence without adding a global queue counter', async () => {
     const isolated = await result('unbound-review');
     await db.insertInto('product_standardization_decisions').values({ product_id: isolated.product.id, action: 'quarantine', source: 'application', reason: 'reviewed isolation', evidence_known: true, content_version: 1n, content_fingerprint: isolated.product.content_fingerprint, standardization_revision: isolated.product.standardization_revision, evidence_snapshot: jsonb({ name: 'unbound-review' }) }).execute();
-    assert.equal((await readRetryPool(db, { limit: 100 })).total, 1);
+    assert.equal((await readRetryPool(db, { limit: 100 })).total, 2);
     const queue = await readAiTaskQueue(db, { status: 'all' });
     assert.equal('manual_isolation' in queue.summary.currentReasons, false);
     assert.equal(queue.items.find(row => row.id === String(isolated.job.id))!.unclassified, 0);

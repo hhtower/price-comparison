@@ -8,6 +8,7 @@ import { advanceAdminDisplayRevision } from './membership-tag-edit.js';
 import { recordManualDecisions } from '../standardization/decision-history.js';
 import { publicationEvidenceConflict } from '../standardization/publication-evidence.js';
 import { productProcessingSummary, productStandardizationOutcome, type ProductProcessingState, type ProductProcessingSummary } from '../ai/product-standardization-state.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from '../ai/pipeline-versions.js';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { DomainValidationError } from '../common/errors.js';
 import { DATABASE } from '../database/database.providers.js';
@@ -242,17 +243,23 @@ export class AdminRepository {
         .select(['p.id', sql<ProductProcessingState>`(
           select jsonb_build_object(
             'reasonCode', case
-              when p.standardization_locked or (d.content_version=p.content_version and d.content_fingerprint=p.content_fingerprint) then 'manual_decision_preserved'
+              when p.standardization_locked or (d.evidence_known and d.content_version=p.content_version and d.content_fingerprint=p.content_fingerprint) then 'manual_decision_preserved'
               when r.job_id is null then 'not_processed'
-              when r.content_version<>p.content_version or im.content_version<>p.content_version
-                or im.standardization_revision<>p.standardization_revision then 'source_changed'
+              when r.content_version is distinct from p.content_version or im.content_version is distinct from p.content_version
+                or r.fingerprint is distinct from p.content_fingerprint or im.fingerprint is distinct from p.content_fingerprint
+                or im.standardization_revision is distinct from p.standardization_revision then 'source_changed'
               when r.status='unclassified' then coalesce(r.reason_code, 'other_unclassified') else 'unassigned' end,
-            'reason', r.reason, 'requestError', b.error, 'manualReason', d.reason)
+            'reason', r.reason, 'evidence', r.evidence, 'requestError', b.error, 'manualReason', d.reason)
           from (select 1) anchor
-          left join lateral (select content_version, content_fingerprint, reason
+          left join lateral (select evidence_known, content_version, content_fingerprint, reason
             from product_standardization_decisions where product_id=p.id order by id desc limit 1) d on true
-          left join lateral (select job_id, batch_id, product_id, content_version, status, reason_code, reason
-            from ai_standardization_results where product_id=p.id order by job_id desc limit 1) r on true
+          left join lateral (select result.job_id, result.batch_id, result.product_id, result.content_version, result.fingerprint,
+              result.status, result.reason_code, result.reason, result.evidence
+            from ai_standardization_results result join ai_jobs result_job on result_job.id=result.job_id
+            where result.product_id=p.id and result_job.prompt_version=${PIPELINE_VERSIONS.prompt}
+              and result_job.rule_version=${STANDARDIZATION_POLICY_VERSION}
+              and result_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+            order by result.job_id desc limit 1) r on true
           left join ai_job_input_members im on im.job_id=r.job_id and im.product_id=p.id
           left join ai_job_batches b on b.id=r.batch_id
         )`.as('processing_state')])

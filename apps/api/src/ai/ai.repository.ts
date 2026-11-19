@@ -7,7 +7,6 @@ import { sanitizeTagAuditText, buildTagExtractionOutcome, needsTagRepair, resolv
 import { projectShopText, readTextEvidence, TEXT_REVIEW_VERSION, validateTextReview } from '../shops/shop-text-review.js';
 import type { StandardizationTag } from './ai.schemas.js';
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { canonicalProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { MEMBERSHIP_KINDS, isAiMembership } from '@price-comparison/catalog/membership-policy';
 import { buildMembershipFeatures, readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
 import { createHash } from 'node:crypto';
@@ -19,19 +18,16 @@ import { DATABASE, PG_POOL } from '../database/database.providers.js';
 import { bumpCatalogVersion, recordCandidateCatalogChanges } from '../catalog/catalog-version.repository.js';
 import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
 import { jsonb, type DatabaseSchema, type JsonValue, type AiJobTable } from '../database/types.js';
-import { type ParsedStandardizationResponse, type StandardizationDecision } from './ai.schemas.js';
+import { assertStandardizationCheckpoint, type ParsedStandardizationResponse, type StandardizationDecision } from './ai.schemas.js';
 import { buildCandidateSearchQuery, buildExtractionPayload, estimateInputSize, extractionContextKey } from './adaptive-batching.js';
 import { planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { readAiBatchLimits } from '../config/env.js';
 import { extractionProgressDelta, getJobProgress, incrementJobProgress, type ProgressSnapshot } from './ai-progress.repository.js';
-import { readLatestManualDecisions, isManualDecisionForCurrentEvidence, type ManualDecision } from '../standardization/decision-history.js';
-import { resolveCanonicalIdentity } from '../standardization/canonical-resolution.js';
-import { loadCandidateDisplayNames, loadCatalogAliases } from '../standardization/catalog-aliases.js';
-import { ensureStandardServiceEvidence, serviceEvidenceRequirement } from '../standardization/provider-publication.js';
+import { readLatestManualDecisions, isManualDecisionForCurrentEvidence, suppressManualDecisionTrigger } from '../standardization/decision-history.js';
+import { loadCatalogAliases } from '../standardization/catalog-aliases.js';
 import { canonicalizeMatchText } from '../standardization/canonical-key.js';
-import { API_RELAY_EXCLUSION_REASON, isExcludedApiRelay } from '../standardization/catalog-exclusion.js';
-import { IDENTITY_POLICY_VERSION, normalizeIdentity, type Identity } from '../standardization/identity-policy.js';
-import { assertCurrentPipeline, isCurrentPipeline, pipelineVersionSnapshot, PIPELINE_VERSIONS } from './pipeline-versions.js';
+import { IDENTITY_POLICY_VERSION } from '../standardization/identity-policy.js';
+import { assertCurrentPipeline, isCurrentPipeline, pipelineVersionSnapshot, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION, readStandardizationRequestLimits, assertStandardizationRequestFits } from './standardization-request.js';
 import { buildTagExtractionRequest, type TagExtractionInput, type TagExtractionResponse } from './tag-extraction-request.js';
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest, assertMembershipFeatureRefs } from './membership-feature-request.js';
@@ -68,7 +64,7 @@ export interface AiBatchResultMetadata { firstContentMs?: number | null; respons
 export interface FrozenBatchReference {
   readonly standardizationStage?: 'review';
   readonly generationBatchId?: string;
-  readonly strategyVersion: 'bounded-candidate-v1' | 'evidence-canonical-candidate-v2';
+  readonly strategyVersion: 'approved-candidate-20261119-v1';
   readonly catalogVersion: string;
   readonly inputs: ReadonlyArray<{
     readonly id: string;
@@ -83,12 +79,24 @@ export function productFingerprint(product: { content_fingerprint: string }): st
 }
 const DATABASE_BATCH_SIZE = 500;
 
-function previousDecisionContext(decision: ManualDecision | undefined): JsonValue | null {
-  if (!decision) return null;
-  return { action: decision.action, contentVersion: decision.content_version?.toString() ?? null,
-    fingerprint: decision.content_fingerprint, evidenceKnown: decision.evidence_known,
-    targetIdentity: decision.target_snapshot, reviewedAt: decision.created_at.toISOString(),
-    scope: 'historical_evidence_only', reason: decision.reason.slice(0, 500) };
+function readFrozenReference(value: JsonValue | null): FrozenBatchReference {
+  const reference = value as unknown as FrozenBatchReference | null;
+  if (!reference || reference.strategyVersion !== 'approved-candidate-20261119-v1'
+    || !Array.isArray(reference.inputs) || !Array.isArray(reference.candidates)) {
+    throw new Error('standardization candidate snapshot is stale or invalid');
+  }
+  const candidates = new Set(reference.candidates.map(candidate => candidate.id));
+  const inputs = new Set(reference.inputs.map(input => input.id));
+  if (candidates.size !== reference.candidates.length || inputs.size !== reference.inputs.length
+    || reference.candidates.some(candidate => !/^[1-9]\d*$/u.test(candidate.id)
+      || typeof candidate.definition !== 'string' || !candidate.definition.trim()
+      || typeof candidate.displayName !== 'string' || !candidate.displayName.trim())
+    || reference.inputs.some(input => !Array.isArray(input.candidateStandardProductIds)
+      || new Set(input.candidateStandardProductIds).size !== input.candidateStandardProductIds.length
+      || input.candidateStandardProductIds.some((id: unknown) => typeof id !== 'string' || !candidates.has(id)))) {
+    throw new Error('standardization candidate snapshot has invalid references');
+  }
+  return reference;
 }
 
 function chunks<T>(items: readonly T[], size = DATABASE_BATCH_SIZE): T[][] {
@@ -106,6 +114,7 @@ function candidateDocument(value: JsonValue | null): CandidateDocument {
     || typeof document.family !== 'string'
     || typeof document.product !== 'string'
     || typeof document.tier !== 'string'
+    || typeof document.definition !== 'string' || !document.definition.trim()
     || !Array.isArray(document.aliases)
     || !document.aliases.every(alias => typeof alias === 'string')) {
     throw new Error('candidate catalog upsert document is invalid');
@@ -115,30 +124,9 @@ function candidateDocument(value: JsonValue | null): CandidateDocument {
     family: document.family,
     product: document.product,
     tier: document.tier,
+    definition: document.definition,
     ...(typeof document.displayName === 'string' ? { displayName: document.displayName } : {}),
     aliases: document.aliases,
-  };
-}
-
-function missingDecision(id: string): StandardizationDecision {
-  return {
-    id,
-    status: 'unclassified',
-    ruleIds: [],
-    evidence: [],
-    reasonCode: 'missing_id',
-    reason: '模型响应未包含该商品',
-  };
-}
-
-function publicationTooLargeDecision(id: string): StandardizationDecision {
-  return {
-    id,
-    status: 'unclassified',
-    ruleIds: [],
-    evidence: [],
-    reasonCode: 'publication_too_large',
-    reason: '单个商品的发布负载超过本地安全预算',
   };
 }
 
@@ -147,9 +135,9 @@ function publicationMembers(
   decision: ParsedStandardizationResponse,
 ): PublicationMember[] {
   const decisions = new Map(decision.items.map(item => [item.id, item]));
-  for (const id of decision.missingIds) decisions.set(id, missingDecision(id));
   return members.map(member => {
-    const item = decisions.get(member.input_id.toString()) ?? missingDecision(member.input_id.toString());
+    const item = decisions.get(member.input_id.toString());
+    if (!item) throw new Error('standardization publication is missing an input decision');
     return {
       productId: member.product_id,
       inputId: member.input_id,
@@ -226,44 +214,26 @@ export class AiRepository {
         const decision = manualDecisions.get(product.id);
         return decision?.action !== 'exclude' || !isManualDecisionForCurrentEvidence(decision, { content_version: product.content_version, content_fingerprint: productFingerprint(product) });
       });
-      const relayIds = new Set(products.filter(product => isExcludedApiRelay(buildExtractionPayload({
-        id: String(product.id), name: product.name, sourceName: product.source_name,
-        description: product.source_description || undefined, spec: product.spec,
-        category: product.source_category, sourceData: product.source_data,
-      }), 'text')).map(product => product.id));
-      const protectedMembers = relayIds.size ? await tx.selectFrom('standard_product_members as m')
-        .innerJoin('standard_products as sp', 'sp.id', 'm.standard_product_id')
-        .select('m.product_id').where('m.product_id', 'in', [...relayIds])
-        .where(eb => eb.or([eb('m.assignment_source', '=', 'human'), eb.and([
-          eb('m.publication_state', '=', 'published'), eb('sp.verification_state', '=', 'verified'), eb('sp.merged_into_id', 'is', null),
-        ])])).execute() : [];
-      const protectedIds = new Set(protectedMembers.map(member => member.product_id));
-      products = products.filter(product => !relayIds.has(product.id) || (!product.standardization_locked && !protectedIds.has(product.id)
-        && !isManualDecisionForCurrentEvidence(manualDecisions.get(product.id), { content_version: product.content_version, content_fingerprint: productFingerprint(product) })));
       const groups = new Map<string, typeof products>();
       for (const p of products) {
-        // Equal current evidence with different review history must not inherit
-        // another listing's historical decision through fingerprint deduplication.
         const payload = buildExtractionPayload({ id: p.id.toString(), name: p.name, sourceName: p.source_name,
           description: p.source_description || undefined, spec: p.spec, category: p.source_category, sourceData: p.source_data as JsonValue });
-        const key = JSON.stringify([productFingerprint(p), extractionContextKey(payload), String(manualDecisions.get(p.id)?.id ?? 'none')]);
+        const key = JSON.stringify([productFingerprint(p), extractionContextKey(payload)]);
         const group = groups.get(key) ?? []; group.push(p); groups.set(key, group);
       }
       const unique = [...groups.values()].map(members => ({ product: members[0]!, members, fingerprint: productFingerprint(members[0]!) }));
-      const excludedCount = products.filter(product => relayIds.has(product.id)).length;
-      const needsModel = unique.some(item => !relayIds.has(item.product.id));
+      const needsModel = unique.length > 0;
       const sourceEventByProduct = new Map(input.sourceEvents?.map(event => [event.productId, event.eventId]) ?? []);
       const job = await tx.insertInto('ai_jobs').values({
         status: needsModel ? 'queued' : 'succeeded', total: BigInt(products.length), model: input.model.trim(), auto_apply: true,
-        processed: BigInt(excludedCount), unclassified: BigInt(excludedCount),
+        processed: 0n, unclassified: 0n,
         job_type: input.jobType ?? 'manual_full', trigger_event_id: input.triggerEventId ?? null, priority: input.priority ?? 0,
         source_fetch_run_id: input.sourceFetchRunId ?? null,
-        scope_shop_id: input.scopeShopId ?? null, prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: IDENTITY_POLICY_VERSION,
+        scope_shop_id: input.scopeShopId ?? null, prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION,
         pipeline_versions: jsonb(pipelineVersionSnapshot(input.model.trim())),
         request_window_size: readAiConcurrency(), phase: needsModel ? 'standardizing' : 'completed', finished_at: needsModel ? null : sql`now()`,
       }).returningAll().executeTakeFirstOrThrow();
       await incrementJobProgress(tx, { jobId: job.id, ...extractionProgressDelta('initialize', products.length) });
-      if (excludedCount) await incrementJobProgress(tx, { jobId: job.id, queued: -excludedCount, processed: excludedCount, succeeded: excludedCount });
       if (unique.length) {
         const sized = unique.map(({ product: p, members, fingerprint }) => {
           const payload = buildExtractionPayload({ id: p.id.toString(), name: p.name, sourceName: p.source_name, description: p.source_description || undefined, spec: p.spec, category: p.source_category, sourceData: p.source_data as JsonValue });
@@ -278,9 +248,8 @@ export class AiRepository {
           await tx.insertInto('ai_job_inputs').values(chunk.map(({ product: p, fingerprint, payload, inputBytes, estimatedTokens }) => ({
             job_id: job.id, input_id: p.id, fingerprint, payload: jsonb(payload), input_bytes: BigInt(inputBytes),
             manual_decision_id: manualDecisions.get(p.id)?.id ?? null,
-            previous_decision: manualDecisions.has(p.id) ? jsonb(previousDecisionContext(manualDecisions.get(p.id))) : null,
-            estimated_tokens: BigInt(estimatedTokens), status: relayIds.has(p.id) ? 'succeeded' as const : 'queued' as const,
-            reason_code: relayIds.has(p.id) ? 'not_sellable' : null, round: 0, content_version: p.content_version,
+            estimated_tokens: BigInt(estimatedTokens), status: 'queued' as const,
+            reason_code: null, round: 0, content_version: p.content_version,
           }))).execute();
         }
         const inputMembers = unique.flatMap(({ product: p, members }) => members.map((member) => {
@@ -288,8 +257,8 @@ export class AiRepository {
           return {
             job_id: job.id, input_id: p.id, product_id: member.id, standardization_revision: member.standardization_revision,
             content_version: member.content_version, fingerprint: productFingerprint(member), payload: jsonb(payload),
-            status: relayIds.has(member.id) ? 'unclassified' as const : 'queued' as const,
-            reason_code: relayIds.has(member.id) ? 'not_sellable' : null,
+            status: 'queued' as const,
+            reason_code: null,
           };
         }));
         for (const chunk of chunks(inputMembers)) await tx.insertInto('ai_job_input_members').values(chunk).execute();
@@ -308,8 +277,8 @@ export class AiRepository {
           await tx.insertInto('ai_standardization_executions').values(chunk.map(member => ({
             product_id: member.product_id, content_version: member.content_version, fingerprint: member.fingerprint,
             snapshot: member.payload, event_id: sourceEventByProduct.get(member.product_id) ?? null,
-            job_id: job.id, input_id: member.input_id, status: relayIds.has(member.product_id) ? 'completed' as const : 'registered' as const,
-            completed_at: relayIds.has(member.product_id) ? sql<Date>`now()` : null,
+            job_id: job.id, input_id: member.input_id, status: 'registered' as const,
+            completed_at: null,
           }))).onConflict(conflict => conflict.columns(['product_id', 'content_version', 'fingerprint']).doUpdateSet(eb => ({
             job_id: eb.ref('excluded.job_id'), input_id: eb.ref('excluded.input_id'), event_id: eb.ref('excluded.event_id'),
             snapshot: eb.ref('excluded.snapshot'), status: eb.ref('excluded.status'), completed_at: eb.ref('excluded.completed_at'),
@@ -321,19 +290,9 @@ export class AiRepository {
               and previous_member.standardization_revision = current_product.standardization_revision
               and previous_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb)`)).execute();
         }
-        for (const chunk of chunks(inputMembers.filter(member => relayIds.has(member.product_id)))) {
-          await tx.insertInto('ai_standardization_results').values(chunk.map(member => ({
-            job_id: job.id, product_id: member.product_id, batch_id: null, input_id: member.input_id,
-            content_version: member.content_version, fingerprint: member.fingerprint, status: 'unclassified' as const,
-            standard_product_id: null, tags: jsonb([]), evidence: jsonb([]), reason_code: 'not_sellable', reason: API_RELAY_EXCLUSION_REASON,
-            decision: jsonb({ id: String(member.input_id), status: 'unclassified', ruleIds: ['catalog_model_relay_excluded'], evidence: [],
-              reasonCode: 'not_sellable', reason: API_RELAY_EXCLUSION_REASON, diagnostic: { stage: 'identity', code: 'deterministic_catalog_exclusion' } }),
-            current_assignment_preserved: true, published_at: sql`now()`,
-          }))).execute();
-        }
         const limits = readAiBatchLimits();
         const maxItems = Math.min(limits.maxItems, batchSize);
-        const modelInputs = sized.filter(item => !relayIds.has(item.product.id));
+        const modelInputs = sized;
         const planned = planIndependentStandardizationBatches(modelInputs.map(x => ({ productId: x.product.id, payload: x.payload, inputBytes: x.inputBytes, estimatedTokens: x.estimatedTokens })), { ...limits, maxItems });
         const plannedIds = new Set(planned.flatMap((b) => b.productIds));
         const oversized = modelInputs.filter((x) => !plannedIds.has(x.product.id));
@@ -370,7 +329,7 @@ export class AiRepository {
             }))).onConflict(conflict => conflict.columns(['job_id', 'product_id']).doNothing()).execute();
           }
           await tx.updateTable('ai_standardization_executions').set({ status: 'completed', completed_at: sql`now()` }).where('job_id', '=', job.id).where('input_id', 'in', oversizedInputIds).execute();
-          await tx.updateTable('ai_jobs').set({ unclassified: BigInt(excludedCount + oversizedProductCount), status: planned.length ? 'queued' : 'ready_with_errors', finished_at: planned.length ? null : sql`now()` }).where('id', '=', job.id).execute();
+          await tx.updateTable('ai_jobs').set({ unclassified: BigInt(oversizedProductCount), status: planned.length ? 'queued' : 'ready_with_errors', finished_at: planned.length ? null : sql`now()` }).where('id', '=', job.id).execute();
           await incrementJobProgress(tx, { jobId: job.id, ...extractionProgressDelta('oversized', oversizedProductCount) });
         }
         const memberCounts = new Map(unique.map((item) => [item.product.id, item.members.length]));
@@ -395,7 +354,7 @@ export class AiRepository {
       .where('b.id', '=', batchId)
       .executeTakeFirstOrThrow();
     assertCurrentPipeline(batch);
-    if (batch.rule_version !== IDENTITY_POLICY_VERSION) throw new Error('AI rule version is stale');
+    if (batch.rule_version !== STANDARDIZATION_POLICY_VERSION) throw new Error('AI rule version is stale');
     if (batch.step !== 'request') return;
 
     // Tag requests have no candidate catalog; budget the exact frozen evidence and prompt.
@@ -446,7 +405,7 @@ export class AiRepository {
             if (current.request_budget_used !== 0) return 'reserved';
             signal?.throwIfAborted();
             const reference = current.reference_snapshot as unknown as FrozenBatchReference | null ?? {
-              strategyVersion: 'evidence-canonical-candidate-v2', catalogVersion: '0',
+              strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0',
               inputs: (current.product_ids as string[]).map(id => ({ id, candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } })),
               candidates: [],
             };
@@ -487,7 +446,7 @@ export class AiRepository {
       const estimate = assertStandardizationRequestFits(request, limits);
       signal?.throwIfAborted();
       const trivialSnapshot: FrozenBatchReference = {
-        strategyVersion: 'evidence-canonical-candidate-v2',
+        strategyVersion: 'approved-candidate-20261119-v1',
         catalogVersion: '0',
         inputs: (batch.product_ids as unknown as string[]).map(id => ({ id, candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } })),
         candidates: [],
@@ -509,7 +468,10 @@ export class AiRepository {
         .where('id', '=', batchId).execute();
       return;
     }
-    if (batch.reference_snapshot !== null) return;
+    if (batch.reference_snapshot !== null) {
+      readFrozenReference(batch.reference_snapshot);
+      return;
+    }
 
     const ids = (batch.product_ids as unknown as string[]).map(BigInt);
     // Re-read active members after queueing. A representative can be deleted
@@ -519,7 +481,7 @@ export class AiRepository {
       .innerJoin('ai_job_input_members as m', join => join.onRef('m.job_id', '=', 'i.job_id').onRef('m.input_id', '=', 'i.input_id'))
       .innerJoin('products as p', 'p.id', 'm.product_id')
       .innerJoin('shops as s', 's.id', 'p.shop_id')
-      .select(['i.input_id', 'i.previous_decision', 'm.payload as payload', 'i.input_bytes', 'i.estimated_tokens'])
+      .select(['i.input_id', 'm.payload as payload', 'i.input_bytes', 'i.estimated_tokens'])
       .where('i.job_id', '=', batch.job_id)
       .where('i.input_id', 'in', ids)
       .where('p.deleted_at', 'is', null)
@@ -531,6 +493,7 @@ export class AiRepository {
     signal?.throwIfAborted();
 
     const catalog = await this.loadCandidateCatalog();
+    if (catalog.index.documentCount === 0) throw new DomainConflictError('STANDARD_CATALOG_EMPTY', '已准入标准目录为空，请先完成目录维护');
     const candidateIds = new Set<string>();
     const plannedInputs = inputs.map(input => {
       const result = catalog.index.search(buildCandidateSearchQuery(input.payload));
@@ -542,7 +505,7 @@ export class AiRepository {
       };
     });
     const reference: FrozenBatchReference = {
-      strategyVersion: 'evidence-canonical-candidate-v2',
+      strategyVersion: 'approved-candidate-20261119-v1',
       catalogVersion: catalog.version.toString(),
       inputs: plannedInputs,
       candidates: [...candidateIds]
@@ -555,14 +518,14 @@ export class AiRepository {
     signal?.throwIfAborted();
     const references = new Map(reference.inputs.map(input => [input.id, input]));
     const requestPlan = planStandardizationRequests({ model: batch.model, candidates: reference.candidates, inputs: inputs.map(input => ({
-      productId: input.input_id, payload: input.payload, previousDecision: input.previous_decision, candidateStandardProductIds: references.get(String(input.input_id))!.candidateStandardProductIds,
+      productId: input.input_id, payload: input.payload, candidateStandardProductIds: references.get(String(input.input_id))!.candidateStandardProductIds,
     })) }, readStandardizationRequestLimits());
 
     if (!requestPlan.length && inputs.length) throw new Error('batch has no request inputs');
     await this.database.transaction().execute(async tx => {
       const job = await tx.selectFrom('ai_jobs').select(['id', 'status', 'prompt_version', 'rule_version', 'pipeline_versions', 'pause_requested', 'cancel_requested'])
         .where('id', '=', batch.job_id).forUpdate().executeTakeFirstOrThrow();
-      if (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== IDENTITY_POLICY_VERSION || !isCurrentPipeline(job.pipeline_versions)) throw new Error('AI policy version is stale');
+      if (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== STANDARDIZATION_POLICY_VERSION || !isCurrentPipeline(job.pipeline_versions)) throw new Error('AI policy version is stale');
       if (job.pause_requested || job.cancel_requested || ['paused', 'cancelled', 'failed', 'succeeded'].includes(job.status)) throw new Error(`job status ${job.status} cannot prepare a batch`);
       const current = await tx.selectFrom('ai_job_batches').select(['step', 'reference_snapshot', 'round', 'request_budget_used', 'request_budget_limit'])
         .where('id', '=', batchId).where('job_id', '=', batch.job_id).forUpdate().executeTakeFirstOrThrow();
@@ -606,7 +569,7 @@ export class AiRepository {
       const job = await tx.selectFrom('ai_jobs').select(['status', 'prompt_version', 'rule_version', 'pipeline_versions', 'pause_requested', 'cancel_requested', 'job_type', 'parent_identity_job_id'])
         .where('id', '=', located.job_id).forUpdate().executeTakeFirstOrThrow();
       const batch = await tx.selectFrom('ai_job_batches').selectAll().where('id', '=', batchId).forUpdate().executeTakeFirstOrThrow();
-      if (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== IDENTITY_POLICY_VERSION || !isCurrentPipeline(job.pipeline_versions)) return 'stale_policy' as const;
+      if (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== STANDARDIZATION_POLICY_VERSION || !isCurrentPipeline(job.pipeline_versions)) return 'stale_policy' as const;
       if (job.pause_requested || job.cancel_requested || ['paused', 'cancelled', 'failed', 'succeeded'].includes(job.status)) return 'inactive_job' as const;
       if (batch.step !== 'request' || batch.reference_snapshot === null) return 'reference_not_frozen' as const;
       if (claim?.workerId && (batch.status !== 'running' || batch.claimed_by !== claim.workerId || batch.lease_until === null || batch.lease_until <= new Date())) return 'stale_lease' as const;
@@ -656,7 +619,7 @@ export class AiRepository {
         .execute() : [];
       const activeInputIds = [...new Set(activeMembers.map(member => member.input_id.toString()))].map(BigInt);
       const activeProductCount = activeMembers.length;
-      const currentReference = batch.reference_snapshot as unknown as FrozenBatchReference;
+      const currentReference = readFrozenReference(batch.reference_snapshot);
       const referenceInputSet = new Set(currentReference.inputs.map(input => input.id));
       const activeInputSet = new Set(activeInputIds.map(String));
       const referenceNeedsRefresh = activeInputIds.length !== inputIds.length
@@ -819,16 +782,14 @@ export class AiRepository {
         .forShare()
         .executeTakeFirstOrThrow();
       const standards = await tx.selectFrom('standard_products as sp')
-      .select(['sp.id', 'sp.name', 'sp.canonical_family', 'sp.canonical_product', 'sp.canonical_tier'])
+      .select(['sp.id', 'sp.name', 'sp.catalog_definition', 'sp.canonical_family', 'sp.canonical_product', 'sp.canonical_tier'])
       .where('sp.verification_state', '=', 'verified')
       .where('sp.merged_into_id', 'is', null)
-      .where(sql<boolean>`exists (select 1 from standard_product_members m join products p on p.id = m.product_id
-        where m.standard_product_id = sp.id and m.publication_state = 'published' and p.deleted_at is null)`)
+      .where('sp.catalog_definition', 'is not', null)
       .orderBy('sp.id')
       .execute();
       const ids = standards.map(row => row.id);
       const aliases = ids.length ? await loadCatalogAliases(tx, ids) : [];
-      const displayNames = await loadCandidateDisplayNames(tx, standards);
       const aliasOwners = new Map<string, Set<string>>();
       for (const alias of aliases) {
         const owners = aliasOwners.get(alias.normalized_alias) ?? new Set<string>();
@@ -845,7 +806,7 @@ export class AiRepository {
       }
       const documents: CandidateDocument[] = standards.flatMap(row => {
         if (!row.canonical_family || !row.canonical_product || !row.canonical_tier) return [];
-        return [{ id: row.id.toString(), displayName: displayNames.get(row.id.toString()) ?? row.name, family: row.canonical_family, product: row.canonical_product, tier: row.canonical_tier,
+        return [{ id: row.id.toString(), displayName: row.name, definition: row.catalog_definition!, family: row.canonical_family, product: row.canonical_product, tier: row.canonical_tier,
           aliases: byStandard.get(row.id.toString()) ?? [] }];
       });
       return {
@@ -935,17 +896,17 @@ export class AiRepository {
     }) };
   }
 
-  async getBatchRequest(batchId: bigint, includeInactive = false): Promise<{ jobId: bigint; model: string; stage: 'generate' | 'review'; proposals?: ParsedStandardizationResponse; candidates: readonly CandidateDocument[]; inputs: Array<{ productId: bigint; fingerprint: string; payload: JsonValue; previousDecision: JsonValue | null; candidateStandardProductIds: readonly string[] }> }> {
+  async getBatchRequest(batchId: bigint, includeInactive = false): Promise<{ jobId: bigint; model: string; stage: 'generate' | 'review'; proposals?: ParsedStandardizationResponse; candidates: readonly CandidateDocument[]; inputs: Array<{ productId: bigint; fingerprint: string; payload: JsonValue; candidateStandardProductIds: readonly string[] }> }> {
     const batch = await this.database.selectFrom('ai_job_batches as b').innerJoin('ai_jobs as j', 'j.id', 'b.job_id').select(['b.job_id', 'b.product_ids', 'b.reference_snapshot', 'j.model', 'j.prompt_version', 'j.rule_version', 'j.pipeline_versions']).where('b.id', '=', batchId).executeTakeFirstOrThrow();
     assertCurrentPipeline(batch);
     if (batch.reference_snapshot === null) throw new Error('batch reference snapshot is not frozen');
-    const reference = batch.reference_snapshot as unknown as FrozenBatchReference;
+    const reference = readFrozenReference(batch.reference_snapshot);
     const ids = (batch.product_ids as unknown as string[]).map(BigInt);
     const inputRows = await this.database.selectFrom('ai_job_inputs as i')
       .innerJoin('ai_job_input_members as m', join => join.onRef('m.job_id', '=', 'i.job_id').onRef('m.input_id', '=', 'i.input_id'))
       .innerJoin('products as p', 'p.id', 'm.product_id')
       .innerJoin('shops as s', 's.id', 'p.shop_id')
-      .select(['i.input_id', 'i.fingerprint', 'i.previous_decision', 'm.payload as payload'])
+      .select(['i.input_id', 'i.fingerprint', 'm.payload as payload'])
       .where('i.job_id', '=', batch.job_id).where('i.input_id', 'in', ids)
       .where(eb => includeInactive ? eb.val(true) : eb.and([eb('p.deleted_at', 'is', null), eb('s.deleted_at', 'is', null), eb('s.enabled', '=', true)]))
       .orderBy('i.input_id').orderBy('m.product_id').execute();
@@ -957,14 +918,14 @@ export class AiRepository {
       const generation = await this.database.selectFrom('ai_job_batches').select(['validated_decision', 'step', 'status'])
         .where('id', '=', BigInt(reference.generationBatchId)).where('job_id', '=', batch.job_id).executeTakeFirstOrThrow();
       if (generation.step !== 'done' || generation.status !== 'succeeded' || !generation.validated_decision) throw new Error('standardization generation checkpoint is unavailable');
-      const document = generation.validated_decision as unknown as ParsedStandardizationResponse;
+      const document = generation.validated_decision;
+      assertStandardizationCheckpoint(document);
       const active = new Set(inputs.map(input => String(input.input_id)));
       const items = document.items.filter(item => active.has(item.id));
-      const refs = new Set(items.flatMap(item => item.identity?.kind === 'new' ? [item.identity.ref] : []));
-      proposals = { items, identities: document.identities.filter(identity => refs.has(identity.ref)), missingIds: document.missingIds.filter(id => active.has(id)) };
+      proposals = { items, missingIds: document.missingIds.filter(id => active.has(id)) };
     }
     return { jobId: batch.job_id, model: batch.model, stage: proposals ? 'review' : 'generate', ...(proposals ? { proposals } : {}),
-      candidates: reference.candidates, inputs: inputs.map((row) => ({ productId: row.input_id, fingerprint: row.fingerprint, payload: row.payload, previousDecision: row.previous_decision, candidateStandardProductIds: references.get(row.input_id.toString()) ?? [] })) };
+      candidates: reference.candidates, inputs: inputs.map((row) => ({ productId: row.input_id, fingerprint: row.fingerprint, payload: row.payload, candidateStandardProductIds: references.get(row.input_id.toString()) ?? [] })) };
   }
 
   /** Checkpoint and confirm the frozen stage before queueing review or publication. */
@@ -1258,14 +1219,21 @@ export class AiRepository {
   }
 
   async persistBatchDecision(jobId: bigint, batchId: bigint, decision: ParsedStandardizationResponse, metadata: AiBatchResultMetadata = {}, claim?: { workerId?: string; attempt?: bigint; token?: string }, stage?: 'generate' | 'review'): Promise<void> {
+    if (Object.hasOwn(decision, 'identities')) throw new Error('standardization checkpoint uses an obsolete identity protocol');
+    assertStandardizationCheckpoint({ items: decision.items, missingIds: decision.missingIds });
     const request = await this.getBatchRequest(batchId, true);
     if (stage && stage !== request.stage) throw new Error('standardization checkpoint stage does not match frozen batch');
     stage = request.stage;
+    if (stage === 'generate' && decision.items.some(item => item.review !== undefined || item.reasonCode === 'review_rejected')) {
+      throw new Error('standardization generation cannot supply review decisions');
+    }
+    validateStandardizationEvidence({ items: decision.items, missingIds: decision.missingIds },
+      request.inputs.map(input => ({ id: String(input.productId), payload: input.payload, candidateStandardProductIds: input.candidateStandardProductIds })), request.candidates);
     const needsReview = decision.items.some(isReviewableStandardizationDecision);
     const reviewPlan = stage === 'generate' && needsReview ? planStandardizationReviewRequests(request, decision, readStandardizationRequestLimits()) : undefined;
     await this.database.transaction().execute(async tx => {
       const job = await tx.selectFrom('ai_jobs').select(['prompt_version', 'rule_version', 'pipeline_versions', 'status', 'pause_requested', 'cancel_requested']).where('id', '=', jobId).forUpdate().executeTakeFirstOrThrow();
-      if (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== IDENTITY_POLICY_VERSION || !isCurrentPipeline(job.pipeline_versions)) throw new Error('AI policy version is stale');
+      if (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== STANDARDIZATION_POLICY_VERSION || !isCurrentPipeline(job.pipeline_versions)) throw new Error('AI policy version is stale');
       if (job.pause_requested || job.cancel_requested || ['paused', 'cancelled', 'failed', 'succeeded'].includes(job.status)) throw new Error(`job status ${job.status} cannot persist results`);
       const batch = await tx.selectFrom('ai_job_batches').selectAll().where('id', '=', batchId).where('job_id', '=', jobId).forUpdate().executeTakeFirstOrThrow();
       if (batch.step === 'publish' || batch.step === 'done') {
@@ -1277,9 +1245,8 @@ export class AiRepository {
       const expected = new Set((batch.product_ids as unknown as string[]).map(String));
       const returned = new Set(decision.items.map(item => item.id));
       const missing = new Set(decision.missingIds);
-      if ([...returned].some(id => !expected.has(id)) || [...missing].some(id => !expected.has(id) || returned.has(id)) || returned.size + missing.size !== expected.size) throw new Error('standardization decision does not match batch inputs');
-      const reference = batch.reference_snapshot as unknown as FrozenBatchReference | null;
-      if (!reference) throw new Error('batch reference snapshot is not frozen');
+      if (returned.size !== decision.items.length || missing.size || [...returned].some(id => !expected.has(id)) || returned.size !== expected.size) throw new Error('standardization decision does not match batch inputs');
+      const reference = readFrozenReference(batch.reference_snapshot);
       if (stage !== (reference.standardizationStage === 'review' ? 'review' : 'generate')) throw new Error('standardization checkpoint stage does not match frozen batch');
       if (batch.unknown_requests !== 0 || batch.request_budget_used - batch.confirmed_requests !== 1) throw new Error('standardization checkpoint requires one unresolved request');
       const candidatesByInput = new Map(reference.inputs.map(input => [input.id, new Set(input.candidateStandardProductIds)]));
@@ -1291,8 +1258,8 @@ export class AiRepository {
       if (stage === 'review') {
         if (!request.proposals || decision.items.some(item => isReviewableStandardizationDecision(item) && typeof item.review?.approved !== 'boolean')) throw new Error('standardization review votes are missing');
         const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: decision.items.filter(item => item.review !== undefined).map(item => ({ id: item.id, approved: item.review!.approved })) }), request.proposals);
-        const bounded = validateStandardizationEvidence(reviewed, request.inputs.map(input => ({ id: String(input.productId), payload: input.payload })), request.candidates, 'boundary');
-        if (!isDeepStrictEqual({ items: decision.items, identities: decision.identities, missingIds: decision.missingIds }, bounded)) throw new Error('standardization review changed its original proposals');
+        const bounded = validateStandardizationEvidence(reviewed, request.inputs.map(input => ({ id: String(input.productId), payload: input.payload, candidateStandardProductIds: input.candidateStandardProductIds })), request.candidates);
+        if (!isDeepStrictEqual({ items: decision.items, missingIds: decision.missingIds }, bounded)) throw new Error('standardization review changed its original proposals');
       }
       const completedAt = Date.now();
       const responseCompletedAt = metadata.responseMs != null && Number.isFinite(metadata.responseMs) ? new Date(completedAt) : null;
@@ -1310,8 +1277,8 @@ export class AiRepository {
         if (planned.size !== expected.size || [...expected].some(id => !planned.has(id))) throw new Error('standardization review plan lost inputs');
         await tx.updateTable('ai_job_batches').set({
           ...responseFields, step: 'done', status: 'succeeded', finished_at: sql`now()`,
-          validated_decision: jsonb({ items: decision.items, identities: decision.identities, missingIds: decision.missingIds } as unknown as JsonValue),
-          decision_hash: createHash('sha256').update(JSON.stringify({ items: decision.items, identities: decision.identities, missingIds: decision.missingIds })).digest('hex'),
+          validated_decision: jsonb({ items: decision.items, missingIds: decision.missingIds } as unknown as JsonValue),
+          decision_hash: createHash('sha256').update(JSON.stringify({ items: decision.items, missingIds: decision.missingIds })).digest('hex'),
         }).where('id', '=', batchId).execute();
         const maximum = await tx.selectFrom('ai_job_batches').select(sql<bigint>`coalesce(max(batch_index), -1)`.as('index'))
           .where('job_id', '=', jobId).executeTakeFirstOrThrow();
@@ -1334,28 +1301,13 @@ export class AiRepository {
         return;
       }
 
-      let document: ParsedStandardizationResponse = { items: decision.items, identities: decision.identities, missingIds: decision.missingIds };
-      const identities = new Map(document.identities.map(identity => [identity.ref, identity]));
-      for (const item of document.items) if (item.identity?.kind === 'new' && !identities.has(item.identity.ref)) throw new Error('standardization decision has a dangling identity ref');
+      const document: ParsedStandardizationResponse = { items: decision.items, missingIds: decision.missingIds };
       const members = await tx.selectFrom('ai_job_input_members').select(['product_id', 'input_id']).where('job_id', '=', jobId).where('input_id', 'in', [...expected].map(BigInt)).orderBy('product_id').execute();
-      let plan = planPublicationUnits(publicationMembers(members, document));
+      const plan = planPublicationUnits(publicationMembers(members, document));
       if (plan.oversizedProductIds.length) {
-        const oversized = new Set(plan.oversizedProductIds.map(String));
-        const oversizedInputs = new Set(members.filter(member => oversized.has(member.product_id.toString())).map(member => member.input_id.toString()));
-        document = {
-          ...document,
-          items: document.items.map(item => oversizedInputs.has(item.id)
-            ? { ...publicationTooLargeDecision(item.id), ...(item.review ? { review: item.review } : {}) } : item),
-          missingIds: document.missingIds.filter(id => !oversizedInputs.has(id)),
-        };
-        plan = planPublicationUnits(publicationMembers(members, document));
-        if (plan.oversizedProductIds.length) throw new Error('publication fallback does not fit configured limits');
+        throw new Error('standardization publication exceeds configured limits');
       }
 
-      for (const identity of document.identities) await tx.insertInto('ai_batch_identity_mappings').values({
-        batch_id: batchId, identity_ref: identity.ref, canonical_key: identity.canonicalKey,
-        identity_snapshot: jsonb(identity as unknown as JsonValue), status: 'pending',
-      }).onConflict(conflict => conflict.columns(['batch_id', 'identity_ref']).doNothing()).execute();
       for (let index = 0; index < plan.units.length; index++) await tx.insertInto('ai_publication_units').values({
         batch_id: batchId, unit_index: index, product_ids: jsonb(plan.units[index]!.productIds.map(String)),
         member_count: plan.units[index]!.memberCount, tag_count: plan.units[index]!.tagCount,
@@ -1417,15 +1369,16 @@ export class AiRepository {
       if (!['queued', 'running'].includes(unit.status)) throw new Error(`publication unit status ${unit.status} cannot publish`);
       await tx.updateTable('ai_publication_units').set({ status: 'running', started_at: sql`coalesce(started_at, now())`, error: null }).where('id', '=', unitId).execute();
 
-      const document = batch.validated_decision as unknown as ParsedStandardizationResponse;
-      const reference = batch.reference_snapshot as unknown as FrozenBatchReference | null;
-      if (!reference) throw new Error('batch reference snapshot is not frozen');
+      const document = batch.validated_decision;
+      assertStandardizationCheckpoint(document);
+      const reference = readFrozenReference(batch.reference_snapshot);
       const reviewed = reference.standardizationStage === 'review';
-      if (document.items.some(item => isReviewableStandardizationDecision(item) && (!reviewed || item.review?.approved !== true))) throw new Error('standardization publication requires reviewed decisions');
+      if (!reviewed || document.items.some(item => typeof item.review?.approved !== 'boolean'
+        || isReviewableStandardizationDecision(item) && item.review.approved !== true)) {
+        throw new Error('standardization publication requires reviewed decisions');
+      }
       const candidatesByInput = new Map(reference.inputs.map(input => [input.id, new Set(input.candidateStandardProductIds)]));
       const decisions = new Map(document.items.map(item => [item.id, item]));
-      for (const id of document.missingIds) decisions.set(id, missingDecision(id));
-      const identities = new Map(document.identities.map(identity => [identity.ref, identity]));
       const productIds = (unit.product_ids as unknown as string[]).map(BigInt);
       const members = await tx.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', located.job_id).where('product_id', 'in', productIds).orderBy('product_id').forUpdate().execute();
       const productQuery = tx.selectFrom('products as p')
@@ -1447,10 +1400,12 @@ export class AiRepository {
       const manualDecisions = await readLatestManualDecisions(tx, productIds);
       const affectedStandardProductIds = new Set(previousMemberships.map(member => member.standard_product_id));
       let visibleChange = false;
+      await suppressManualDecisionTrigger(tx, productIds);
       for (const member of members) {
         // A locally reopened publication unit may also contain successful members.
         if (['classified', 'unclassified', 'cancelled'].includes(member.status)) continue;
-        const decision = decisions.get(member.input_id.toString()) ?? missingDecision(member.input_id.toString());
+        const decision = decisions.get(member.input_id.toString());
+        if (!decision) throw new Error('standardization publication is missing an input decision');
         let publishedDecision = decision;
         const product = current.get(member.product_id.toString());
         let status: 'classified' | 'unclassified' = decision.status;
@@ -1461,40 +1416,18 @@ export class AiRepository {
         const sourceChanged = !product || product.content_version !== member.content_version
           || product.standardization_revision !== member.standardization_revision || productFingerprint(product) !== member.fingerprint;
         const choice = decision.identity;
-        const proposedIdentity = choice?.kind === 'new' ? identities.get(choice.ref)
-          : choice?.kind === 'existing' ? reference.candidates.find(candidate => candidate.id === choice.standardProductId) : undefined;
-        const providerConflict = product ? serviceEvidenceRequirement({ name: product.name, spec: product.spec, sourceCategory: product.source_category, sourceData: product.source_data }) : null;
+        const proposedIdentity = choice?.kind === 'existing' ? reference.candidates.find(candidate => candidate.id === choice.standardProductId) : undefined;
         if (sourceChanged) {
           status = 'unclassified'; reasonCode = 'source_changed'; reason = '商品资料、人工归类或商铺状态已变化';
         } else if (product.standardization_locked
-          || isManualDecisionForCurrentEvidence(manualDecisions.get(member.product_id), { content_version: product.content_version, content_fingerprint: productFingerprint(product) })
-          || (previousMemberships.some(previous => previous.product_id === member.product_id && previous.assignment_source === 'human')
-            && (!manualDecisions.get(member.product_id)?.evidence_known || manualDecisions.get(member.product_id)?.content_version === product.content_version))) {
+          || isManualDecisionForCurrentEvidence(manualDecisions.get(member.product_id), { content_version: product.content_version, content_fingerprint: productFingerprint(product) })) {
           status = 'unclassified'; reasonCode = 'manual_decision_preserved'; reason = '保留持续锁定或当前证据版本的人工决定';
-        } else if (status === 'classified' && providerConflict) {
-          status = 'unclassified'; reasonCode = 'insufficient_evidence'; reason = providerConflict;
         } else if (status === 'classified' && decision.identity) {
-          standardProductId = await this.resolvePublishedIdentity(tx, batchId, decision, identities,
+          standardProductId = await this.resolvePublishedIdentity(tx, decision,
             candidatesByInput.get(member.input_id.toString()) ?? new Set(), proposedIdentity);
           if (standardProductId === null) {
             status = 'unclassified'; reasonCode = 'publication_blocked'; reason = '标准商品身份不可发布';
-            const mapping = decision.identity.kind === 'new' ? await tx.selectFrom('ai_batch_identity_mappings').select('error')
-              .where('batch_id', '=', batchId).where('identity_ref', '=', decision.identity.ref).executeTakeFirst() : undefined;
-            publicationFailure = mapping?.error?.slice(0, 100) || (decision.identity.kind === 'existing' ? 'candidate_unavailable' : 'identity_unavailable');
-          }
-          // Canonical lookup may follow aliases; publish only the reviewed identity.
-          if (standardProductId !== null) {
-            const final = await tx.selectFrom('standard_products').select(['canonical_family', 'canonical_product', 'canonical_tier', 'verification_state', 'merged_into_id'])
-              .where('id', '=', standardProductId).forUpdate().executeTakeFirst();
-            const finalAvailable = final && !final.merged_into_id && final.verification_state === 'verified';
-            const finalIdentity = finalAvailable ? normalizeIdentity({ family: final.canonical_family, product: final.canonical_product, tier: final.canonical_tier }) : undefined;
-            let finalConflict = !finalAvailable ? '最终标准商品已失效'
-              : !proposedIdentity || !isDeepStrictEqual(finalIdentity, normalizeIdentity(proposedIdentity)) ? '最终身份与 LLM 复核身份不一致' : null;
-            finalConflict ??= await ensureStandardServiceEvidence(tx, standardProductId, { name: product.name, spec: product.spec, sourceCategory: product.source_category, sourceData: product.source_data });
-            if (finalConflict) {
-              status = 'unclassified'; standardProductId = null; reasonCode = finalAvailable ? 'identity_conflict' : 'publication_blocked'; reason = finalConflict;
-              publicationFailure = finalAvailable ? 'final_identity_conflict' : 'final_identity_unavailable';
-            }
+            publicationFailure = 'candidate_unavailable';
           }
         }
 
@@ -1502,7 +1435,7 @@ export class AiRepository {
           publishedDecision = { id: decision.id, status, ruleIds: [], evidence: [], reasonCode, reason,
             ...(decision.review ? { review: decision.review } : {}),
             diagnostic: { stage: reasonCode === 'identity_conflict' ? 'identity' : 'publication', code: publicationFailure ?? reasonCode ?? 'publication_blocked',
-              ...(proposedIdentity ? { proposedIdentity: normalizeIdentity(proposedIdentity) } : {}),
+              ...(proposedIdentity ? { proposedIdentity: { family: proposedIdentity.family, product: proposedIdentity.product, tier: proposedIdentity.tier } } : {}),
               ...(choice?.kind === 'existing' ? { standardProductId: choice.standardProductId } : {}),
             } };
         }
@@ -1515,19 +1448,25 @@ export class AiRepository {
             assignment_source: 'ai', decision_version: located.job_id }).execute();
           visibleChange = true;
         }
+        const unmatched = status === 'unclassified' && reasonCode === 'unmatched' && decision.review?.approved === true;
+        if (unmatched) {
+          const removed = await tx.deleteFrom('standard_product_members')
+            .where('product_id', '=', member.product_id).executeTakeFirst();
+          visibleChange ||= removed.numDeletedRows > 0n;
+        }
         await tx.insertInto('ai_standardization_results').values({
           job_id: located.job_id, product_id: member.product_id, batch_id: batchId, input_id: member.input_id,
           content_version: member.content_version, fingerprint: member.fingerprint, status,
           standard_product_id: status === 'classified' ? standardProductId : null,
           tags: jsonb([]), evidence: jsonb(decision.evidence as unknown as JsonValue),
           reason_code: status === 'classified' ? null : reasonCode ?? 'invalid_response', reason,
-          decision: jsonb(publishedDecision as unknown as JsonValue), current_assignment_preserved: status === 'unclassified', published_at: sql`now()`,
+          decision: jsonb(publishedDecision as unknown as JsonValue), current_assignment_preserved: status === 'unclassified' && !unmatched, published_at: sql`now()`,
         }).onConflict(conflict => conflict.columns(['job_id', 'product_id']).doUpdateSet({
           batch_id: batchId, input_id: member.input_id, content_version: member.content_version, fingerprint: member.fingerprint, status,
           standard_product_id: status === 'classified' ? standardProductId : null,
           tags: jsonb([]), evidence: jsonb(decision.evidence as unknown as JsonValue),
           reason_code: status === 'classified' ? null : reasonCode ?? 'invalid_response', reason,
-          decision: jsonb(publishedDecision as unknown as JsonValue), current_assignment_preserved: status === 'unclassified', published_at: sql`now()`,
+          decision: jsonb(publishedDecision as unknown as JsonValue), current_assignment_preserved: status === 'unclassified' && !unmatched, published_at: sql`now()`,
         })).execute();
         await tx.updateTable('ai_job_input_members').set({ status, reason_code: status === 'classified' ? null : reasonCode ?? 'invalid_response', output: jsonb(publishedDecision as unknown as JsonValue) }).where('job_id', '=', located.job_id).where('product_id', '=', member.product_id).execute();
         await tx.updateTable('ai_standardization_executions').set({ status: 'completed', completed_at: sql`now()` }).where('job_id', '=', located.job_id).where('product_id', '=', member.product_id).execute();
@@ -1542,60 +1481,15 @@ export class AiRepository {
     });
   }
 
-  private async resolvePublishedIdentity(tx: Transaction<DatabaseSchema>, batchId: bigint, decision: StandardizationDecision, identities: ReadonlyMap<string, ParsedStandardizationResponse['identities'][number]>, allowedExistingIds: ReadonlySet<string>, frozenIdentity: Identity | undefined): Promise<bigint | null> {
-    if (!decision.identity) return null;
-    if (decision.identity.kind === 'existing') {
-      if (!allowedExistingIds.has(decision.identity.standardProductId) || !frozenIdentity) return null;
-      const id = BigInt(decision.identity.standardProductId);
-      const row = await tx.selectFrom('standard_products').select(['id', 'verification_state']).where('id', '=', id).where('merged_into_id', 'is', null)
-        .where('canonical_family', '=', frozenIdentity.family).where('canonical_product', '=', frozenIdentity.product).where('canonical_tier', '=', frozenIdentity.tier)
-        .forUpdate().executeTakeFirst();
-      return row?.verification_state === 'verified' ? row.id : null;
-    }
-    const identity = identities.get(decision.identity.ref);
-    if (!identity) return null;
-    const mapping = await tx.selectFrom('ai_batch_identity_mappings').select(['standard_product_id', 'status', 'identity_snapshot']).where('batch_id', '=', batchId).where('identity_ref', '=', identity.ref).forUpdate().executeTakeFirstOrThrow();
-    const resolution = await resolveCanonicalIdentity(tx, identity);
-    if (decision.review?.approved && resolution.status === 'resolved'
-      && !isDeepStrictEqual(normalizeIdentity(identity), normalizeIdentity(resolution.identity))) {
-      await tx.updateTable('ai_batch_identity_mappings').set({ status: 'conflict', error: 'reviewed_identity_changed', resolved_at: sql`now()` })
-        .where('batch_id', '=', batchId).where('identity_ref', '=', identity.ref).execute();
-      return null;
-    }
-    if (resolution.status === 'conflict') {
-      await tx.updateTable('ai_batch_identity_mappings').set({ status: 'conflict', error: resolution.reason, resolved_at: sql`now()` }).where('batch_id', '=', batchId).where('identity_ref', '=', identity.ref).execute();
-      return null;
-    }
-    if (mapping.status === 'resolved' && mapping.standard_product_id !== null) {
-      if (resolution.status !== 'resolved' || resolution.standardProductId !== mapping.standard_product_id) return null;
-      const frozen = mapping.identity_snapshot as unknown as Identity;
-      const resolved = await tx.selectFrom('standard_products').select(['id', 'verification_state']).where('id', '=', mapping.standard_product_id).where('merged_into_id', 'is', null)
-        .where('canonical_family', '=', frozen.family).where('canonical_product', '=', frozen.product).where('canonical_tier', '=', frozen.tier)
-        .forUpdate().executeTakeFirst();
-      return resolved?.verification_state === 'verified' ? resolved.id : null;
-    }
-    let standard: { id: bigint; verification_state: string } | undefined = resolution.status === 'resolved'
-      ? { id: resolution.standardProductId, verification_state: 'verified' } : undefined;
-    if (!standard) {
-      standard = await tx.insertInto('standard_products').values({
-        name: canonicalProductDisplayName(identity), platform: identity.family, standard_key: identity.canonicalKey,
-        canonical_platform: identity.family, canonical_family: identity.family, canonical_product: identity.product, canonical_tier: identity.tier,
-        verification_state: 'verified', verification_run_id: null, verification_reason: jsonb({ reason: identity.reason, evidence: identity.evidence } as unknown as JsonValue),
-      }).onConflict(conflict => conflict.column('standard_key').where('standard_key', 'is not', null).doNothing()).returning(['id', 'verification_state']).executeTakeFirst();
-      standard ??= await tx.selectFrom('standard_products').select(['id', 'verification_state']).where('standard_key', '=', identity.canonicalKey).where('merged_into_id', 'is', null).forUpdate().executeTakeFirst();
-    }
-    if (!standard || standard.verification_state !== 'verified') {
-      await tx.updateTable('ai_batch_identity_mappings').set({ status: 'conflict', error: 'identity_quarantined', resolved_at: sql`now()` }).where('batch_id', '=', batchId).where('identity_ref', '=', identity.ref).execute();
-      return null;
-    }
-    // Confirmed aliases may resolve to a different spelling. Freeze the resolved
-    // target's identity so later publication units cannot follow an edited ID.
-    const resolvedIdentity = await tx.selectFrom('standard_products').select(['canonical_family', 'canonical_product', 'canonical_tier'])
-      .where('id', '=', standard.id).forUpdate().executeTakeFirstOrThrow();
-    await tx.updateTable('ai_batch_identity_mappings').set({ status: 'resolved', standard_product_id: standard.id,
-      identity_snapshot: jsonb({ family: resolvedIdentity.canonical_family, product: resolvedIdentity.canonical_product, tier: resolvedIdentity.canonical_tier }),
-      error: null, resolved_at: sql`now()` }).where('batch_id', '=', batchId).where('identity_ref', '=', identity.ref).execute();
-    return standard.id;
+  private async resolvePublishedIdentity(tx: Transaction<DatabaseSchema>, decision: StandardizationDecision, allowedExistingIds: ReadonlySet<string>, frozenIdentity: CandidateDocument | undefined): Promise<bigint | null> {
+    if (decision.identity?.kind !== 'existing' || !allowedExistingIds.has(decision.identity.standardProductId) || !frozenIdentity?.definition) return null;
+    const row = await tx.selectFrom('standard_products').select(['id', 'verification_state'])
+      .where('id', '=', BigInt(decision.identity.standardProductId)).where('merged_into_id', 'is', null)
+      .where('canonical_family', '=', frozenIdentity.family).where('canonical_product', '=', frozenIdentity.product).where('canonical_tier', '=', frozenIdentity.tier)
+      .where('catalog_definition', '=', frozenIdentity.definition)
+      .where('name', '=', frozenIdentity.displayName!)
+      .forUpdate().executeTakeFirst();
+    return row?.verification_state === 'verified' ? row.id : null;
   }
 
   getJobProgress(jobId: bigint, since?: bigint): Promise<ProgressSnapshot | null> {
@@ -2063,19 +1957,23 @@ export class AiRepository {
     const afterId = parseCursor(input.cursor);
     const { rows } = await sql<Record<string, unknown>>`
       select p.id as "productId", p.name, p.spec, s.name as "shopName", r.job_id as "sourceJobId",
-        case when p.standardization_locked or (d.content_version = p.content_version and d.content_fingerprint = p.content_fingerprint) then 'manual_decision_preserved'
+        case when p.standardization_locked or (d.evidence_known and d.content_version = p.content_version and d.content_fingerprint = p.content_fingerprint) then 'manual_decision_preserved'
           when r.job_id is null then 'not_processed'
           when r.content_version <> p.content_version or im.standardization_revision <> p.standardization_revision
             or r.fingerprint <> p.content_fingerprint or im.fingerprint <> p.content_fingerprint then 'source_changed'
           when r.status='unclassified' then r.reason_code else 'unassigned' end as "reasonCode",
-        r.reason, b.error as "requestError", d.action as "manualAction", d.reason as "manualReason"
+        r.reason, r.evidence, b.error as "requestError", d.action as "manualAction", d.reason as "manualReason"
       from products p
       join shops s on s.id=p.shop_id and s.enabled and s.deleted_at is null
       left join lateral (
         select d.* from product_standardization_decisions d where d.product_id = p.id order by d.id desc limit 1
       ) d on true
       left join lateral (
-        select r.* from ai_standardization_results r where r.product_id=p.id order by r.job_id desc limit 1
+        select r.* from ai_standardization_results r join ai_jobs result_job on result_job.id=r.job_id
+        where r.product_id=p.id and result_job.prompt_version=${STANDARDIZATION_PROMPT_VERSION}
+          and result_job.rule_version=${STANDARDIZATION_POLICY_VERSION}
+          and result_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+        order by r.job_id desc limit 1
       ) r on true
       left join ai_job_input_members im on im.job_id=r.job_id and im.product_id=p.id
       left join ai_job_batches b on b.id=r.batch_id

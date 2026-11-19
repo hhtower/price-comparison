@@ -136,6 +136,28 @@ describe('AdminPage', () => {
     expect(within(region).getByText('暂无处理摘要')).toBeInTheDocument();
   });
 
+  test('未匹配商品可在待处理中查看原文证据，且不标为技术失败', async () => {
+    vi.stubGlobal('fetch', vi.fn(async input => {
+      const url = new URL(input, 'http://localhost');
+      return jsonResponse(paged(url.pathname === '/api/admin/products' ? [{
+        id: '3', name: '待匹配商品', processingSummary: {
+          reasonCode: 'unmatched', processingDisposition: 'retry_available', reason: '未匹配到已准入标准商品',
+          evidence: [{ path: 'name', quote: '待匹配商品' }],
+        },
+      }] : []));
+    }));
+    render(<AdminPage initialAuthenticated />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '商品管理' }));
+    await user.click(await screen.findByRole('button', { name: '待处理' }));
+    const region = screen.getByRole('region', { name: '待处理商品' });
+    expect(await within(region).findByText('未匹配，待处理')).toBeInTheDocument();
+    expect(within(region).queryByText('处理失败，可重试')).not.toBeInTheDocument();
+    await user.click(within(region).getByText('查看匹配证据'));
+    expect(region.querySelector('details[open]')).toHaveTextContent('待匹配商品');
+    expect(within(region).getByRole('button', { name: '选择标准商品' })).toBeInTheDocument();
+  });
+
   test.each([
     ['商品管理', '/api/admin/products', { latestPrice: '2.006', latestCurrency: 'CNY' }, 'CNY 2.01'],
     ['商品管理', '/api/admin/products', { latestPrice: '12.50', latestCurrency: 'CNY' }, 'CNY 12.5'],

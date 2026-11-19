@@ -97,6 +97,7 @@ export interface ProductTable {
 export interface ProductPlatformTable { name: string; enabled: Generated<boolean> }
 
 export interface StandardProductTable {
+  catalog_definition: string | null;
   aliases: Generated<string[]>;
   service_evidence: GeneratedJsonbColumn;
   hidden: Generated<boolean>;

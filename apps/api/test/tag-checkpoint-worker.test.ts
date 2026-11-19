@@ -26,7 +26,7 @@ test('validated tag results checkpoint directly without a separate outcome audit
         assert.equal(stage, 'extract');
       },
     } as never,
-    modelCall: async () => { events.push('model'); return { items: [], identities: [], missingIds: [], tagExtractionItems: [], tagExtractionStage: 'extract' as const, metadata: { responseId: 'mock' } }; },
+    modelCall: async () => { events.push('model'); return { items: [], missingIds: [], tagExtractionItems: [], tagExtractionStage: 'extract' as const, metadata: { responseId: 'mock' } }; },
   });
   try { await worker.runOnce(); await settled.promise; } finally { await worker.stop(); }
   assert.deepEqual(events, ['reserve', 'model', 'checkpoint', 'complete']);
@@ -72,7 +72,7 @@ test('failure before a durable checkpoint remains terminal instead of sending an
       recordBatchRequestOutcome: async () => { auditWrites++; },
       checkpointTagExtractionBatchDecision: async () => { throw new Error('database unavailable'); },
     } as never,
-    modelCall: async () => { calls++; return { items: [], identities: [], missingIds: [], tagExtractionItems: [] }; },
+    modelCall: async () => { calls++; return { items: [], missingIds: [], tagExtractionItems: [] }; },
   });
   try { await worker.runOnce(); await settled.promise; } finally { await worker.stop(); }
   assert.equal(calls, 1);

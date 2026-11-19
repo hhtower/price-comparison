@@ -255,6 +255,8 @@ describe('membership catalog features share standard identities', { skip: !proce
   });
 
   test('candidate change documents contain identity without feature classification', async () => {
+    await db.updateTable('standard_products').set({ catalog_definition: 'Approved ChatGPT Plus subscription' })
+      .where('id', '=', BigInt(ids.base!)).execute();
     const version = await recordCandidateCatalogChanges(db, [BigInt(ids.account!), BigInt(ids.top_up!)], 'test-membership');
     const result = await sql<{ document: { membershipKind: string } }>`select document from catalog_index_changes
       where version = ${version.version} and operation = 'upsert'`.execute(db);

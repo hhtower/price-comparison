@@ -6,7 +6,9 @@ import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
-import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
+import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
+import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
+import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
 import { jsonb, type AiJobStatus, type DatabaseSchema, type JsonValue, type StandardizationMemberStatus } from '../src/database/types.js';
 import { reconcileNameConsensus } from '../src/standardization/name-consensus-repair.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
@@ -72,6 +74,9 @@ async function work(productId: bigint, options: WorkOptions = {}) {
   const product = await db.selectFrom('products').selectAll().where('id', '=', productId).executeTakeFirstOrThrow();
   const job = await db.insertInto('ai_jobs').values({
     model: 'mock', total: 1n, status: options.status ?? 'succeeded', cancel_requested: options.cancelRequested ?? false,
+    prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION,
+    ...(options.status && ['queued', 'running', 'paused', 'ready'].includes(options.status)
+      ? { pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) } : {}),
   }).returning('id').executeTakeFirstOrThrow();
   await db.insertInto('ai_job_inputs').values({
     job_id: job.id, input_id: productId, fingerprint: options.fingerprint ?? product.content_fingerprint, payload: jsonb({}),
@@ -99,7 +104,7 @@ async function result(productId: bigint, approved: JsonValue | undefined, option
     content_version: options.resultVersion ?? options.contentVersion ?? product.content_version,
     fingerprint: options.fingerprint ?? product.content_fingerprint, status: approved === true ? 'classified' : 'unclassified',
     standard_product_id: approved === true ? minorityId : null,
-    reason_code: approved === true ? null : approved === false ? 'review_rejected' : 'insufficient_evidence',
+    reason_code: approved === true ? null : approved === false ? 'review_rejected' : 'unmatched',
     reason: 'Fixture decision', decision: jsonb(approved === undefined ? {} : { review: { approved } }),
   }).execute();
   return jobId;
@@ -107,17 +112,22 @@ async function result(productId: bigint, approved: JsonValue | undefined, option
 
 async function failedReview(productId: bigint, errorSource: string, options: WorkOptions & { stage?: string } = {}) {
   const jobId = await work(productId, { ...options, status: 'running', memberStatus: 'processing' });
+  await db.updateTable('ai_jobs').set({ pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) }).where('id', '=', jobId).execute();
+  const product = await db.selectFrom('products').select('name').where('id', '=', productId).executeTakeFirstOrThrow();
+  const inputs = [{ id: String(productId), candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } }];
+  const document = parseStandardizationProtocolResponse({
+    items: [{ id: String(productId), standardProductId: null, evidence: [{ path: 'name', quote: product.name }] }],
+  }, inputs);
+  const reference = { strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs, candidates: [] };
   const generation = await db.insertInto('ai_job_batches').values({
     job_id: jobId, batch_index: 0n, product_ids: jsonb([String(productId)]), product_count: 1n,
-    status: 'succeeded', step: 'done', validated_decision: jsonb({
-      items: [{ id: String(productId), status: 'unclassified', reasonCode: 'insufficient_evidence',
-        reason: 'Frozen proposal', ruleIds: [], evidence: [] }], identities: [], missingIds: [],
-    }),
+    status: 'succeeded', step: 'done', validated_decision: jsonb(document as unknown as JsonValue),
+    reference_snapshot: jsonb(reference),
   }).returning('id').executeTakeFirstOrThrow();
   await db.insertInto('ai_job_batches').values({
     job_id: jobId, batch_index: 1n, product_ids: jsonb([String(productId)]), product_count: 1n,
     status: 'failed', step: 'request', error_source: errorSource,
-    reference_snapshot: jsonb({ standardizationStage: options.stage ?? 'review', generationBatchId: String(generation.id) }),
+    reference_snapshot: jsonb({ ...reference, standardizationStage: options.stage ?? 'review', generationBatchId: String(generation.id) }),
   }).execute();
   await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, jobId));
   const terminal = await db.selectFrom('ai_standardization_results').select(['decision', 'reason_code'])
@@ -244,10 +254,10 @@ for (const assigned of [true, false]) {
     await assertRepairable(productId);
   });
 
-  test(`${label}: a generation-stage technical failure keeps legacy repair`, async () => {
+  test(`${label}: a current generation-stage technical failure prevents unchecked repair`, async () => {
     const productId = await fixture(assigned);
     await failedReview(productId, 'invalid_response', { stage: 'generate' });
-    await assertRepairable(productId);
+    await assertProtected(productId);
   });
 
   for (const approved of [true, false]) {

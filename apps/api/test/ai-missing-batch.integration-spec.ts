@@ -7,8 +7,10 @@ import { AiRepository } from '../src/ai/ai.repository.js';
 import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
+import { createAiWorker, createOpenAiModelCall } from '../src/ai/ai.worker.js';
+import { JobsRepository } from '../src/jobs/jobs.repository.js';
 
-describe('missing-ID retry batch limits', () => {
+describe('standardization omissions and attribute missing-ID retry limits', () => {
   let database: Kysely<DatabaseSchema>;
   let admin: Pool;
   let schema = '';
@@ -32,7 +34,7 @@ describe('missing-ID retry batch limits', () => {
     delete process.env.PG_SCHEMA;
   });
 
-  async function missingJob(batchSize = 2) {
+  async function missingJob(batchSize = 2, attribute = true) {
     const shop = await database.insertInto('shops').values({
       platform: 'integration', url: `https://shop.invalid/missing-${++sequence}`, name: `missing-${sequence}`,
       enabled: true, deleted_at: null, last_fetch_at: null, last_error: null,
@@ -50,6 +52,8 @@ describe('missing-ID retry batch limits', () => {
     }
     const job = await new AiRepository(database).createJob({ model: `missing-${sequence}`, productIds, batchSize });
     assert.equal(job.batches.length, batchSize === 1 ? 2 : 1);
+    if (!attribute) return job;
+    await database.updateTable('ai_jobs').set({ job_type: 'tag_extraction' }).where('id', '=', job.id).execute();
     await database.updateTable('ai_job_input_members').set({ status: 'unclassified', reason_code: 'missing_id' })
       .where('job_id', '=', job.id).execute();
     await database.updateTable('ai_job_inputs').set({ status: 'succeeded', reason_code: 'missing_id' })
@@ -58,6 +62,54 @@ describe('missing-ID retry batch limits', () => {
       .where('job_id', '=', job.id).execute();
     return job;
   }
+
+  test('incomplete standardization output fails the entire streamed request without checkpointing or automatic retry', async () => {
+    const job = await missingJob(2, false);
+    const repository = new AiRepository(database);
+    const jobs = new JobsRepository(database);
+    let calls = 0;
+    const settled = Promise.withResolvers<void>();
+    const call = createOpenAiModelCall(repository, {
+      AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: job.model,
+    }, async (_url, init) => {
+      calls++;
+      assert.equal(JSON.parse(String(init?.body)).stream, true);
+      const request = await repository.getBatchRequest(job.batches[0]!.id);
+      const first = request.inputs[0]!;
+      const name = (first.payload as { name: string }).name;
+      const content = JSON.stringify({ items: [{
+        id: String(first.productId), standardProductId: null, evidence: [{ path: 'name', quote: name }],
+      }] });
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+    });
+    const worker = createAiWorker({
+      claimNext: jobs.claimNext.bind(jobs), heartbeat: jobs.heartbeat.bind(jobs),
+      complete: jobs.complete.bind(jobs), fail: jobs.fail.bind(jobs), requeue: jobs.requeue.bind(jobs),
+      onSettled: () => settled.resolve(),
+    }, { repository, modelCall: call, workerId: 'missing-standardization', concurrency: 1 });
+    try {
+      assert.equal(await worker.runOnce(), 1);
+      await settled.promise;
+      assert.equal(await worker.runOnce(), 0);
+      assert.equal(calls, 1);
+      const batches = await database.selectFrom('ai_job_batches')
+        .select(['status', 'error_source', 'round', 'validated_decision', 'request_budget_used', 'confirmed_requests'])
+        .where('job_id', '=', job.id).execute();
+      assert.deepEqual(batches, [{
+        status: 'failed', error_source: 'invalid_response', round: 0, validated_decision: null,
+        request_budget_used: 1, confirmed_requests: 1,
+      }]);
+      const results = await database.selectFrom('ai_standardization_results').select(['status', 'reason_code'])
+        .where('job_id', '=', job.id).execute();
+      assert.deepEqual(results, [
+        { status: 'unclassified', reason_code: 'invalid_response' }, { status: 'unclassified', reason_code: 'invalid_response' },
+      ]);
+      const members = await database.selectFrom('ai_job_input_members').select('missing_reprocess_count').where('job_id', '=', job.id).execute();
+      assert.ok(members.every(member => member.missing_reprocess_count === 0));
+      const finished = await database.selectFrom('ai_jobs').select('status').where('id', '=', job.id).executeTakeFirstOrThrow();
+      assert.equal(finished.status, 'ready_with_errors');
+    } finally { await worker.stop(); }
+  });
 
   async function withLimits(limits: { items: number; bytes: number; tokens: number }, action: () => Promise<void>) {
     const keys = ['AI_BATCH_MAX_ITEMS', 'AI_BATCH_MAX_INPUT_BYTES', 'AI_BATCH_MAX_INPUT_TOKENS'] as const;
@@ -138,10 +190,11 @@ describe('missing-ID retry batch limits', () => {
     assert.ok(oversized.length > 0);
     const batches = await database.selectFrom('ai_job_batches').select(['product_ids', 'status']).where('job_id', '=', job.id).where('round', '=', 1).execute();
     assert.deepEqual(batches.flatMap(batch => batch.product_ids as string[]), inputs.filter(input => Number(input.input_bytes) <= smaller).map(input => input.input_id.toString()));
-    const results = await database.selectFrom('ai_standardization_results').select(['input_id', 'status', 'reason_code'])
+    const results = await database.selectFrom('ai_job_input_members').select(['input_id', 'status', 'reason_code', 'output'])
       .where('job_id', '=', job.id).orderBy('input_id').execute();
-    assert.deepEqual(results.filter(row => oversized.includes(row.input_id.toString())).map(row => [row.status, row.reason_code]),
-      oversized.map(() => ['unclassified', 'input_too_large']));
+    assert.deepEqual(results.filter(row => oversized.includes(row.input_id.toString()))
+      .map(row => [row.status, row.reason_code, (row.output as { reasonCode: string }).reasonCode]),
+      oversized.map(() => ['unclassified', 'input_too_large', 'input_too_large']));
     const stranded = await database.selectFrom('ai_job_input_members').select('product_id').where('job_id', '=', job.id)
       .where('status', '=', 'queued').where('input_id', 'in', oversized.map(BigInt)).execute();
     assert.equal(stranded.length, 0);
@@ -168,10 +221,10 @@ describe('missing-ID retry batch limits', () => {
       .where('job_id', '=', job.id).execute();
     assert.deepEqual(members.map(row => [row.status, row.reason_code]),
       [['unclassified', 'input_too_large'], ['unclassified', 'input_too_large']]);
-    const results = await database.selectFrom('ai_standardization_results').select(['status', 'reason_code'])
+    const results = await database.selectFrom('ai_job_input_members').select('output')
       .where('job_id', '=', job.id).execute();
-    assert.deepEqual(results.map(row => [row.status, row.reason_code]),
-      [['unclassified', 'input_too_large'], ['unclassified', 'input_too_large']]);
+    assert.deepEqual(results.map(row => (row.output as { reasonCode: string }).reasonCode), ['input_too_large', 'input_too_large']);
+    assert.deepEqual(await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', job.id).execute(), []);
     const finished = await database.selectFrom('ai_jobs').select(['status', 'processed', 'unclassified'])
       .where('id', '=', job.id).executeTakeFirstOrThrow();
     assert.deepEqual(finished, { status: 'ready_with_errors', processed: 2n, unclassified: 2n });

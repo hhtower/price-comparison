@@ -11,16 +11,19 @@ import { ProductsRepository } from '../src/products/products.repository.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
-import type { ParsedStandardizationResponse } from '../src/ai/ai.schemas.js';
+import { parseStandardizationProtocolResponse, type ParsedStandardizationResponse } from '../src/ai/ai.schemas.js';
 import { buildStandardizationRequest, estimateStandardizationRequest, STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
-import { PIPELINE_VERSIONS } from '../src/ai/pipeline-versions.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { recordManualDecisions } from '../src/standardization/decision-history.js';
 import { validateStandardizationEvidence } from '../src/ai/standardization-evidence.js';
+import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
+import { CATALOG_ALIAS_VERSION } from '../src/standardization/catalog-aliases.js';
 import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
 
 let db: Kysely<DatabaseSchema>;
 let admin: Pool;
 let schema: string;
+let plusId: bigint, pro5xId: bigint, teamId: bigint, team5xId: bigint;
 before(async () => {
   assert.ok(process.env.TEST_DATABASE_URL, 'TEST_DATABASE_URL is required');
   schema = `ai_correctness_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
@@ -29,6 +32,10 @@ before(async () => {
   process.env.PG_SCHEMA = schema;
   db = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path=${schema},public`, max: 4 }) }) });
   await migrateToLatest(db);
+  plusId = await seedStandard('ChatGPT Plus', 'openai', 'chatgpt', 'plus');
+  pro5xId = await seedStandard('ChatGPT Pro 5x', 'openai', 'chatgpt', 'pro_5x');
+  teamId = await seedStandard('ChatGPT Team', 'openai', 'chatgpt', 'team');
+  team5xId = await seedStandard('ChatGPT Team 5x', 'openai', 'chatgpt', 'team_5x');
 });
 after(async () => {
   await db?.destroy();
@@ -37,6 +44,13 @@ after(async () => {
   delete process.env.PG_SCHEMA;
 });
 
+async function seedStandard(name: string, family: string, product: string, tier: string) {
+  const row = await db.insertInto('standard_products').values({ catalog_definition: name + ': only this product and plan; duration and delivery are offer attributes.', name, canonical_family: family,
+    canonical_product: product, canonical_tier: tier, verification_state: 'verified',
+    standard_key: buildCanonicalStandardKey({ family, product, tier }) }).returning('id').executeTakeFirstOrThrow();
+  await db.transaction().execute(tx => recordCandidateCatalogChanges(tx, [row.id], CATALOG_ALIAS_VERSION));
+  return row.id;
+}
 async function product(name: string) {
   const shop = await db.insertInto('shops').values({ name: 'correctness', platform: 'integration', url: `https://shop.invalid/${randomUUID()}`, enabled: true }).returning('id').executeTakeFirstOrThrow();
   const source = { name, spec: 'monthly', source_category: '', source_data: {} };
@@ -65,6 +79,7 @@ test('jobs freeze independent pipeline versions and reject a changed schema befo
   const source = await product('ChatGPT Plus pipeline versions');
   const task = await prepare([source]);
   assert.equal(task.job.prompt_version, STANDARDIZATION_PROMPT_VERSION);
+  assert.equal(task.job.rule_version, STANDARDIZATION_POLICY_VERSION);
   assert.equal((task.job.pipeline_versions as Record<string, unknown>).schema, PIPELINE_VERSIONS.schema);
   await db.updateTable('ai_jobs').set({ pipeline_versions: jsonb({ ...PIPELINE_VERSIONS, schema: 'stale' }) }).where('id', '=', task.job.id).execute();
   await assert.rejects(task.repository.getBatchRequest(task.batch), { code: 'AI_POLICY_STALE' });
@@ -145,105 +160,67 @@ test('human quarantine is preserved on same evidence and changed evidence can be
   const source = await product('ChatGPT Plus quarantine evidence');
   const seed = await prepare([source]); await save(seed, decision([source])); await publish(seed);
   await db.updateTable('standard_product_members').set({ assignment_source: 'human', publication_state: 'quarantined' }).where('product_id', '=', source.id).execute();
+  await historicalReview(source.id, 'quarantine', '当前原始证据已人工核对');
   const retry = await prepare([source]); await save(retry, decision([source])); await publish(retry);
   assert.equal((await db.selectFrom('standard_product_members').select('publication_state').where('product_id', '=', source.id).executeTakeFirstOrThrow()).publication_state, 'quarantined');
   const next = { ...source, name: 'ChatGPT Pro 5x changed listing' };
   await db.updateTable('products').set({ name: next.name, content_version: source.content_version + 1n, content_fingerprint: productContentFingerprint(next), standardization_revision: sql`standardization_revision + 1` }).where('id', '=', source.id).execute();
   await db.deleteFrom('standard_product_members').where('product_id', '=', source.id).execute();
-  const changed = await prepare([next]); await save(changed, decision([next], 'pro_5x')); await publish(changed);
+  const changed = await prepare([next]); await save(changed, decision([next], pro5xId)); await publish(changed);
   const current = await db.selectFrom('standard_product_members as m').innerJoin('standard_products as s', 's.id', 'm.standard_product_id').select(['m.assignment_source', 's.canonical_tier']).where('m.product_id', '=', source.id).executeTakeFirstOrThrow();
   assert.deepEqual(current, { assignment_source: 'ai', canonical_tier: 'pro_5x' });
   const history = await sql<{ content_version: bigint }>`select content_version from product_standardization_decisions where product_id = ${source.id}`.execute(db);
   assert.ok(history.rows.some(row => row.content_version === source.content_version));
 });
 
-test('a manually reviewed API listing can change provider, but cannot reuse the old provider identity', async () => {
+test('changed provider evidence uses a fresh reviewed target and preserves the old manual audit', async () => {
+  const alphaId = await seedStandard('Alpha API 接口服务', 'alpha', 'api_service', 'standard');
+  const betaId = await seedStandard('Beta API 接口服务', 'beta', 'api_service', 'standard');
   const row = await product('Alpha API 接口服务');
   const products = new ProductsRepository(db);
   const base = { shopId: row.shop_id, externalId: row.external_id, name: row.name, spec: row.spec, normalizedKey: row.normalized_key, url: row.url };
   await products.upsertBatch([{ ...base, sourceData: { apiEndpoint: 'https://alpha.example/v1' } }]);
   const alpha = (await products.findById(row.id))!;
-  const response = (p: { id: bigint; name: string }, provider: string): ParsedStandardizationResponse => {
-    const identity = { family: provider, product: 'api_service', tier: 'standard' };
-    const canonicalKey = buildCanonicalStandardKey(identity);
-    return { identities: [{ ...identity, ref: String(p.id), canonicalKey, reason: '明确服务端点', evidence: [{ path: 'name', quote: p.name }] }],
-      items: [{ id: String(p.id), status: 'classified', identity: { kind: 'new', ref: String(p.id), canonicalKey }, ruleIds: [],
-        evidence: [{ path: 'name', quote: p.name }], reason: '明确服务端点', reasonCode: null }], missingIds: [] };
-  };
-  const seed = await prepare([alpha]); await save(seed, response(alpha, 'alpha')); await publish(seed);
-  const original = await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', row.id).executeTakeFirstOrThrow();
-  await products.assignStandardProduct(row.id, original.standard_product_id);
+  const seed = await prepare([alpha]); await save(seed, decision([alpha], alphaId)); await publish(seed);
+  await products.assignStandardProduct(row.id, alphaId);
   await products.upsertBatch([{ ...base, name: 'Beta API 接口服务', sourceData: { apiEndpoint: 'https://beta.example/v1' } }]);
   const beta = (await products.findById(row.id))!;
   assert.ok(beta.content_version > alpha.content_version);
   assert.equal((await db.selectFrom('standard_product_members').where('product_id', '=', row.id).execute()).length, 0);
-  const staleIdentity = await prepare([beta]);
-  const request = await staleIdentity.repository.getBatchRequest(staleIdentity.batch);
-  assert.equal((request.inputs[0]!.previousDecision as Record<string, unknown>).action, 'assign');
+  const changed = await prepare([beta]);
+  const request = await changed.repository.getBatchRequest(changed.batch);
+  assert.equal(Object.hasOwn(request.inputs[0]!, 'previousDecision'), false);
   assert.equal((request.inputs[0]!.payload as Record<string, unknown>).name, beta.name);
-  await save(staleIdentity, response(beta, 'alpha')); await publish(staleIdentity);
-  assert.equal((await db.selectFrom('ai_standardization_results').select('reason_code').where('job_id', '=', staleIdentity.job.id).executeTakeFirstOrThrow()).reason_code, 'identity_conflict');
-  const changed = await prepare([beta]); await save(changed, response(beta, 'beta')); await publish(changed);
-  const assignment = await db.selectFrom('standard_product_members as m').innerJoin('standard_products as s', 's.id', 'm.standard_product_id')
-    .select(['s.id', 's.canonical_family', 'm.assignment_source']).where('m.product_id', '=', row.id).executeTakeFirstOrThrow();
-  assert.equal(assignment.canonical_family, 'beta');
-  assert.equal(assignment.assignment_source, 'ai');
-  assert.notEqual(assignment.id, original.standard_product_id);
-  const oldStandard = await db.selectFrom('standard_products').select('service_evidence').where('id', '=', original.standard_product_id).executeTakeFirstOrThrow();
-  assert.deepEqual((oldStandard.service_evidence as Record<string, unknown>).endpoints, ['https://alpha.example/v1']);
-  await products.assignStandardProduct(row.id, assignment.id);
+  await save(changed, decision([beta], betaId)); await publish(changed);
+  assert.deepEqual(await db.selectFrom('standard_product_members').select(['standard_product_id', 'assignment_source'])
+    .where('product_id', '=', row.id).executeTakeFirstOrThrow(), { standard_product_id: betaId, assignment_source: 'ai' });
+  const history = await db.selectFrom('product_standardization_decisions').select(['standard_product_id', 'content_version'])
+    .where('product_id', '=', row.id).execute();
+  assert.ok(history.some(item => item.standard_product_id === alphaId && item.content_version === alpha.content_version));
+  await products.assignStandardProduct(row.id, betaId);
   await products.upsertBatch([{ ...base, name: beta.name, sourceData: { apiEndpoint: 'https://beta.example/v1', price: 99, stock: 5 } }]);
   assert.equal((await products.findById(row.id))!.content_version, beta.content_version);
   assert.equal((await db.selectFrom('standard_product_members').select('assignment_source').where('product_id', '=', row.id).executeTakeFirstOrThrow()).assignment_source, 'human');
 });
 
-for (const scenario of [
-  { name: '通用 API 接口服务', endpoint: null, expected: 'service_provider_missing' },
-  { name: '通用 API 接口服务（附赠教程）', endpoint: 'https://beta.invalid/v1', expected: 'service_provider_conflict' },
-  { name: '通用 API 接口服务同站套餐', endpoint: 'https://alpha.invalid/v1', expected: null },
-  { name: '通用 API 接口服务同站套餐（附赠教程）', endpoint: 'https://alpha.invalid/v1', expected: null },
-]) test(`durable provider publication: ${scenario.name} ${scenario.endpoint ?? 'missing'}`, async () => {
-  const identity = { family: 'provider', product: 'api_service', tier: 'standard' };
-  const canonicalKey = buildCanonicalStandardKey(identity);
-  const target = await db.selectFrom('standard_products').select('id').where('standard_key', '=', canonicalKey).executeTakeFirst()
-    ?? await db.insertInto('standard_products').values({ name: 'Generic relay credits', canonical_family: identity.family, canonical_product: identity.product, canonical_tier: identity.tier, standard_key: canonicalKey, verification_state: 'verified', service_evidence: jsonb({ state: 'verified', source: 'manual', endpoints: ['https://alpha.invalid/v1'], brands: [] }) }).returning('id').executeTakeFirstOrThrow();
-  const source = await product(scenario.name);
-  if (scenario.endpoint) await new ProductsRepository(db).update(source.id, { sourceData: { apiEndpoint: scenario.endpoint } });
-  const task = await prepare([source]);
-  const payload = (await task.repository.getBatchRequest(task.batch)).inputs[0]!.payload as { name: string };
-  const evidence = [{ path: 'name', quote: payload.name }];
-  await save(task, { identities: [{ ...identity, ref: String(source.id), canonicalKey, reason: '明确额度销售对象', evidence }],
-    items: [{ id: String(source.id), status: 'classified', identity: { kind: 'new', ref: String(source.id), canonicalKey }, ruleIds: [], evidence, reason: '明确额度销售对象', reasonCode: null }], missingIds: [] });
-  await publish(task);
-  const result = await db.selectFrom('ai_standardization_results').select(['status', 'reason', 'standard_product_id']).where('job_id', '=', task.job.id).where('product_id', '=', source.id).executeTakeFirstOrThrow();
-  assert.equal(result.status, scenario.expected ? 'unclassified' : 'classified');
-  const member = await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', source.id).executeTakeFirst();
-  if (scenario.expected) { assert.equal(result.reason, scenario.expected); assert.equal(result.standard_product_id, null); assert.equal(member, undefined); }
-  else { assert.equal(result.standard_product_id, target.id); assert.equal(member?.standard_product_id, target.id); }
-  assert.deepEqual((await db.selectFrom('standard_products').select('service_evidence').where('id', '=', target.id).executeTakeFirstOrThrow()).service_evidence, { state: 'verified', source: 'manual', endpoints: ['https://alpha.invalid/v1'], brands: [] });
-});
-
-test('review history grouping freezes quarantine separately from identical evidence with no history', async () => {
+test('deduplicated evidence still preserves each member manual decision without exposing history', async () => {
   const reviewed = await product('ChatGPT Plus identical quarantine grouping');
   const untouched = await product(reviewed.name);
   await historicalReview(reviewed.id, 'quarantine', '仅第一件当前证据隔离');
   const task = await prepare([reviewed, untouched]);
-  const inputs = await db.selectFrom('ai_job_inputs').select(['input_id', 'fingerprint', 'previous_decision']).where('job_id', '=', task.job.id).orderBy('input_id').execute();
-  assert.equal(inputs.length, 2);
+  const inputs = await db.selectFrom('ai_job_inputs').select(['input_id', 'fingerprint', 'manual_decision_id']).where('job_id', '=', task.job.id).orderBy('input_id').execute();
+  assert.equal(inputs.length, 1);
   assert.ok(inputs.every(row => row.fingerprint === reviewed.content_fingerprint));
+  assert.notEqual(inputs[0]!.manual_decision_id, null);
   const request = await task.repository.getBatchRequest(task.batch);
-  const prior = request.inputs.find(input => input.productId === reviewed.id)!.previousDecision as Record<string, unknown>;
-  assert.equal(prior.action, 'quarantine'); assert.equal(prior.reason, '仅第一件当前证据隔离');
-  assert.equal(prior.fingerprint, reviewed.content_fingerprint);
-  assert.equal(request.inputs.find(input => input.productId === untouched.id)!.previousDecision, null);
-  await historicalReview(reviewed.id, 'exclude', '较晚复核不改变已冻结历史');
-  assert.deepEqual((await task.repository.getBatchRequest(task.batch)).inputs.map(input => input.previousDecision), request.inputs.map(input => input.previousDecision));
-  const members = await db.selectFrom('ai_job_input_members').select(['product_id', 'input_id']).where('job_id', '=', task.job.id).orderBy('product_id').execute();
-  assert.deepEqual(members, [{ product_id: reviewed.id, input_id: reviewed.id }, { product_id: untouched.id, input_id: untouched.id }]);
-  await task.repository.cancelJob(task.job.id);
+  assert.ok(request.inputs.every(input => !Object.hasOwn(input, 'previousDecision')));
+  await historicalReview(reviewed.id, 'exclude', '较晚复核不改变已冻结原始证据');
+  assert.deepEqual((await task.repository.getBatchRequest(task.batch)).inputs, request.inputs);
+  await save(task, decision([reviewed])); await publish(task);
+  assert.deepEqual(await db.selectFrom('standard_product_members').select('product_id').where('product_id', 'in', [reviewed.id, untouched.id]).execute(), [{ product_id: untouched.id }]);
 });
 
-test('review history grouping keeps two old decisions separate after evidence becomes identical', async () => {
+test('identical current evidence deduplicates without treating old manual decisions as current evidence', async () => {
   const first = await product('原先销售对象甲'); const second = await product('原先销售对象乙');
   const products = new ProductsRepository(db);
   await historicalReview(first.id, 'quarantine', '甲旧证据隔离');
@@ -253,18 +230,14 @@ test('review history grouping keeps two old decisions separate after evidence be
   const task = await prepare([first, second]);
   const current = (await products.findById(first.id))!;
   const request = await task.repository.getBatchRequest(task.batch);
-  assert.equal(request.inputs.length, 2);
+  assert.equal(request.inputs.length, 1);
   assert.ok(request.inputs.every(input => input.fingerprint === current.content_fingerprint));
-  for (const [productId, action, reason, oldFingerprint] of [[first.id, 'quarantine', '甲旧证据隔离', first.content_fingerprint], [second.id, 'exclude', '乙旧证据排除', second.content_fingerprint]] as const) {
-    const input = request.inputs.find(input => input.productId === productId)!;
-    const previous = input.previousDecision as Record<string, unknown>;
-    assert.equal(previous.action, action); assert.equal(previous.reason, reason); assert.equal(previous.fingerprint, oldFingerprint);
-    assert.equal(previous.contentVersion, '1'); assert.equal(previous.scope, 'historical_evidence_only');
-    assert.equal((input.payload as Record<string, unknown>).name, current.name);
-    assert.notEqual(previous.fingerprint, input.fingerprint);
-  }
-  const members = await db.selectFrom('ai_job_input_members').select(['product_id', 'input_id']).where('job_id', '=', task.job.id).orderBy('product_id').execute();
-  assert.deepEqual(members, [{ product_id: first.id, input_id: first.id }, { product_id: second.id, input_id: second.id }]);
+  assert.ok(request.inputs.every(input => !Object.hasOwn(input, 'previousDecision')));
+  assert.ok(request.inputs.every(input => (input.payload as Record<string, unknown>).name === current.name));
+  const history = await db.selectFrom('product_standardization_decisions').select(['product_id', 'content_fingerprint'])
+    .where('product_id', 'in', [first.id, second.id]).orderBy('product_id').execute();
+  assert.deepEqual(history, [{ product_id: first.id, content_fingerprint: first.content_fingerprint },
+    { product_id: second.id, content_fingerprint: second.content_fingerprint }]);
   await task.repository.cancelJob(task.job.id);
 });
 
@@ -273,16 +246,15 @@ test('review history grouping still reuses identical evidence without any manual
   const task = await prepare([first, second]);
   const request = await task.repository.getBatchRequest(task.batch);
   assert.equal(request.inputs.length, 1); assert.equal(request.inputs[0]!.fingerprint, first.content_fingerprint);
-  assert.equal(request.inputs[0]!.previousDecision, null);
+  assert.equal(Object.hasOwn(request.inputs[0]!, 'previousDecision'), false);
   const members = await db.selectFrom('ai_job_input_members').select(['product_id', 'input_id']).where('job_id', '=', task.job.id).orderBy('product_id').execute();
   assert.deepEqual(members, [{ product_id: first.id, input_id: first.id }, { product_id: second.id, input_id: first.id }]);
   await task.repository.cancelJob(task.job.id);
 });
-function decision(products: { id: bigint; name: string }[], tier = 'plus'): ParsedStandardizationResponse {
-  return {
-    identities: products.map(p => ({ ref: String(p.id), family: 'openai', product: 'chatgpt', tier, canonicalKey: buildCanonicalStandardKey({ family: 'openai', product: 'chatgpt', tier }), reason: 'mock', evidence: [{ path: 'name', quote: p.name }] })),
-    items: products.map(p => ({ id: String(p.id), status: 'classified', identity: { kind: 'new', ref: String(p.id), canonicalKey: buildCanonicalStandardKey({ family: 'openai', product: 'chatgpt', tier }) }, ruleIds: [], evidence: [{ path: 'name', quote: p.name }], reason: 'mock', reasonCode: null })), missingIds: [],
-  };
+function decision(products: { id: bigint; name: string }[], standardProductId = plusId): ParsedStandardizationResponse {
+  return parseStandardizationProtocolResponse({ items: products.map(product => ({
+    id: String(product.id), standardProductId: String(standardProductId), evidence: [{ path: 'name', quote: product.name }],
+  })) }, products.map(product => ({ id: String(product.id), candidateStandardProductIds: [String(standardProductId)] })));
 }
 async function save(task: Prepared, response: ParsedStandardizationResponse, approve?: (proposal: ParsedStandardizationResponse['items'][number]) => boolean) {
   task.batch = await saveStandardizationThroughReview(db, task.repository, {
@@ -293,42 +265,73 @@ async function publish(task: Prepared, attempt = 1n) {
   await task.repository.publishBatch(task.batch, await claim(task.batch, 'publish', attempt));
 }
 
-test('hidden verified identities accept publication without changing their display flag', async () => {
+test('hidden verified candidates accept publication without changing their display flag', async () => {
   const source = await product('ChatGPT Go hidden identity');
+  const standardId = await seedStandard('ChatGPT Go', 'openai', 'chatgpt', 'go');
+  await db.updateTable('standard_products').set({ hidden: true }).where('id', '=', standardId).execute();
   const task = await prepare([source]);
-  const fields = { family: 'openai', product: 'chatgpt', tier: 'go' };
-  const standard = await db.insertInto('standard_products').values({ name: 'hidden Go', canonical_family: fields.family,
-    canonical_product: fields.product, canonical_tier: fields.tier, standard_key: buildCanonicalStandardKey(fields),
-    hidden: true, verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
-  await save(task, decision([source], 'go')); await publish(task);
-  const result = await db.selectFrom('ai_standardization_results').select(['status', 'standard_product_id']).where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
-  assert.deepEqual(result, { status: 'classified', standard_product_id: standard.id });
-  assert.equal((await db.selectFrom('standard_products').select('hidden').where('id', '=', standard.id).executeTakeFirstOrThrow()).hidden, true);
+  await save(task, decision([source], standardId)); await publish(task);
+  assert.deepEqual(await db.selectFrom('ai_standardization_results').select(['status', 'standard_product_id']).where('job_id', '=', task.job.id).executeTakeFirstOrThrow(),
+    { status: 'classified', standard_product_id: standardId });
+  assert.equal((await db.selectFrom('standard_products').select('hidden').where('id', '=', standardId).executeTakeFirstOrThrow()).hidden, true);
 });
 
-test('a failed sibling identity is removed before batch storage and canonical publication', async () => {
+test('legacy verified standards with no approved definition stay outside frozen candidates', async () => {
+  const name = 'Legacy unadmitted product';
+  const targetId = await seedStandard(name, 'legacy', 'unadmitted', 'standard');
+  await db.updateTable('standard_products').set({ catalog_definition: null }).where('id', '=', targetId).execute();
+  const source = await product(name);
+  const task = await prepare([source]);
+  const request = await task.repository.getBatchRequest(task.batch);
+  assert.ok(!request.candidates.some(candidate => candidate.id === String(targetId)));
+  await assert.rejects(save(task, decision([source], targetId)), { reasonCode: 'invalid_response' });
+  assert.deepEqual(await db.selectFrom('standard_product_members').select('product_id').where('product_id', '=', source.id).execute(), []);
+  assert.equal((await db.selectFrom('standard_products').select('hidden').where('id', '=', targetId).executeTakeFirstOrThrow()).hidden, false);
+  await task.repository.cancelJob(task.job.id);
+});
+
+test('frozen names and applicability definitions must still match at publication', async () => {
+  for (const field of ['name', 'definition', 'admission'] as const) {
+    const name = `Frozen boundary ${field}`;
+    const targetId = await seedStandard(name, `boundary_${field}`, 'plan', 'standard');
+    const source = await product(name);
+    const task = await prepare([source]);
+    const request = await task.repository.getBatchRequest(task.batch);
+    const candidate = request.candidates.find(row => row.id === String(targetId))!;
+    assert.equal(candidate.displayName, name);
+    assert.equal(candidate.definition, `${name}: only this product and plan; duration and delivery are offer attributes.`);
+    await save(task, decision([source], targetId));
+    await db.updateTable('standard_products').set(field === 'name' ? { name: `${name} changed` }
+      : { catalog_definition: field === 'definition' ? 'A different admitted plan boundary' : null }).where('id', '=', targetId).execute();
+    await publish(task);
+    assert.deepEqual(await db.selectFrom('ai_standardization_results').select(['status', 'reason_code'])
+      .where('job_id', '=', task.job.id).executeTakeFirstOrThrow(), { status: 'unclassified', reason_code: 'publication_blocked' });
+    assert.deepEqual(await db.selectFrom('standard_product_members').select('product_id').where('product_id', '=', source.id).execute(), []);
+  }
+});
+
+test('one invalid citation rejects the complete batch without partial persistence or standard creation', async () => {
   const sources = [await product('ChatGPT Team 5x invalid first'), await product('ChatGPT Team 5x valid second')];
   const task = await prepare(sources);
-  const response = decision(sources, 'team_5x');
-  response.identities[0]!.evidence = [{ path: 'name', quote: 'UNVALIDATED_QUOTE_MARKER' }];
-  response.identities[0]!.reason = 'UNVALIDATED_REASON_MARKER';
+  const response = decision(sources, team5xId);
+  response.items[0]!.evidence = [{ path: 'name', quote: 'UNVALIDATED_QUOTE_MARKER' }];
   const request = await task.repository.getBatchRequest(task.batch);
-  const validated = validateStandardizationEvidence(response, request.inputs.map(input => ({ id: String(input.productId), payload: input.payload })), request.candidates);
-  await save(task, validated);
-  const saved = await db.selectFrom('ai_job_batches').select('validated_decision').where('id', '=', task.batch).executeTakeFirstOrThrow();
-  assert.doesNotMatch(JSON.stringify(saved.validated_decision), /UNVALIDATED_/);
-  await publish(task);
-  const result = await db.selectFrom('ai_standardization_results').select(['product_id', 'status', 'standard_product_id']).where('job_id', '=', task.job.id).orderBy('product_id').execute();
-  assert.deepEqual(result.map(row => row.status), ['unclassified', 'classified']);
-  const standard = await db.selectFrom('standard_products').select('verification_reason').where('id', '=', result[1]!.standard_product_id!).executeTakeFirstOrThrow();
-  assert.doesNotMatch(JSON.stringify(standard.verification_reason), /UNVALIDATED_/);
+  const before = await db.selectFrom('standard_products').select('id').orderBy('id').execute();
+  assert.throws(() => validateStandardizationEvidence(response, request.inputs.map(input => ({
+    id: String(input.productId), payload: input.payload, candidateStandardProductIds: input.candidateStandardProductIds,
+  })), request.candidates), { reasonCode: 'evidence_invalid' });
+  await assert.rejects(save(task, response), { reasonCode: 'evidence_invalid' });
+  assert.equal((await db.selectFrom('ai_job_batches').select('validated_decision').where('id', '=', task.batch).executeTakeFirstOrThrow()).validated_decision, null);
+  assert.deepEqual(await db.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', task.job.id).execute(), []);
+  assert.deepEqual(await db.selectFrom('standard_products').select('id').orderBy('id').execute(), before);
+  await task.repository.cancelJob(task.job.id);
 });
 
 test('admin identity edits refresh warm candidate indexes and reject changed frozen candidates', async () => {
   const seed = await product('YouTube Individual seed correctness');
+  const youtubeId = await seedStandard('YouTube Individual', 'youtube', 'youtube', 'individual');
   const initial = await prepare([seed]);
-  const initialDecision = decision([seed], 'individual');
-  Object.assign(initialDecision.identities[0]!, { family: 'youtube', product: 'youtube' });
+  const initialDecision = decision([seed], youtubeId);
   await save(initial, initialDecision); await publish(initial);
   const standard = await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', seed.id).executeTakeFirstOrThrow();
   const source = await product('YouTube Individual frozen correctness');
@@ -340,9 +343,7 @@ test('admin identity edits refresh warm candidate indexes and reject changed fro
   const next = await prepare([await product('YouTube Individual next correctness')], task.repository);
   const refreshed = await task.repository.getBatchRequest(next.batch);
   assert.equal(refreshed.candidates.find(c => c.id === id)?.tier, 'family');
-  const response = decision([source]);
-  response.identities = [];
-  response.items[0]!.identity = { kind: 'existing', standardProductId: id };
+  const response = decision([source], standard.standard_product_id);
   await save(task, response); await publish(task);
   const result = await db.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
   assert.deepEqual(result, { status: 'unclassified', reason_code: 'publication_blocked' });
@@ -353,19 +354,26 @@ test('admin identity edits refresh warm candidate indexes and reject changed fro
   await next.repository.cancelJob(next.job.id);
 });
 
-test('batch-wide resolved identity cannot silently change before the next publication unit', async () => {
+test('legacy resolved identity mappings cannot redirect a frozen existing ID', async () => {
   const source = await product('ChatGPT Plus mapping correctness');
   const task = await prepare([source]);
   const response = decision([source]);
   await save(task, response);
   const fields = { family: 'mapping', product: 'unrelated', tier: 'standard' };
-  const wrong = await db.insertInto('standard_products').values({ name: 'Unrelated mapping target', platform: fields.family,
+  const wrong = await db.insertInto('standard_products').values({ catalog_definition: 'Explicit fixture admission: only the named product and plan; duration and delivery do not change identity.', name: 'Unrelated mapping target', platform: fields.family,
     canonical_family: fields.family, canonical_product: fields.product, canonical_tier: fields.tier,
     standard_key: buildCanonicalStandardKey(fields), verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
-  await db.updateTable('ai_batch_identity_mappings').set({ status: 'resolved', standard_product_id: wrong.id }).where('batch_id', '=', task.batch).execute();
+  const mappings = await db.selectFrom('ai_batch_identity_mappings').selectAll().where('batch_id', '=', task.batch).execute();
+  assert.deepEqual(mappings, []);
+  await db.insertInto('ai_batch_identity_mappings').values({
+    batch_id: task.batch, identity_ref: `existing:${plusId}`, canonical_key: buildCanonicalStandardKey({ family: 'openai', product: 'chatgpt', tier: 'plus' }),
+    status: 'resolved', standard_product_id: wrong.id, identity_snapshot: jsonb({ family: 'mapping', product: 'unrelated', tier: 'standard' }),
+  }).execute();
   await publish(task);
   const result = await db.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
-  assert.deepEqual(result, { status: 'unclassified', reason_code: 'publication_blocked' });
+  assert.deepEqual(result, { status: 'classified', reason_code: null });
+  assert.equal((await db.selectFrom('standard_product_members').select('standard_product_id')
+    .where('product_id', '=', source.id).executeTakeFirstOrThrow()).standard_product_id, plusId);
 });
 
 test('manual publication retry restores failed members, preserves successes and reuses the saved request', async () => {
@@ -381,7 +389,9 @@ test('manual publication retry restores failed members, preserves successes and 
   await new JobsRepository(db).fail('ai_batch', task.batch, 'correctness', 'local retry exhausted', { retry: false, retryClass: 'local' });
   await task.repository.retryJob(task.job.id);
   const reopened = await db.selectFrom('ai_job_input_members').select(['product_id', 'status']).where('job_id', '=', task.job.id).orderBy('product_id').execute();
-  assert.deepEqual(reopened.map(m => m.status), ['classified', 'queued']);
+  const reopenedByProduct = new Map(reopened.map(member => [member.product_id, member.status]));
+  assert.equal(reopenedByProduct.get(members[0]!.id), 'classified');
+  assert.equal(reopenedByProduct.get(members[1]!.id), 'queued');
   const job = await db.selectFrom('ai_jobs').select('phase').where('id', '=', task.job.id).executeTakeFirstOrThrow();
   assert.equal(job.phase, 'standardizing');
   const progress = await task.repository.getJobProgress(task.job.id);
@@ -407,9 +417,9 @@ test('entering publication starts a fresh bounded local attempt budget', async (
 
 test('clearing a canonical identity removes it from an already warmed candidate index', async () => {
   const seed = await product('Microsoft Outlook account clear seed');
+  const outlookId = await seedStandard('Microsoft Outlook account', 'microsoft', 'outlook', 'standard');
   const initial = await prepare([seed]);
-  const initialDecision = decision([seed], 'standard');
-  Object.assign(initialDecision.identities[0]!, { family: 'microsoft', product: 'outlook' });
+  const initialDecision = decision([seed], outlookId);
   await save(initial, initialDecision);
   await publish(initial);
   const assigned = await db.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', seed.id).executeTakeFirstOrThrow();
@@ -427,34 +437,26 @@ test('clearing a canonical identity removes it from an already warmed candidate 
 test('binary review rejects an identity conflicting with the sold non-SMS product', async () => {
   const source = await product('ChatGPT Plus actual identity');
   const task = await prepare([source]);
-  await save(task, decision([source], 'team'), () => false);
+  await save(task, decision([source], teamId), () => false);
   await publish(task);
   const result = await db.selectFrom('ai_standardization_results').select(['status', 'reason_code']).where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
   assert.deepEqual(result, { status: 'unclassified', reason_code: 'review_rejected' });
   assert.equal((await db.selectFrom('standard_product_members').select('product_id').where('product_id', '=', source.id).execute()).length, 0);
 });
 
-test('local catalog bounds reject invalid identities and binary review rejects fake generic tools', async () => {
-  for (const [productName, name, approved] of [
-    ['grok_super', 'Grok Super会员', true], ['grok_heavy', 'Grok Heavy会员', true],
-    ['x_account', 'X账号', true], ['residential_proxy', '住宅IP代理', true],
-    ['grok_tool', 'Grok Super会员', false], ['x_account_bundle', 'X账号', false],
-  ] as const) {
-    const source = await product(name);
-    const task = await prepare([source]);
-    const identity = { family: 'generic', product: productName!, tier: 'standard' };
-    const canonicalKey = buildCanonicalStandardKey(identity);
-    const response = decision([source]);
-    Object.assign(response.identities[0]!, identity, { canonicalKey });
-    response.items[0]!.identity = { kind: 'new', ref: String(source.id), canonicalKey };
-    await save(task, response, () => approved);
-    await publish(task);
-    const result = await db.selectFrom('ai_standardization_results').select(['status', 'reason_code'])
-      .where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
-    assert.deepEqual(result, { status: 'unclassified', reason_code: approved ? 'publication_blocked' : 'review_rejected' }, productName);
-    assert.equal((await db.selectFrom('standard_product_members').where('product_id', '=', source.id).execute()).length, 0);
-    assert.equal((await db.selectFrom('standard_products').where('standard_key', '=', canonicalKey).execute()).length, 0);
-  }
+test('legacy identity creation output is rejected without adding standards or publication units', async () => {
+  const source = await product('Grok Super会员');
+  const task = await prepare([source]);
+  const before = await db.selectFrom('standard_products').select('id').orderBy('id').execute();
+  const legacy = { identities: [{ ref: 'new', family: 'generic', product: 'grok_tool', tier: 'standard' }],
+    items: [{ id: String(source.id), action: 'create_identity', identity: { ref: 'new' } }] };
+  assert.throws(() => parseStandardizationProtocolResponse(legacy,
+    [{ id: String(source.id), candidateStandardProductIds: [] }]), { reasonCode: 'invalid_response' });
+  await assert.rejects(task.repository.persistBatchDecision(task.job.id, task.batch,
+    legacy as unknown as ParsedStandardizationResponse, {}, task.requestClaim), /obsolete identity protocol/);
+  assert.deepEqual(await db.selectFrom('standard_products').select('id').orderBy('id').execute(), before);
+  assert.deepEqual(await db.selectFrom('ai_publication_units').select('id').where('batch_id', '=', task.batch).execute(), []);
+  await task.repository.cancelJob(task.job.id);
 });
 
 test('reapplying saved results resets the local publication attempt budget', async () => {

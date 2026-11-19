@@ -4,6 +4,7 @@ import { DummyDriver, Kysely, PostgresAdapter, PostgresIntrospector, PostgresQue
 import { AdminRepository } from '../src/admin/admin.repository.js';
 import type { DatabaseSchema } from '../src/database/types.js';
 import { productProcessingSummary } from '../src/ai/product-standardization-state.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 
 test('pending lists disable JIT only within their transaction and fetch summaries after pagination', async () => {
   const queries: CompiledQuery[] = [];
@@ -31,7 +32,7 @@ test('pending lists disable JIT only within their transaction and fetch summarie
     });
     assert.equal(queries[0]?.sql, 'set local jit = off');
     const summary = queries.find(query => query.sql.includes('as "processing_state"'))!;
-    assert.deepEqual(summary.parameters, [1n]);
+    assert.deepEqual(summary.parameters, [PIPELINE_VERSIONS.prompt, STANDARDIZATION_POLICY_VERSION, JSON.stringify(PIPELINE_VERSIONS), 1n]);
     assert.ok(queries.indexOf(summary) > queries.findIndex(query => query.sql.includes('limit')));
     queries.length = 0;
     await new AdminRepository(database).listProducts({ page: 1, limit: 1 });
@@ -48,4 +49,17 @@ test('processing summaries distinguish stale evidence, manual protection and abs
   });
   assert.equal(productProcessingSummary({ reasonCode: 'provider_error' }).reason, '处理未完成，历史记录未提供具体原因。');
   assert.equal(productProcessingSummary({ reasonCode: 'review_rejected', reason: 'a\n'.repeat(300) }).reason.length, 240);
+});
+
+test('processing summaries expose only nonempty current non-manual evidence', () => {
+  const evidence = [{ path: 'name', quote: 'Unmatched offer' }];
+  assert.deepEqual(productProcessingSummary({ reasonCode: 'unmatched', reason: 'No candidate matches', evidence }), {
+    reasonCode: 'unmatched', processingDisposition: 'retry_available', reason: 'No candidate matches', evidence,
+  });
+  for (const reasonCode of ['manual_decision_preserved', 'source_changed', 'not_processed']) {
+    assert.equal(Object.hasOwn(productProcessingSummary({ reasonCode, evidence }), 'evidence'), false);
+  }
+  for (const empty of [undefined, null, []]) {
+    assert.equal(Object.hasOwn(productProcessingSummary({ reasonCode: 'unmatched', evidence: empty }), 'evidence'), false);
+  }
 });

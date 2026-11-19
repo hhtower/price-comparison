@@ -5,9 +5,8 @@ import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { jsonb, type AiJobStatus, type DatabaseSchema } from '../src/database/types.js';
 import { readAiTaskQueue } from '../src/ai/ai-task-queue.js';
-import { PIPELINE_VERSIONS, pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
+import { PIPELINE_VERSIONS, pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
-import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
 import { AiAdminController } from '../src/ai/ai-admin.controller.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
@@ -27,7 +26,7 @@ describe('normalization task queue over PostgreSQL', () => {
     const shop = await db.insertInto('shops').values({ platform: '16688', url: 'https://example.test/queue', name: '队列测试店', enabled: true }).returning('id').executeTakeFirstOrThrow();
     const run = await db.insertInto('fetch_runs').values({ shop_id: shop.id, status: 'succeeded', started_at: new Date() }).returning('id').executeTakeFirstOrThrow();
     sourceRunId = run.id;
-    const currentConfig = { prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: IDENTITY_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) };
+    const currentConfig = { prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) };
     const states: AiJobStatus[] = ['queued', 'queued', 'running', 'paused', 'ready', 'failed', 'cancelled', 'ready_with_errors'];
     for (const status of states) {
       const row = await db.insertInto('ai_jobs').values({ status, total: 100n, model: 'mock', job_type: 'incremental', scope_shop_id: shop.id, source_fetch_run_id: run.id, ...currentConfig }).returning('id').executeTakeFirstOrThrow();
@@ -45,7 +44,7 @@ describe('normalization task queue over PostgreSQL', () => {
       content_fingerprint: productContentFingerprint({ name: 'Product', spec: '' }) }).returningAll().executeTakeFirstOrThrow();
     await db.insertInto('ai_job_inputs').values({ job_id: runningId, input_id: product.id, fingerprint: product.content_fingerprint, payload: jsonb({}), status: 'succeeded', input_bytes: 1n, estimated_tokens: 1n, content_version: 1n }).execute();
     await db.insertInto('ai_job_input_members').values({ job_id: runningId, input_id: product.id, product_id: product.id, content_version: 1n, standardization_revision: product.standardization_revision, fingerprint: product.content_fingerprint, status: 'unclassified' }).execute();
-    await db.insertInto('ai_standardization_results').values({ job_id: runningId, product_id: product.id, input_id: product.id, content_version: 1n, fingerprint: product.content_fingerprint, status: 'unclassified', reason_code: 'missing_identity', reason: 'mock', decision: jsonb({}) }).execute();
+    await db.insertInto('ai_standardization_results').values({ job_id: runningId, product_id: product.id, input_id: product.id, content_version: 1n, fingerprint: product.content_fingerprint, status: 'unclassified', reason_code: 'unmatched', reason: 'mock', decision: jsonb({}) }).execute();
     const event = await db.insertInto('product_change_events').values({ product_id: product.id, shop_id: shop.id, content_version: 1n, fingerprint: product.content_fingerprint, event_type: 'created', payload: jsonb({}), source_fetch_run_id: run.id }).returning('id').executeTakeFirstOrThrow();
     await db.insertInto('standardization_outbox').values({ product_id: product.id, event_id: event.id, fingerprint: product.content_fingerprint, status: 'queued' }).execute();
   });
@@ -61,7 +60,7 @@ describe('normalization task queue over PostgreSQL', () => {
     assert.equal(first.items.length, 50);
     assert.ok(first.items.every(row => row.status === 'succeeded'));
     assert.deepEqual(first.summary, { total: 64, unfinished: 5, queued: 2, running: 1, paused: 2, attention: 1, pendingProducts: 0, pendingEvents: 1,
-      currentReasons: { technical_failure: 0, provider_policy_rejection: 0, insufficient_evidence: 1, not_sellable: 0, evidence_invalid: 0, attribute_conflict: 0, identity_conflict: 0, publication_blocked: 0, review_rejected: 0, other_unclassified: 0 } });
+      currentReasons: { technical_failure: 0, provider_policy_rejection: 0, evidence_invalid: 0, attribute_conflict: 0, identity_conflict: 0, publication_blocked: 0, review_rejected: 0, other_unclassified: 1 } });
     assert.ok(first.nextCursor);
     const next = await readAiTaskQueue(db, { status: 'all', limit: 50, cursor: first.nextCursor });
     assert.equal(next.items.length, 14);
@@ -101,26 +100,26 @@ describe('normalization task queue over PostgreSQL', () => {
     await assert.rejects(readAiTaskQueue(db, { cursor: 'bad-cursor' }), { code: 'INVALID_CURSOR' });
   });
 
-  test('explicit business refusals do not keep completed tasks in the attention queue', async () => {
-    await db.updateTable('ai_standardization_results').set({ reason_code: 'not_sellable' }).where('job_id', '=', runningId).execute();
-    assert.equal((await readAiTaskQueue(db, { status: 'attention' })).items.length, 0);
+  test('unmatched results remain in attention after their task completes', async () => {
+    await db.updateTable('ai_jobs').set({ status: 'succeeded' }).where('id', '=', runningId).execute();
+    assert.deepEqual((await readAiTaskQueue(db, { status: 'attention' })).items.map(item => item.id), [String(runningId)]);
   });
 
   test('mixed-shop identity tasks scope pending, attention and reasons to selected products', async () => {
     const shops = await db.insertInto('shops').values(['A','B'].map(name => ({ platform:'test',name,url:`https://mixed.test/${name}`,enabled:true }))).returning('id').execute();
-    const job = await db.insertInto('ai_jobs').values({ status:'running',total:3n,model:'mock',job_type:'manual_full',prompt_version:STANDARDIZATION_PROMPT_VERSION,rule_version:IDENTITY_POLICY_VERSION,pipeline_versions:jsonb(pipelineVersionSnapshot('mock')) }).returning('id').executeTakeFirstOrThrow();
+    const job = await db.insertInto('ai_jobs').values({ status:'running',total:3n,model:'mock',job_type:'manual_full',prompt_version:STANDARDIZATION_PROMPT_VERSION,rule_version:STANDARDIZATION_POLICY_VERSION,pipeline_versions:jsonb(pipelineVersionSnapshot('mock')) }).returning('id').executeTakeFirstOrThrow();
     for (const [index, shop] of [shops[0]!,shops[1]!,shops[1]!].entries()) {
       const p = await db.insertInto('products').values({shop_id:shop.id,external_id:`mixed${index}`,name:'mixed',source_name:'mixed',spec:'',normalized_key:`mixed${index}`,url:'https://mixed.test/p',content_version:1n,content_fingerprint:productContentFingerprint({name:'mixed',spec:''})}).returningAll().executeTakeFirstOrThrow();
       await db.insertInto('ai_job_inputs').values({job_id:job.id,input_id:p.id,fingerprint:p.content_fingerprint,payload:jsonb({}),input_bytes:1n,estimated_tokens:1n,content_version:1n}).execute();
       await db.insertInto('ai_job_input_members').values({job_id:job.id,input_id:p.id,product_id:p.id,content_version:1n,standardization_revision:p.standardization_revision,fingerprint:p.content_fingerprint,status:index===2?'queued':index===1?'unclassified':'classified'}).execute();
-      if(index===1) await db.insertInto('ai_standardization_results').values({job_id:job.id,product_id:p.id,input_id:p.id,content_version:1n,fingerprint:p.content_fingerprint,status:'unclassified',reason_code:'missing_identity',reason:'mock',decision:jsonb({})}).execute();
+      if(index===1) await db.insertInto('ai_standardization_results').values({job_id:job.id,product_id:p.id,input_id:p.id,content_version:1n,fingerprint:p.content_fingerprint,status:'unclassified',reason_code:'unmatched',reason:'mock',decision:jsonb({})}).execute();
     }
     const clean = await readAiTaskQueue(db,{jobType:'identity',status:'all',scopeShopId:shops[0]!.id});
     assert.equal(clean.items[0]!.remaining,0);assert.equal(clean.items[0]!.unclassified,0);
-    assert.equal(clean.summary.pendingProducts,0);assert.equal(clean.summary.currentReasons.insufficient_evidence,0);
+    assert.equal(clean.summary.pendingProducts,0);assert.equal(clean.summary.currentReasons.other_unclassified,0);
     assert.equal((await readAiTaskQueue(db,{status:'attention',scopeShopId:shops[0]!.id})).items.length,0);
     const affected = await readAiTaskQueue(db,{status:'all',scopeShopId:shops[1]!.id});
-    assert.equal(affected.summary.pendingProducts,1);assert.equal(affected.summary.currentReasons.insufficient_evidence,1);
+    assert.equal(affected.summary.pendingProducts,1);assert.equal(affected.summary.currentReasons.other_unclassified,1);
     assert.equal(affected.items[0]!.unclassified,1);
   });
 });

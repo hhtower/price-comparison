@@ -91,7 +91,7 @@ for (const stage of ['extract', 'review'] as const) {
     assert.equal(sends, 1);
     assert.equal(result.tagExtractionStage, stage);
     assert.deepEqual(result.items, []);
-    assert.deepEqual(result.identities, []);
+    assert.equal(Object.hasOwn(result, 'identities'), false);
     assert.deepEqual(result.missingIds, []);
     assert.deepEqual(byProductId(result.tagExtractionItems!), stage === 'extract' ? extracted : reviewed);
     assert.equal(result.metadata?.responseDiagnostic?.code, stage === 'review' ? 'items_rejected' : 'accepted');

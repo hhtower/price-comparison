@@ -16,7 +16,7 @@ import { finalizeOrScheduleMissing, recoverAbandonedStandardizationBatches, reco
 import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
 import { readAiConcurrency } from '../src/ai/ai-concurrency.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
-import { PIPELINE_VERSIONS } from '../src/ai/pipeline-versions.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 
 type QueryResult = { rows?: unknown[]; numAffectedRows?: bigint };
 
@@ -53,7 +53,7 @@ const activeJob = {
   id: 3n,
   status: 'queued',
   prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock',
-  rule_version: IDENTITY_POLICY_VERSION,
+  rule_version: STANDARDIZATION_POLICY_VERSION,
   pause_requested: false,
   cancel_requested: false,
 };
@@ -72,7 +72,7 @@ function runningBatch(overrides: Record<string, unknown> = {}) {
     claim_token: 'claim-1',
     lease_until: new Date(Date.now() + 60_000),
     step: 'request',
-    reference_snapshot: { strategyVersion: 'bounded-candidate-v1', catalogVersion: '1', inputs: [], candidates: [] },
+    reference_snapshot: { strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [], candidates: [] },
     request_budget_limit: 2,
     request_budget_used: 0,
     confirmed_requests: 0,
@@ -85,15 +85,18 @@ test('batch reference is frozen once and later preparation reuses it', async () 
   let frozen: unknown = null;
   let freezeUpdates = 0;
   const f = fixture((query) => {
-    if (query.sql.includes('from "ai_job_batches" as "b"')) return { rows: [{ job_id: 3n, product_ids: ['11'], step: 'request', reference_snapshot: frozen, prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock', rule_version: IDENTITY_POLICY_VERSION }] };
+    if (query.sql.includes('from "ai_job_batches" as "b"')) return { rows: [{ job_id: 3n, product_ids: ['11'], step: 'request', reference_snapshot: frozen, prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock', rule_version: STANDARDIZATION_POLICY_VERSION }] };
     if (query.sql.includes('from "ai_job_inputs"')) return { rows: [{ input_id: 11n, input_bytes: 100n, estimated_tokens: 30n, previous_decision: null, payload: { id: '11', name: 'ChatGPT Plus' } }] };
     if (query.sql.includes('from "standardization_catalog_versions"')) return { rows: [{ version: 1n, alias_policy_version: IDENTITY_POLICY_VERSION }] };
-    if (query.sql.includes('from "standard_products" as "sp"')) return { rows: [] };
+    if (query.sql.includes('from "standard_products" as "sp"')) return { rows: [{
+      id: 1n, name: 'ChatGPT Plus', catalog_definition: 'ChatGPT Plus subscription',
+      canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus',
+    }] };
     if (query.sql.includes('from "ai_jobs"')) return { rows: [activeJob] };
     if (query.sql.startsWith('select') && query.sql.includes('from "ai_job_batches"')) return { rows: [{ step: 'request', round: 0, request_budget_used: 0, request_budget_limit: 2, reference_snapshot: frozen }] };
     if (query.sql.startsWith('update "ai_job_batches"') && query.sql.includes('"reference_snapshot"')) {
       freezeUpdates++;
-      frozen = { frozen: true };
+      frozen = JSON.parse(String(query.parameters.find(value => typeof value === 'string' && value.includes('strategyVersion'))));
     }
     return {};
   });
@@ -106,7 +109,7 @@ test('batch reference is frozen once and later preparation reuses it', async () 
   await f.db.destroy();
 });
 
-test('candidate catalog changes share one independent version and persist final visible documents', async () => {
+test('candidate catalog changes include approved standards without members and isolate quarantined standards', async () => {
   const f = fixture((query) => {
     if (query.sql.includes('from standard_products sp')) return { rows: [{ standard_product_id: 1n, aliases: ['ChatGPT Plus'], active: true }] };
     if (query.sql.includes('update standardization_catalog_versions')) {
@@ -120,14 +123,17 @@ test('candidate catalog changes share one independent version and persist final 
           canonical_family: 'openai',
           canonical_product: 'chatgpt',
           canonical_tier: 'plus',
+          catalog_definition: 'ChatGPT Plus subscription',
           verification_state: 'verified',
           has_published_member: true,
         },
         {
           id: 2n,
+          name: 'ChatGPT Team',
           canonical_family: 'openai',
           canonical_product: 'chatgpt',
           canonical_tier: 'team',
+          catalog_definition: 'ChatGPT Team subscription',
           verification_state: 'verified',
           has_published_member: false,
         },
@@ -136,6 +142,7 @@ test('candidate catalog changes share one independent version and persist final 
           canonical_family: 'openai',
           canonical_product: 'chatgpt',
           canonical_tier: 'pro',
+          catalog_definition: 'ChatGPT Pro subscription',
           verification_state: 'quarantined',
           has_published_member: true,
         },
@@ -157,10 +164,10 @@ test('candidate catalog changes share one independent version and persist final 
   assert.ok(versionUpdate);
   assert.ok(changeInsert);
   assert.ok(f.queries.indexOf(changeInsert) > f.queries.indexOf(versionUpdate));
-  assert.deepEqual(changeInsert.parameters.filter(value => ['upsert', 'delete', 'isolate'].includes(String(value))), ['upsert', 'delete', 'isolate']);
+  assert.deepEqual(changeInsert.parameters.filter(value => ['upsert', 'delete', 'isolate'].includes(String(value))), ['upsert', 'upsert', 'isolate']);
   const document = changeInsert.parameters.find(value => typeof value === 'string' && value.includes('ChatGPT Plus'));
   assert.deepEqual(JSON.parse(String(document)), {
-    id: '1', family: 'openai', product: 'chatgpt', tier: 'plus', displayName: 'ChatGPT Plus', aliases: ['ChatGPT Plus'],
+    id: '1', family: 'openai', product: 'chatgpt', tier: 'plus', displayName: 'ChatGPT Plus', aliases: ['ChatGPT Plus'], definition: 'ChatGPT Plus subscription',
   });
   await f.db.destroy();
 });
@@ -182,6 +189,7 @@ test('candidate catalog changes refresh both owners when an alias becomes ambigu
           canonical_family: 'openai',
           canonical_product: 'chatgpt',
           canonical_tier: 'plus',
+          catalog_definition: 'ChatGPT Plus subscription',
           verification_state: 'verified',
           has_published_member: true,
         },
@@ -191,6 +199,7 @@ test('candidate catalog changes refresh both owners when an alias becomes ambigu
           canonical_family: 'other',
           canonical_product: 'assistant',
           canonical_tier: 'plus',
+          catalog_definition: 'Other Plus subscription',
           verification_state: 'verified',
           has_published_member: true,
         },
@@ -211,8 +220,8 @@ test('candidate catalog changes refresh both owners when an alias becomes ambigu
     .map(value => JSON.parse(String(value)) as { id?: string; aliases?: string[] })
     .filter(value => value.id);
   assert.deepEqual(documents, [
-    { id: '1', family: 'openai', product: 'chatgpt', tier: 'plus', displayName: 'First Plus', aliases: [] },
-    { id: '2', family: 'other', product: 'assistant', tier: 'plus', displayName: 'Other Plus', aliases: [] },
+    { id: '1', family: 'openai', product: 'chatgpt', tier: 'plus', displayName: 'First Plus', aliases: [], definition: 'ChatGPT Plus subscription' },
+    { id: '2', family: 'other', product: 'assistant', tier: 'plus', displayName: 'Other Plus', aliases: [], definition: 'Other Plus subscription' },
   ]);
   await f.db.destroy();
 });
@@ -230,7 +239,7 @@ test('candidate catalog reuses its base and applies only versioned change rows',
         step: 'request',
         reference_snapshot: frozen.get(batchId) ?? null,
         prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock',
-        rule_version: IDENTITY_POLICY_VERSION,
+        rule_version: STANDARDIZATION_POLICY_VERSION,
       }] };
     }
     if (query.sql.includes('from "ai_job_inputs"')) {
@@ -245,12 +254,12 @@ test('candidate catalog reuses its base and applies only versioned change rows',
         version: 2n,
         standard_product_id: 2n,
         operation: 'upsert',
-        document: { id: '2', family: 'openai', product: 'chatgpt', tier: 'team', aliases: [] },
+        document: { id: '2', displayName: 'ChatGPT Team', family: 'openai', product: 'chatgpt', tier: 'team', aliases: [], definition: 'ChatGPT Team subscription' },
       }] };
     }
     if (query.sql.includes('from "standard_products" as "sp"')) {
       fullCatalogReads++;
-      return { rows: [{ id: 1n, canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus' }] };
+      return { rows: [{ id: 1n, name: 'ChatGPT Plus', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus', catalog_definition: 'ChatGPT Plus subscription' }] };
     }
     if (query.sql.includes('from standard_products sp')) return { rows: [
       { standard_product_id: 1n, aliases: ['Consumer Plus'], active: true },
@@ -289,9 +298,11 @@ test('candidate catalog keeps the applied delta when non-blocking compaction fai
   const frozen = new Map<string, unknown>();
   const baseDocuments = Array.from({ length: 20 }, (_, index) => ({
     id: BigInt(index + 1),
+    name: `Approved basic product ${index + 1}`,
     canonical_family: `vendor-${index + 1}`,
     canonical_product: `product-${index + 1}`,
     canonical_tier: 'basic',
+    catalog_definition: `Approved basic product ${index + 1}`,
   }));
   const f = fixture((query) => {
     if (query.sql.includes('from "ai_job_batches" as "b"')) {
@@ -302,7 +313,7 @@ test('candidate catalog keeps the applied delta when non-blocking compaction fai
         step: 'request',
         reference_snapshot: frozen.get(batchId) ?? null,
         prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock',
-        rule_version: IDENTITY_POLICY_VERSION,
+        rule_version: STANDARDIZATION_POLICY_VERSION,
       }] };
     }
     if (query.sql.includes('from "ai_job_inputs"')) {
@@ -318,13 +329,13 @@ test('candidate catalog keeps the applied delta when non-blocking compaction fai
           version: 2n,
           standard_product_id: 1n,
           operation: 'upsert',
-          document: { id: '1', family: 'updated', product: 'alpha', tier: 'basic', aliases: [] },
+          document: { id: '1', displayName: 'Updated alpha', family: 'updated', product: 'alpha', tier: 'basic', aliases: [], definition: 'Updated alpha product' },
         },
         {
           version: 2n,
           standard_product_id: 2n,
           operation: 'upsert',
-          document: { id: '2', family: 'updated', product: 'beta', tier: 'basic', aliases: [] },
+          document: { id: '2', displayName: 'Updated beta', family: 'updated', product: 'beta', tier: 'basic', aliases: [], definition: 'Updated beta product' },
         },
       ] };
     }
@@ -375,7 +386,7 @@ test('provider request cannot be reserved before the reference is frozen', async
 });
 
 test('reservation clears a frozen reference when an active input has no candidate snapshot', async () => {
-  const batch = runningBatch({ reference_snapshot: { strategyVersion: 'bounded-candidate-v1', catalogVersion: '1', inputs: [], candidates: [] } });
+  const batch = runningBatch({ reference_snapshot: { strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [], candidates: [] } });
   const f = fixture(query => {
     if (query.sql.startsWith('select "job_id" from "ai_job_batches"')) return { rows: [{ job_id: 3n }] };
     if (query.sql.includes('from "ai_jobs"')) return { rows: [activeJob] };
@@ -396,7 +407,7 @@ test('reservation clears a frozen reference when an active input has no candidat
 test('tag extraction reserves requests using unique input-member IDs', async () => {
   const batch = runningBatch({
     product_ids: ['11'], product_count: 1n,
-    reference_snapshot: { strategyVersion: 'bounded-candidate-v1', catalogVersion: '0', inputs: [
+    reference_snapshot: { strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs: [
       { id: '11', candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } },
     ], candidates: [] },
   });
@@ -523,12 +534,12 @@ test('oversized inputs get an explicit terminal result without a provider reques
 test('unknown outcomes and exhausted budgets cannot reserve another provider request', async () => {
   for (const state of [
     runningBatch({ request_budget_used: 1, confirmed_requests: 0, unknown_requests: 1, reference_snapshot: {
-      strategyVersion: 'bounded-candidate-v1', catalogVersion: '1', inputs: [
+      strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [
         { id: '11', candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } },
       ], candidates: [],
     } }),
     runningBatch({ request_budget_used: 2, confirmed_requests: 2, unknown_requests: 0, reference_snapshot: {
-      strategyVersion: 'bounded-candidate-v1', catalogVersion: '1', inputs: [
+      strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [
         { id: '11', candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } },
       ], candidates: [],
     } }),
@@ -596,9 +607,9 @@ test('local publication retry leaves provider budget and extraction progress unc
   await f.db.destroy();
 });
 
-test('finalization locks the job and creates exactly one round-1 batch for missing inputs', async () => {
+test('attribute finalization locks the job and retains one retry for missing tag inputs', async () => {
   const f = fixture((query) => {
-    if (query.sql.includes('from "ai_jobs"') && query.sql.includes('for update')) return { rows: [activeJob] };
+    if (query.sql.includes('from "ai_jobs"') && query.sql.includes('for update')) return { rows: [{ ...activeJob, job_type: 'tag_extraction' }] };
     if (query.sql.includes('from "ai_job_batches"') && query.sql.includes('"status" in')) return { rows: [] };
     if (query.sql.includes('from "ai_job_input_members"') && query.sql.includes('"reason_code"')) {
       return { rows: [
@@ -627,7 +638,7 @@ test('finalization locks the job and creates exactly one round-1 batch for missi
   await f.db.destroy();
 });
 
-test('finalization never schedules round 2 and completes a job after round-1 omission', async () => {
+test('match-only finalization never schedules a missing-ID retry and completes unmatched work', async () => {
   const f = fixture((query) => {
     if (query.sql.includes('from "ai_jobs"') && query.sql.includes('for update')) return { rows: [activeJob] };
     if (query.sql.includes('from "ai_jobs"')) return { rows: [{ ...activeJob, job_type: 'manual_full', total: 1n }] };
@@ -640,6 +651,7 @@ test('finalization never schedules round 2 and completes a job after round-1 omi
   await f.db.transaction().execute(tx => finalizeOrScheduleMissing(tx, 3n));
 
   assert.equal(f.queries.some(query => query.sql.startsWith('insert into "ai_job_batches"')), false);
+  assert.equal(f.queries.some(query => query.parameters.includes('missing_id')), false);
   const completion = f.queries.find(query => query.sql.startsWith('update "ai_jobs"'));
   assert.ok(completion);
   assert.ok(completion.parameters.includes('succeeded'));

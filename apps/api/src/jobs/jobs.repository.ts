@@ -6,11 +6,10 @@ import { PG_POOL } from '../database/database.providers.js';
 import type { DatabaseSchema } from '../database/types.js';
 import { extractionProgressDelta, incrementJobProgress } from '../ai/ai-progress.repository.js';
 import { finalizeOrScheduleMissing } from '../ai/standardization-finalizer.js';
-import { IDENTITY_POLICY_VERSION } from '../standardization/identity-policy.js';
 import { PgNotifications } from '../database/pg-notifications.js';
 import { readAiConcurrency } from '../ai/ai-concurrency.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../ai/standardization-request.js';
-import { PIPELINE_VERSIONS } from '../ai/pipeline-versions.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from '../ai/pipeline-versions.js';
 import { readCrawlerConfig } from '../config/env.js';
 import { readAiStandardizationFeatures } from '../ai/ai-standardization-features.js';
 import { claimAssistantTurns, completeAssistantTurn, failAssistantTurn, heartbeatAssistantTurn } from './assistant-queue.js';
@@ -111,7 +110,7 @@ function activeStandardizationBatch(windowSize: number) { return sql`exists (
   where j.id = q.job_id
     and (${readAiStandardizationFeatures().tagExtractionEnabled} or j.job_type <> 'tag_extraction')
     and j.prompt_version = ${STANDARDIZATION_PROMPT_VERSION}
-    and j.rule_version = ${IDENTITY_POLICY_VERSION}
+    and j.rule_version = ${STANDARDIZATION_POLICY_VERSION}
     and j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
     and j.status not in ('paused','cancelled','failed','succeeded')
     and not j.pause_requested and not j.cancel_requested

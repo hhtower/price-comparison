@@ -1,4 +1,5 @@
 import { tagRows } from './tag-fixtures.js';
+import { pipelineVersionSnapshot, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -288,10 +289,12 @@ describe('admin lists over real PostgreSQL', () => {
     const pendingBeforeAiResult = await get('products?pending=true');
     assert.ok(pendingBeforeAiResult.items.some(item => item.id === ids.productAlpha!.toString()));
     assert.deepEqual(pendingBeforeAiResult.items.find(item => item.id === ids.productAlpha!.toString()).processingSummary, {
-      reasonCode: 'manual_decision_preserved', processingDisposition: 'review_required',
-      reason: '直接数据库人工修改；未提供审核证据快照',
+      reasonCode: 'not_processed', processingDisposition: 'pending',
+      reason: '尚无模型处理结果。',
     });
-    const job = await database.insertInto('ai_jobs').values({ status: 'succeeded', total: 1n, processed: 1n, applied: 1n, model: 'test', scope_shop_id: ids.shopAlpha! }).returning('id').executeTakeFirstOrThrow();
+    const job = await database.insertInto('ai_jobs').values({ status: 'succeeded', total: 1n, processed: 1n, applied: 1n, model: 'test', scope_shop_id: ids.shopAlpha!,
+      prompt_version: PIPELINE_VERSIONS.prompt, rule_version: STANDARDIZATION_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')),
+    }).returning('id').executeTakeFirstOrThrow();
     const product = await database.selectFrom('products').select(['content_version', 'content_fingerprint']).where('id', '=', ids.productBeta!).executeTakeFirstOrThrow();
     await database.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: ids.productBeta!, fingerprint: product.content_fingerprint, payload: jsonb({}), status: 'succeeded', content_version: product.content_version }).execute();
     await database.insertInto('ai_job_input_members').values({ job_id: job.id, input_id: ids.productBeta!, product_id: ids.productBeta!, fingerprint: product.content_fingerprint, payload: jsonb({}), status: 'classified', content_version: product.content_version }).execute();
@@ -305,7 +308,7 @@ describe('admin lists over real PostgreSQL', () => {
     assert.ok(pending.items.some(item => item.id === ids.productAlpha!.toString()));
     assert.ok(pending.items.some(item => item.id === ids.productBeta!.toString()), 'a classified result without a published assignment still requires processing');
     assert.ok(!pending.items.some(item => item.name === 'Deleted Product'));
-    await database.updateTable('ai_standardization_results').set({ status: 'unclassified', standard_product_id: null, reason_code: 'llm_unclassified' }).where('product_id', '=', ids.productBeta!).where('content_version', '=', product.content_version).execute();
+    await database.updateTable('ai_standardization_results').set({ status: 'unclassified', standard_product_id: null, reason_code: 'unmatched' }).where('product_id', '=', ids.productBeta!).where('content_version', '=', product.content_version).execute();
     const pendingAfterUnclassified = await get('products?pending=true');
     assert.ok(pendingAfterUnclassified.items.some(item => item.id === ids.productBeta!.toString()));
     await database.updateTable('ai_standardization_results').set({ status: 'classified', standard_product_id: ids.standardBackup, reason_code: null }).where('product_id', '=', ids.productBeta!).where('content_version', '=', product.content_version).execute();

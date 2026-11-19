@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createAiWorker, createOpenAiModelCall, buildStandardizationRequest, estimateStandardizationRequest, readStandardizationRequestLimits } from '../src/ai/ai.worker.js';
+import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
 import type { ClaimedJob } from '../src/jobs/jobs.repository.js';
 
 const claimed = (step: 'request' | 'publish' = 'request'): ClaimedJob => ({
@@ -35,19 +36,19 @@ const request = {
 };
 
 const citation = (quote: string) => ({ path: 'name', quote });
-const rawIdentity = (family: string, product: string, tier: string) => ({
-  family, product, tier, reason: 'identity follows the listing', evidence: [citation(product + ' ' + tier)],
-});
-const rawItem = (id: string, identity: ReturnType<typeof rawIdentity> | null, candidateRef: string | null) => ({
-  id, ...(identity ? { action: 'create_identity', identity } : { action: 'reuse_candidate', candidateRef }),
-  ruleIds: ['identity-v1'], evidence: [citation(request.inputs.find(input => String(input.productId) === id)!.payload.name)], reason: 'classified from evidence',
+const rawItem = (id: string, standardProductId: string | null) => ({
+  id, standardProductId,
+  evidence: [citation(request.inputs.find(input => String(input.productId) === id)!.payload.name)],
 });
 const validResponse = {
   items: [
-    rawItem('11', null, 'i1c1'),
-    rawItem('12', rawIdentity('Anthropic', 'Claude', 'Team'), null),
+    rawItem('11', '91'),
+    rawItem('12', null),
+    rawItem('13', null),
   ],
 };
+const parsedResponse = () => parseStandardizationProtocolResponse(validResponse,
+  request.inputs.map(input => ({ id: input.productId.toString(), candidateStandardProductIds: input.candidateStandardProductIds })));
 
 function modelCall(body: unknown, options: { status?: number; finishReason?: string; split?: number } = {}) {
   return createOpenAiModelCall({ getBatchRequest: async () => request } as never, {
@@ -220,7 +221,7 @@ test('frozen job model selects provider options and preflight measures the exact
   }
 });
 
-test('streams one finite-action request using the job model and frozen per-input candidate refs', async () => {
+test('streams one match-only request using the job model and frozen per-input candidate IDs', async () => {
   let sent: any;
   const call = createOpenAiModelCall({ getBatchRequest: async () => ({ ...request, model: 'selected-model' }) } as never, {
     AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'secret', AI_MODEL: 'default-model', AI_TIMEOUT_MS: '1000',
@@ -238,24 +239,25 @@ test('streams one finite-action request using the job model and frozen per-input
   const contract = JSON.parse(sent.messages[0].content.split('Output JSON Schema:\n')[1]);
   assert.deepEqual(contract.required, ['items']);
   assert.equal(Object.hasOwn(contract.$defs, 'tag'), false);
-  assert.match(sent.messages[0].content, /reuse_candidate.*create_identity.*insufficient_evidence.*not_sellable/);
-  assert.match(sent.messages[0].content, /not_sellable:.*excluded model API relay product/iu);
-  assert.match(sent.messages[0].content, /Relay\/API mentions in after-sales or policy warnings.*alone do not establish the sold object/iu);
   const payload = JSON.parse(sent.messages[1].content);
-  assert.deepEqual(payload.items.map((item: any) => item.candidateRefs), [{ i1c1: 'c1' }, {}, {}]);
-  assert.deepEqual(payload.candidates, { c1: { family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [] } });
-  assert.deepEqual(result.items.map(item => item.id), ['11', '12']);
-  assert.deepEqual(result.missingIds, ['13']);
+  assert.deepEqual(payload.items.map((item: any) => item.candidateStandardProductIds), [['91'], [], []]);
+  assert.deepEqual(payload.candidates, request.candidates);
+  assert.ok(payload.items.every((item: any) => !Object.hasOwn(item, 'candidateRefs')));
+  assert.deepEqual(result.items.map(item => item.id), ['11', '12', '13']);
+  assert.deepEqual(result.missingIds, []);
   assert.ok(result.items.every(item => !Object.hasOwn(item, 'tags')));
 });
 
 test('assembles streamed chunks before JSON and business validation', async () => {
   const result = await modelCall(validResponse, { split: 37 })(claimed(), new AbortController().signal);
-  assert.equal(result.identities.length, 1);
-  assert.equal(result.items[1]?.identity?.kind, 'new');
+  assert.equal(Object.hasOwn(result, 'identities'), false);
+  assert.deepEqual(result.items[0]?.identity, { kind: 'existing', standardProductId: '91' });
+  assert.equal(result.items[1]?.status, 'unclassified');
+  assert.equal(result.items[1]?.reasonCode, 'unmatched');
+  assert.deepEqual(result.items[1]?.evidence, validResponse.items[1]!.evidence);
 });
 
-test('accepts one complete JSON code fence after streaming without bypassing validation', async () => {
+test('streamed Markdown and BOM wrappers fail instead of repairing the match-only wire response', async () => {
   const json = JSON.stringify(validResponse);
   for (const content of [
     `\`\`\`json\n${json}\n\`\`\``,
@@ -263,34 +265,26 @@ test('accepts one complete JSON code fence after streaming without bypassing val
     ` \n\`\`\`JSON \r\n${json}\r\n\`\`\`\n `,
     `\uFEFF${json}`,
   ]) {
-    const result = await modelCall(content, { split: 4 })(claimed(), new AbortController().signal);
-    assert.equal(result.items[0]?.status, 'classified');
-    assert.equal(result.items[1]?.identity?.kind, 'new');
-    assert.deepEqual(result.missingIds, ['13']);
+    await assert.rejects(modelCall(content, { split: 4 })(claimed(), new AbortController().signal), /JSON/i);
   }
-  const fabricated = structuredClone(validResponse);
-  fabricated.items[0]!.evidence = [citation('invented evidence')];
-  const rejected = await modelCall(`\`\`\`json\n${JSON.stringify(fabricated)}\n\`\`\``)(claimed(), new AbortController().signal);
-  assert.equal(rejected.items[0]?.reasonCode, 'evidence_invalid');
-  const duplicate = { items: [validResponse.items[0], validResponse.items[0]] };
-  await assert.rejects(modelCall(`\`\`\`json\n${JSON.stringify(duplicate)}\n\`\`\``)(claimed(), new AbortController().signal), /duplicate|重复/i);
 });
 
 test('invalid JSON reports bounded format diagnostics without exposing response text', async () => {
   const json = JSON.stringify(validResponse);
-  for (const [content, format] of [
-    [' \n\t ', 'empty'],
-    ['{"secret-private-listing":', 'json'],
-    ['{"secret-private-listing":true,}', 'json'],
-    [`Here is the result: ${json}`, 'text'],
-    [`<think>secret-private-listing</think>${json}`, 'text'],
-    [`\`\`\`json\n${json}`, 'markdown'],
-    [`\`\`\`json\n${json}\n\`\`\`\nsecret-private-listing`, 'markdown'],
-    [`\`\`\`json\n${json}\n\`\`\`\n\`\`\`json\n${json}\n\`\`\``, 'markdown'],
-    [`${json}\n${json}`, 'json'],
+  for (const content of [
+    ' \n\t ',
+    '{"secret-private-listing":',
+    '{"secret-private-listing":true,}',
+    `Here is the result: ${json}`,
+    `<think>secret-private-listing</think>${json}`,
+    `\`\`\`json\n${json}`,
+    `\`\`\`json\n${json}\n\`\`\`\nsecret-private-listing`,
+    `\`\`\`json\n${json}\n\`\`\`\n\`\`\`json\n${json}\n\`\`\``,
+    `${json}\n${json}`,
   ]) {
     await assert.rejects(modelCall(content, { split: 4 })(claimed(), new AbortController().signal), (error: any) => {
-      assert.equal(error.message, `AI response JSON is invalid (format=${format}, chars=${content.length})`);
+      assert.match(error.message, /JSON.*invalid/i);
+      assert.ok(error.message.length < 150);
       assert.equal(error.retryClass, 'invalid_response');
       assert.equal(error.requestOutcome, 'confirmed');
       assert.equal(error.retryable, false);
@@ -301,12 +295,14 @@ test('invalid JSON reports bounded format diagnostics without exposing response 
   }
 });
 
-test('streamed multiline citations match the frozen field after whitespace normalization', async () => {
+test('streamed citations must match the literal frozen field without whitespace repair', async () => {
   const response = structuredClone(validResponse);
   response.items[0]!.evidence = [citation('ChatGPT\nPlus\tmonthly')];
-  const result = await modelCall(response, { split: 37 })(claimed(), new AbortController().signal);
-  assert.equal(result.items[0]?.status, 'classified');
-  assert.equal(result.items[0]?.evidence[0]?.quote, 'ChatGPT Plus monthly');
+  await assert.rejects(modelCall(response, { split: 37 })(claimed(), new AbortController().signal), (error: any) => {
+    assert.equal(error.retryClass, 'invalid_response');
+    assert.equal(error.requestOutcome, 'confirmed');
+    return true;
+  });
 });
 
 test('rejects fabricated, borrowed, absent and incorrectly located evidence before saving decisions', async () => {
@@ -318,40 +314,41 @@ test('rejects fabricated, borrowed, absent and incorrectly located evidence befo
   ]) {
     const response = structuredClone(validResponse);
     response.items[0]!.evidence = evidence;
-    const result = await modelCall(response)(claimed(), new AbortController().signal);
-    assert.equal(result.items[0]?.status, 'unclassified');
-    assert.equal(result.items[0]?.reasonCode, 'evidence_invalid');
-    assert.equal(result.items[1]?.status, 'classified', 'invalid evidence must remain item-local');
-    assert.deepEqual(result.missingIds, ['13']);
+    await assert.rejects(modelCall(response)(claimed(), new AbortController().signal), (error: any) => {
+      assert.equal(error.retryClass, 'invalid_response');
+      assert.equal(error.requestOutcome, 'confirmed');
+      assert.equal(error.retryable, false);
+      return true;
+    });
   }
 });
 
-test('generation preserves authentic identity proposals for independent LLM semantic review', async () => {
-  const response = structuredClone(validResponse);
-  response.items[0] = rawItem('11', { ...rawIdentity('google', 'gemini', 'pro'), evidence: [citation('ChatGPT Plus')] }, null);
-  const result = await modelCall(response)(claimed(), new AbortController().signal);
+test('generation leaves the semantics of a cited candidate match to independent review', async () => {
+  const frozen = { ...request, candidates: [{ ...request.candidates[0]!, family: 'google', product: 'gemini', tier: 'pro' }] };
+  const call = createOpenAiModelCall({ getBatchRequest: async () => frozen } as never, {
+    AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock',
+  }, async () => new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(validResponse) }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`));
+  const result = await call(claimed(), new AbortController().signal);
   assert.equal(result.items[0]?.status, 'classified');
   assert.equal(result.standardizationStage, 'generate');
-  assert.equal(result.identities[0]?.family, 'google');
+  assert.deepEqual(result.items[0]?.identity, { kind: 'existing', standardProductId: '91' });
 });
 
-test('rejects candidate refs borrowed from another item as an item-local invalid response', async () => {
+test('a candidate ID borrowed from another item fails the entire response', async () => {
   const response = structuredClone(validResponse);
-  response.items[1] = rawItem('12', null, 'i1c1');
-  const result = await modelCall(response)(claimed(), new AbortController().signal);
-  assert.equal(result.items[1]?.status, 'unclassified');
-  assert.equal(result.items[1]?.reasonCode, 'invalid_response');
+  response.items[1] = rawItem('12', '91');
+  await assert.rejects(modelCall(response)(claimed(), new AbortController().signal));
 });
 
-test('rejects duplicate and unknown IDs globally while allowing omitted IDs', async () => {
+test('duplicate, unknown and omitted IDs fail the whole response', async () => {
   const duplicate = structuredClone(validResponse);
-  duplicate.items.push(structuredClone(duplicate.items[0]!));
+  duplicate.items[1] = structuredClone(duplicate.items[0]!);
   await assert.rejects(modelCall(duplicate)(claimed(), new AbortController().signal), /duplicate|重复/i);
   const unknown = structuredClone(validResponse);
   unknown.items[0]!.id = '999';
   await assert.rejects(modelCall(unknown)(claimed(), new AbortController().signal), /unknown|未知/i);
-  const omitted = await modelCall({ items: [] })(claimed(), new AbortController().signal);
-  assert.deepEqual(omitted.missingIds, ['11', '12', '13']);
+  await assert.rejects(modelCall({ items: [] })(claimed(), new AbortController().signal));
+  await assert.rejects(modelCall({ items: validResponse.items.slice(0, 2) })(claimed(), new AbortController().signal));
 });
 
 test('rejects invalid JSON and truncated streamed output after the full response', async () => {
@@ -446,7 +443,7 @@ test('request step prepares, reserves and atomically checkpoints its confirmed r
       persistBatchDecision: async () => { calls.push('persist'); },
       publishBatch: async () => { calls.push('publish'); },
     } as never,
-    modelCall: async () => Object.assign({ identities: [], items: [], missingIds: ['11', '12', '13'] }, { metadata: { responseMs: 2, outputBytes: 10 } }),
+    modelCall: async () => Object.assign(parsedResponse(), { metadata: { responseMs: 2, outputBytes: 10 } }),
   });
   await worker.runOnce();
   await new Promise(resolve => setImmediate(resolve));
@@ -466,7 +463,7 @@ test('skipped request batches never call the model or consume a provider outcome
       persistBatchDecision: async () => { calls.push('persist'); },
       publishBatch: async () => { calls.push('publish'); },
     } as never,
-    modelCall: async () => { calls.push('model'); return { identities: [], items: [], missingIds: [] }; },
+    modelCall: async () => { throw new Error('Skipped batches must not call the model'); },
   });
   await worker.runOnce();
   await new Promise(resolve => setImmediate(resolve));
@@ -479,11 +476,11 @@ test('changed batches rebuild the request before reserving a provider attempt', 
   const calls: string[] = [];
   const state = service();
   const modelCall = Object.assign(
-    async () => ({ identities: [], items: [], missingIds: [] }),
+    async () => parsedResponse(),
     { prepare: async () => {
       const request = calls.filter(call => call.startsWith('request:')).length + 1;
       calls.push(`request:${request}`);
-      return async () => { calls.push(`model:${request}`); return { identities: [], items: [], missingIds: [] }; };
+      return async () => { calls.push(`model:${request}`); return parsedResponse(); };
     } },
   );
   let reservations = 0;
@@ -516,7 +513,7 @@ test('publish step uses no model request and calls only recoverable publication'
       persistBatchDecision: async () => { calls.push('persist'); },
       publishBatch: async () => { calls.push('publish'); },
     } as never,
-    modelCall: async () => { calls.push('model'); return { identities: [], items: [], missingIds: [] }; },
+    modelCall: async () => { throw new Error('Publication must not call the model'); },
   });
   await worker.runOnce();
   await new Promise(resolve => setImmediate(resolve));
@@ -617,16 +614,22 @@ test('preflight reuses the exact frozen request once and preserves provider usag
   assert.equal(saved.metadata.responseModel, 'actual-model'); assert.equal(saved.metadata.responseId, 'response-1');
 });
 
-test('known generic goods, email, courses and human services retain the new-identity path', async () => {
-  for (const [family, product, tier] of [
-    ['stationery', 'notebook', 'lined'], ['google', 'email', 'standard'],
-    ['education', 'mathematics_course', 'basic'], ['services', 'consultation', 'standard'],
-  ]) {
-    const name = family + ' ' + product + ' ' + tier; const evidence = [citation(name)];
-    const genericRequest = { jobId: 3n, model: 'configured', candidates: [], inputs: [{ productId: 11n, fingerprint: 'a'.repeat(64), payload: { id: '11', name }, candidateStandardProductIds: [] }] };
-    const call = createOpenAiModelCall({ getBatchRequest: async () => genericRequest } as never, { AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'test', AI_MODEL: 'configured' }, async () => new Response('data: ' + JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ items: [{ id: '11', action: 'create_identity', identity: { family, product, tier, reason: 'Explicit offer', evidence }, ruleIds: [], reason: 'Explicit offer', evidence }] }) }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n'));
+test('goods and services without supplied catalog matches remain unmatched with evidence', async () => {
+  for (const name of ['lined notebook', 'Google email', 'mathematics course', 'human consultation']) {
+    const evidence = [citation(name)];
+    const frozen = { jobId: 3n, model: 'mock', candidates: [], inputs: [
+      { productId: 11n, payload: { id: '11', name }, candidateStandardProductIds: [] },
+    ] };
+    const call = createOpenAiModelCall({ getBatchRequest: async () => frozen } as never, {
+      AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock',
+    }, async () => new Response('data: ' + JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ items: [
+      { id: '11', standardProductId: null, evidence },
+    ] }) }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n'));
     const result = await call(claimed(), new AbortController().signal);
-    assert.equal(result.items[0]?.status, 'classified', product);
-    assert.equal(result.items[0]?.identity?.kind, 'new');
+    assert.equal(result.items[0]?.status, 'unclassified', name);
+    assert.equal(result.items[0]?.reasonCode, 'unmatched');
+    assert.equal(result.items[0]?.identity, undefined);
+    assert.deepEqual(result.items[0]?.evidence, evidence);
+    assert.equal(Object.hasOwn(result, 'identities'), false);
   }
 });

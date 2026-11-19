@@ -5,9 +5,8 @@ import { Pool } from 'pg';
 import { jsonb, type DatabaseSchema, type AiJobType } from '../src/database/types.js';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
-import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
+import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
-import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
 
 describe('durable job queue leases', () => {
   let pool: Pool;
@@ -36,7 +35,7 @@ describe('durable job queue leases', () => {
   });
 
   test('claims one queued AI batch when two workers race', async () => {
-    const job = await database.insertInto('ai_jobs').values({ status: 'queued', total: 1n, model: 'test', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')), rule_version: IDENTITY_POLICY_VERSION }).returning('id').executeTakeFirstOrThrow();
+    const job = await database.insertInto('ai_jobs').values({ status: 'queued', total: 1n, model: 'test', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')), rule_version: STANDARDIZATION_POLICY_VERSION }).returning('id').executeTakeFirstOrThrow();
     const batch = await database.insertInto('ai_job_batches').values({ job_id: job.id, batch_index: 0n, product_ids: '[]' as never, product_count: 0n, status: 'queued' }).returning('id').executeTakeFirstOrThrow();
     const claims = await Promise.all([
       repository.claimNext('ai_batch', 'worker-a', 5000),
@@ -50,7 +49,7 @@ describe('durable job queue leases', () => {
   test('bulk AI claims skip a job whose parent row is locked', async () => {
     const job = await database.insertInto('ai_jobs').values({
       status: 'queued', total: 1n, model: 'test',
-      prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')), rule_version: IDENTITY_POLICY_VERSION,
+      prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')), rule_version: STANDARDIZATION_POLICY_VERSION,
     }).returning('id').executeTakeFirstOrThrow();
     const batch = await database.insertInto('ai_job_batches').values({
       job_id: job.id, batch_index: 0n, product_ids: '[]' as never, product_count: 0n, status: 'queued',
@@ -78,7 +77,7 @@ describe('durable job queue leases', () => {
   });
 
   test('heartbeat only extends the current owner lease', async () => {
-    const job = await database.insertInto('ai_jobs').values({ status: 'queued', total: 1n, model: 'test', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')), rule_version: IDENTITY_POLICY_VERSION }).returning('id').executeTakeFirstOrThrow();
+    const job = await database.insertInto('ai_jobs').values({ status: 'queued', total: 1n, model: 'test', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')), rule_version: STANDARDIZATION_POLICY_VERSION }).returning('id').executeTakeFirstOrThrow();
     const batch = await database.insertInto('ai_job_batches').values({ job_id: job.id, batch_index: 1n, product_ids: '[]' as never, product_count: 0n, status: 'queued' }).returning('id').executeTakeFirstOrThrow();
     const claim = await repository.claimNext('ai_batch', 'owner-a', 10_000);
     assert.ok(claim);
@@ -106,7 +105,7 @@ describe('durable job queue leases', () => {
 
   test('kind-qualified transitions never cross identity tables', async () => {
     const shop = await database.insertInto('shops').values({ platform: 'same-id', url: `https://same-id-${Date.now()}.invalid`, name: 'same-id' }).returning('id').executeTakeFirstOrThrow();
-    const job = await database.insertInto('ai_jobs').values({ status: 'queued', total: 1n, model: 'test', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')), rule_version: IDENTITY_POLICY_VERSION }).returning('id').executeTakeFirstOrThrow();
+    const job = await database.insertInto('ai_jobs').values({ status: 'queued', total: 1n, model: 'test', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')), rule_version: STANDARDIZATION_POLICY_VERSION }).returning('id').executeTakeFirstOrThrow();
     await database.insertInto('ai_job_batches').values({ id: 9001n, job_id: job.id, batch_index: 90n, product_ids: '[]' as never, product_count: 0n, status: 'queued', step: 'done' }).execute();
     await database.insertInto('fetch_runs').values({ id: 9001n, shop_id: shop.id, started_at: new Date(), status: 'queued' }).execute();
     await database.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'same-owner', lease_until: new Date(Date.now() + 5000) }).where('id', '=', 9001n).execute();
@@ -129,7 +128,7 @@ describe('durable job queue leases', () => {
     const job = await database.insertInto('ai_jobs').values({
       status: 'queued', total: 2n, model: 'test', job_type: 'tag_extraction', priority: 9999,
       prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')),
-      rule_version: IDENTITY_POLICY_VERSION,
+      rule_version: STANDARDIZATION_POLICY_VERSION,
     }).returning('id').executeTakeFirstOrThrow();
     const head = await database.insertInto('ai_job_batches').values({
       job_id: job.id, batch_index: 0n, product_ids: jsonb([]), product_count: 0n,
@@ -153,7 +152,7 @@ describe('durable job queue leases', () => {
     return database.insertInto('ai_jobs').values({
       status: 'queued', total: 1n, model: 'test', job_type: jobType, priority,
       prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')),
-      rule_version: IDENTITY_POLICY_VERSION,
+      rule_version: STANDARDIZATION_POLICY_VERSION,
     }).returning('id').executeTakeFirstOrThrow();
   }
 

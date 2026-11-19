@@ -67,14 +67,17 @@ test('unrelated account identities do not inherit the X account product restrict
   assert.ok(identityEvidenceConflict({ family: 'steam', product: 'account', tier: 'standard' }, { name: 'ChatGPT Plus账号', sourceData: { evidence: '实际交付ChatGPT Plus账号' } }));
 });
 
-test('unknown real subscriptions become review, never not_sellable', () => {
+test('subscriptions without an allowed matching candidate retain evidence as unmatched', () => {
   const evidence = [{ path: 'name', quote: 'Cursor Premium会员' }];
-  const result = parseStandardizationProtocolResponse({ items: [{ id: '1', action: 'create_identity',
-    identity: { family: 'cursor', product: 'cursor', tier: 'premium', reason: '新套餐', evidence },
-    ruleIds: [], evidence, reason: '新套餐' }] }, [{ id: '1', candidateStandardProductIds: [], candidateRefs: {} }]);
+  const inputs = [{ id: '1', payload: { name: 'Cursor Premium会员' }, candidateStandardProductIds: [] }];
+  const result = parseStandardizationProtocolResponse({ items: [{
+    id: '1', standardProductId: null, evidence,
+  }] }, inputs);
+  assert.equal(validateStandardizationEvidence(result, inputs, []), result);
   assert.equal(result.items[0]?.status, 'unclassified');
-  assert.equal(result.items[0]?.reasonCode, 'identity_conflict');
-  assert.deepEqual(result.identities, []);
+  assert.equal(result.items[0]?.reasonCode, 'unmatched');
+  assert.deepEqual(result.items[0]?.evidence, evidence);
+  assert.equal(Object.hasOwn(result, 'identities'), false);
 });
 
 test('telegram account variants converge on the telegram account identity', () => {
@@ -112,22 +115,9 @@ test('changing family or naming a tool cannot recreate finite platform subscript
   ]) {
     const identity = { family: 'generic', product: product!, tier: 'standard' };
     const input = { id: '1', name: name!, spec: '', sourceData: { evidence: `交付${name!}` } };
-    const evidence = [{ path: 'name', quote: input.name }];
     const payload = buildExtractionPayload(input);
     assert.ok(identityEvidenceConflict(identity, input), product);
     assert.ok(identityEvidenceConflict(identity, payload, 'text'), product + ' frozen');
-    for (const choice of [
-      { action: 'create_identity', identity: { ...identity, reason: '实际商品', evidence } },
-      { action: 'reuse_candidate', candidateRef: 'i1c1' },
-    ]) {
-      const parsed = parseStandardizationProtocolResponse({ items: [{ id: '1', ...choice,
-        ruleIds: [], evidence, reason: '实际商品' }] },
-      [{ id: '1', candidateStandardProductIds: ['91'], candidateRefs: { i1c1: '91' } }]);
-      const result = validateStandardizationEvidence(parsed, [{ id: '1', payload }], [{ id: '91', ...identity, aliases: [] }]);
-      assert.equal(result.items[0]?.status, 'unclassified', product + ' ' + choice.action);
-      assert.equal(result.items[0]?.reasonCode, 'identity_conflict');
-      assert.deepEqual(result.identities, []);
-    }
   }
 });
 

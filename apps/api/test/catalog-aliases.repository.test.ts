@@ -43,7 +43,7 @@ function fixture(standards: Standard[]) {
               id: s.id, name: `Standard ${s.id}`, canonical_family: 'family',
               canonical_product: `product${s.id}`, canonical_tier: 'standard',
               verification_state: s.active ? 'verified' : 'quarantined',
-              merged_into_id: null, has_published_member: true,
+              merged_into_id: null, catalog_definition: `Approved definition ${s.id}`,
             }));
           } else if (query.sql.startsWith('insert into "catalog_index_changes"')) {
             documents = query.parameters.filter((v): v is string => typeof v === 'string' && v.startsWith('{')).map(v => JSON.parse(v));

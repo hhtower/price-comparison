@@ -1,14 +1,13 @@
 import { sql } from 'kysely';
 import { unknownRequestReason } from './request-outcome.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
+import type { EvidenceCitation } from './ai.schemas.js';
 
-/** Storage keeps legacy reason codes; only explicit business refusals are final outcomes. */
-export const BUSINESS_REFUSAL_REASONS = ['insufficient_evidence', 'not_sellable'] as const;
-export const RETRYABLE_RESULT_REASONS = ['request_outcome_unknown', 'invalid_response', 'provider_error', 'evidence_invalid', 'attribute_conflict', 'missing_id', 'result_not_saved'] as const;
+export const RETRYABLE_RESULT_REASONS = ['unmatched', 'request_outcome_unknown', 'invalid_response', 'provider_error', 'evidence_invalid', 'attribute_conflict', 'missing_id', 'result_not_saved'] as const;
 
-export function productProcessingDisposition(reasonCode: unknown): 'review_required' | 'retry_available' | 'handled' | 'pending' {
+export function productProcessingDisposition(reasonCode: unknown): 'review_required' | 'retry_available' | 'pending' {
   if (reasonCode === 'identity_conflict' || reasonCode === 'publication_blocked' || reasonCode === 'review_rejected' || reasonCode === 'manual_decision_preserved' || reasonCode === 'input_too_large') return 'review_required';
   if (RETRYABLE_RESULT_REASONS.some(reason => reason === reasonCode)) return 'retry_available';
-  if (BUSINESS_REFUSAL_REASONS.some(reason => reason === reasonCode)) return 'handled';
   return 'pending';
 }
 
@@ -17,12 +16,14 @@ export interface ProductProcessingState {
   reason?: string | null;
   requestError?: string | null;
   manualReason?: string | null;
+  evidence?: EvidenceCitation[] | null;
 }
 
 export interface ProductProcessingSummary {
   reasonCode: string;
   processingDisposition: ReturnType<typeof productProcessingDisposition>;
   reason: string;
+  evidence?: EvidenceCitation[];
 }
 
 export function productProcessingSummary(state: ProductProcessingState): ProductProcessingSummary {
@@ -36,13 +37,18 @@ export function productProcessingSummary(state: ProductProcessingState): Product
     reasonCode: state.reasonCode,
     processingDisposition: productProcessingDisposition(state.reasonCode),
     reason: reason.replace(/\s+/gu, ' ').trim().slice(0, 240),
+    ...(!['manual_decision_preserved', 'source_changed', 'not_processed'].includes(state.reasonCode)
+      && Array.isArray(state.evidence) && state.evidence.length > 0 ? { evidence: state.evidence } : {}),
   };
 }
 
 export function hasCurrentStandardizationResult(product = 'p') {
   return sql<boolean>`exists (select 1 from ai_standardization_results r
     join ai_job_input_members m on m.job_id = r.job_id and m.product_id = r.product_id
+    join ai_jobs result_job on result_job.id = r.job_id
     where r.product_id = ${sql.ref(product + '.id')}
+      and result_job.prompt_version = ${PIPELINE_VERSIONS.prompt} and result_job.rule_version = ${STANDARDIZATION_POLICY_VERSION}
+      and result_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
       and r.content_version = ${sql.ref(product + '.content_version')}
       and m.content_version = ${sql.ref(product + '.content_version')}
       and r.fingerprint = ${sql.ref(product + '.content_fingerprint')}
@@ -58,33 +64,18 @@ export function hasPublishedAssignment(product = 'p') {
       and standard.verification_state = 'verified' and standard.merged_into_id is null)`;
 }
 
-/** An explicit review is a handled outcome, including legacy isolated human memberships. */
+/** Isolation requires a current review or an explicit ongoing lock. */
 export function hasManualIsolation(product = 'p') {
-  return sql<boolean>`(exists (select 1 from product_standardization_decisions d
+  return sql<boolean>`exists (select 1 from product_standardization_decisions d
     where d.product_id = ${sql.ref(product + '.id')} and d.action in ('quarantine', 'exclude')
-      and (not d.evidence_known or (d.content_version = ${sql.ref(product + '.content_version')}
+      and (${sql.ref(product + '.standardization_locked')} or (d.evidence_known and d.content_version = ${sql.ref(product + '.content_version')}
         and d.content_fingerprint = ${sql.ref(product + '.content_fingerprint')}))
-      and not exists (select 1 from product_standardization_decisions newer where newer.product_id = d.product_id and newer.id > d.id))
-    or exists (select 1 from standard_product_members m join standard_products sp on sp.id = m.standard_product_id
-      where m.product_id = ${sql.ref(product + '.id')} and m.assignment_source = 'human'
-        and (m.publication_state = 'quarantined' or sp.verification_state = 'quarantined')
-        and coalesce((select not d.evidence_known or (d.content_version = ${sql.ref(product + '.content_version')}
-          and d.content_fingerprint = ${sql.ref(product + '.content_fingerprint')})
-          from product_standardization_decisions d where d.product_id = m.product_id order by d.id desc limit 1), true)))`;
+      and not exists (select 1 from product_standardization_decisions newer where newer.product_id = d.product_id and newer.id > d.id))`;
 }
 
 export function productStandardizationOutcome(product = 'p') {
   return sql<'classified' | 'cannot_process' | null>`case when ${hasPublishedAssignment(product)} then 'classified'
     when ${hasManualIsolation(product)} then 'cannot_process'
-    when (select case when r.status = 'unclassified' then r.reason_code end from ai_standardization_results r
-      join ai_job_input_members m on m.job_id = r.job_id and m.product_id = r.product_id
-      where r.product_id = ${sql.ref(product + '.id')}
-        and r.content_version = ${sql.ref(product + '.content_version')}
-        and m.content_version = ${sql.ref(product + '.content_version')}
-        and r.fingerprint = ${sql.ref(product + '.content_fingerprint')}
-        and m.fingerprint = ${sql.ref(product + '.content_fingerprint')}
-        and m.standardization_revision = ${sql.ref(product + '.standardization_revision')}
-      order by r.job_id desc limit 1) in (${sql.join(BUSINESS_REFUSAL_REASONS)}) then 'cannot_process'
     else null end`;
 }
 
@@ -93,6 +84,8 @@ export const hasActiveStandardizationWork = sql<boolean>`exists (select 1 from a
   where active.product_id = p.id and active.content_version = p.content_version
     and active.fingerprint = p.content_fingerprint
     and active.standardization_revision = p.standardization_revision
+    and j.prompt_version = ${PIPELINE_VERSIONS.prompt} and j.rule_version = ${STANDARDIZATION_POLICY_VERSION}
+    and j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
     and j.status in ('queued', 'running', 'paused', 'ready') and not j.cancel_requested
     and (active.status in ('queued', 'processing') or exists (
       select 1 from ai_job_batches pending where pending.job_id = active.job_id
