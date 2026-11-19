@@ -1,5 +1,5 @@
-import { normalizeProductTag } from './product-tag-policy.js';
-import { durationToDays, formatDuration, tagValueKey, type TagValue } from './tag-value.js';
+import { isFilterableProductTag, normalizeProductTag } from './product-tag-policy.js';
+import { durationToDays, formatDuration, MAX_DURATION_DAYS, tagValueKey, type TagValue } from './tag-value.js';
 export { durationToDays, formatDuration, isDurationValue, tagValueKey, MAX_DURATION_DAYS } from './tag-value.js';
 export type { DurationValue, TagValue } from './tag-value.js';
 
@@ -31,6 +31,13 @@ export const PURCHASE_ATTRIBUTE_DEFINITIONS: PurchaseAttributeDefinition[] = [
 
 export function normalizePurchaseTag(tag: PurchaseTag): PurchaseTag[] {
   return normalizeProductTag(tag) ?? [];
+}
+export function minimumDaysDimension(name: string) {
+  return /^(duration|subscription_warranty|usage_warranty)_min_days$/u.exec(name)?.[1];
+}
+export function normalizeCatalogFilter(tag: PurchaseTag): PurchaseTag[] {
+  if (!minimumDaysDimension(tag.name)) return normalizePurchaseTag(tag).filter(isFilterableProductTag);
+  return typeof tag.value === 'number' && Number.isInteger(tag.value) && tag.value > 0 && tag.value <= MAX_DURATION_DAYS ? [tag] : [];
 }
 const countries = new Intl.DisplayNames(['zh-CN'], { type: 'region', fallback: 'code' });
 export function purchaseTagLabel(tag: PurchaseTag): string {

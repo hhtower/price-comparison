@@ -122,11 +122,10 @@ test.each(kinds.filter(kind => kind !== 'unclassified'))('%s cards, both dialogs
   expect(dialog.querySelectorAll('.shop-offer')).toHaveLength(values.length);
   assertOnlyFeature(dialog, kind);
   fireEvent.click(modal.getByRole('button', { name: '筛选', exact: true }));
-  const filters = modal.getByRole('region', { name: '筛选报价' });
-  await within(filters).findByRole('checkbox', { name: `地区：${regionLabels[group]}` });
-  for (const label of regionLabels.filter(value => value !== regionLabels[group])) {
-    expect(within(filters).queryByRole('checkbox', { name: `地区：${label}` })).not.toBeInTheDocument();
-  }
+  const filters = await modal.findByRole('region', { name: '筛选报价' });
+  fireEvent.change(await within(filters).findByRole('combobox', { name: '地区' }), { target: { value: '区' } });
+  expect(within(filters).getByRole('option', { name: regionLabels[group] })).toBeVisible();
+  for (const label of regionLabels.filter(value => value !== regionLabels[group])) expect(within(filters).queryByRole('option', { name: label })).not.toBeInTheDocument();
   fireEvent.click(modal.getByRole('button', { name: '应用筛选', exact: true }));
   const first = modal.getByText(values[0].name, { selector: '.offer-name' }).closest('.shop-offer');
   expect(within(first).getByLabelText(/^结算价/)).toHaveTextContent(`¥${values[0].price}`);
@@ -175,7 +174,7 @@ test('changing feature clears old quotes, counts, history and facets during load
   await screen.findByText('商家原名0-0', { selector: '.offer-name' });
   await screen.findByText('¥100.25', { selector: 'strong' });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  await screen.findByRole('checkbox', { name: '地区：美区' });
+  fireEvent.change(await screen.findByRole('combobox', { name: '地区' }), { target: { value: '美' } }); expect(screen.getByRole('option', { name: '美区' })).toBeVisible();
   let resume;
   control.pause = new Promise(resolve => { resume = resolve; });
   control.failFacets = true;
@@ -197,7 +196,7 @@ test('changing feature clears old quotes, counts, history and facets during load
   assertOnlyFeature(document.querySelector('.product-page-details'), 'short_term');
   control.failFacets = false;
   fireEvent.click(within(filters).getByRole('button', { name: '重试筛选' }));
-  await within(filters).findByRole('checkbox', { name: '地区：港区' });
+  fireEvent.change(await within(filters).findByRole('combobox', { name: '地区' }), { target: { value: '区' } }); expect(within(filters).getByRole('option', { name: '港区' })).toBeVisible();
   await waitFor(() => expect(within(filters).queryByText('筛选条件加载失败')).not.toBeInTheDocument());
   expect(within(filters).queryByRole('checkbox', { name: '地区：美区' })).not.toBeInTheDocument();
 });

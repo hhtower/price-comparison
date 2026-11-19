@@ -11,7 +11,7 @@ import { CATALOG_DISPLAY_SEARCH_LABELS, CATALOG_PRODUCT_ALIASES, sanitizeOfferNa
 import { PriceHistoryRepository } from './price-history.repository.js';
 import { isAiMembership, MEMBERSHIP_GROUPS, MEMBERSHIP_POLICY_VERSION, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { catalogMembershipKind, failedMembershipFeatures } from '../standardization/membership-classification.js';
-import type { PurchaseTag } from '@price-comparison/catalog/purchase-attributes';
+import { minimumDaysDimension, type PurchaseTag } from '@price-comparison/catalog/purchase-attributes';
 
 export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly identityNames?: readonly string[]; readonly kind: string; readonly mergedIntoId?: string;
   readonly identity?: { family: string; product: string; tier: string }; readonly isAiMembership?: boolean }
@@ -190,8 +190,20 @@ function offerPayload(alias: string): RawBuilder<unknown> {
 function tagConditions(tags: readonly CatalogTag[]): { name: string; condition: RawBuilder<unknown> }[] {
   const dimensions = new Map<string, CatalogTag[]>();
   for (const tag of tags) dimensions.set(tag.name, [...(dimensions.get(tag.name) ?? []), tag]);
-  return [...dimensions].map(([name, values]) => ({ name, condition: sql`(
-    ${sql.join(values.map(tag => sql`r.tags @> ${JSON.stringify([tag])}::jsonb`), sql` or `)})` }));
+  return [...dimensions].map(([name, values]) => {
+    const dimension = minimumDaysDimension(name);
+    if (!dimension) return { name, condition: sql`(${sql.join(values.map(tag => sql`r.tags @> ${JSON.stringify([tag])}::jsonb`), sql` or `)})` };
+    const minimum = Math.max(...values.map(tag => Number(tag.value)));
+    const days = dimension === 'duration' ? sql`case
+      when jsonb_typeof(t->'value') = 'number' then (t->>'value')::numeric
+      when t->'value'->>'kind' = 'permanent' then 'Infinity'::numeric
+      when t->'value'->>'kind' = 'range' and jsonb_typeof(t->'value'->'min') = 'number' then (t->'value'->>'min')::numeric
+      when t->'value'->>'kind' = 'min' and jsonb_typeof(t->'value'->'days') = 'number' then (t->'value'->>'days')::numeric end`
+      : sql`case when t->>'value' ~ '^质保 [0-9]+([.][0-9]+)?(e[+-]?[0-9]+)? (小时|天)$' then
+        split_part(t->>'value', ' ', 2)::numeric / case split_part(t->>'value', ' ', 3) when '小时' then 24 else 1 end end`;
+    return { name, condition: sql`(r.tags @> ${JSON.stringify([{ name: dimension }])}::jsonb and exists (
+      select 1 from jsonb_array_elements(r.tags) t where t->>'name' = ${dimension} and (${days}) >= ${minimum}::numeric))` };
+  });
 }
 
 export function encodeCatalogCursor(cursor: CatalogCursor): string {
@@ -532,7 +544,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     ), facet_options as (
       select distinct name, value from facet_tags
       union
-      select s->>'name', s->'value' from jsonb_array_elements(${JSON.stringify(input.tags.map(({ name, value }) => ({ name, value })))}::jsonb) s
+      select s->>'name', s->'value' from jsonb_array_elements(${JSON.stringify(input.tags.filter(tag => !minimumDaysDimension(tag.name)).map(({ name, value }) => ({ name, value })))}::jsonb) s
     )`;
   if (optionsOnly) {
     // Priority uses prepared-set frequency, not a count of matching offers.

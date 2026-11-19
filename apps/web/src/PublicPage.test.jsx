@@ -164,8 +164,8 @@ test('keeps platform, sorting and filters together and expands a nonmodal deskto
   await user.click(trigger);
   const panel = screen.getByRole('region', { name: '筛选报价' });
   expect(panel).not.toHaveAttribute('aria-modal');
-  expect(within(panel).queryByRole('heading')).not.toBeInTheDocument();
-  expect(within(panel).queryByRole('searchbox')).not.toBeInTheDocument();
+  expect(within(panel).getByRole('group', { name: '接码状态' })).toBeVisible();
+  expect(within(panel).getByRole('combobox', { name: '标准商品' })).toBeVisible();
   expect(within(panel).queryByRole('button', { name: '收起筛选' })).not.toBeInTheDocument();
   expect(panel).toHaveFocus();
   expect(screen.queryByRole('dialog', { name: '筛选报价' })).not.toBeInTheDocument();
@@ -268,6 +268,30 @@ test('mobile platform picker cancels without changing selection and closes when 
   expect(screen.queryByRole('dialog', { name: '选择平台' })).not.toBeInTheDocument();
 });
 
+test('checkbox filters keep their facet order when toggled and reopened after applying', async () => {
+  const user = userEvent.setup();
+  const tagFacets = ['unverified', 'verified'].map(value => ({ name: 'sms_verification', value }));
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ tagFacets, items: [{ id: '1', name: '测试商品', offers: [] }] })));
+  render(<PublicPage />);
+  const trigger = await screen.findByRole('button', { name: '筛选', exact: true });
+  await user.click(trigger);
+  const row = () => within(screen.getByRole('group', { name: '接码状态' }));
+  const verified = () => row().getByRole('checkbox', { name: /已接码/ });
+  const expectOrder = () => expect(row().getAllByRole('checkbox')).toEqual([row().getByRole('checkbox', { name: /未接码/ }), verified()]);
+  await screen.findByRole('group', { name: '接码状态' });
+  expectOrder();
+  for (const checked of [true, false, true]) {
+    await user.click(verified());
+    expect(verified().checked).toBe(checked);
+    expectOrder();
+  }
+  await user.click(screen.getByRole('button', { name: '应用筛选（1）' }));
+  await user.click(trigger);
+  await screen.findByRole('group', { name: '接码状态' });
+  expect(verified()).toBeChecked();
+  expectOrder();
+});
+
 test('keeps a modal drawer on mobile and preserves draft choices across a breakpoint change', async () => {
   const user = userEvent.setup();
   let onChange;
@@ -289,13 +313,13 @@ test('keeps a modal drawer on mobile and preserves draft choices across a breakp
   await act(async () => { media.matches = false; onChange({ matches: false }); });
   const drawer = within(screen.getByRole('dialog', { name: '筛选报价' }));
   expect(screen.getByRole('dialog', { name: '筛选报价' })).toHaveFocus();
-  expect(drawer.queryByRole('heading')).not.toBeInTheDocument();
-  expect(drawer.queryByRole('searchbox')).not.toBeInTheDocument();
+  expect(drawer.getByRole('group', { name: '接码状态' })).toBeVisible();
+  expect(drawer.getByRole('combobox', { name: '标准商品' })).toBeVisible();
   const apply = drawer.getByRole('button', { name: '应用筛选（1）' });
   await user.tab({ shift: true });
   expect(apply).toHaveFocus();
   await user.tab();
-    expect(drawer.getByRole('combobox', { name: '标准商品' })).toHaveFocus();
+  expect(within(drawer.getByRole('group', { name: '标准商品' })).getByRole('button', { name: '不限' })).toHaveFocus();
   await user.tab({ shift: true });
   expect(apply).toHaveFocus();
   await user.click(drawer.getByRole('button', { name: '取消筛选' }));
@@ -351,11 +375,10 @@ test('applies desktop draft filters once while preserving keywords, purchase int
   const catalogCalls = () => calls.filter(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20');
   const beforeSelection = catalogCalls().length;
   await user.click(panel.getByRole('checkbox', { name: /已接码/ }));
-  await user.click(panel.getByRole('checkbox', { name: '使用期限：1个月' }));
-  await user.click(panel.getByRole('checkbox', { name: '使用期限：12个月' }));
+  await user.type(panel.getByRole('spinbutton', { name: '使用期限至少天数' }), '30');
   expect(catalogCalls()).toHaveLength(beforeSelection);
-  await user.click(panel.getByRole('button', { name: '应用筛选（3）' }));
-  await waitFor(() => expect(catalogCalls().at(-1).searchParams.getAll('tag')).toHaveLength(3));
+  await user.click(panel.getByRole('button', { name: '应用筛选（2）' }));
+  await waitFor(() => expect(catalogCalls().at(-1).searchParams.getAll('tag')).toHaveLength(2));
   expect(catalogCalls()).toHaveLength(beforeSelection + 1);
   expect(catalogCalls().at(-1).searchParams.get('q')).toBe('ChatGPT Plus 已接码 质保至少30天');
   expect(catalogCalls().at(-1).searchParams.get('platform')).toBe('openai');
@@ -454,7 +477,7 @@ test('keeps raw merchant values out of purchase filters and shows readable condi
   await user.click(screen.getByRole('button', { name: '筛选' }));
   const drawer = within(screen.getByRole('region', { name: '筛选报价' }));
   expect(drawer.getByRole('checkbox', { name: /已接码/ })).toBeInTheDocument();
-  expect(drawer.getByRole('checkbox', { name: /1个月/ })).toBeInTheDocument();
+  expect(drawer.getByRole('spinbutton', { name: '使用期限至少天数' })).toBeVisible();
   expect(drawer.getByText(/1 款 · \d+ 条报价/)).toHaveAttribute('role', 'status');
   expect(drawer.queryByRole('checkbox', { name: /条报价/ })).not.toBeInTheDocument();
   expect(drawer.queryByText(/can be used twice|100刀|10-open/)).not.toBeInTheDocument();
@@ -515,20 +538,6 @@ test('loads paginated quotes with the current purchase filters when a preview ca
   expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Plus 已接码');
 });
 
-test('shows common durations first and keeps selected options visible after collapsing the full group', async () => {
-  const user = userEvent.setup();
-  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ total: 0, items: [], tagFacets: Array.from({ length: 20 }, (_, index) => ({ name: 'duration', value: index + 1, priority: 20 - index })) })));
-  render(<PublicPage />);
-  await user.click(screen.getByRole('button', { name: '筛选' }));
-  const drawer = within(screen.getByRole('region', { name: '筛选报价' }));
-  await waitFor(() => expect(drawer.getAllByRole('checkbox')).toHaveLength(3));
-  await user.click(drawer.getByRole('button', { name: '更多期限（按天）' }));
-  expect(drawer.getAllByRole('checkbox')).toHaveLength(20);
-  await user.click(drawer.getByRole('checkbox', { name: /20天/ }));
-  await user.click(drawer.getByRole('button', { name: '收起（按天）' }));
-  expect(drawer.getAllByRole('checkbox')).toHaveLength(4);
-  expect(drawer.getByRole('checkbox', { name: /20天/ })).toBeChecked();
-});
 
 test('retries failed quote details and ignores a response arriving after the dialog closes', async () => {
   const user = userEvent.setup();
@@ -876,21 +885,21 @@ test('filters one standard product card by all selected tags', async () => {
     expect(screen.queryByText('质保时长：质保25天')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('checkbox', { name: '批量购买：支持批量购买' }));
-    await user.click(screen.getByRole('checkbox', { name: '订阅保障：质保 12 天' }));
+    await user.type(screen.getByRole('spinbutton', { name: '订阅保障至少天数' }), '12');
     await user.click(screen.getByRole('button', { name: '应用筛选（2）' }));
     await waitFor(() => expect(calls.some(path => {
       const selected = new URL(path, 'http://localhost').searchParams.getAll('tag').map(value => JSON.parse(value));
-      return selected.length === 2 && selected.some(tag => tag.name === 'bulk_purchase' && tag.value === 'supported') && selected.some(tag => tag.name === 'subscription_warranty' && tag.value === '质保 12 天');
+      return selected.length === 2 && selected.some(tag => tag.name === 'bulk_purchase' && tag.value === 'supported') && selected.some(tag => tag.name === 'subscription_warranty_min_days' && tag.value === 12);
     })).toBe(true));
     expect(screen.getByText('原始报价名')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Gemini / Google' }));
     await waitFor(() => expect(new URL(calls.at(-1), 'http://localhost').searchParams.get('platform')).toBe('google'));
     const switched = new URL(calls.at(-1), 'http://localhost').searchParams;
-    expect(switched.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'subscription_warranty', value: '质保 12 天' }]);
+    expect(switched.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'subscription_warranty_min_days', value: 12 }]);
     expect(switched.has('warrantyDaysMin')).toBe(false);
     await user.click(screen.getByRole('button', { name: '筛选（2）' }));
     expect(screen.getByRole('checkbox', { name: '批量购买：支持批量购买' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: '订阅保障：质保 12 天' })).toBeChecked();
+    expect(screen.getByRole('spinbutton', { name: '订阅保障至少天数' })).toHaveValue(12);
   });
 
   test('shows the price disclaimer and lets users report a specific offer', async () => {
@@ -933,7 +942,7 @@ test('retains all SKU tag options and uses the server ranking after filtering', 
   await screen.findByRole('heading', { name: /Plus/ });
   await user.click(screen.getByRole('button', { name: 'Plus' }));
   await user.click(screen.getByRole('button', { name: '筛选' }));
-  await user.click(screen.getByRole('checkbox', { name: '使用期限：12个月' }));
+  await user.type(screen.getByRole('spinbutton', { name: '使用期限至少天数' }), '360');
   await user.click(screen.getByRole('button', { name: '应用筛选（1）' }));
   await screen.findByText('报价2');
   const tiles = screen.getAllByRole('link', { name: '去商家' }).map(link => link.closest('.shop-tile'));
@@ -943,8 +952,7 @@ test('retains all SKU tag options and uses the server ranking after filtering', 
   expect(tiles[1]).toHaveTextContent('12个月');
   expect(screen.queryByText('报价1')).toBeNull();
   await user.click(screen.getByRole('button', { name: '筛选（1）' }));
-  expect(screen.getByRole('checkbox', { name: '使用期限：1个月' })).toBeInTheDocument();
-  expect(screen.getByRole('checkbox', { name: '使用期限：12个月' })).toBeChecked();
+  expect(screen.getByRole('spinbutton', { name: '使用期限至少天数' })).toHaveValue(360);
 });
 
 test('pages whole products and aborts a superseded catalog request', async () => {

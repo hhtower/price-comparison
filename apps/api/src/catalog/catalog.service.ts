@@ -2,8 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { CACHE, type Cache } from '../cache/cache.js';
 import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQuery, type CatalogSort, type CatalogTag, type PublicCatalogProduct, type PublicProductIdentity } from './catalog.repository.js';
 import { DomainValidationError } from '../common/errors.js';
-import { normalizePurchaseTag, parseCatalogSearch, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
-import { isFilterableProductTag } from '@price-comparison/catalog/product-tag-policy';
+import { normalizeCatalogFilter, parseCatalogSearch, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
 import { normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
 import { MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 
@@ -118,8 +117,8 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
       || tag.value === undefined || JSON.stringify(tag.value).length > 500) {
       throw new DomainValidationError('INVALID_FILTER', '筛选条件必须包含有效属性和值');
     }
-    const normalized = normalizePurchaseTag({ name: tag.name.trim(), value: tag.value as CatalogTag['value'] });
-    if (!normalized.length || !normalized.every(isFilterableProductTag)) {
+    const normalized = normalizeCatalogFilter({ name: tag.name.trim(), value: tag.value as CatalogTag['value'] });
+    if (!normalized.length) {
       throw new DomainValidationError('INVALID_FILTER', '筛选条件包含已移除的属性或无效值');
     }
     return normalized;

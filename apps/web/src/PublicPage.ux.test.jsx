@@ -86,7 +86,7 @@ test('detail search and sort apply directly while filter drafts stay isolated', 
   expect(dialog.queryByRole('button', { name: '查询', exact: true })).not.toBeInTheDocument();
   expect(dialog.queryByRole('spinbutton', { name: '最低价格' })).not.toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
-  fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '1.111' } });
+  fireEvent.change(await dialog.findByRole('spinbutton', { name: '最低价格' }), { target: { value: '1.111' } });
   fireEvent.click(await dialog.findByRole('checkbox', { name: /已接码/ }));
   fireEvent.change(dialog.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '甲店' } });
   await waitFor(() => expect(requests.some(url => url.searchParams.get('q') === '甲店' && url.searchParams.has('detailKind'))).toBe(true));
@@ -97,16 +97,16 @@ test('detail search and sort apply directly while filter drafts stay isolated', 
   expect(params.has('tag')).toBe(false);
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   expect(dialog.getByRole('alert')).toHaveTextContent('最多两位小数');
-  fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
+  fireEvent.change(await dialog.findByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   await waitFor(() => expect(dialog.getByRole('button', { name: '筛选（2）' })).toBeInTheDocument());
   fireEvent.click(dialog.getByRole('button', { name: '筛选（2）' }));
-  fireEvent.click(dialog.getByRole('button', { name: '清除全部', exact: true }));
+  fireEvent.click(await dialog.findByRole('button', { name: '清除全部', exact: true }));
   expect(dialog.getByRole('button', { name: '筛选（2）' })).toBeInTheDocument();
   fireEvent.keyDown(dialog.getByRole('region', { name: '筛选报价' }), { key: 'Escape' });
   fireEvent.click(dialog.getByRole('button', { name: '筛选（2）' }));
-  expect(dialog.getByRole('spinbutton', { name: '最低价格' })).toHaveValue(10);
-  fireEvent.click(dialog.getByRole('button', { name: '清除全部', exact: true }));
+  expect(await dialog.findByRole('spinbutton', { name: '最低价格' })).toHaveValue(10);
+  fireEvent.click(await dialog.findByRole('button', { name: '清除全部', exact: true }));
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   await waitFor(() => expect(dialog.getByRole('button', { name: '筛选', exact: true })).toBeInTheDocument());
   expect(dialog.getByRole('textbox', { name: '搜索商铺或报价' })).toHaveValue('甲店');
@@ -134,14 +134,14 @@ test('modal reset clears applied filters, invalid drafts, pagination and a pendi
   await dialog.findByText('报价12');
   fireEvent.change(dialog.getByRole('combobox', { name: '报价排序' }), { target: { value: 'updated' } });
   fireEvent.click(dialog.getByRole('button', { name: '筛选（1）' }));
-  fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
+  fireEvent.change(await dialog.findByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   await waitFor(() => expect(dialog.getByRole('button', { name: '加载更多报价' })).toBeEnabled());
   fireEvent.click(await dialog.findByRole('button', { name: '加载更多报价' }));
   await dialog.findByText('报价15');
   fireEvent.change(dialog.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '不存在' } });
   fireEvent.click(dialog.getByRole('button', { name: '筛选（2）' }));
-  fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '1.111' } });
+  fireEvent.change(await dialog.findByRole('spinbutton', { name: '最低价格' }), { target: { value: '1.111' } });
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   expect(dialog.getByRole('alert')).toBeInTheDocument();
   await act(async () => fireEvent.click(dialog.getByRole('button', { name: '重置', exact: true })));
@@ -158,7 +158,7 @@ test('modal reset clears applied filters, invalid drafts, pagination and a pendi
   expect(params.has('tag')).toBe(false);
   expect(params.has('warrantyDaysMin')).toBe(false);
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
-  expect(dialog.getByRole('spinbutton', { name: '最低价格' })).toHaveValue(null);
+  expect(await dialog.findByRole('spinbutton', { name: '最低价格' })).toHaveValue(null);
   expect(await dialog.findByRole('checkbox', { name: /已接码/ })).not.toBeChecked();
   expect(dialog.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Plus');
@@ -208,8 +208,8 @@ test('filters the complete quote query but resets conditions and pagination when
   fireEvent.change(dialog.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '甲店 已接码' } });
   fireEvent.submit(dialog.getByRole('form', { name: '详情查询' }));
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
-  fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
-  fireEvent.change(dialog.getByRole('spinbutton', { name: '最高价格' }), { target: { value: '20' } });
+  fireEvent.change(await dialog.findByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
+  fireEvent.change(await dialog.findByRole('spinbutton', { name: '最高价格' }), { target: { value: '20' } });
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   await waitFor(() => expect(requests.some(url => !url.searchParams.has('shopQuery') && url.searchParams.get('priceMin') === '10' && url.searchParams.get('priceMax') === '20' && url.searchParams.get('q') === '甲店 已接码')).toBe(true));
   fireEvent.change(dialog.getByRole('combobox', { name: '报价排序' }), { target: { value: 'updated' } });
@@ -235,8 +235,8 @@ test('filters the complete quote query but resets conditions and pagination when
   expect(reopened.getByRole('button', { name: '筛选', exact: true })).toBeInTheDocument();
   expect(reopened.queryByRole('spinbutton', { name: '跳转页码' })).not.toBeInTheDocument();
   fireEvent.click(reopened.getByRole('button', { name: '筛选', exact: true }));
-  expect(reopened.getByRole('spinbutton', { name: '最低价格' })).toHaveValue(null);
-  expect(reopened.getByRole('spinbutton', { name: '最高价格' })).toHaveValue(null);
+  expect(await reopened.findByRole('spinbutton', { name: '最低价格' })).toHaveValue(null);
+  expect(await reopened.findByRole('spinbutton', { name: '最高价格' })).toHaveValue(null);
 });
 
 test('opens a shop quote list, recovers from an empty filter and reopens the full shop list', async () => {
@@ -343,7 +343,7 @@ test.each(['offers', 'shops'])('opening %s inherits list filters and restores th
     expect(params.get('currency')).toBe('CNY');
   });
   fireEvent.click(dialog.getByRole('button', { name: /^筛选/ }));
-  fireEvent.click(dialog.getByRole('button', { name: '清除全部', exact: true }));
+  fireEvent.click(await dialog.findByRole('button', { name: '清除全部', exact: true }));
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   expect(await dialog.findByText(kind === 'shops' ? '未匹配店' : 'Plus 未匹配报价')).toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: kind === 'shops' ? '关闭商铺详情' : '关闭报价详情' }));
@@ -363,8 +363,8 @@ test.each([['20', '10'], ['-1', ''], ['', '1.111']])('rejects invalid amount bou
   const dialog = within(screen.getByRole('dialog'));
   await dialog.findByText('报价12');
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
-  fireEvent.change(dialog.getByRole('spinbutton', { name: '最低价格' }), { target: { value: minimum } });
-  fireEvent.change(dialog.getByRole('spinbutton', { name: '最高价格' }), { target: { value: maximum } });
+  fireEvent.change(await dialog.findByRole('spinbutton', { name: '最低价格' }), { target: { value: minimum } });
+  fireEvent.change(await dialog.findByRole('spinbutton', { name: '最高价格' }), { target: { value: maximum } });
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   expect(dialog.getByRole('alert')).toBeInTheDocument();
   expect(requests.filter(url => url.searchParams.has('detailKind'))).toHaveLength(1);
@@ -394,7 +394,7 @@ test('paginated offers request CNY-only prices and apply an upper-only bound wit
   await dialog.findByText('人民币二十元');
   expect(dialog.queryByText('美元一元')).not.toBeInTheDocument();
   fireEvent.click(dialog.getByRole('button', { name: '筛选', exact: true }));
-  fireEvent.change(dialog.getByRole('spinbutton', { name: '最高价格' }), { target: { value: '15' } });
+  fireEvent.change(await dialog.findByRole('spinbutton', { name: '最高价格' }), { target: { value: '15' } });
   fireEvent.change(dialog.getByRole('combobox', { name: '报价排序' }), { target: { value: 'priceDesc' } });
   expect(await dialog.findByText('人民币二十元')).toBeInTheDocument();
   const sortedParams = requests.filter(url => url.searchParams.has('detailKind')).at(-1).searchParams;
@@ -408,7 +408,7 @@ test('paginated offers request CNY-only prices and apply an upper-only bound wit
   expect(filteredParams.get('priceMax')).toBe('15');
   expect(filteredParams.has('priceMin')).toBe(false);
   fireEvent.click(dialog.getByRole('button', { name: /^筛选/ }));
-  fireEvent.click(dialog.getByRole('button', { name: '清除全部', exact: true }));
+  fireEvent.click(await dialog.findByRole('button', { name: '清除全部', exact: true }));
   fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
   expect(await dialog.findByText('人民币二十元')).toBeInTheDocument();
   expect(dialog.queryByText('美元一元')).not.toBeInTheDocument();

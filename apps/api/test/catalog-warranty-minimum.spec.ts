@@ -2,6 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeCatalogQuery } from '../src/catalog/catalog.service.ts';
 
+test('minimum days are separate query constraints, not exact merchant tags', () => {
+  for (const name of ['duration_min_days', 'subscription_warranty_min_days', 'usage_warranty_min_days']) {
+    assert.deepEqual(normalizeCatalogQuery({ tags: [{ name, value: 30 }] }).tags, [{ name, value: 30 }]);
+    for (const value of [0, -1, 1.5, 36501, '30']) assert.throws(() => normalizeCatalogQuery({ tags: [{ name, value }] }), { code: 'INVALID_FILTER' });
+  }
+});
+
 test('removed warranty minimum inputs fail explicitly, including empty and malformed values', () => {
   for (const warrantyDaysMin of [30, 0, '', null, undefined, '30']) {
     assert.throws(() => normalizeCatalogQuery({ warrantyDaysMin } as never), { code: 'INVALID_FILTER' });

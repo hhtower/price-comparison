@@ -179,7 +179,7 @@ test('keeps inline filters below the sticky toolbar without scrolling an already
     bounds.mockImplementation(function () { return this === toolbar ? { bottom: toolbarBottom } : { top: panelTop }; });
     scrollBy.mockClear();
     fireEvent.click(trigger);
-    const panel = screen.getByRole('region', { name: '筛选报价' });
+    const panel = await screen.findByRole('region', { name: '筛选报价' });
     expect(panel).toHaveFocus();
     expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
     if (adjustment) expect(scrollBy).toHaveBeenCalledExactlyOnceWith(0, adjustment);
@@ -195,9 +195,8 @@ test('keeps main search and delivery filters independent of the standard product
   fireEvent.change(screen.getByRole('textbox', { name: '搜索商品' }), { target: { value: 'Plus' } });
   await waitFor(() => expect(calls.some(url => url.pathname === '/api/catalog' && url.searchParams.get('q') === 'Plus')).toBe(true));
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  const panel = within(screen.getByRole('region', { name: '筛选报价' }));
+  const panel = within(await screen.findByRole('region', { name: '筛选报价' }));
   fireEvent.click(await panel.findByRole('checkbox', { name: /支持批量购买/ }));
-  expect(panel.queryByRole('searchbox')).not.toBeInTheDocument();
   expect(panel.queryByRole('group', { name: '商品平台' })).not.toBeInTheDocument();
   expect(panel.queryByRole('radio')).not.toBeInTheDocument();
   expect(calls.filter(url => url.pathname === '/api/catalog/products')).toHaveLength(1);
@@ -215,15 +214,14 @@ test('keeps old product links in the selector and discards unapplied edits', asy
   const calls = mockApi(); await renderWithOffers();
   await screen.findByRole('button', { name: 'Codex 手机接码 ×' });
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
-  const panel = within(screen.getByRole('region', { name: '筛选报价' }));
+  const panel = within(await screen.findByRole('region', { name: '筛选报价' }));
   fireEvent.click(await panel.findByRole('checkbox', { name: /支持批量购买/ }));
   fireEvent.keyDown(window, { key: 'Escape' });
   expect(new URLSearchParams(window.location.search).get('standardProductId')).toBe('42');
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
   expect(screen.getByRole('checkbox', { name: /支持批量购买/ })).not.toBeChecked();
-  expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: '标准商品' })).toHaveValue('Codex 手机接码');
   expect(calls.filter(url => url.pathname === '/api/catalog/products')).toHaveLength(1);
-  expect(screen.getByRole('combobox', { name: '标准商品' })).toHaveValue('42');
   fireEvent.click(within(screen.getByRole('region', { name: '筛选报价' })).getByRole('button', { name: '清除全部' }));
   fireEvent.click(screen.getByRole('button', { name: '应用筛选', exact: true }));
   expect(new URLSearchParams(window.location.search).has('standardProductId')).toBe(false);
@@ -350,7 +348,8 @@ test.each([
 test('retired rapid and warranty-scope facets never appear as selectable conditions', async () => {
   mockApi({ facets: [{ name: 'intended_use', value: 'rapid' }, { name: 'warranty_scope', value: 'first_login' }, { name: 'region', value: 'us' }] });
   await renderWithOffers(); fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  expect(await screen.findByRole('checkbox', { name: '地区：美区' })).toBeInTheDocument();
+  fireEvent.change(await screen.findByRole('combobox', { name: '地区' }), { target: { value: '美国' } });
+  expect(screen.getByRole('option', { name: '美区' })).toBeVisible();
   expect(screen.queryByRole('checkbox', { name: /速刷|首登/ })).not.toBeInTheDocument();
 });
 
@@ -370,14 +369,14 @@ test('rapid words stay literal search text instead of producing retired intent c
   expect(screen.queryByLabelText('已识别购买条件')).not.toBeInTheDocument();
 });
 
-test.each(['质保 12 天', '质保 2.5 小时', '质保（期限未注明）'])('detail filters submit short subscription coverage %s without derived days', async value => {
+test.each(['质保 12 天', '质保 2.5 小时', '质保（期限未注明）'])('detail warranty input uses a lower bound independent of sample value %s', async value => {
   window.history.replaceState({}, '', '/products/42');
   const calls = mockApi({ facets: [{ name: 'subscription_warranty', value }] }); await renderWithOffers(); await screen.findByText('¥12.5');
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  fireEvent.click(await screen.findByRole('checkbox', { name: '订阅保障：' + value }));
+  fireEvent.change(await screen.findByRole('spinbutton', { name: '订阅保障至少天数' }), { target: { value: '12' } });
   expect(screen.queryByRole('group', { name: '最低质保天数' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /应用筛选/ }));
-  await waitFor(() => expect(calls.some(url => url.searchParams.has('detailKind') && url.searchParams.getAll('tag').includes(JSON.stringify({ name: 'subscription_warranty', value })))).toBe(true));
+  await waitFor(() => expect(calls.some(url => url.searchParams.has('detailKind') && url.searchParams.getAll('tag').includes(JSON.stringify({ name: 'subscription_warranty_min_days', value: 12 })))).toBe(true));
   expect(calls.every(url => !url.searchParams.has('warrantyDaysMin'))).toBe(true);
 });
 

@@ -10,10 +10,9 @@ import { usePageAnalytics } from './usePageAnalytics.js';
 import { trackUsage } from './analytics.js';
 import { keepPreviousData, QueryClient, QueryClientProvider, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
-import { normalizePurchaseTag, parseCatalogSearch, tagValueKey, PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
-import { isFilterableProductTag } from '@price-comparison/catalog/product-tag-policy';
+import { MAX_DURATION_DAYS, minimumDaysDimension, normalizeCatalogFilter, parseCatalogSearch, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
-import { DurationFilterOptions } from './components/PurchasePeriodFilters.jsx';
+import { FilterRow, SearchFilterRow } from './components/PurchaseFilterRow.jsx';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { MEMBERSHIP_GROUPS, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
 import { updatePageMetadata } from './page-metadata.js';
@@ -64,13 +63,13 @@ function matchingProducts(products, query, platform) {
 }
 
 function MembershipFilter({ value, onChange }) {
-  return <fieldset className="filter-group"><legend>AI会员类型</legend><div className="filter-group-content"><div className="filter-options">
+  return <FilterRow label="AI会员类型" unlimited={!value.length} onClear={() => onChange([])}><div className="filter-options">
     {MEMBERSHIP_GROUPS.filter(kind => kind !== 'unclassified').map(kind => <label key={kind} className={value.includes(kind) ? 'is-selected' : ''}>
       <input type="checkbox" aria-label={membershipFilterLabel(kind)} checked={value.includes(kind)}
         onChange={() => onChange(MEMBERSHIP_GROUPS.filter(candidate => candidate === kind ? !value.includes(candidate) : value.includes(candidate)))} />
       <span>{membershipFilterLabel(kind)}</span>
     </label>)}
-  </div></div></fieldset>;
+  </div></FilterRow>;
 }
 
 function membershipName(item, kind = '') {
@@ -111,7 +110,7 @@ function readCatalogLocation(params = new URLSearchParams(window.location.search
   const tags = params.getAll('tag').slice(0, 50).flatMap(value => {
     try {
       const tag = JSON.parse(value);
-      const normalized = normalizePurchaseTag(tag).filter(isFilterableProductTag);
+      const normalized = normalizeCatalogFilter(tag);
       if (!normalized.length) invalidFilters = true;
       return normalized.map(tagKey);
     } catch { invalidFilters = true; return []; }
@@ -198,7 +197,7 @@ function FilterCount({ params, enabled, detail = false, current }) {
 }
 
 const TAG_LABELS = Object.fromEntries(Object.entries(PURCHASE_GUIDE_FIELDS).map(([name, field]) => [name, field.label]));
-const FILTER_DEFINITIONS = PURCHASE_ATTRIBUTE_DEFINITIONS;
+const regionNames = new Intl.DisplayNames(['zh-CN'], { type: 'region' });
 
 const PLATFORM_LABELS = {
   anthropic: 'Anthropic', apple: 'Apple', email: '邮箱', google: 'Google',
@@ -233,9 +232,6 @@ function displayPurchaseValue(tag) {
   return displayPurchaseTagValue(tag);
 }
 
-function isReadableFilter(tag) {
-  return FILTER_DEFINITIONS.some(definition => definition.name === tag.name) && normalizePurchaseTag(tag).length > 0;
-}
 
 function searchIntentTags(query) {
   return parseCatalogSearch(query).tags;
@@ -281,7 +277,7 @@ async function readApiError(response) {
 function uniqueTags(items) {
   const unique = new Map();
   for (const tag of items.flatMap(item => item || [])) {
-    for (const normalized of normalizePurchaseTag(tag)) {
+    for (const normalized of normalizeCatalogFilter(tag)) {
       const key = tagKey(normalized);
       const previous = unique.get(key);
       unique.set(key, { ...tag, ...normalized, priority: Math.max(Number(previous?.priority ?? 0), Number(tag.priority ?? 0)) });
@@ -293,7 +289,7 @@ function uniqueTags(items) {
 function groupTags(tags) {
   const groups = TAG_GROUPS.map((group) => ({ ...group, tags: [] }));
   for (const tag of tags) {
-    const group = groups.find((candidate) => candidate.names.includes(tag.name)) || groups.find((candidate) => candidate.id === 'other');
+    const group = groups.find(candidate => candidate.names.includes(minimumDaysDimension(tag.name) || tag.name));
     group?.tags.push(tag);
   }
   return groups.filter((group) => group.tags.length);
@@ -313,12 +309,37 @@ function useDesktopFilters() {
   return desktop;
 }
 
-function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, draftTags, draftProduct = '', onToggle, onClear, onApply, onClose, preview, children, extraCount = 0, id = 'catalog-purchase-filters' }) {
-  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+function PurchaseFacet({ group, draftTags, onChange }) {
+  const selected = group.tags.filter(tag => draftTags.has(tagKey(tag)));
+  const clear = () => { const next = new Set(draftTags); selected.forEach(tag => next.delete(tagKey(tag))); return next; };
+  const toggle = key => { const next = new Set(draftTags); if (!next.delete(key)) next.add(key); onChange(next); };
+  const props = { label: group.label, unlimited: !selected.length, onClear: () => onChange(clear()) };
+  if (minimumDaysDimension(`${group.id}_min_days`)) {
+    const minimum = selected.find(tag => minimumDaysDimension(tag.name));
+    return <FilterRow {...props}><label className="filter-days">至少<input type="number" aria-label={`${group.label}至少天数`} min="1" max={MAX_DURATION_DAYS} step="1" placeholder="天数" value={minimum?.value ?? ''} onChange={event => {
+      const next = clear();
+      if (event.target.value) {
+        const constraint = { name: `${group.id}_min_days`, value: event.target.valueAsNumber };
+        if (!normalizeCatalogFilter(constraint).length) { event.target.reportValidity(); return; }
+        next.add(tagKey(constraint));
+      }
+      onChange(next);
+    }} />天</label>{selected.filter(tag => !minimumDaysDimension(tag.name)).map(tag => <button type="button" key={tagKey(tag)} className="filter-picked" onClick={() => toggle(tagKey(tag))}>{displayPurchaseValue(tag)} ×</button>)}</FilterRow>;
+  }
+  if (group.id === 'region' || group.id === 'access_channel' || group.tags.length > 6) {
+    const options = group.tags.map(tag => ({ key: tagKey(tag), label: displayPurchaseValue(tag), keywords: `${tag.value} ${tag.name === 'region' && /^[a-z]{2}$/u.test(tag.value) ? regionNames.of(tag.value.toUpperCase()) : ''}` }));
+    return <SearchFilterRow {...props} options={options} selected={options.filter(option => draftTags.has(option.key))} onChoose={toggle} onRemove={toggle} />;
+  }
+  return <FilterRow {...props}><div className="filter-options">{group.tags.map(tag => {
+    const key = tagKey(tag);
+    return <label key={key} className={draftTags.has(key) ? 'is-selected' : ''}><input type="checkbox" aria-label={displayTag(tag)} checked={draftTags.has(key)} onChange={() => toggle(key)} /><span>{displayPurchaseValue(tag)}</span></label>;
+  })}</div></FilterRow>;
+}
+
+function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, draftTags, draftProduct = '', onChangeTags, onClear, onApply, onClose, preview, children, extraCount = 0, id = 'catalog-purchase-filters' }) {
   const dialogRef = useRef(null);
   useEffect(() => {
     if (!open) return undefined;
-    setExpandedGroups(new Set());
     const previousFocus = document.activeElement;
     const panel = dialogRef.current;
     const toolbar = panel?.parentElement?.previousElementSibling;
@@ -341,7 +362,7 @@ function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, dra
     return () => { document.body.style.overflow = previousOverflow; };
   }, [open, inline]);
   if (!open) return null;
-  const readableTags = uniqueTags([[...draftTags].map(tag => JSON.parse(tag)), tags]).filter(tag => isReadableFilter(tag) || draftTags.has(tagKey(tag)));
+  const readableTags = uniqueTags([tags, [...draftTags].map(tag => JSON.parse(tag))]);
   const groups = groupTags(readableTags);
   const draftCount = draftTags.size + Number(Boolean(draftProduct)) + extraCount;
   return (
@@ -349,29 +370,7 @@ function FilterPanel({ open, inline, covered, tags, loading, error, onRetry, dra
       <section ref={dialogRef} id={id} className={`filter-drawer ${inline ? 'filter-panel--inline' : ''}`} role={inline ? 'region' : 'dialog'} tabIndex={-1} aria-modal={inline || covered ? undefined : true} aria-label="筛选报价" onKeyDown={inline || covered ? undefined : trapDialogFocus}>
         <div className="filter-drawer-body">
           {children}
-          {loading ? <p role="status">正在加载筛选条件…</p> : error ? <div role="alert"><p>{error}</p><button type="button" className="text-button" onClick={onRetry}>重试筛选</button></div> : groups.length ? groups.map((group) => {
-            if (group.id === 'duration') return <fieldset className="filter-group" key={group.id}>
-              <legend>{group.label}</legend>
-              <div className="filter-group-content"><DurationFilterOptions tags={group.tags} selectedTags={draftTags} onToggle={onToggle} /></div>
-            </fieldset>;
-            const ranked = [...group.tags].sort((a, b) => Number(a.value === 'unknown') - Number(b.value === 'unknown') || Number(b.priority ?? 0) - Number(a.priority ?? 0) || displayPurchaseValue(a).localeCompare(displayPurchaseValue(b), 'zh-CN', { numeric: true }));
-            const expanded = expandedGroups.has(group.id);
-            const visible = expanded ? ranked : ranked.filter((tag, index) => index < 6 || draftTags.has(tagKey(tag)));
-            return (
-            <fieldset className="filter-group" key={group.id}>
-              <legend>{group.label}</legend>
-              <div className="filter-group-content">
-                <div className="filter-options">
-                  {visible.map((tag) => {
-                    const key = tagKey(tag);
-                    return <label key={key} className={draftTags.has(key) ? 'is-selected' : ''}><input type="checkbox" aria-label={displayTag(tag)} checked={draftTags.has(key)} onChange={() => onToggle(key)} /><span>{displayPurchaseValue(tag)}</span></label>;
-                  })}
-                </div>
-                {ranked.length > 6 ? <button type="button" className="filter-expand" aria-expanded={expanded} onClick={() => setExpandedGroups(current => { const next = new Set(current); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{expanded ? '收起' : `展开全部 ${ranked.length} 项`}</button> : null}
-              </div>
-            </fieldset>
-            );
-          }) : <p className="filter-empty">暂无明确的可选条件，可尝试搜索商品名称</p>}
+          {loading ? <p role="status">正在加载筛选条件…</p> : error ? <div role="alert"><p>{error}</p><button type="button" className="text-button" onClick={onRetry}>重试筛选</button></div> : groups.length ? groups.map(group => <PurchaseFacet key={group.id} group={group} draftTags={draftTags} onChange={onChangeTags} />) : <p className="filter-empty">暂无明确的可选条件，可尝试搜索商品名称</p>}
         </div>
         <footer className="filter-drawer-footer"><button type="button" className="text-button" onClick={onClear}>清除全部</button>{preview}<div className="filter-drawer-actions">{inline ? null : <button type="button" className="text-button" aria-label="取消筛选" onClick={onClose}>取消</button>}<button type="button" className="primary-button" onClick={onApply}>应用筛选{draftCount ? `（${draftCount}）` : ''}</button></div></footer>
       </section>
@@ -703,16 +702,16 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
         <select aria-label="报价排序" value={state.offerSort} onChange={event => update({ offerSort: event.target.value })}><option value="price">价格从低到高</option><option value="priceDesc">价格从高到低</option><option value="updated">最近更新</option></select>
         {detail.item.isAiMembership && !fixedMembershipKind ? <label className="catalog-newcomer-toggle"><input type="checkbox" role="switch" aria-label="新手" checked={state.newcomer && !state.membershipKinds.length}
           onChange={event => update({ newcomer: event.target.checked, membershipKinds: [] })} /><span>新手</span></label> : null}
-        <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-expanded={filterOpen} aria-controls="detail-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraft({ ...state, tags: new Set(state.tags) }); setRangeError(''); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
+        <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-busy={filterOpen && facets.isPending} aria-expanded={filterOpen && !facets.isPending} aria-controls="detail-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraft({ ...state, tags: new Set(state.tags) }); setRangeError(''); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
         <button type="button" className="text-button" onClick={() => navigate({ keyword: '', tags: [], priceMin: '', priceMax: '', offerSort: 'price', membershipKinds: [] })}>重置</button>
       </form>
-      <div className="detail-filter-popover">
-      <FilterPanel id="detail-purchase-filters" open={filterOpen} inline extraCount={Number(Boolean(draft.priceMin || draft.priceMax)) + (fixedMembershipKind ? 0 : draft.membershipKinds.length)} tags={facets.data?.tagFacets || EMPTY_LIST} loading={facets.isFetching && !facets.data} error={facets.isError ? '筛选条件加载失败' : ''} onRetry={() => facets.refetch()}
+      <div className="detail-filter-popover">{filterOpen && facets.isPending && <span className="filter-loading-status" role="status">正在加载筛选条件…</span>}
+      <FilterPanel id="detail-purchase-filters" open={filterOpen && !facets.isPending} inline extraCount={Number(Boolean(draft.priceMin || draft.priceMax)) + (fixedMembershipKind ? 0 : draft.membershipKinds.length)} tags={facets.data?.tagFacets || EMPTY_LIST} loading={facets.isFetching && !facets.data} error={facets.isError ? '筛选条件加载失败' : ''} onRetry={() => facets.refetch()}
         draftTags={draft.tags}
-        onToggle={key => setDraft(current => { const tags = new Set(current.tags); if (tags.has(key)) tags.delete(key); else tags.add(key); return { ...current, tags }; })}
+        onChangeTags={tags => field('tags', tags)}
         onClear={() => { setDraft(current => ({ ...current, tags: new Set(), priceMin: '', priceMax: '', membershipKinds: [] })); setRangeError(''); }} onApply={apply} onClose={() => setFilterOpen(false)}>
         {detail.item.isAiMembership && !fixedMembershipKind ? <MembershipFilter value={draft.membershipKinds} onChange={membershipKinds => field('membershipKinds', membershipKinds)} /> : null}
-        <fieldset className="filter-group"><legend>价格区间</legend><div className="filter-group-content"><div className="detail-price-range" role="group" aria-label="人民币金额区间"><label><span aria-hidden="true">¥</span><input type="number" aria-label="最低价格" placeholder="最低价" min="0" max="999999999999.99" step="0.01" value={draft.priceMin} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMin', event.target.value)} /></label><span>—</span><label><span aria-hidden="true">¥</span><input type="number" aria-label="最高价格" placeholder="最高价" min="0" max="999999999999.99" step="0.01" value={draft.priceMax} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMax', event.target.value)} /></label></div>{rangeError ? <span id="detail-price-error" role="alert" className="report-error detail-query-error">{rangeError}</span> : null}</div></fieldset>
+        <FilterRow label="价格区间" unlimited={!draft.priceMin && !draft.priceMax} onClear={() => { setDraft(current => ({ ...current, priceMin: '', priceMax: '' })); setRangeError(''); }}><div className="detail-price-range" role="group" aria-label="人民币金额区间"><label><span aria-hidden="true">¥</span><input type="number" aria-label="最低价格" placeholder="最低价" min="0" max="999999999999.99" step="0.01" value={draft.priceMin} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMin', event.target.value)} /></label><span>—</span><label><span aria-hidden="true">¥</span><input type="number" aria-label="最高价格" placeholder="最高价" min="0" max="999999999999.99" step="0.01" value={draft.priceMax} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMax', event.target.value)} /></label></div>{rangeError ? <span id="detail-price-error" role="alert" className="report-error detail-query-error">{rangeError}</span> : null}</FilterRow>
       </FilterPanel>
       </div>
     </div>
@@ -1000,10 +999,10 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
   const loading = catalogQuery.isFetching || !membershipReady;
   const error = catalogQuery.isError && !catalogQuery.isFetchNextPageError ? '商品加载失败' : '';
   const facetTags = facetQuery.data?.tagFacets || EMPTY_LIST;
-  const facetLoading = filterOpen && facetQuery.isFetching && !facetQuery.data;
-  const facetError = facetQuery.isError ? '筛选条件加载失败' : '';
+  const facetLoading = filterOpen && (productsQuery.isPending || !membershipReady || facetQuery.isPending);
+  const facetError = productsQuery.isError || facetQuery.isError ? '筛选条件加载失败' : '';
   const platforms = useMemo(() => ['全部', ...groupCatalogPlatforms([...data.platformFacets.filter(item => item !== '全部'), ...(platform === '全部' ? [] : [platform])])], [data.platformFacets, platform]);
-  const allTags = useMemo(() => uniqueTags([[...selectedTags].map(tag => JSON.parse(tag)), facetTags]), [selectedTags, facetTags]);
+  const allTags = useMemo(() => uniqueTags([facetTags, [...selectedTags].map(tag => JSON.parse(tag))]), [selectedTags, facetTags]);
   const intentTags = aiSearch && membershipNegation.test(query) ? EMPTY_LIST : searchIntentTags(membershipSearch(query, aiSearch).text);
   const hasRecognizedIntent = intentTags.length > 0 || searchMembership.kinds.length > 0;
   const selectedTagList = useMemo(() => allTags.filter(tag => selectedTags.has(tagKey(tag))), [allTags, selectedTags]);
@@ -1023,9 +1022,6 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
     }),
   [catalogQuery.isPlaceholderData, data.items, priceRevision, membershipReady]);
   const clearFilters = () => { if (selectedCount) { setSelectedTags(new Set()); setSelectedProduct(''); setMembershipKinds([]); if (searchMembership.kinds.length) changeSearch(searchMembership.text); trackUsage('filter'); } setDraftTags(new Set()); setDraftProduct(''); setDraftMembershipKinds([]); };
-  const toggleDraftTag = key => {
-    setDraftTags(current => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
-  };
   const applyFilters = () => {
     if (!equalTags(selectedTags, draftTags) || selectedProduct !== draftProduct || membershipKinds.join() !== draftKinds.join()) {
       setSelectedTags(new Set(draftTags)); setSelectedProduct(draftProduct); setMembershipKinds(draftKinds);
@@ -1177,7 +1173,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
           <div className="catalog-actions">
             <label className="catalog-newcomer-toggle"><input type="checkbox" role="switch" aria-label="新手" checked={effectiveNewcomer} onChange={event => changeNewcomer(event.target.checked)} /><span>新手</span></label>
             <label className="sort-control"><select value={sort} onChange={changeSort} aria-label="商品排序"><option value="default">默认顺序</option><option value="price">起价最低</option><option value="updated">最近更新</option></select></label>
-            <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-expanded={filterOpen} aria-controls="catalog-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraftTags(new Set(selectedTags)); setDraftProduct(selectedProduct); setDraftMembershipKinds(effectiveKinds); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
+            <button type="button" className={`filter-open-button ${selectedCount ? 'has-selection' : ''}`} aria-busy={facetLoading} aria-expanded={filterOpen && !facetLoading} aria-controls="catalog-purchase-filters" onClick={() => { if (filterOpen) setFilterOpen(false); else { setDraftTags(new Set(selectedTags)); setDraftProduct(selectedProduct); setDraftMembershipKinds(effectiveKinds); setFilterOpen(true); } }}>筛选{selectedCount ? `（${selectedCount}）` : ''}<span className="filter-chevron" aria-hidden="true" /></button>
           </div>
         </div>
       </section>
@@ -1194,13 +1190,13 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
         <div className="platform-picker-options" role="group" aria-label="商品平台">{platforms.map(item => <button key={item} type="button" aria-pressed={item === platform} onClick={() => changePlatform(item)}><span>{item === '全部' ? '全部平台' : displayPlatform(item)}</span><span aria-hidden="true">{item === platform ? '✓' : ''}</span></button>)}</div>
       </ModalDialog> : null}
       {invalidFilters && <p role="alert">部分旧筛选条件已失效，请重新选择。<button type="button" className="text-button" onClick={() => setInvalidFilters(false)}>知道了</button></p>}
-      <FilterPanel open={filterOpen} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen || disclaimerOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => facetQuery.refetch()} draftTags={draftTags} draftProduct={draftProduct} extraCount={draftKinds.length} onToggle={toggleDraftTag} onClear={() => { setDraftTags(new Set()); setDraftProduct(''); setDraftMembershipKinds([]); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
-        preview={filterOpen && membershipReady ? <FilterCount params={draftRequest} enabled current={draftRequest === request && catalogQuery.data && !catalogQuery.isPlaceholderData ? data : undefined} /> : null}>
-        {products.length ? <fieldset className="filter-group"><legend>标准商品</legend><div className="filter-group-content"><select className="catalog-standard-select" aria-label="标准商品" value={draftProduct} onChange={event => {
-          const product = products.find(item => item.id === event.target.value);
-          setDraftProduct(event.target.value);
-          if (product?.isAiMembership === false) setDraftMembershipKinds([]);
-        }}><option value="">全部商品</option>{products.filter(item => platform === '全部' || normalizeCatalogPlatform(item.platform || '') === platform).map(item => <option key={item.id} value={item.id}>{membershipName(item)}</option>)}</select></div></fieldset> : null}
+      {facetLoading && <span className="filter-loading-status" role="status">正在加载筛选条件…</span>}
+      <FilterPanel open={filterOpen && !facetLoading} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen || disclaimerOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => { if (productsQuery.isError) productsQuery.refetch(); if (facetQuery.isError) facetQuery.refetch(); }} draftTags={draftTags} draftProduct={draftProduct} extraCount={draftKinds.length} onChangeTags={setDraftTags} onClear={() => { setDraftTags(new Set()); setDraftProduct(''); setDraftMembershipKinds([]); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
+        preview={filterOpen && membershipReady ? <FilterCount params={draftRequest} enabled={draftRequest !== request} current={draftRequest === request && catalogQuery.data && !catalogQuery.isPlaceholderData ? data : undefined} /> : null}>
+        {products.length || draftProduct ? <SearchFilterRow single label="标准商品" options={products.filter(item => platform === '全部' || normalizeCatalogPlatform(item.platform || '') === platform).map(item => ({ key: item.id, label: membershipName(item), keywords: item.identityNames?.join(' ') }))} selected={draftProduct ? [{ key: draftProduct, label: draftProductData ? membershipName(draftProductData) : selectedProductName }] : []} onClear={() => setDraftProduct('')} onRemove={() => setDraftProduct('')} onChoose={id => {
+          setDraftProduct(id);
+          if (products.find(item => item.id === id)?.isAiMembership === false) setDraftMembershipKinds([]);
+        }} /> : null}
         {showMembershipFilter ? <MembershipFilter value={draftKinds} onChange={setDraftMembershipKinds} /> : null}
       </FilterPanel>
       <div className="catalog-scroll">
@@ -1210,7 +1206,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
             const next = effectiveKinds.filter(value => value !== kind); setMembershipKinds(next); setDraftMembershipKinds(next);
             if (searchMembership.kinds.length) { setQuery(searchMembership.text); setSearch(searchMembership.text); }
           }}>AI会员：{membershipKindLabel(kind)} ×</button>)}
-          {selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
+          {selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{minimumDaysDimension(tag.name) ? `${TAG_LABELS[minimumDaysDimension(tag.name)]}至少 ${tag.value} 天` : displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
         {error ? <div className="catalog-error" role="alert"><span>{error}</span><button type="button" onClick={() => catalogQuery.refetch()}>重新加载</button></div> : null}
         {loading && !visibleItems.length ? <CatalogSkeleton /> : null}
         <section id="catalog-quotes" className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={effectiveNewcomer} factLimit={desktopFilters ? 2 : 1} /></section>

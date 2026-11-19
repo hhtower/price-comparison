@@ -141,7 +141,7 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
       product_id: product.id, standard_product_id: standard.id, assignment_source: 'human', publication_state: 'published',
     }).execute();
     await db.insertInto('offers').values({ product_id: product.id, idempotency_key: String(product.id), price: '20.00' }).execute();
-    await insert(product.id, [{ name: 'duration', value }, { name: 'region', value: 'ph' }]);
+    await insert(product.id, [{ name: 'duration', value }, { name: 'region', value: 'ph' }, { name: 'usage_warranty', value: value === 2 ? '质保 48 小时' : '质保（期限未注明）' }]);
   }
   while (await publishNextCatalogChange(db)) {}
   const search = (tags: PurchaseTag[], q?: string) => repository.search(normalizeCatalogQuery({
@@ -150,6 +150,13 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
   const results = (page: Awaited<ReturnType<typeof search>>) =>
     page.items.flatMap(item => item.detail?.entries ?? []).map(entry => 'productId' in entry ? entry.productId : entry.offer.productId);
   assert.deepEqual(results(await search([{ name: 'duration', value: 30 }])), [String(source.id)]);
+  const minimum = await search([{ name: 'duration_min_days', value: 30 }]);
+  assert.equal(minimum.offerTotal, 5);
+  assert.deepEqual(new Set(results(minimum)), new Set([30, 90, 360, 365, 'range'].map(key => String(ids.get(key)))));
+  assert.deepEqual(results(await search([{ name: 'subscription_warranty_min_days', value: 30 }])), [String(source.id)]);
+  assert.deepEqual(results(await search([{ name: 'subscription_warranty_min_days', value: 31 }])), []);
+  assert.deepEqual(results(await search([{ name: 'usage_warranty_min_days', value: 2 }])), [String(ids.get(2))]);
+  assert.deepEqual(results(await search([{ name: 'usage_warranty_min_days', value: 3 }])), []);
   assert.deepEqual(results(await search([], '1个月')), [String(source.id)]);
   assert.deepEqual(results(await search([], '30天')), [String(source.id)]);
   const orTags = [{ name: 'region', value: 'jp' }, { name: 'region', value: 'ph' }, { name: 'duration', value: 30 }];

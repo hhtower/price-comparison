@@ -50,19 +50,46 @@ test('filter options and the standard selector load metadata without fetching an
   expect(screen.getByRole('heading', { name: /^商品0$/ })).toBeInTheDocument();
 });
 
-test('keeps three common duration shortcuts before expanding all choices', async () => {
-  const tagFacets = [...Array.from({ length: 8 }, (_, i) => ({ name: 'duration', value: i + 1, priority: 1 })),
-    { name: 'duration', value: 31, priority: 100 }];
-  vi.stubGlobal('fetch', vi.fn(async input => String(input).includes('/catalog/facets')
-    ? Response.json({ tagFacets }) : response([product(0)])));
+test('cold opening reveals products and facets together and a second click cancels the pending panel', async () => {
+  let finish;
+  const facets = new Promise(resolve => { finish = resolve; });
+  vi.stubGlobal('fetch', vi.fn(async input => String(input).includes('/catalog/facets') ? facets : response([product(1)])));
+  render(<PublicPage />);
+  await screen.findByRole('heading', { name: /^商品1$/ });
+  const trigger = screen.getByRole('button', { name: '筛选', exact: true });
+  fireEvent.click(trigger);
+  await screen.findByText('正在加载筛选条件…');
+  expect(screen.queryByRole('region', { name: '筛选报价' })).not.toBeInTheDocument();
+  expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  fireEvent.click(trigger);
+  finish(facetsResponse());
+  await waitFor(() => expect(screen.queryByText('正在加载筛选条件…')).not.toBeInTheDocument());
+  fireEvent.click(trigger);
+  const panel = within(await screen.findByRole('region', { name: '筛选报价' }));
+  const picker = panel.getByRole('combobox', { name: '标准商品' });
+  expect(picker).toHaveAttribute('spellcheck', 'false');
+  expect(panel.getByRole('checkbox', { name: /已接码/ })).toBeVisible();
+  fireEvent.click(picker);
+  expect(panel.getByRole('option', { name: '商品1' })).toBeVisible();
+  fireEvent.keyDown(picker, { key: 'ArrowDown' });
+  fireEvent.keyDown(picker, { key: 'Enter' });
+  expect(picker).toHaveValue('商品1');
+  expect(picker).toHaveAttribute('aria-expanded', 'false');
+  fireEvent.click(picker);
+  expect(panel.getByRole('option', { name: '商品1', selected: true })).toBeVisible();
+  fireEvent.click(within(picker.closest('fieldset')).getByRole('button', { name: '不限' }));
+  expect(picker).toHaveValue('');
+});
+
+test('many durations cost a single control, independent of the number of merchant values', async () => {
+  const tagFacets = Array.from({ length: 350 }, (_, index) => ({ name: 'duration', value: index + 1 }));
+  vi.stubGlobal('fetch', vi.fn(async input => String(input).includes('/catalog/facets') ? Response.json({ tagFacets }) : response([product(0)])));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /^商品0$/ });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  expect(await screen.findByRole('checkbox', { name: /31天/ })).toBeInTheDocument();
-  const group = screen.getByRole('checkbox', { name: /31天/ }).closest('fieldset');
-  expect(within(group).getAllByRole('checkbox')).toHaveLength(3);
-  fireEvent.click(screen.getByRole('button', { name: '更多期限（按天）' }));
-  expect(within(group).getAllByRole('checkbox')).toHaveLength(9);
+  const row = within(await screen.findByRole('group', { name: '使用期限' }));
+  expect(row.getAllByRole('spinbutton')).toHaveLength(1);
+  expect(row.queryByRole('checkbox')).not.toBeInTheDocument();
 });
 
 test('typing before the debounce does not rerender existing prices', async () => {
@@ -122,7 +149,7 @@ test('facet reuse expires so reopening filters can show updated conditions', asy
   clock.mockReturnValue(6001);
   facets = [{ name: 'duration', value: 31, priority: 2 }];
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  expect(await screen.findByRole('checkbox', { name: /31天/ })).toBeInTheDocument();
+  expect(await screen.findByRole('spinbutton', { name: '使用期限至少天数' })).toBeVisible();
   expect(screen.queryByRole('checkbox', { name: /已接码/ })).not.toBeInTheDocument();
 });
 

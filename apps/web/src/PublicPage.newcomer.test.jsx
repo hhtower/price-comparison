@@ -67,7 +67,7 @@ test('the newcomer switch remembers its mode and carries it into facets, preview
   expect(link).toHaveAttribute('aria-expanded', 'false');
   fireEvent.click(screen.getByRole('button', { name: /^筛选$/ }));
   await waitFor(() => expect(requests.some(url => url.pathname.endsWith('/facets') && url.searchParams.get('newcomer') === 'true')).toBe(true));
-  fireEvent.click(screen.getByRole('button', { name: /应用筛选/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /应用筛选/ }));
   fireEvent.click(screen.getByRole('button', { name: '1 条报价' }));
   await waitFor(() => expect(requests.some(url => url.searchParams.get('detailKind') === 'offers'
     && url.searchParams.get('newcomer') === 'true')).toBe(true));
@@ -108,7 +108,7 @@ test('another tab changing the preference does not change the current list mode 
 
 test('newcomer switch preserves explicit filters and history restores the previous mode', async () => {
   localStorage.setItem(storageKey, 'newcomer');
-  const params = new URLSearchParams({ tag: JSON.stringify({ name: 'subscription_warranty', value: '保订阅90天' }), newcomer: 'true' });
+  const params = new URLSearchParams({ tag: JSON.stringify({ name: 'subscription_warranty', value: '质保 90 天' }), newcomer: 'true' });
   params.append('tag', JSON.stringify({ name: 'region', value: 'us' }));
   window.history.replaceState({}, '', '/?' + params);
   const requests = mockCatalog();
@@ -120,7 +120,7 @@ test('newcomer switch preserves explicit filters and history restores the previo
     const last = requests.filter(url => url.pathname === '/api/catalog').at(-1);
     expect(last.searchParams.get('newcomer')).not.toBe('true');
     expect(last.searchParams.has('warrantyDaysMin')).toBe(false);
-    expect(last.searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'region', value: 'us' }, { name: 'subscription_warranty', value: '保订阅90天' }]);
+    expect(last.searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'region', value: 'us' }, { name: 'subscription_warranty', value: '质保 90 天' }]);
   });
   window.history.replaceState({}, '', '/?' + params);
   fireEvent(window, new PopStateEvent('popstate'));
@@ -274,7 +274,7 @@ test.each([['short_term', '短期', '短期', '10'], ['rental', '租号（共享
   fireEvent.change(screen.getByRole('combobox', { name: '商品排序' }), { target: { value: 'price' } });
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
   await waitFor(() => expect(requests.some(url => url.pathname.endsWith('/facets') && url.searchParams.get('membershipKind') === kind)).toBe(true));
-  fireEvent.click(within(screen.getByRole('group', { name: 'AI会员类型' })).getByRole('checkbox', { name: '成品号', exact: true }));
+  fireEvent.click(within(await screen.findByRole('group', { name: 'AI会员类型' })).getByRole('checkbox', { name: '成品号', exact: true }));
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（2）' }));
   await waitFor(() => expect(new URLSearchParams(window.location.search).getAll('membershipKind')).toEqual(['account', kind]));
   window.history.replaceState({}, '', '/' + saved);
@@ -291,11 +291,11 @@ test('choosing a standard keeps feature selection independent and names plain', 
   await screen.findByRole('button', { name: 'ChatGPT Plus · 成品号' });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   const selector = await screen.findByRole('combobox', { name: '标准商品' });
-  expect(within(selector).getByRole('option', { name: 'ChatGPT Plus', exact: true })).toHaveValue('10');
-  fireEvent.change(selector, { target: { value: '10' } });
+  fireEvent.change(selector, { target: { value: 'ChatGPT' } });
+  fireEvent.click(within(selector.closest('fieldset')).getByRole('option', { name: 'ChatGPT Plus', exact: true }));
   const choices = within(screen.getByRole('group', { name: 'AI会员类型' })).getAllByRole('checkbox');
   for (const choice of choices) expect(choice).not.toBeChecked();
-  fireEvent.click(screen.getByRole('button', { name: /应用筛选/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /应用筛选/ }));
   await waitFor(() => {
     const request = requests.filter(url => url.pathname === '/api/catalog' && url.searchParams.get('limit') === '20').at(-1);
     expect(request.searchParams.get('standardProductId')).toBe('10');
@@ -349,14 +349,14 @@ test.each([
 
 test('AI membership search coexists with explicit bulk and warranty constraints', async () => {
   const params = new URLSearchParams({ q: 'ChatGPT Plus 短期', tag: JSON.stringify({ name: 'bulk_purchase', value: 'supported' }) });
-  params.append('tag', JSON.stringify({ name: 'subscription_warranty', value: '保订阅30天' }));
+  params.append('tag', JSON.stringify({ name: 'subscription_warranty', value: '质保 30 天' }));
   window.history.replaceState({}, '', '/?' + params);
   const requests = mockMembershipCatalog();
   mount();
   await waitFor(() => {
     const request = requests.filter(url => url.pathname === '/api/catalog').at(-1);
     expect(request?.searchParams.getAll('membershipKind')).toEqual(['short_term']);
-    expect(request.searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'subscription_warranty', value: '保订阅30天' }]);
+    expect(request.searchParams.getAll('tag').map(JSON.parse)).toEqual([{ name: 'bulk_purchase', value: 'supported' }, { name: 'subscription_warranty', value: '质保 30 天' }]);
     expect(request.searchParams.has('warrantyDaysMin')).toBe(false);
   });
 });
@@ -369,7 +369,7 @@ test('AI detail filters persist and reset, and newcomer never broadens an empty 
   await screen.findByText('没有匹配的报价');
   expect(requests.filter(url => url.searchParams.has('detailKind')).every(url => url.searchParams.get('newcomer') === 'true')).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  fireEvent.click(within(screen.getByRole('group', { name: 'AI会员类型' })).getByRole('checkbox', { name: '短期' }));
+  fireEvent.click(within(await screen.findByRole('group', { name: 'AI会员类型' })).getByRole('checkbox', { name: '短期' }));
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（1）' }));
   await screen.findByText(/^报价3/);
   expect(new URLSearchParams(window.location.search).getAll('membershipKind')).toEqual(['short_term']);
@@ -439,7 +439,9 @@ test('non-AI standard product selection clears membership restrictions and hides
   mount();
   await screen.findByRole('button', { name: 'ChatGPT Plus · 短期' });
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
-  fireEvent.change(await screen.findByRole('combobox', { name: '标准商品' }), { target: { value: '4' } });
+  const selector = await screen.findByRole('combobox', { name: '标准商品' });
+  fireEvent.change(selector, { target: { value: 'YouTube' } });
+  fireEvent.click(within(selector.closest('fieldset')).getByRole('option', { name: 'YouTube Premium' }));
   expect(screen.queryByRole('group', { name: 'AI会员类型' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（1）' }));
   await waitFor(() => {
@@ -466,7 +468,7 @@ test('standard details render all features and keep per-offer history on the sam
 
 test('detail feature filters keep the route, identity and purchase constraints', async () => {
   const requests = mockMembershipCatalog();
-  window.history.replaceState({}, '', '/products/10?' + new URLSearchParams({ newcomer: 'true', priceMax: '50', tag: JSON.stringify({ name: 'subscription_warranty', value: '保订阅30天' }) }));
+  window.history.replaceState({}, '', '/products/10?' + new URLSearchParams({ newcomer: 'true', priceMax: '50', tag: JSON.stringify({ name: 'subscription_warranty', value: '质保 30 天' }) }));
   render(<VirtuosoMockContext.Provider value={{ viewportHeight: 900, itemHeight: 300 }}><App /></VirtuosoMockContext.Provider>);
   await screen.findByRole('heading', { name: 'ChatGPT Plus', level: 1 });
   await screen.findByText(/^报价1/);
@@ -474,7 +476,7 @@ test('detail feature filters keep the route, identity and purchase constraints',
   expect(screen.queryByText(/^报价3/)).not.toBeInTheDocument();
   expect(screen.queryByRole('navigation', { name: '会员类型' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '筛选（2）' }));
-  fireEvent.click(within(screen.getByRole('group', { name: 'AI会员类型' })).getByRole('checkbox', { name: '短期' }));
+  fireEvent.click(within(await screen.findByRole('group', { name: 'AI会员类型' })).getByRole('checkbox', { name: '短期' }));
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（3）' }));
   await screen.findByText(/^报价3/);
   expect(screen.queryByText(/^报价1/)).not.toBeInTheDocument();
@@ -483,7 +485,7 @@ test('detail feature filters keep the route, identity and purchase constraints',
   const params = new URLSearchParams(window.location.search);
   expect(params.getAll('membershipKind')).toEqual(['short_term']);
   expect(params.get('newcomer')).toBe('false');
-  expect(params.getAll('tag').map(JSON.parse)).toEqual([{ name: 'subscription_warranty', value: '保订阅30天' }]);
+  expect(params.getAll('tag').map(JSON.parse)).toEqual([{ name: 'subscription_warranty', value: '质保 30 天' }]);
   expect(params.get('priceMax')).toBe('50');
   const histories = requests.filter(url => url.pathname.endsWith('/price-history'));
   expect(histories[0].searchParams.get('newcomer')).toBe('true');
