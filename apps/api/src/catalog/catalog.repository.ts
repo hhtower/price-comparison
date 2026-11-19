@@ -368,7 +368,8 @@ type FacetResult = { tag_facets: CatalogFacets['tagFacets']; next_expiry_at: str
 function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly: true): RawBuilder<FacetResult>;
 function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly?: false): RawBuilder<CatalogResult>;
 function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnly = false): RawBuilder<CatalogResult> | RawBuilder<FacetResult> {
-  const pricesOnly = !optionsOnly;
+  const scopedSearch = Boolean(input.standardProductId && input.search);
+  const pricesOnly = !optionsOnly && !scopedSearch;
   const membershipFiltered = Boolean(input.newcomer || input.membershipKinds?.length || input.membershipSearch);
   const needsMembership = !optionsOnly || membershipFiltered;
   const ai = sql<boolean>`cs.is_ai_membership`;
@@ -386,6 +387,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     case when ${verified} then coalesce(r.settlement_quantity, 1) else 1 end as settlement_quantity`;
   const limit = catalogPageLimit(input.limit);
   const conditions = [sql`r.available = true`, membershipScope(input, ai, kind, failed)];
+  if (scopedSearch) conditions.push(sql`r.standard_product_id = ${input.standardProductId}::bigint`);
   if (input.shopId) conditions.push(sql`r.shop_id = ${input.shopId}::bigint`);
   if (input.shopQuery) conditions.push(sql`r.shop_id in (select shop_id from catalog_shops
     where search_text like lower(${`%${input.shopQuery.replace(/[\\%_]/gu, '\\$&')}%`}))`);
@@ -419,6 +421,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     array_to_string(sp.aliases, ' ')), NFKC))` : sql`null::text`;
   const wordCondition = (word: string) => {
     const term = `%${word.replace(/[\\%_]/gu, '\\$&')}%`;
+    if (scopedSearch) return sql`(r.search_text like lower(${term}) or cs.search_text like lower(${term}) or sh.search_text like lower(${term}))`;
     return sql`r.product_id in (
       select product_id from catalog_read_offers where search_text like lower(${term})
       union all
@@ -501,7 +504,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       select sp.id, sp.name, sp.platform, sp.sort_order, sp.platform_group, sp.search_text,
         is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier) as is_ai_membership
       from catalog_groups sp
-    ), catalog_shops as materialized (
+    ), catalog_shops as ${scopedSearch ? sql`not materialized` : sql`materialized`} (
       select sh.id as shop_id, sh.name as shop_name,
         -- Marketplace protocols are the lower-risk baseline; every other or unknown protocol is a self-built storefront with a higher-risk marker.
         (sh.protocol is distinct from 'liandong' and sh.protocol is distinct from '16688') as independent_shop,

@@ -496,7 +496,7 @@ describe('membership catalog features share standard identities', { skip: !proce
         ['top_up', 'top_up', 200, 60], ['rental', 'rental', 10, 90],
         ['short_term', 'short_term', 50, 120], ['unknown', null, 1, 120],
       ] as const) {
-        const name = `Original merchant quote ${merchant}/${key}`;
+        const name = `Original merchant quote ${merchant}/${key}${merchant === 0 ? ' 长效' : ''}`;
         const source = await db.insertInto('products').values({ shop_id: shop.id, external_id: key, name,
           normalized_key: `${merchant}/${key}`, url: `https://scoped${merchant}.invalid/${key}`,
         }).returning('id').executeTakeFirstOrThrow();
@@ -539,6 +539,16 @@ describe('membership catalog features share standard identities', { skip: !proce
       assert.equal(all.total, 1);
       assert.equal(all.offerTotal, 30);
       assert.deepEqual(all.items[0].membershipGroups.map((group: { kind: string }) => group.kind), MEMBERSHIP_GROUPS);
+      for (const [detailKind, membershipKind] of [['offers', 'short_term'], ['shops', 'top_up']] as const) {
+        const scope = { q: '长效', searchMode: 'literal', detailKind, membershipKind, detailPageSize: '12', limit: '1' };
+        const page = await read('', scope);
+        assert.equal(page.offerTotal, 1);
+        assert.equal(page.items[0].detail.total, 1);
+        const [entry] = page.items[0].detail.entries;
+        checkOffer(detailKind === 'shops' ? entry.offer : entry, samples.filter(sample => sample.kind === membershipKind && sample.name.includes('长效')));
+        assert.deepEqual((await read('', { ...scope, q: 'Claude Scoped 长效' })).items, page.items);
+        assert.equal((await read('', { ...scope, q: '长效%' })).total, 0);
+      }
       for (const kind of [...MEMBERSHIP_GROUPS, ...MEMBERSHIP_GROUPS.toReversed()]) {
         const expected = samples.filter(sample => sample.kind === kind);
         const scope = { membershipKind: kind, newcomer: 'true' };
