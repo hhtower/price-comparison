@@ -64,6 +64,7 @@ export interface CatalogQuery {
   readonly detailPageSize?: number;
   readonly platform?: string;
   readonly search?: string;
+  readonly searchOffers?: true;
   readonly newcomer?: boolean;
   readonly membershipKinds?: readonly MembershipGroup[];
   readonly membershipSearch?: { readonly kinds: readonly MembershipKind[]; readonly terms: readonly string[] };
@@ -147,7 +148,7 @@ export interface CatalogPage {
   readonly nextCursor?: string;
 }
 
-export type CatalogFacetsQuery = Pick<CatalogQuery, 'platform' | 'search' | 'tags' | 'newcomer' | 'membershipKinds' | 'membershipSearch'
+export type CatalogFacetsQuery = Pick<CatalogQuery, 'platform' | 'search' | 'searchOffers' | 'tags' | 'newcomer' | 'membershipKinds' | 'membershipSearch'
   | 'standardProductId' | 'shopQuery' | 'shopId' | 'priceMin' | 'priceMax' | 'currency'>;
 export interface CatalogFacets { readonly nextExpiryAt?: string | null; readonly tagFacets: readonly (Pick<CatalogTag, 'name' | 'value'> & { readonly priority: number })[] }
 
@@ -368,7 +369,7 @@ type FacetResult = { tag_facets: CatalogFacets['tagFacets']; next_expiry_at: str
 function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly: true): RawBuilder<FacetResult>;
 function buildCatalogQuery(input: CatalogQuery, policy: QuotePolicy, optionsOnly?: false): RawBuilder<CatalogResult>;
 function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnly = false): RawBuilder<CatalogResult> | RawBuilder<FacetResult> {
-  const scopedSearch = Boolean(input.standardProductId && input.search);
+  const scopedSearch = Boolean(input.standardProductId && input.search && (input.detailKind || input.searchOffers));
   const pricesOnly = !optionsOnly && !scopedSearch;
   const membershipFiltered = Boolean(input.newcomer || input.membershipKinds?.length || input.membershipSearch);
   const needsMembership = !optionsOnly || membershipFiltered;
@@ -421,25 +422,18 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     array_to_string(sp.aliases, ' ')), NFKC))` : sql`null::text`;
   const wordCondition = (word: string) => {
     const term = `%${word.replace(/[\\%_]/gu, '\\$&')}%`;
-    if (scopedSearch) return sql`(r.search_text like lower(${term}) or cs.search_text like lower(${term}) or sh.search_text like lower(${term}))`;
-    return sql`r.product_id in (
-      select product_id from catalog_read_offers where search_text like lower(${term})
-      union all
-      select product_id from catalog_read_offers where standard_product_id in (
-        select id from catalog_standards where search_text like lower(${term}))
-      union all
-      select product_id from catalog_read_offers where shop_id in (
-        select shop_id from catalog_shops where search_text like lower(${term})))`;
+    const identity = sql`cs.search_text like lower(${term})`;
+    return scopedSearch ? sql`(${identity} or lower(normalize(r.product_name, NFKC)) like lower(${term}) or sh.search_text like lower(${term}))` : identity;
   };
+  const standardWords = !scopedSearch && !input.membershipSearch ? words : [];
   const aiSearch = input.membershipSearch?.terms.reduce((text, term) => text.replaceAll(term, ''), input.search ?? '')
     .replace(/\(\s*\)/gu, '');
   if (aiSearch !== undefined && aiSearch !== (input.search ?? '')) {
     const aiWords = searchWords(aiSearch);
-    const aiStandard = sql`r.standard_product_id in (select id from catalog_standards where is_ai_membership)`;
     conditions.push(sql`(
-      (${aiStandard} and ${aiWords.length ? sql.join(aiWords.map(wordCondition), sql` and `) : sql`true`})
-      or (not (${aiStandard}) and ${words.length ? sql.join(words.map(wordCondition), sql` and `) : sql`true`}))`);
-  } else conditions.push(...words.map(wordCondition));
+      (${ai} and ${aiWords.length ? sql.join(aiWords.map(wordCondition), sql` and `) : sql`true`})
+      or (not (${ai}) and ${words.length ? sql.join(words.map(wordCondition), sql` and `) : sql`true`}))`);
+  } else if (!standardWords.length) conditions.push(...words.map(wordCondition));
   const tags = tagConditions(input.tags);
   const filters = tags.length ? sql.join(tags.map(({ condition }) => condition), sql` and `) : sql`true`;
   const cursor = input.cursor ? decodeCatalogCursor(input.cursor) : undefined;
@@ -449,7 +443,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   const afterCursor = !cursor ? sql`true` : sort === 'default'
     ? sql`(sort_order, standard_product_id) > (${cursor.sortOrder}, ${cursor.standardProductId})`
     : sql`(${sortValue}, sort_order, standard_product_id) > (${cursor.sortValue}::numeric, ${cursor.sortOrder}, ${cursor.standardProductId})`;
-  const preparedTotals = !words.length && !tags.length && !input.newcomer && !input.detailKind
+  const preparedTotals = !scopedSearch && !tags.length && !input.newcomer && !input.detailKind
     && !input.membershipKinds?.length && !input.membershipSearch
     && input.priceMin === undefined && input.priceMax === undefined;
   const rankingCtes = sql`${preparedTotals ? sql`prepared_totals as materialized (
@@ -501,14 +495,15 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       where sp.hidden = false and sp.merged_into_id is null and sp.verification_state = 'verified'
         ${input.standardProductId ? sql`and sp.id = ${input.standardProductId}::bigint` : sql``}
     ), catalog_standards as materialized (
-      select sp.id, sp.name, sp.platform, sp.sort_order, sp.platform_group, sp.search_text,
-        is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier) as is_ai_membership
-      from catalog_groups sp
+      select cs.id, cs.name, cs.platform, cs.sort_order, cs.platform_group, cs.search_text,
+        is_ai_membership(cs.canonical_family, cs.canonical_product, cs.canonical_tier) as is_ai_membership
+      from catalog_groups cs
+      ${standardWords.length ? sql`where ${sql.join(standardWords.map(wordCondition), sql` and `)}` : sql``}
     ), catalog_shops as ${scopedSearch ? sql`not materialized` : sql`materialized`} (
       select sh.id as shop_id, sh.name as shop_name,
         -- Marketplace protocols are the lower-risk baseline; every other or unknown protocol is a self-built storefront with a higher-risk marker.
         (sh.protocol is distinct from 'liandong' and sh.protocol is distinct from '16688') as independent_shop,
-        ${words.length || input.shopQuery ? sql`lower(normalize(sh.name, NFKC))` : sql`null::text`} as search_text
+        ${scopedSearch || input.shopQuery ? sql`lower(normalize(sh.name, NFKC))` : sql`null::text`} as search_text
       from shops sh where sh.enabled = true and sh.deleted_at is null
     ), eligible_skus as not materialized (
       select r.standard_product_id,
@@ -552,7 +547,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     : sql`select standard_product_id from product_totals`;
   return sql<CatalogResult>`with ${eligibleCte}, ${tags.length ? sql`purchase_matches as materialized (
       select r.product_id from catalog_read_offers r where ${filters}
-    ),` : sql``} filtered_skus as ${words.length || requestedPlatform || tags.length || membershipFiltered ? sql`materialized` : sql`not materialized`} (
+    ),` : sql``} filtered_skus as ${scopedSearch || requestedPlatform || tags.length || membershipFiltered ? sql`materialized` : sql`not materialized`} (
       select e.* from eligible_skus e
       where ${platformCondition}
       ${tags.length ? sql`and e.product_id in (select product_id from purchase_matches)` : sql``}

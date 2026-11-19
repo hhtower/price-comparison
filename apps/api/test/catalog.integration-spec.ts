@@ -152,6 +152,22 @@ describe('catalog SQL read model', () => {
     assert.equal((await readPublished({ tags: [], limit: 20, standardProductId: String(standardOne) })).items[0]?.offers[0]?.stockQuantity, null);
   });
 
+  test('global search matches Plus by standard identity, not merchant text or shop names', async () => {
+    await database.updateTable('standard_products').set({ name: 'ChatGPT Plus' }).where('id', '=', standardOne).execute();
+    await database.updateTable('standard_products').set({ name: 'ChatGPT Go' }).where('id', '=', standardTwo).execute();
+    await database.updateTable('shops').set({ name: 'Plus Store' }).where('id', '=', shopOne).execute();
+    await database.updateTable('products').set({ spec: '不支持 Plus' }).where('id', '=', productTwo).execute();
+    await database.insertInto('product_tags').values({ product_id: productTwo, name: 'access_channel', value: jsonb('api') }).execute();
+    const service = new CatalogService(repository, createCache());
+    for (const q of ['plus', 'ChatGPT Ｐｌｕｓ']) {
+      const page = await service.getCatalog({ q });
+      assert.deepEqual(page.items.map(item => item.id), [String(standardOne)]);
+      assert.equal(page.offerTotal, 1);
+      assert.ok(!(await service.getFacets({ q })).tagFacets.some(tag => tag.name === 'access_channel'));
+      assert.equal((await service.getCatalog({ q, standardProductId: String(standardTwo) })).total, 0);
+    }
+  });
+
   test('current and legacy plan searches share the existing products and offers', async () => {
     await database.updateTable('standard_products').set({ name: 'Claude Max 20x', canonical_family: 'anthropic',
       canonical_product: 'claude', canonical_tier: 'max_20x' }).where('id', '=', standardOne).execute();
@@ -799,14 +815,14 @@ describe('catalog SQL read model', () => {
       settlement_verified_at: new Date(Date.now() - quotePolicy.ttlMs + 5),
     }).where('product_id', '=', productTwo).execute();
     {
-      const page = await readPublished({ search: 'One source', tags: [], limit: 20 });
+      const page = await readPublished({ search: 'Widget One', tags: [], limit: 20 });
       assert.deepEqual(page.items.map(item => item.id), [String(standardOne)]);
       assert.equal(page.nextExpiryAt!, null);
       const empty = await readPublished({ search: 'no-such-product', tags: [], limit: 20 });
       assert.equal(empty.total, 0);
       assert.equal(empty.nextExpiryAt, null);
     }
-    const facets = await repository.facets({ search: 'One source', tags: [] });
+    const facets = await repository.facets({ search: 'Widget One', tags: [] });
     assert.equal(facets.nextExpiryAt!, null);
     assert.equal((await repository.facets({ search: 'no-such-product', tags: [] })).nextExpiryAt, null);
   });
@@ -835,7 +851,7 @@ describe('catalog SQL read model', () => {
       captured_at: new Date(Date.now() - quotePolicy.ttlMs + 10),
       settlement_verified_at: new Date(Date.now() - quotePolicy.ttlMs + 5),
     }).where('product_id', '=', productTwo).execute();
-    for (const search of [undefined, 'source']) {
+    for (const search of [undefined, 'Widget']) {
       const page = await readPublished({ platform: 'openai', search, tags: [], limit: 20 });
       assert.deepEqual(page.items.map(item => item.id), [String(standardOne)]);
       assert.ok(page.platformFacets.includes('anthropic'));
@@ -881,7 +897,7 @@ describe('catalog SQL read model', () => {
 
   test('cold catalog searches and purchase filters read one prepared projection statement', async () => {
     for (const input of [
-      {}, { search: 'Widget source' },
+      {}, { search: 'Widget' },
       { tags: [{ name: 'supported_client', value: 'red' }] },
     ]) {
       statements.length = 0;
@@ -893,7 +909,7 @@ describe('catalog SQL read model', () => {
       assert.doesNotMatch(reads[0]!, /from offers\b|join products\b/u);
     }
     statements.length = 0;
-    await repository.facets({ search: 'Widget source', tags: [] });
+    await repository.facets({ search: 'Widget', tags: [] });
     const reads = statements.filter(statement => statement.startsWith('with catalog_groups'));
     assert.equal(reads.length, 1);
     assert.ok(statements.includes('set local jit = off'));
@@ -1107,7 +1123,7 @@ describe('catalog SQL read model', () => {
     }
   });
 
-  test('a single search matches shop names, quote names and nonempty raw specifications', async () => {
+  test('detail searches match shop names and quote titles but never merchant specs', async () => {
     await database.updateTable('shops').set({ name: '星河代充' }).where('id', '=', shopOne).execute();
     await database.insertInto('product_tags').values({ product_id: productOne, name: 'bulk_purchase', value: jsonb('supported') }).execute();
     const other = await database.insertInto('shops').values({ name: '其他商铺', platform: 'alpha', url: 'https://other-shop.invalid', enabled: true }).returning('id').executeTakeFirstOrThrow();
@@ -1121,7 +1137,7 @@ describe('catalog SQL read model', () => {
       const ids = item.detail!.entries.map(entry => 'offer' in entry ? entry.offer.productId : entry.productId);
       assert.ok(ids.includes(String(productOne)), 'shop name must match');
       assert.ok(ids.includes(String(matchingName)), 'quote name must match');
-      if (detailKind === 'offers') assert.ok(ids.includes(String(specOnly)), 'nonempty raw spec must match');
+      assert.ok(!ids.includes(String(specOnly)), 'a spec-only match must not be returned');
       assert.equal(item.shopCount, 2);
     }
     const service = new CatalogService(repository, createCache());
@@ -1410,7 +1426,7 @@ describe('catalog SQL read model', () => {
     const filtered = await readPublished({ ...query, tags: [{ name: 'access_channel', value: 'web' }] });
     assert.deepEqual(filtered.items, page.items);
     assert.deepEqual(filtered.platformFacets, page.platformFacets);
-    const searched = await readPublished({ ...query, search: 'api' });
+    const searched = await readPublished({ ...query, search: 'Widget Two' });
     assert.deepEqual(searched.items, []);
     assert.deepEqual(searched.platformFacets, ['openai']);
     const plan: any = await repository.explain(query);
@@ -1638,10 +1654,10 @@ describe('catalog SQL read model', () => {
     assert.deepEqual(warrantyTags(firstLogin), [{ name: 'usage_warranty', value: '首登' }]);
   });
 
-  test('raw listing text stays searchable but never supplies inferred purchase tags', async () => {
+  test('quote titles stay searchable in details but never supply inferred purchase tags', async () => {
     const product = await addSku(shopOne, 'historical', '19.00');
     await database.updateTable('products').set({ name: '未接码 速刷 无质保', spec: '独享 兑换码' }).where('id', '=', product).execute();
-    const result = await readPublished({ search: '速刷', tags: [], limit: 20 });
+    const result = await readPublished({ standardProductId: String(standardOne), detailKind: 'offers', search: '速刷', tags: [], limit: 20 });
     assert.equal(result.offerTotal, 1);
     assert.deepEqual(result.items[0]!.offers[0]!.tags, []);
     assert.equal((await readPublished({ tags: [{ name: 'sms_verification', value: 'unverified' }], limit: 20 })).total, 0);
@@ -1653,14 +1669,18 @@ describe('catalog SQL read model', () => {
     assert.ok(page.items[0]!.offers[0]!.tags.every(tag => tag.name !== 'delivery' && tag.value !== 'unknown'));
   });
 
-  test('daily and rapid words use literal text search with no retired facet', async () => {
+  test('daily and rapid words in merchant specs never match search or create retired facets', async () => {
     const daily = await addSku(shopOne, 'daily', '4');
     await database.updateTable('products').set({ spec: '日抛号' }).where('id', '=', daily).execute();
     const both = await addSku(shopOne, 'both', '6');
     await database.updateTable('products').set({ spec: '日抛 速刷' }).where('id', '=', both).execute();
     const service = new CatalogService(repository, createCache());
-    assert.equal((await service.getCatalog({ q: '日抛' })).offerTotal, 2);
-    assert.equal((await service.getCatalog({ q: '速刷' })).offerTotal, 1);
+    for (const q of ['日抛', '速刷']) {
+      assert.equal((await service.getCatalog({ q })).offerTotal, 0);
+      const scope = { standardProductId: String(standardOne), q, searchMode: 'literal' };
+      for (const detailKind of ['offers', 'shops']) assert.equal((await service.getCatalog({ ...scope, detailKind })).offerTotal, 0);
+      assert.deepEqual((await service.getFacets(scope)).tagFacets, []);
+    }
     assert.ok(!(await service.getFacets({})).tagFacets.some(tag => tag.name === 'intended_use'));
     await assert.rejects(service.getCatalog({ tags: [{ name: 'intended_use', value: 'rapid' }] }), { code: 'INVALID_FILTER' });
   });
@@ -1691,9 +1711,9 @@ describe('catalog SQL read model', () => {
     assert.equal(page.offerTotal, 1);
   });
 
-  test('search matches separate words, source specs and unambiguous aliases literally', async () => {
-    await database.updateTable('products').set({ spec: '罕见规格 100%_literal' }).where('id', '=', productOne).execute();
-    assert.deepEqual((await readPublished({ search: 'source 罕见规格', tags: [], limit: 20 })).items.map(item => item.id), [String(standardOne)]);
+  test('global search matches separate words and literal wildcards in standard aliases', async () => {
+    await database.updateTable('standard_products').set({ aliases: ['100%_literal'] }).where('id', '=', standardOne).execute();
+    assert.deepEqual((await readPublished({ search: 'Widget 100%_literal', tags: [], limit: 20 })).items.map(item => item.id), [String(standardOne)]);
     assert.equal((await readPublished({ search: '100%_literal', tags: [], limit: 20 })).total, 1);
     assert.equal((await readPublished({ search: '100%xliteral', tags: [], limit: 20 })).total, 0);
     await database.updateTable('standard_products').set({ aliases: ['小众别名'] }).where('id', '=', standardOne).execute();

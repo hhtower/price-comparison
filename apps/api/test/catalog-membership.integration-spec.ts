@@ -189,7 +189,7 @@ describe('membership catalog features share standard identities', { skip: !proce
     assert.deepEqual((await service.getCatalog({ q: 'ChatGPT短期', newcomer: true })).items.map(item => item.id), [ids.short_term]);
     assert.deepEqual((await service.getCatalog({ q: 'ChatGPT 代充' })).items.map(item => item.id), [ids.top_up]);
     assert.deepEqual((await service.getCatalog({ q: '成品账号' })).items.map(item => item.id).sort(),
-      [ids.account, ids.free].sort());
+      [ids.account]);
     assert.equal((await service.getCatalog({ q: '短期', searchMode: 'literal' })).total, 0);
     await assert.rejects(service.getCatalog({ tag: { name: 'delivery', value: 'account' } }), { code: 'INVALID_FILTER' });
   });
@@ -203,8 +203,8 @@ describe('membership catalog features share standard identities', { skip: !proce
     }
     for (const term of ['共享', '合租']) {
       assert.deepEqual(new Set((await service.getCatalog({ q: term, newcomer: true })).items.map(item => item.id)),
-        new Set([ids.rental, ids.youtube]));
-      assert.deepEqual((await service.getCatalog({ q: `youtube ${term}`, newcomer: true })).items.map(item => item.id), [ids.youtube]);
+        new Set([ids.rental]));
+      assert.deepEqual((await service.getCatalog({ q: `youtube ${term}`, newcomer: true })).items, []);
       assert.equal((await service.getCatalog({ q: `ChatGPT ${term}`, tag: { name: 'access_channel', value: 'api' } })).total, 0);
     }
     for (const q of ['ChatGPT 共享未说明', 'ChatGPT 不接受合租', 'ChatGPT 租号(共享)未知']) {
@@ -418,7 +418,7 @@ describe('membership catalog features share standard identities', { skip: !proce
     }
     const sharedOnly = await repository.search(normalizeCatalogQuery({ q: 'ChatGPT Plus 共享' }));
     assert.equal(sharedOnly.offerTotal, 2, 'shared alias alone must still allow both rental access types');
-    const nonAi = await controller.getCatalog({ q: 'youtube 共享', tag: [JSON.stringify({ name: 'access_channel', value: 'web' }), JSON.stringify({ name: 'access_channel', value: 'api' })] });
+    const nonAi = await controller.getCatalog({ q: 'youtube', tag: [JSON.stringify({ name: 'access_channel', value: 'web' }), JSON.stringify({ name: 'access_channel', value: 'api' })] });
     assert.deepEqual(nonAi.items.flatMap(item => item.offers.map(offer => offer.productId)), [products.youtube]);
     for (const q of ['ChatGPT Plus 没有共享', 'ChatGPT Plus 共享状态未知']) {
       assert.equal((await controller.getCatalog({ q })).total, 0, q);

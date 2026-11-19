@@ -150,6 +150,7 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
     ...(hasDetail ? { detailKind: input.detailKind as 'offers' | 'shops', detailPage, detailPageSize } : {}),
     ...(input.platform?.trim() ? { platform: normalizeCatalogPlatform(input.platform) } : {}),
     ...(parsed.text ? { search: parsed.text } : {}),
+    ...(parsed.text && standardProductId && input.searchMode === 'literal' ? { searchOffers: true } : {}),
     tags: uniqueTags,
     ...(input.newcomer === true || input.newcomer === 'true' ? { newcomer: true } : {}),
     ...(membershipKinds ? { membershipKinds: [...new Set(membershipKinds)].sort() as MembershipGroup[] } : {}),

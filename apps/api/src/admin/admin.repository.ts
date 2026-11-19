@@ -295,7 +295,6 @@ export class AdminRepository {
       const pattern = containsPattern(filter.keyword);
       query = query.where(({ eb, or }) => or([
         eb('products.name', 'ilike', pattern),
-        eb('products.normalized_key', 'ilike', pattern),
         eb('products.external_id', 'ilike', pattern),
       ]));
     }

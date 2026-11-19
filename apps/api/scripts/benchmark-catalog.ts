@@ -91,7 +91,7 @@ try {
   const base = await app.getUrl();
   const cases = [
     ['homepage', 'limit=20'], ['platform', 'platform=openai&limit=20'],
-    ['first-search', 'q=Package%201234&limit=20'], ['broad-search', 'q=Package&limit=20'],
+    ['first-search', 'q=Plan%2012&limit=20'], ['broad-search', 'q=Plan&limit=20'],
     ['filter', 'warrantyDaysMin=30&limit=20'], ['price-sort', 'sort=price&limit=20'],
     ['detail', 'standardProductId=1&detailKind=offers&detailPage=1&limit=20'],
   ];
