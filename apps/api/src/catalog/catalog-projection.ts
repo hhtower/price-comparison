@@ -2,6 +2,8 @@ import { sql, type Kysely } from 'kysely';
 import type { DatabaseSchema } from '../database/types.js';
 import { createTextReviewAccumulator, prepareTextReview, type ProductReviewRow } from '../shops/shop-text-review.js';
 import { readShopRating } from '../shops/shop-rating.js';
+import { failedMembershipFeatures } from '../standardization/membership-classification.js';
+import { MEMBERSHIP_POLICY_VERSION } from '@price-comparison/catalog/membership-policy';
 
 /** Runs only in the catalog worker; readers never prepare missing results. */
 export async function publishNextCatalogChange(database: Kysely<DatabaseSchema>, now = Date.now()): Promise<boolean> {
@@ -10,10 +12,17 @@ export async function publishNextCatalogChange(database: Kysely<DatabaseSchema>,
       hashtext(current_schema()), hashtext('catalog-projection')) as acquired`.execute(tx);
     if (!lock.rows[0]!.acquired) return false;
     // Publish browsing results before optional scores so initial backfills do not hide the catalog.
-    const change = (await sql<{ shop_id: bigint | null; standard_product_id: bigint | null }>`
+    let change = (await sql<{ shop_id: bigint | null; standard_product_id: bigint | null }>`
       select shop_id, standard_product_id from catalog_projection_changes
       order by (shop_id is not null), id limit 1`.execute(tx)).rows[0];
-    if (!change) return false;
+    if (!change) {
+      const missing = (await sql<{ standard_product_id: bigint }>`select standard_product_id
+        from catalog_read_shop_totals where membership_policy_version is distinct from ${MEMBERSHIP_POLICY_VERSION}
+        limit 1`.execute(tx)).rows[0];
+      if (!missing) return false;
+      await sql`insert into catalog_projection_changes (standard_product_id) values (${missing.standard_product_id})`.execute(tx);
+      change = { shop_id: null, standard_product_id: missing.standard_product_id };
+    }
     const predicate = change.shop_id !== null ? sql`shop_id = ${change.shop_id}`
       : change.standard_product_id !== null ? sql`standard_product_id = ${change.standard_product_id}` : sql`coverage`;
     // Only acknowledge events visible to this snapshot, including out-of-order commits.
@@ -52,11 +61,26 @@ export async function publishNextCatalogChange(database: Kysely<DatabaseSchema>,
       const id = change.standard_product_id!;
       await sql`delete from catalog_read_shop_totals where standard_product_id = ${id}`.execute(tx);
       await sql`insert into catalog_read_shop_totals
-          (standard_product_id, shop_id, currency, min_price, latest_captured_at, product_count, winner_id)
+          (standard_product_id, shop_id, currency, min_price, latest_captured_at, product_count, winner_id, membership_policy_version)
         select standard_product_id, shop_id, currency, min(price), max(captured_at), count(*)::int,
-          (array_agg(product_id order by price, product_id))[1]
+          (array_agg(product_id order by price, product_id))[1], ${MEMBERSHIP_POLICY_VERSION}
         from catalog_read_offer_prices where standard_product_id = ${id} and available
         group by standard_product_id, shop_id, currency`.execute(tx);
+      await sql`delete from catalog_read_membership_totals where standard_product_id = ${id}`.execute(tx);
+      await sql`insert into catalog_read_membership_totals
+          (standard_product_id, shop_id, currency, membership_kind, min_price, max_price,
+            latest_captured_at, product_count, winner_id)
+        select r.standard_product_id, r.shop_id, r.currency, coalesce(mk.kind, 'unclassified'),
+          min(r.price), max(r.price), max(r.captured_at), count(*)::int,
+          (array_agg(r.product_id order by r.price nulls last,
+            case when r.price is null then r.captured_at end desc, r.product_id))[1]
+        from catalog_read_offer_prices r
+        left join catalog_membership_kinds mk on mk.product_id = r.product_id
+          and mk.policy_version = ${MEMBERSHIP_POLICY_VERSION}
+        where r.standard_product_id = ${id} and r.available
+          and (mk.kind is not null or (select ${failedMembershipFeatures()}
+            from products p join shops sh on sh.id = p.shop_id where p.id = r.product_id))
+        group by r.standard_product_id, r.shop_id, r.currency, mk.kind`.execute(tx);
     } else {
       await sql`update catalog_coverage set shop_count = (select count(*) from shops),
         product_count = (select count(*) from products) where id = 1`.execute(tx);

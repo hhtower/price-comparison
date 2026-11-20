@@ -1639,6 +1639,22 @@ describe('catalog SQL read model', () => {
     }
   });
 
+  test('stale prepared tags cannot leak retired fields into pages, references or filter options', async () => {
+    const tags = [{ name: 'usage_warranty', value: '首登' }, { name: 'warranty', value: '旧售后说明' },
+      { name: 'delivery', value: 'account' }];
+    await sql`update catalog_read_offers set tags = ${jsonb(tags)}, facet_tags = ${JSON.stringify(tags)}
+      where product_id = ${productOne}`.execute(database);
+    const input = { standardProductId: String(standardOne), tags: [], limit: 20 };
+    const page = await readPublished(input);
+    assert.deepEqual(page.items[0]?.offers.find(offer => offer.productId === String(productOne))?.tags,
+      [{ name: 'usage_warranty', value: '首登' }]);
+    assert.deepEqual((await repository.referenceOffers(input)).find(offer => offer.productId === String(productOne))?.tags,
+      [{ name: 'usage_warranty', value: '首登' }]);
+    assert.ok((await repository.facets(input)).tagFacets.every(tag => !['warranty', 'delivery'].includes(tag.name)));
+    const stored = await sql<{ tags: unknown }>`select tags from catalog_read_offers where product_id = ${productOne}`.execute(database);
+    assert.deepEqual(stored.rows[0]?.tags, tags);
+  });
+
   test('catalog reads preserve canonical warranty values and omit absent or retired warranties', async () => {
     const { noWarranty, covered30, covered7, firstLogin } = await addPurchaseChoices();
     await database.insertInto('product_tags').values({

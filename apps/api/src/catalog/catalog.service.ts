@@ -205,12 +205,12 @@ export class CatalogService {
   async getFacets(input: Pick<CatalogQueryInput, 'platform' | 'q' | 'search' | 'searchMode' | 'tags' | 'tag' | 'newcomer'
     | 'standardProductId' | 'shopQuery' | 'shopId' | 'priceMin' | 'priceMax' | 'currency' | 'offerSort' | 'membershipKind' | 'membershipKinds'>): Promise<CatalogFacets> {
     const { limit: _limit, offerSort: _offerSort, ...query } = normalizeCatalogQuery(input);
-    return this.readCached(`catalog:facets:v4:${JSON.stringify(query)}`, () => this.repository.facets(query));
+    return this.readCached(`catalog:facets:v5:${JSON.stringify(query)}`, () => this.repository.facets(query));
   }
 
   async getCatalog(input: CatalogQueryInput): Promise<CatalogPage> {
     const query = normalizeCatalogQuery(input);
-    return this.readCached(`catalog:page:v5:${JSON.stringify(query)}`, () => this.repository.search(query));
+    return this.readCached(`catalog:page:v6:${JSON.stringify(query)}`, () => this.repository.search(query));
   }
 
   getReferenceOffers(input: Pick<CatalogQueryInput, 'standardProductId' | 'currency' | 'priceMax' | 'tags' | 'newcomer' | 'membershipKinds'>) {

@@ -12,6 +12,7 @@ import { PriceHistoryRepository } from './price-history.repository.js';
 import { isAiMembership, MEMBERSHIP_GROUPS, MEMBERSHIP_POLICY_VERSION, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { failedMembershipFeatures } from '../standardization/membership-classification.js';
 import { minimumDaysDimension, type PurchaseTag } from '@price-comparison/catalog/purchase-attributes';
+import { PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 
 export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly identityNames?: readonly string[]; readonly kind: string; readonly mergedIntoId?: string;
   readonly identity?: { family: string; product: string; tier: string }; readonly isAiMembership?: boolean }
@@ -21,11 +22,10 @@ export interface CatalogCoverage { readonly shopCount: number; readonly productC
 
 function publicStandard(alias: string): RawBuilder<boolean> {
   const sp = sql.table(alias);
-  // Keep the existence probe correlated so each indexed lookup stops at its first visible member.
   return sql<boolean>`${sp}.hidden = false and ${sp}.merged_into_id is null and ${sp}.verification_state = 'verified'
     and exists (select 1 from standard_product_members m join products p on p.id = m.product_id
       join shops sh on sh.id = p.shop_id where m.standard_product_id = ${sp}.id
-      and m.publication_state = 'published' and p.deleted_at is null and sh.deleted_at is null and sh.enabled = true offset 0)`;
+      and m.publication_state = 'published' and p.deleted_at is null and sh.deleted_at is null and sh.enabled = true)`;
 }
 
 function productMetadata(row: { id: string; name: string; platform: string; platform_group: string; family: string | null; product: string | null; tier: string | null; aliases: string[]; merged_into_id: string | null }): PublicCatalogProduct {
@@ -156,6 +156,7 @@ export interface CatalogFacets { readonly nextExpiryAt?: string | null; readonly
 interface CatalogResult {
   has_next: boolean;
   shop_ratings: { shop_id: string; score: string | null; details: ShopRatingDetails | null }[];
+  membership_groups: Record<string, readonly CatalogMembershipGroup[]>;
   entries: (Omit<CatalogItem, 'standardProductId' | 'minPrice'> & { sortOrder: string; sortValue: string })[];
   platform_facets: string[];
   total: number;
@@ -165,11 +166,18 @@ interface CatalogResult {
 
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 20;
+const PURCHASE_TAG_NAMES = Object.keys(PRODUCT_TAG_RULES);
 const PRODUCT_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.products);
 const FAMILY_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.families);
 const TIER_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.tiers);
 const IDENTITY_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.identities);
 const TIER_TERM_SEARCH_LABELS = JSON.stringify(CATALOG_DISPLAY_SEARCH_LABELS.tierTerms);
+function publicPurchaseTags(tags: RawBuilder<unknown>): RawBuilder<unknown> {
+  return sql`(select coalesce(json_agg(tag order by ordinal), '[]'::json)
+    from jsonb_array_elements(${tags}) with ordinality entries(tag, ordinal)
+    where tag->>'name' = any(${PURCHASE_TAG_NAMES}::text[]))`;
+}
+
 function offerPriceText(alias: string): RawBuilder<string | null> {
   const offer = sql.table(alias);
   return sql<string | null>`(case when ${offer}.settlement_quantity = 1 then round(${offer}.price, 2) else ${offer}.price end)::text`;
@@ -177,7 +185,7 @@ function offerPriceText(alias: string): RawBuilder<string | null> {
 
 function offerPayload(alias: string): RawBuilder<unknown> {
   const offer = sql.table(alias);
-  return sql`jsonb_build_object(
+  return sql`json_build_object(
     'shopId', ${offer}.shop_id::text, 'productId', ${offer}.product_id::text, 'name', ${offer}.product_name,
     'membershipKind', ${offer}.membership_kind, 'shop', ${offer}.shop_name, 'independentShop', ${offer}.independent_shop,
     'price', ${offerPriceText(alias)}, 'currency', ${offer}.currency, 'listedPrice', ${offer}.listed_price::text,
@@ -296,10 +304,11 @@ export class CatalogRepository {
         shopScoreDetails: rating?.details ?? null, shopScoreExpiresAt: null };
     };
     const items = visible.map(({ sortOrder: _sortOrder, sortValue: _sortValue, ...item }): CatalogItem => {
+      const groups = result.membership_groups[item.id];
       const detail = item.detail?.kind === 'shops' ? { ...item.detail, entries: item.detail.entries.map(entry => ({ ...entry, offer: withRating(entry.offer) })) }
         : item.detail ? { ...item.detail, entries: item.detail.entries.map(withRating) } : undefined;
       return { ...item, offers: item.offers.map(withRating),
-        ...(item.membershipGroups ? { membershipGroups: item.membershipGroups.map(group => ({ ...group, offers: group.offers.map(withRating) })) } : {}),
+        ...(groups ? { membershipGroups: groups.map(group => ({ ...group, offers: group.offers.map(withRating) })) } : {}),
         ...(detail ? { detail } : {}), name: standardProductDisplayName(item.name), standardProductId: item.id, minPrice: item.offers[0]!.price };
     });
     const last = visible.at(-1);
@@ -323,7 +332,8 @@ export class CatalogRepository {
         from standard_products sp where sp.id = ${input.standardProductId}::bigint and ${publicStandard('sp')}
       )
       select r.product_id::text as "productId", r.shop_id::text as "shopId",
-      r.product_name as name, sh.name as shop, r.product_url as "productUrl", r.product_spec as spec, r.tags, ${kind} as "membershipKind",
+      r.product_name as name, sh.name as shop, r.product_url as "productUrl", r.product_spec as spec,
+      ${publicPurchaseTags(sql`r.tags`)} as tags, ${kind} as "membershipKind",
       (${price})::text as price, r.currency, r.listed_price::text as "listedPrice",
       case when ${verified} then coalesce(r.settlement_quantity, 1) else 1 end as "settlementQuantity",
       case when ${verified} then r.settlement_payment_method else '支付价（预估：售价）' end as "paymentMethod",
@@ -402,7 +412,9 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   const verified = sql`r.settlement_price is not null and r.settlement_price >= 0 and r.settlement_price < 'Infinity'::numeric
     and r.settlement_verified_at is not null and nullif(btrim(r.settlement_payment_method), '') is not null`;
   const price = pricesOnly ? sql`r.price` : sql`case when ${verified} then r.settlement_price else r.listed_price end`;
-  const payloadFields = sql`r.product_name, r.product_url, r.product_spec, sh.shop_name, sh.independent_shop, r.tags, r.listed_price, r.currency, r.stock_quantity,
+  const payloadFields = sql`r.product_name, r.product_url, r.product_spec, sh.name as shop_name,
+    (sh.protocol is distinct from 'liandong' and sh.protocol is distinct from '16688') as independent_shop,
+    ${publicPurchaseTags(sql`r.tags`)} as tags, r.listed_price, r.currency, r.stock_quantity,
     case when ${verified} then 'verified' else 'estimated' end as price_status,
     case when ${verified} then r.settlement_verified_at end as price_verified_at,
     null::timestamptz as price_expires_at, null::timestamptz as inventory_expires_at,
@@ -457,6 +469,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       or (not (${ai}) and ${words.length ? sql.join(words.map(wordCondition), sql` and `) : sql`true`}))`);
   } else if (!standardWords.length) conditions.push(...words.map(wordCondition));
   const tags = tagConditions(input.tags);
+  const matchedPrices = pricesOnly && tags.length > 0;
   const filters = tags.length ? sql.join(tags.map(({ condition }) => condition), sql` and `) : sql`true`;
   const cursor = input.cursor ? decodeCatalogCursor(input.cursor) : undefined;
   const sort = input.sort ?? 'default';
@@ -465,17 +478,42 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   const afterCursor = !cursor ? sql`true` : sort === 'default'
     ? sql`(sort_order, standard_product_id) > (${cursor.sortOrder}, ${cursor.standardProductId})`
     : sql`(${sortValue}, sort_order, standard_product_id) > (${cursor.sortValue}::numeric, ${cursor.sortOrder}, ${cursor.standardProductId})`;
-  const preparedTotals = !scopedSearch && !tags.length && !input.newcomer && !input.detailKind
-    && !input.membershipKinds?.length && !input.membershipSearch
+  const preparedTotals = !scopedSearch && !tags.length && !input.detailKind && !input.membershipSearch
     && input.priceMin === undefined && input.priceMax === undefined;
+  const preparedMembership = !scopedSearch && !tags.length && input.priceMin === undefined && input.priceMax === undefined;
+  // Source changes use live rows until the worker publishes all totals in the same transaction.
+  const membershipPublished = (id: RawBuilder<unknown>) => sql<boolean>`exists (
+    select 1 from catalog_read_shop_totals ready where ready.standard_product_id = ${id}
+      and ready.membership_policy_version = ${MEMBERSHIP_POLICY_VERSION}
+  ) and not exists (select 1 from catalog_projection_changes pending where pending.standard_product_id = ${id})`;
+  const preparedScope = membershipFiltered ? sql`(
+      select t.standard_product_id, t.shop_id, t.currency, min(t.min_price) as min_price,
+        max(t.latest_captured_at) as latest_captured_at, sum(t.product_count)::int as product_count,
+        (array_agg(t.winner_id order by t.min_price, t.winner_id))[1] as winner_id
+      from catalog_read_membership_totals t join catalog_standards cs on cs.id = t.standard_product_id
+      where cs.is_ai_membership and ${membershipPublished(sql`cs.id`)}
+        and ${membershipScope(input, sql<boolean>`true`, sql<MembershipKind | null>`nullif(t.membership_kind, 'unclassified')`, sql<boolean>`true`)}
+      group by t.standard_product_id, t.shop_id, t.currency
+      union all
+      select e.standard_product_id, e.shop_id, ${currency}::text, min(e.price), max(e.captured_at), count(*)::int,
+        (array_agg(e.product_id order by e.price, e.product_id))[1]
+      from filtered_skus e join catalog_standards cs on cs.id = e.standard_product_id
+      where cs.is_ai_membership and not (${membershipPublished(sql`cs.id`)} )
+      group by e.standard_product_id, e.shop_id
+      ${input.newcomer && !input.membershipKinds?.length ? sql`union all
+      select t.standard_product_id, t.shop_id, t.currency, t.min_price, t.latest_captured_at, t.product_count, t.winner_id
+      from catalog_read_shop_totals t join catalog_standards cs on cs.id = t.standard_product_id
+      where not cs.is_ai_membership` : sql``}
+    )` : sql`catalog_read_shop_totals`;
   const rankingCtes = sql`${preparedTotals ? sql`prepared_totals as materialized (
-      select e.* from catalog_read_shop_totals e
+      select e.standard_product_id, e.shop_id, e.currency, e.min_price, e.latest_captured_at, e.product_count, e.winner_id
+      from ${preparedScope} e
       where e.currency = ${currency} and e.standard_product_id in (select id from catalog_standards)
         and e.shop_id in (select shop_id from catalog_shops)
         ${input.shopId ? sql`and e.shop_id = ${input.shopId}::bigint` : sql``}
         ${input.shopQuery ? sql`and e.shop_id in (select shop_id from catalog_shops
           where search_text like lower(${`%${input.shopQuery.replace(/[\\%_]/gu, '\\$&')}%`}))` : sql``}
-    ),` : sql``} shop_totals as materialized (
+    ),` : sql``} shop_totals as ${preparedTotals ? sql`not materialized` : sql`materialized`} (
       ${preparedTotals ? sql`select * from prepared_totals e where ${platformCondition}` : sql`
       select standard_product_id, shop_id, min(price) as min_price,
         max(captured_at) as latest_captured_at, count(*)::int as product_count
@@ -510,6 +548,16 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       select w.*, row_number() over (partition by standard_product_id order by price nulls last, case when price is null then captured_at end desc, shop_id, product_id) as preview_rank
       from shop_winners w
     )`;
+  const eligibleSkus = (source: string) => sql`
+      select r.standard_product_id,
+        ${optionsOnly ? sql`r.facet_tags` : sql`r.product_id, r.captured_at, ${kind} as membership_kind,
+          ${price} as price, r.shop_id`}
+      from ${sql.table(source)} r
+      join catalog_standards cs on cs.id = r.standard_product_id
+      join catalog_shops sh on sh.shop_id = r.shop_id
+      ${needsMembership ? sql`left join catalog_membership_kinds mk on cs.is_ai_membership and mk.product_id = r.product_id
+        and mk.policy_version = ${MEMBERSHIP_POLICY_VERSION}` : sql``}
+      where ${sql.join(conditions, sql` and `)}`;
   const eligibleCte = sql`catalog_groups as materialized (
       select sp.id, sp.name, sp.platform, sp.sort_order, sp.canonical_family, sp.canonical_product, sp.canonical_tier,
         ${platformGroup} as platform_group, ${standardSearchText} as search_text
@@ -522,21 +570,11 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       from catalog_groups cs
       ${standardWords.length ? sql`where ${sql.join(standardWords.map(wordCondition), sql` and `)}` : sql``}
     ), catalog_shops as ${scopedSearch ? sql`not materialized` : sql`materialized`} (
-      select sh.id as shop_id, sh.name as shop_name,
-        -- Marketplace protocols are the lower-risk baseline; every other or unknown protocol is a self-built storefront with a higher-risk marker.
-        (sh.protocol is distinct from 'liandong' and sh.protocol is distinct from '16688') as independent_shop,
+      select sh.id as shop_id,
         ${scopedSearch || input.shopQuery ? sql`lower(normalize(sh.name, NFKC))` : sql`null::text`} as search_text
       from shops sh where sh.enabled = true and sh.deleted_at is null
     ), eligible_skus as not materialized (
-      select r.standard_product_id,
-        ${optionsOnly ? sql`r.facet_tags` : sql`r.product_id, r.captured_at, ${kind} as membership_kind,
-          ${price} as price, r.shop_id`}
-      from ${sql.table(pricesOnly ? 'catalog_read_offer_prices' : 'catalog_read_offers')} r
-      join catalog_standards cs on cs.id = r.standard_product_id
-      join catalog_shops sh on sh.shop_id = r.shop_id
-      ${needsMembership ? sql`left join catalog_membership_kinds mk on cs.is_ai_membership and mk.product_id = r.product_id
-        and mk.policy_version = ${MEMBERSHIP_POLICY_VERSION}` : sql``}
-      where ${sql.join(conditions, sql` and `)}
+      ${eligibleSkus(pricesOnly ? 'catalog_read_offer_prices' : 'catalog_read_offers')}
     )`;
   const scopeCtes = sql`scoped_skus as not materialized (
       select * from eligible_skus e where ${platformCondition}
@@ -550,6 +588,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     ), facet_tags as materialized (
       select t->>'name' as name, t->'value' as value, sum(e.weight)::int as priority
       from facet_sets e cross join lateral jsonb_array_elements(e.tags) t
+      where t->>'name' = any(${PURCHASE_TAG_NAMES}::text[])
       group by t->>'name', t->'value'
     ), facet_options as (
       select distinct name, value from facet_tags
@@ -559,8 +598,8 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   if (optionsOnly) {
     // Priority uses prepared-set frequency, not a count of matching offers.
     return sql<FacetResult>`with ${eligibleCte}, ${scopeCtes}, ${facetOptionsCtes}
-      select coalesce(jsonb_agg(jsonb_build_object('name', name, 'value', value, 'priority', coalesce(t.priority, 0))
-        order by name, value), '[]'::jsonb) as tag_facets,
+      select coalesce(json_agg(json_build_object('name', name, 'value', value, 'priority', coalesce(t.priority, 0))
+        order by name, value), '[]'::json) as tag_facets,
         null::text as next_expiry_at
       from facet_options f left join facet_tags t using (name, value)`;
   }
@@ -568,15 +607,17 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     ? sql`select distinct standard_product_id from eligible_skus`
     : sql`select standard_product_id from product_totals`;
   return sql<CatalogResult>`with ${eligibleCte}, ${tags.length ? sql`purchase_matches as materialized (
-      select r.product_id from catalog_read_offers r where ${filters}
-    ),` : sql``} filtered_skus as ${scopedSearch || requestedPlatform || tags.length || membershipFiltered ? sql`materialized` : sql`not materialized`} (
-      select e.* from eligible_skus e
+      select r.product_id${matchedPrices ? sql`, r.standard_product_id, r.shop_id, r.captured_at, r.available, r.currency,
+        case when ${verified} then r.settlement_price else r.listed_price end as price` : sql``}
+      from catalog_read_offers r where ${filters}
+    ),` : sql``} filtered_skus as ${!preparedTotals && (scopedSearch || requestedPlatform || tags.length || membershipFiltered) ? sql`materialized` : sql`not materialized`} (
+      select e.* from ${matchedPrices ? sql`(${eligibleSkus('purchase_matches')})` : sql`eligible_skus`} e
       where ${platformCondition}
-      ${tags.length ? sql`and e.product_id in (select product_id from purchase_matches)` : sql``}
+      ${tags.length && !matchedPrices ? sql`and e.product_id in (select product_id from purchase_matches)` : sql``}
     ), ${rankingCtes}, preview_skus as materialized (
       select w.*, ${payloadFields}
       from ranked_shops w join catalog_read_offers r using (product_id)
-      join catalog_shops sh on sh.shop_id = r.shop_id
+      join shops sh on sh.id = r.shop_id
       where preview_rank <= 4
     )${input.detailKind ? sql`, detail_skus as materialized (
       select detail.* from visible_page page cross join lateral (
@@ -588,49 +629,77 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     ), detail_entries as (
       select d.*, ${payloadFields}
       from detail_skus d join catalog_read_offers r using (product_id)
-      join catalog_shops sh on sh.shop_id = r.shop_id
+      join shops sh on sh.id = r.shop_id
     ), detail_payload as (
-      select d.standard_product_id, coalesce(jsonb_agg(${input.detailKind === 'shops' ? sql`jsonb_build_object(
+      select d.standard_product_id, coalesce(json_agg(${input.detailKind === 'shops' ? sql`json_build_object(
         'key', d.shop_id::text, 'name', d.shop_name, 'count', d.shop_product_count, 'offer',` : sql``}
         ${offerPayload('d')}${input.detailKind === 'shops' ? sql`)` : sql``}
-        order by ${detailOrder}), '[]'::jsonb) as entries
+        order by ${detailOrder}), '[]'::json) as entries
       from detail_entries d group by d.standard_product_id
     )` : sql``}, catalog_items as (
       select page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.is_ai_membership, page.sort_value,
-        page.product_count, page.shop_count, page.latest_captured_at, jsonb_agg(${offerPayload('w')} order by w.price nulls last, case when w.price is null then w.captured_at end desc, w.shop_id, w.product_id) as offers
+        page.product_count, page.shop_count, page.latest_captured_at, json_agg(${offerPayload('w')} order by w.price nulls last, case when w.price is null then w.captured_at end desc, w.shop_id, w.product_id) as offers
       from visible_page page join preview_skus w using (standard_product_id)
       group by page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.is_ai_membership, page.sort_value,
         page.product_count, page.shop_count, page.latest_captured_at
-    ), membership_candidates as materialized (
-      select e.* from filtered_skus e join visible_page page using (standard_product_id)
+    ), prepared_membership_page as materialized (
+      select page.* from visible_page page where page.is_ai_membership and ${preparedMembership}
+        and ${membershipPublished(sql`page.standard_product_id`)}
+    ), live_membership_page as materialized (
+      select page.* from visible_page page
       where page.is_ai_membership
+        and not exists (select 1 from prepared_membership_page p where p.standard_product_id = page.standard_product_id)
+    ), membership_candidates as materialized (
+      select e.* from live_membership_page page cross join lateral (
+        select e.* from filtered_skus e where e.standard_product_id = page.standard_product_id offset 0
+      ) e
     ), membership_skus as materialized (
       select e.* from membership_candidates e
       where e.membership_kind is not null or (select ${failedMembershipFeatures('p', 'source_shop')}
           from products p join shops source_shop on source_shop.id = p.shop_id where p.id = e.product_id)
+    ), membership_shop_totals as materialized (
+      select standard_product_id, membership_kind, shop_id, count(*)::int as product_count,
+        min(price) as min_price, max(price) as max_price, max(captured_at) as latest_captured_at,
+        (array_agg(product_id order by price nulls last,
+          case when price is null then captured_at end desc, product_id))[1] as winner_id
+      from membership_skus group by standard_product_id, membership_kind, shop_id
+      union all
+      select t.standard_product_id, nullif(t.membership_kind, 'unclassified'), t.shop_id,
+        t.product_count, t.min_price, t.max_price, t.latest_captured_at, t.winner_id
+      from catalog_read_membership_totals t join prepared_membership_page page using (standard_product_id)
+      join catalog_shops sh on sh.shop_id = t.shop_id
+      where t.currency = ${currency}
+        and ${membershipScope(input, sql<boolean>`true`, sql<MembershipKind | null>`nullif(t.membership_kind, 'unclassified')`, sql<boolean>`true`)}
+        ${input.shopId ? sql`and t.shop_id = ${input.shopId}::bigint` : sql``}
+        ${input.shopQuery ? sql`and sh.search_text like lower(${`%${input.shopQuery.replace(/[\\%_]/gu, '\\$&')}%`})` : sql``}
     ), membership_counts as (
-      select standard_product_id, membership_kind, count(distinct shop_id)::int as shop_count, count(*)::int as product_count,
-        min(price)::text as min_price, max(price)::text as max_price, max(captured_at) as latest_captured_at
-      from membership_skus group by standard_product_id, membership_kind
+      select standard_product_id, membership_kind, count(*)::int as shop_count, sum(product_count)::int as product_count,
+        min(min_price)::text as min_price, max(max_price)::text as max_price, max(latest_captured_at) as latest_captured_at
+      from membership_shop_totals group by standard_product_id, membership_kind
     ), membership_shop_winners as (
-      select distinct on (standard_product_id, membership_kind, shop_id) * from membership_skus
-      order by standard_product_id, membership_kind, shop_id, price nulls last,
-        case when price is null then captured_at end desc, product_id
+      select standard_product_id, membership_kind, shop_id, winner_id as product_id,
+        min_price as price, latest_captured_at as captured_at from membership_shop_totals
     ), membership_ranked as (
       select e.*, row_number() over (partition by standard_product_id, membership_kind
         order by price nulls last, case when price is null then captured_at end desc, shop_id, product_id) as group_rank
       from membership_shop_winners e
     ), membership_preview as materialized (
-      select g.*, ${payloadFields} from membership_ranked g join catalog_read_offers r using (product_id)
-      join catalog_shops sh on sh.shop_id = g.shop_id where g.group_rank <= 4
-    ), membership_groups as (
-      select c.standard_product_id, jsonb_agg(jsonb_build_object(
+      select g.standard_product_id, g.membership_kind, g.shop_id, g.price, g.group_rank,
+        r.product_id, r.captured_at, ${payloadFields} from membership_ranked g join catalog_read_offers r using (product_id)
+      join shops sh on sh.id = g.shop_id where g.group_rank <= 4
+    ), membership_payloads as (
+      select g.standard_product_id, g.membership_kind,
+        json_agg(${offerPayload('g')} order by g.group_rank) as offers
+      from membership_preview g group by g.standard_product_id, g.membership_kind
+    ), membership_groups as materialized (
+      select c.standard_product_id, json_agg(json_build_object(
         'kind', coalesce(c.membership_kind, 'unclassified'), 'shopCount', c.shop_count, 'productCount', c.product_count,
         'minPrice', c.min_price, 'maxPrice', c.max_price, 'latestCapturedAt', c.latest_captured_at,
-        'offers', (select jsonb_agg(${offerPayload('g')} order by g.group_rank) from membership_preview g
-          where g.standard_product_id = c.standard_product_id and g.membership_kind is not distinct from c.membership_kind)
+        'offers', g.offers
       ) order by array_position(${[...MEMBERSHIP_GROUPS]}::text[], coalesce(c.membership_kind, 'unclassified'))) as groups
-      from membership_counts c group by c.standard_product_id
+      from membership_counts c left join membership_payloads g on g.standard_product_id = c.standard_product_id
+        and g.membership_kind is not distinct from c.membership_kind
+      group by c.standard_product_id
     ), returned_shop_ids as materialized (
       select distinct shop_id from preview_skus
       union select shop_id from membership_preview
@@ -638,26 +707,27 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
     ), catalog_page as (
     select
       (select count(*) > ${limit} from page) as has_next,
-      (select coalesce(jsonb_agg(jsonb_build_object(
+      (select coalesce(json_agg(${input.detailKind ? sql`jsonb_build_object` : sql`json_build_object`}(
         'id', standard_product_id::text, 'name', standard_product_name, 'platform', platform, 'isAiMembership', is_ai_membership,
         'sortOrder', sort_order::text, 'sortValue', sort_value::text, 'offers', offers,
         'shopCount', shop_count, 'productCount', product_count, 'latestCapturedAt', latest_captured_at
-      ) || case when is_ai_membership and exists (select 1 from membership_groups g where g.standard_product_id = catalog_items.standard_product_id)
-        then jsonb_build_object('membershipGroups', (select groups from membership_groups g where g.standard_product_id = catalog_items.standard_product_id))
-        else '{}'::jsonb end${input.detailKind ? sql` || jsonb_build_object('detail', jsonb_build_object(
+      )${input.detailKind ? sql` || jsonb_build_object('detail', jsonb_build_object(
         'kind', ${input.detailKind}::text, 'page', ${detailPage}::bigint, 'pageSize', ${detailPageSize}::int,
         'total', ${input.detailKind === 'shops' ? sql`shop_count` : sql`product_count`},
-        'entries', coalesce((select entries from detail_payload d where d.standard_product_id = catalog_items.standard_product_id), '[]'::jsonb)
-      ))` : sql``} order by sort_value, sort_order, standard_product_id), '[]'::jsonb) from catalog_items) as entries,
-      (select coalesce(jsonb_agg(platform order by platform), '[]'::jsonb)
+        'entries', coalesce((select entries from detail_payload d where d.standard_product_id = catalog_items.standard_product_id), '[]'::json)
+      ))` : sql``} order by sort_value, sort_order, standard_product_id), '[]'::json)
+        from catalog_items) as entries,
+      (select coalesce(json_object_agg(standard_product_id::text, groups), '{}'::json)
+        from membership_groups) as membership_groups,
+      (select coalesce(json_agg(platform order by platform), '[]'::json)
        from (select distinct sp.platform_group as platform from (${navigationIds}) e
          join catalog_standards sp on sp.id = e.standard_product_id) platforms) as platform_facets,
       (select count(*)::int from product_totals) as total,
       (select coalesce(sum(product_count), 0)::int from product_totals) as offer_total,
       null::text as next_expiry_at
-    ) select p.*, coalesce((select jsonb_agg(jsonb_build_object(
+    ) select p.*, coalesce((select json_agg(json_build_object(
       'shop_id', r.shop_id::text, 'score', r.score, 'details', r.details))
-      from catalog_shop_ratings r join returned_shop_ids s using (shop_id)), '[]'::jsonb) as shop_ratings
+      from catalog_shop_ratings r join returned_shop_ids s using (shop_id)), '[]'::json) as shop_ratings
     from catalog_page p
   `;
 }

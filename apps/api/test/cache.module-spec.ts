@@ -84,10 +84,17 @@ test('real Redis serves a second cache instance and then promotes the value to i
   const outcomes: boolean[] = [];
   const first = createCache(catalogCacheOptions({ REDIS_URL: url }));
   const second = createCache(catalogCacheOptions({ REDIS_URL: url }, { recordRedisResult: hit => outcomes.push(hit) }));
+  const written = Promise.withResolvers<void>();
+  const secondary = first.stores[1]!;
+  const write = secondary.setRaw.bind(secondary);
+  context.mock.method(secondary, 'setRaw', async (...args: Parameters<typeof secondary.setRaw>) => {
+    try { return await write(...args); } finally { written.resolve(); }
+  });
   const key = 'framework-test:' + randomUUID();
   const expected = { items: [{ id: '42', price: '1.23' }] };
   try {
     assert.deepEqual(await first.wrap(key, async () => expected), expected);
+    await written.promise;
     const stored = await first.stores[1]!.getRaw(key);
     assert.deepEqual(stored?.value, expected);
     assert.ok(stored?.expires && stored.expires - Date.now() <= CATALOG_CACHE_TTL_MS);
@@ -106,6 +113,7 @@ for (const stalledCommand of ['GET', 'SET']) {
   test(`an established Redis connection that stops answering ${stalledCommand} cannot hang catalog loads`, { timeout: 5_000 }, async context => {
     let stall = false;
     let stalled = 0;
+    const received = Promise.withResolvers<void>();
     const sockets = new Set<Socket>();
     const server = createServer(socket => {
       sockets.add(socket);
@@ -129,7 +137,7 @@ for (const stalledCommand of ['GET', 'SET']) {
           }
           pending = pending.subarray(offset);
           const command = args[0]?.toUpperCase();
-          if (stall && command === stalledCommand) { stalled += 1; continue; }
+          if (stall && command === stalledCommand) { stalled += 1; received.resolve(); continue; }
           socket.write(command === 'GET' ? '$-1\r\n' : '+OK\r\n');
         }
       });
@@ -151,7 +159,8 @@ for (const stalledCommand of ['GET', 'SET']) {
     const load = async () => ({ value: ++reads });
     const started = performance.now();
     assert.deepEqual(await cache.wrap('stalled-command', load), { value: 1 });
-    assert.ok(performance.now() - started < 2_500, 'native socket timeout releases the request before test cleanup');
+    assert.ok(performance.now() - started < (stalledCommand === 'SET' ? 500 : 2_500), 'cache writes must not delay the response; reads remain timeout-bounded');
+    await received.promise;
     assert.ok(stalled > 0, 'the socket was established and actually received the stalled command');
     assert.deepEqual(await cache.wrap('stalled-command', load), { value: 1 });
     assert.equal(reads, 1, 'the successful loader remains in the memory tier');

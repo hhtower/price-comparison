@@ -59,6 +59,81 @@ test('concurrent cache misses share one loader and rejected loaders can be retri
   } finally { await cache.disconnect(); }
 });
 
+test('fresh reads populate memory without waiting for secondary cache writes', async t => {
+  const memory = new Keyv(), secondary = new Keyv();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const original = secondary.setRaw.bind(secondary);
+  t.mock.method(secondary, 'setRaw', async (...args: Parameters<typeof secondary.setRaw>) => {
+    started.resolve();
+    await release.promise;
+    return original(...args);
+  });
+  const cache = createCache({ stores: [memory, secondary], ttl: 1000 });
+  try {
+    const read = cache.wrap('fresh', () => ({ value: 1 }));
+    await started.promise;
+    assert.deepEqual(await Promise.race([read, new Promise(resolve => setImmediate(() => resolve('waiting on secondary')))]), { value: 1 });
+    assert.deepEqual(await cache.wrap('fresh', () => { assert.fail('memory must already be warm'); }), { value: 1 });
+  } finally {
+    release.resolve();
+    await cache.disconnect();
+  }
+});
+
+test('deletion waits for pending secondary writes so an invalidated value cannot reappear', async t => {
+  const memory = new Keyv(), secondary = new Keyv();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const original = secondary.setRaw.bind(secondary);
+  t.mock.method(secondary, 'setRaw', async (...args: Parameters<typeof secondary.setRaw>) => {
+    started.resolve();
+    await release.promise;
+    return original(...args);
+  });
+  const cache = createCache({ stores: [memory, secondary], ttl: 1000 });
+  try {
+    const read = cache.wrap('fresh', () => 1);
+    await started.promise;
+    const deleted = cache.del('fresh');
+    release.resolve();
+    await read;
+    await deleted;
+    assert.equal(await memory.get('fresh'), undefined);
+    assert.equal(await secondary.get('fresh'), undefined);
+  } finally {
+    release.resolve();
+    await cache.disconnect();
+  }
+});
+
+test('background writes retain the original value and expiry and finish before shutdown', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  const memory = new Keyv(), secondary = new Keyv();
+  const release = Promise.withResolvers<void>();
+  const original = secondary.setRaw.bind(secondary);
+  t.mock.method(secondary, 'setRaw', async (...args: Parameters<typeof secondary.setRaw>) => {
+    await release.promise;
+    return original(...args);
+  });
+  const cache = createCache({ stores: [memory, secondary], ttl: 100 });
+  try {
+    const value = await cache.wrap('fresh', () => ({ nested: { value: 1 } }));
+    value.nested.value = 2;
+    t.mock.timers.tick(50);
+    let closed = false;
+    const closing = cache.disconnect().then(() => { closed = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(closed, false);
+    release.resolve();
+    await closing;
+    assert.deepEqual(await secondary.get('fresh'), { nested: { value: 1 } });
+    t.mock.timers.tick(51);
+    assert.equal(await secondary.get('fresh'), undefined);
+  } finally {
+    release.resolve();
+    await cache.disconnect();
+  }
+});
+
 test('an oversized replacement invalidates both tiers while returning the uncached value', async () => {
   const stores = [new Keyv(), new Keyv()];
   const cache = createCache({ stores, maxBytes: 32 });
@@ -77,7 +152,7 @@ test('an oversized replacement invalidates both tiers while returning the uncach
 test('failed cache stores do not hide working stores or successful loaders', async t => {
   const failed = new Keyv(), memory = new Keyv();
   const cache = createCache({ stores: [failed, memory], ttl: 1000 });
-  for (const method of ['get', 'getRaw', 'getMany', 'set', 'delete'] as const)
+  for (const method of ['get', 'getRaw', 'getMany', 'set', 'setRaw', 'delete'] as const)
     t.mock.method(failed, method, async () => { throw new Error('cache unavailable'); });
   try {
     assert.equal(await cache.wrap('available', () => 'ready'), 'ready');

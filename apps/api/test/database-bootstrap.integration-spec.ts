@@ -125,19 +125,22 @@ test('published results backfill asynchronously and survive migration rollback w
     .returning('id').executeTakeFirstOrThrow();
   assert.ifError((await migrator.migrateTo('029_catalog_published_results_20261101')).error);
   assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 0);
-  assert.equal(await publishNextCatalogChange(database), true);
-  assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 0);
-  while (await publishNextCatalogChange(database)) {}
-  assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 1);
-  assert.equal(await publishNextCatalogChange(database), false);
-  await sql`insert into catalog_read_shop_totals values (99, ${shop.id}, 'CNY', 10, now(), 1, 99)`.execute(database);
-  await sql`truncate catalog_read_offer_prices`.execute(database);
-  while (await publishNextCatalogChange(database)) {}
-  assert.equal((await sql`select * from catalog_read_shop_totals`.execute(database)).rows.length, 0);
+  assert.equal((await sql`select id from catalog_projection_changes where coverage`.execute(database)).rows.length, 1);
+  assert.equal((await sql`select id from catalog_projection_changes where shop_id = ${shop.id}`.execute(database)).rows.length, 1);
   assert.ifError((await migrator.migrateTo('028_catalog_rating_versions_20261101')).error);
   assert.equal((await database.selectFrom('shops').select('name').where('id', '=', shop.id).executeTakeFirstOrThrow()).name, 'Published');
   assert.ifError((await migrator.migrateTo('029_catalog_published_results_20261101')).error);
-  assert.equal(await publishNextCatalogChange(database), true);
+  assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 0);
+  await migrateToLatest(database);
+  while (await publishNextCatalogChange(database)) {}
+  assert.equal((await sql`select * from catalog_shop_ratings`.execute(database)).rows.length, 1);
+  assert.equal(await publishNextCatalogChange(database), false);
+  await sql`insert into catalog_read_shop_totals
+    (standard_product_id, shop_id, currency, min_price, latest_captured_at, product_count, winner_id)
+    values (99, ${shop.id}, 'CNY', 10, now(), 1, 99)`.execute(database);
+  await sql`truncate catalog_read_offer_prices`.execute(database);
+  while (await publishNextCatalogChange(database)) {}
+  assert.equal((await sql`select * from catalog_read_shop_totals`.execute(database)).rows.length, 0);
 });
 
 test('boolean text review upgrade invalidates cached scores while retaining historical reviews', async t => {
@@ -214,7 +217,12 @@ for (const legacyStockProjection of [false, true]) {
       select tgname from pg_trigger where tgrelid = 'catalog_read_offer_prices'::regclass
         and not tgisinternal and tgname in (${sql.join(triggerNames)}) and tgenabled = 'O'
       order by tgname`.execute(database)).rows.map(row => row.tgname);
-    await publish();
+    // Seed the previously published state before applying the current runtime's schema.
+    await sql`insert into catalog_read_shop_totals
+      (standard_product_id, shop_id, currency, min_price, latest_captured_at, product_count, winner_id)
+      values (${team.id}, ${shop.id}, 'CNY', 5, now(), 2, ${winner.id}),
+        (${retired.id}, ${shop.id}, 'CNY', 20, now(), 1, ${retiredWinner.id}),
+        (${soldOut.id}, ${shop.id}, 'CNY', 30, now(), 1, ${soldOutWinner.id})`.execute(database);
     assert.equal((await totals()).find(row => row.standard === String(team.id))?.winner, String(winner.id));
 
     if (legacyStockProjection) {
@@ -234,10 +242,11 @@ for (const legacyStockProjection of [false, true]) {
     await database.updateTable('offers').set({ stock_available: false })
       .where('product_id', '=', soldOutWinner.id).execute();
     assert.equal((await sql`select id from catalog_projection_changes`.execute(database)).rows.length, 0);
-    assert.equal(await publishNextCatalogChange(database), false);
     assert.equal((await totals()).find(row => row.standard === String(team.id))?.winner, String(winner.id));
     const repository = new CatalogRepository(database);
-    assert.equal((await repository.search({ tags: [], limit: 20 })).items.some(item => item.id === String(team.id)), false);
+    assert.equal((await sql`select 1 from catalog_read_shop_totals t join catalog_read_offer_prices r
+      on r.product_id = t.winner_id and r.standard_product_id = t.standard_product_id
+      where t.standard_product_id = ${team.id}`.execute(database)).rows.length, 0);
     const version = (await sql<{ version: string }>`
       select version::text from catalog_cache_versions where id = 1`.execute(database)).rows[0]!.version;
 
@@ -260,9 +269,9 @@ for (const legacyStockProjection of [false, true]) {
     const restored = (await repository.search({ tags: [], limit: 20 })).items.find(item => item.id === String(team.id));
     assert.equal(restored?.offers[0]?.productId, String(fallback.id));
 
-    assert.ifError((await migrator.migrateTo('041_boolean_text_review_20261114')).error);
+    await repair.down?.(database);
     assert.deepEqual(await installed(), triggerNames, 'rollback must retain the protection originally installed by 029');
-    await migrateToLatest(database);
+    await repair.up(database);
     await publish();
 
     await database.updateTable('standard_product_members').set({ standard_product_id: team.id })

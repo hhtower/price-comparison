@@ -41,3 +41,19 @@ test('slow loads and failed loads do not create a renewed five-second cache wind
     assert.equal((await service.getCatalog({})).total, 3);
   } finally { await cache.disconnect(); }
 });
+
+test('public catalog reads do not reuse the cache generation containing retired tags', async () => {
+  const cache = createCache();
+  const old = { tagFacets: [{ name: 'warranty', value: '旧售后说明', priority: 1 }] };
+  const current = { tagFacets: [{ name: 'usage_warranty', value: '首登', priority: 1 }] };
+  const page = { items: [], platformFacets: [], total: 0 };
+  const service = new CatalogService({
+    facets: async () => current, search: async () => page,
+  } as unknown as CatalogRepository, cache);
+  try {
+    await cache.set('catalog:facets:v4:{"tags":[]}', old, 5000);
+    await cache.set('catalog:page:v5:{"tags":[],"limit":20}', old, 5000);
+    assert.deepEqual(await service.getFacets({}), current);
+    assert.deepEqual(await service.getCatalog({}), page);
+  } finally { await cache.disconnect(); }
+});

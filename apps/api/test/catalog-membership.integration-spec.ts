@@ -117,10 +117,12 @@ describe('membership catalog features share standard identities', { skip: !proce
 
   test('membership projection backfills existing features and rolls back with their source', async () => {
     const before = await sql`select * from catalog_membership_kinds order by product_id`.execute(db);
-    await db.transaction().execute(async tx => {
+    await assert.rejects(db.transaction().execute(async tx => {
       await removeMembershipKinds(tx);
       await installMembershipKinds(tx);
-    });
+      assert.deepEqual((await sql`select * from catalog_membership_kinds order by product_id`.execute(tx)).rows, before.rows);
+      throw new Error('rollback migration probe');
+    }), /rollback migration probe/);
     assert.deepEqual((await sql`select * from catalog_membership_kinds order by product_id`.execute(db)).rows, before.rows);
     await assert.rejects(db.transaction().execute(async tx => {
       await tx.updateTable('products').set({ membership_features: null }).where('id', '=', BigInt(products.account!)).execute();
@@ -143,6 +145,110 @@ describe('membership catalog features share standard identities', { skip: !proce
     };
     walk(plan);
     assert.ok(readsProjection);
+  });
+
+  test('membership previews are not rescanned for every category', async () => {
+    const plan = await repository.explain({ standardProductId: ids.base, tags: [], limit: 20 });
+    let previews = 0;
+    let groupBuilds = 0;
+    const walk = (value: unknown): void => {
+      if (!value || typeof value !== 'object') return;
+      const node = value as Record<string, unknown>;
+      if (node['CTE Name'] === 'membership_preview') {
+        previews++;
+        assert.ok(Number(node['Actual Loops']) <= 1, 'preview payloads must aggregate once rather than once per category');
+      }
+      if (node['Subplan Name'] === 'CTE membership_groups') {
+        groupBuilds++;
+        assert.equal(node['Actual Loops'], 1, 'membership groups must be built once for the whole page');
+      }
+      for (const child of Object.values(node)) walk(child);
+    };
+    walk(plan);
+    assert.ok(previews > 0);
+    assert.equal(groupBuilds, 1);
+  });
+
+  test('published membership groups avoid scanning offer and task history, and changes fall back until republished', async () => {
+    const query = { standardProductId: ids.base, tags: [], limit: 20 };
+    const original = await repository.search(query);
+    while (await publishNextCatalogChange(db)) {}
+    assert.deepEqual(await repository.search(query), original);
+    const plan = await repository.explain(query);
+    let prepared = false;
+    const walk = (value: unknown): void => {
+      if (!value || typeof value !== 'object') return;
+      const node = value as Record<string, unknown>;
+      if (node['Relation Name'] === 'catalog_read_membership_totals') prepared = Number(node['Actual Loops']) > 0;
+      if (node['Relation Name'] === 'ai_job_input_members') assert.equal(node['Actual Loops'], 0);
+      for (const child of Object.values(node)) walk(child);
+    };
+    walk(plan);
+    assert.ok(prepared, 'published groups must read prepared merchant totals');
+    await sql`update catalog_read_shop_totals set membership_policy_version = null
+      where standard_product_id = ${ids.base}::bigint`.execute(db);
+    await sql`delete from catalog_read_membership_totals where standard_product_id = ${ids.base}::bigint`.execute(db);
+    assert.deepEqual(await repository.search(query), original, 'an old worker must not make an empty summary authoritative');
+    while (await publishNextCatalogChange(db)) {}
+    assert.deepEqual(await repository.search(query), original);
+    try {
+      await saveFeature(products.account!, 'top_up');
+      const changed = await repository.search(query);
+      assert.deepEqual(changed.items[0]?.membershipGroups?.map(group => group.kind), ['top_up', 'rental', 'short_term']);
+      while (await publishNextCatalogChange(db)) {}
+      assert.deepEqual(await repository.search(query), changed);
+    } finally {
+      await saveFeature(products.account!, 'account');
+      while (await publishNextCatalogChange(db)) {}
+    }
+  });
+
+  test('prepared unclassified groups follow task status, job type, source revisions and deletion', async () => {
+    const shop = (await sql<{ id: string }>`insert into shops (name, platform, url)
+      values ('Prepared failures', 'test', 'https://prepared-failures.invalid') returning id::text`.execute(db)).rows[0]!.id;
+    const product = (await sql<{ id: string }>`insert into products (shop_id, external_id, name, normalized_key, url)
+      values (${shop}::bigint, 'failed', 'Failed features', 'prepared-failed', '') returning id::text`.execute(db)).rows[0]!.id;
+    await sql`insert into standard_product_members (standard_product_id, product_id, publication_state, assignment_source)
+      values (${ids.pending}::bigint, ${product}::bigint, 'published', 'ai')`.execute(db);
+    await sql`insert into offers (product_id, idempotency_key, price, currency, captured_at, stock_available, is_stale)
+      values (${product}::bigint, 'prepared-failed', 3, 'CNY', now(), true, false)`.execute(db);
+    const job = await saveFeatureTask(product, 'failed');
+    while (await publishNextCatalogChange(db)) {}
+    const query = { standardProductId: ids.pending, shopId: shop, tags: [], limit: 20 };
+    const check = async (visible: boolean) => {
+      const page = await repository.search(query);
+      assert.equal(page.items[0]?.membershipGroups?.some(group => group.kind === 'unclassified') ?? false, visible);
+      const filtered = await repository.search({ ...query, membershipKinds: ['unclassified'] });
+      assert.equal(filtered.offerTotal, visible ? 1 : 0);
+      while (await publishNextCatalogChange(db)) {}
+      assert.deepEqual(await repository.search(query), page);
+      assert.deepEqual(await repository.search({ ...query, membershipKinds: ['unclassified'] }), filtered);
+    };
+    try {
+      await check(true);
+      await sql`update ai_job_input_members set status = 'queued' where job_id = ${job}`.execute(db);
+      await check(false);
+      await sql`update ai_job_input_members set status = 'failed' where job_id = ${job}`.execute(db);
+      await check(true);
+      await sql`update ai_jobs set job_type = 'tag_extraction' where id = ${job}`.execute(db);
+      await check(false);
+      await sql`update ai_jobs set job_type = 'membership_features' where id = ${job}`.execute(db);
+      await check(true);
+      await sql`update products set standardization_revision = standardization_revision + 1 where id = ${product}::bigint`.execute(db);
+      await check(false);
+      await sql`update products set standardization_revision = standardization_revision - 1 where id = ${product}::bigint`.execute(db);
+      await check(true);
+      await sql`update shops set url = 'https://changed-failures.invalid' where id = ${shop}::bigint`.execute(db);
+      await check(false);
+      await sql`update shops set url = 'https://prepared-failures.invalid' where id = ${shop}::bigint`.execute(db);
+      await check(true);
+      await db.deleteFrom('ai_jobs').where('id', '=', job).execute();
+      await check(false);
+    } finally {
+      await db.deleteFrom('ai_jobs').where('id', '=', job).execute();
+      await db.deleteFrom('shops').where('id', '=', BigInt(shop)).execute();
+      while (await publishNextCatalogChange(db)) {}
+    }
   });
 
   test('SQL candidates, counts, facets and cursors share hard AI-only scope', async () => {

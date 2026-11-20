@@ -34,6 +34,7 @@ async function attempt<T>(operation: () => Promise<T>): Promise<T | undefined> {
 export class Cache {
   readonly stores: Keyv[];
   private readonly pending = new Map<string, Promise<unknown>>();
+  private readonly writes = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: CacheOptions = {}) {
     this.stores = options.stores ?? [createMemoryStore(options.ttl)];
@@ -59,7 +60,13 @@ export class Cache {
     return values;
   }
 
-  async set<T>(key: string, value: T, ttl = this.options.ttl): Promise<T> {
+  async set<T>(key: string, value: T, ttl = this.options.ttl, waitForSecondary = true): Promise<T> {
+    const expires = ttl ? Date.now() + ttl : undefined;
+    await this.writes.get(key);
+    if (expires !== undefined) {
+      ttl = expires - Date.now();
+      if (ttl <= 0) { await this.del(key); return value; }
+    }
     let admitted = value !== undefined;
     if (admitted && this.options.maxBytes !== undefined) {
       try { admitted = Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8') <= this.options.maxBytes; }
@@ -69,7 +76,14 @@ export class Cache {
       await this.del(key);
       return value;
     }
-    await Promise.all(this.stores.map(store => attempt(() => store.set(key, value, ttl))));
+    const [first, ...secondary] = this.stores;
+    const stored = first && await attempt(() => first.set(key, value, ttl));
+    const record = stored ? await this.record<T>(first, key) : undefined;
+    const write = Promise.all(secondary.map(store => attempt(() => record
+      ? store.setRaw(key, record) : store.set(key, value, ttl))));
+    this.writes.set(key, write);
+    void write.finally(() => { if (this.writes.get(key) === write) this.writes.delete(key); });
+    if (waitForSecondary) await write;
     return value;
   }
 
@@ -87,7 +101,8 @@ export class Cache {
       const value = await load();
       const remaining = typeof ttl === 'function' ? ttl() : ttl;
       // Keyv treats zero as unlimited; an exhausted read budget must not be cached.
-      if (remaining === undefined || remaining > 0) await this.set(key, value, remaining);
+      // Warm memory before returning; a remote cache write must not delay a successful read.
+      if (remaining === undefined || remaining > 0) await this.set(key, value, remaining, false);
       return value;
     })();
     this.pending.set(key, task);
@@ -104,6 +119,7 @@ export class Cache {
   }
 
   async del(key: string): Promise<boolean> {
+    await this.writes.get(key);
     await Promise.all(this.stores.map(store => attempt(() => store.delete(key))));
     return true;
   }
@@ -114,6 +130,7 @@ export class Cache {
   }
 
   async disconnect(): Promise<void> {
+    await Promise.all(this.writes.values());
     await Promise.all(this.stores.map(store => attempt(() => store.disconnect())));
   }
 
