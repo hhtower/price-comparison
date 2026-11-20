@@ -29,9 +29,12 @@ test('reference lookup uses one scoped read without catalog aggregates or freshn
     assert.match(query.sql, /publication_state = 'published'/u);
     assert.match(query.sql, /p.deleted_at is null/u);
     assert.match(query.sql, /sh.enabled = true and sh.deleted_at is null/u);
+    assert.match(query.sql, /left join catalog_membership_kinds mk/u);
+    assert.doesNotMatch(query.sql, /membership_features->/u);
     assert.match(query.sql, /r.tags @>/u);
     assert.doesNotMatch(query.sql, /warranty_days/u);
-    assert.doesNotMatch(query.sql, /count\(|offset |limit |captured_at >|available =|reviews/iu);
+    assert.doesNotMatch(query.sql, /count\(|captured_at >|available =|reviews/iu);
+    assert.doesNotMatch(query.sql, /order by r.product_id\s+(?:offset|limit)/iu);
     assert.ok(query.parameters.includes('42'));
     assert.ok(query.parameters.includes('80.00'));
     assert.ok(query.parameters.includes('CNY'));

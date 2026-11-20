@@ -10,7 +10,7 @@ import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './qu
 import { CATALOG_DISPLAY_SEARCH_LABELS, CATALOG_PRODUCT_ALIASES, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { PriceHistoryRepository } from './price-history.repository.js';
 import { isAiMembership, MEMBERSHIP_GROUPS, MEMBERSHIP_POLICY_VERSION, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
-import { catalogMembershipKind, failedMembershipFeatures } from '../standardization/membership-classification.js';
+import { failedMembershipFeatures } from '../standardization/membership-classification.js';
 import { minimumDaysDimension, type PurchaseTag } from '@price-comparison/catalog/purchase-attributes';
 
 export interface PublicCatalogProduct { readonly id: string; readonly name: string; readonly platform: string; readonly platformGroup?: string; readonly identityNames?: readonly string[]; readonly kind: string; readonly mergedIntoId?: string;
@@ -21,10 +21,11 @@ export interface CatalogCoverage { readonly shopCount: number; readonly productC
 
 function publicStandard(alias: string): RawBuilder<boolean> {
   const sp = sql.table(alias);
+  // Keep the existence probe correlated so each indexed lookup stops at its first visible member.
   return sql<boolean>`${sp}.hidden = false and ${sp}.merged_into_id is null and ${sp}.verification_state = 'verified'
     and exists (select 1 from standard_product_members m join products p on p.id = m.product_id
       join shops sh on sh.id = p.shop_id where m.standard_product_id = ${sp}.id
-      and m.publication_state = 'published' and p.deleted_at is null and sh.deleted_at is null and sh.enabled = true)`;
+      and m.publication_state = 'published' and p.deleted_at is null and sh.deleted_at is null and sh.enabled = true offset 0)`;
 }
 
 function productMetadata(row: { id: string; name: string; platform: string; platform_group: string; family: string | null; product: string | null; tier: string | null; aliases: string[]; merged_into_id: string | null }): PublicCatalogProduct {
@@ -309,13 +310,19 @@ export class CatalogRepository {
   }
 
   async referenceOffers(input: CatalogQuery): Promise<CatalogOffer[]> {
-    const ai = sql<boolean>`is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier)`;
-    const kind = catalogMembershipKind(ai);
+    const ai = sql<boolean>`sp.is_ai_membership`;
+    const kind = sql<MembershipKind | null>`mk.kind`;
+    const failed = sql<boolean>`(select ${failedMembershipFeatures('p', 'source_shop')}
+      from products p join shops source_shop on source_shop.id = p.shop_id where p.id = r.product_id)`;
     const verified = sql`r.settlement_price is not null and r.settlement_price >= 0 and r.settlement_price < 'Infinity'::numeric
       and r.settlement_verified_at is not null and nullif(btrim(r.settlement_payment_method), '') is not null`;
     const price = sql`case when ${verified} then r.settlement_price else r.listed_price end`;
     // Reference quotes need no freshness gate, catalog totals or merchant-review hydration.
-    const result = await sql<CatalogOffer>`select r.product_id::text as "productId", r.shop_id::text as "shopId",
+    const result = await sql<CatalogOffer>`with reference_standard as materialized (
+        select sp.id, is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier) as is_ai_membership
+        from standard_products sp where sp.id = ${input.standardProductId}::bigint and ${publicStandard('sp')}
+      )
+      select r.product_id::text as "productId", r.shop_id::text as "shopId",
       r.product_name as name, sh.name as shop, r.product_url as "productUrl", r.product_spec as spec, r.tags, ${kind} as "membershipKind",
       (${price})::text as price, r.currency, r.listed_price::text as "listedPrice",
       case when ${verified} then coalesce(r.settlement_quantity, 1) else 1 end as "settlementQuantity",
@@ -325,12 +332,15 @@ export class CatalogRepository {
       r.stock_quantity::float8 as "stockQuantity",
       (sh.protocol is distinct from 'liandong' and sh.protocol is distinct from '16688') as "independentShop"
       from catalog_read_offers r
-      join standard_products sp on sp.id = r.standard_product_id
-      join shops sh on sh.id = r.shop_id
-      join products p on p.id = r.product_id
+      join reference_standard sp on sp.id = r.standard_product_id
+      join lateral (
+        select sh.id, sh.name, sh.protocol from shops sh
+        where sh.id = r.shop_id and sh.enabled = true and sh.deleted_at is null limit 1
+      ) sh on true
+      left join catalog_membership_kinds mk on ${ai} and mk.product_id = r.product_id
+        and mk.policy_version = ${MEMBERSHIP_POLICY_VERSION}
       where r.standard_product_id = ${input.standardProductId}::bigint
-        and ${membershipScope(input, ai, kind, failedMembershipFeatures())}
-        and ${publicStandard('sp')} and sh.enabled = true and sh.deleted_at is null
+        and ${membershipScope(input, ai, kind, failed)}
         and ${price} >= 0 and ${price} < 'Infinity'::numeric
         ${input.currency ? sql`and r.currency = ${input.currency}` : sql``}
         ${input.priceMax !== undefined ? sql`and ${price} <= ${input.priceMax}::numeric` : sql``}
