@@ -237,7 +237,7 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
       'a different tag name remains a required constraint');
       assert.equal(offers[0]!.settlementQuantity, quantity, 'stale quantity must not default to one');
       assert.ok(offers[0]!.tags.some(tag => tag.name === 'duration' && tag.value === 30));
-      assert.ok(offers[0]!.tags.some(tag => tag.name === 'warranty_terms' && tag.value === '保订阅30天，封号不保'));
+      assert.ok(!offers[0]!.tags.some(tag => tag.name === 'warranty_terms'), 'retired warranty tags must not enter reference offers');
       const standardProduct = await service.resolvePublicProductIdentity(identity);
       assert.ok(standardProduct);
       const needs = { purpose: null, platform: null, requiredTags, preferences: [],

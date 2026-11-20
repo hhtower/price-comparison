@@ -2118,7 +2118,7 @@
           "requiredTags": [
             {
               "name": "subscription_warranty",
-              "value": "订阅保障30天"
+              "value": "质保 30 天"
             }
           ]
         },
@@ -2138,7 +2138,7 @@
         "requiredTags": [
           {
             "name": "subscription_warranty",
-            "value": "订阅保障30天"
+            "value": "质保 30 天"
           }
         ],
         "preferences": []

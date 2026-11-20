@@ -271,8 +271,8 @@ test('MCP accepts typed tag values and advertises only current fields', async t 
   }
   for (const tags of [
     [{ name: 'bulk_purchase', value: 'supported' }], [{ name: 'bulk_purchase', value: 'required' }],
-    [{ name: 'bulk_purchase', value: 'bundle' }], [{ name: 'subscription_warranty', value: '订阅保障30天' }],
-    [{ name: 'usage_warranty', value: '仅保首登' }], [{ name: 'usage_warranty', value: '封号保障7天' }],
+    [{ name: 'bulk_purchase', value: 'bundle' }], [{ name: 'subscription_warranty', value: '质保 30 天' }],
+    [{ name: 'usage_warranty', value: '首登' }], [{ name: 'usage_warranty', value: '质保 7 天' }],
   ]) assert.equal((await call('get_product_offers', { standardProductId: '1', tags })).json().result.isError, undefined);
   const count = queries.length;
   for (const args of [
@@ -280,6 +280,8 @@ test('MCP accepts typed tag values and advertises only current fields', async t 
     ...[
       { name: 'delivery', value: 'account' }, { name: 'warranty_days', value: '30' },
       { name: 'warranty', value: '保订阅30天' }, { name: 'warranty_terms', value: '完整保障条款' },
+      { name: 'subscription_warranty', value: '订阅保障30天' },
+      { name: 'usage_warranty', value: '仅保首登' }, { name: 'usage_warranty', value: '封号保障7天' },
       { name: 'subscription_warranty', value: '字'.repeat(251) },
       { name: 'duration', value: '30 days' }, { name: 'duration', value: { kind: 'range', min: 90, max: 30 } },
       { name: 'duration', value: { kind: 'min', days: 30, unit: 'days' } },
