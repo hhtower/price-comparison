@@ -48,7 +48,7 @@
 
 ### npm 编译运行
 
-推荐使用 Node.js 26 LTS；需要 PostgreSQL 16+ 和 Redis 7+。先创建数据库并启动 Redis，在项目根目录执行：
+Node.js 版本须满足 [package.json](package.json) 中的 `engines` 要求；需要 PostgreSQL 16+ 和 Redis 7+。先创建数据库并启动 Redis，在项目根目录执行：
 
 ```bash
 git clone https://github.com/hhtower/price-comparison.git
@@ -64,9 +64,7 @@ npm start
 
 PowerShell 使用 `Copy-Item .env.example .env` 复制配置。替换示例管理密码；`PUBLIC_SITE_URL` 为站点的 HTTPS origin。默认访问 `http://localhost:3000`，管理后台为 `/admin`。新安装不包含业务数据，需在后台添加并审核商铺，再采集商品。
 
-开发模式运行 `npm run dev`，访问终端显示的前端地址。配置项见 [.env.example](.env.example)，worker 和部署说明见 [WORKFLOW.md](WORKFLOW.md)。AI 默认关闭，启用后会向配置的模型服务发送商品证据并可能产生费用。
-
-AI 导购助手需单独启用并运行对应 worker，配置与启动方式见 [开发与部署流程](WORKFLOW.md)。启用后会向配置的模型服务发送对话需求与候选商品资料。
+开发模式运行 `npm run dev`，访问终端显示的前端地址。配置项见 [.env.example](.env.example)，worker 与导购的启用方式见 [开发与部署](WORKFLOW.md)。AI 默认关闭，启用后会向配置的模型服务发送相关商品资料或对话需求，并可能产生费用。
 
 ### Docker 安装
 
@@ -84,7 +82,7 @@ docker compose -f docker-compose.dev.yml run --rm --build migrate
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 
-访问 `http://localhost:3000`。数据库保存在 Docker volume 中。内置数据库示例密码仅适合本机开发。使用外部数据库的部署参考 [docker-compose.yml](docker-compose.yml) 和 [开发与部署流程](WORKFLOW.md)。
+访问 `http://localhost:3000`。数据库保存在 Docker volume 中。内置数据库示例密码仅适合本机开发。使用外部数据库的部署参考 [docker-compose.yml](docker-compose.yml) 和 [开发与部署](WORKFLOW.md)。
 
 ## 联系方式
 

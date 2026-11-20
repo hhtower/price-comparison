@@ -1,67 +1,21 @@
 # PostgreSQL 运行配置
 
-应用只支持 PostgreSQL 16 或更高版本。生产连接应优先指向 PgBouncer
-transaction pool，再由 PgBouncer 连接主库。每个 API 或 worker 实例的
-`PG_POOL_MAX` 必须纳入数据库连接预算：
+使用 PostgreSQL 16 或更高版本，通过 `DATABASE_URL` 配置连接。生产环境应限制网络访问，妥善保存连接凭据。
 
-```text
-实例数 * PG_POOL_MAX + 管理连接 + worker 连接 <= PostgreSQL max_connections
-```
+## 连接容量
 
-## PgBouncer
+每个 API 和 worker 进程分别使用连接池。配置 `PG_POOL_MAX` 时，将所有实例纳入数据库连接预算，并为迁移、管理和监控预留连接。
 
-推荐使用 `pool_mode = transaction`，并把应用的 `DATABASE_URL` 指向
-PgBouncer 服务。不要在业务代码中依赖 session 临时表、session 级
-`SET` 或 prepared statement；schema 通过连接选项固定，事务级设置通过
-SQL 显式声明。PgBouncer 的 `max_client_conn` 应覆盖 API 和 worker 的
-并发连接上限，`default_pool_size` 则按主库预算设置。
+连接超时、语句超时及可选 schema 的配置见 [数据库连接配置](../../apps/api/src/database/database.providers.ts)。使用连接池代理时，应先在测试环境验证迁移、API 和后台任务。
 
-应用连接参数：
+## 监控
 
-- `PG_POOL_MAX`：单进程连接池上限；
-- `PG_IDLE_TIMEOUT_MS`：空闲连接回收时间；
-- `PG_CONNECTION_TIMEOUT_MS`：获取连接超时；
-- `PG_STATEMENT_TIMEOUT_MS`：单条语句超时；
-- `PG_SCHEMA`：可选的隔离 schema 名称。
+关注连接数、慢查询、锁等待、磁盘空间和备份状态。可使用 `pg_stat_activity` 查看当前活动与等待情况，按需启用 `pg_stat_statements` 汇总查询开销。性能评估入口见 [性能说明](../performance.md)。
 
-## 慢查询与锁等待
-
-将 `log_min_duration_statement` 设置为与 `SLOW_QUERY_THRESHOLD_MS`
-一致或略高，默认应用阈值为 250ms。日志只记录 `queryName`、耗时和状态，
-不记录 SQL 文本、绑定参数、密码、token 或连接 URL。使用
-`pg_stat_activity` 观察 `wait_event_type = 'Lock'`，并按发布门槛持续检查
-锁等待 P95 是否低于 50ms。
-
-需要查询性能统计时启用 `pg_stat_statements`：
-
-```sql
--- postgresql.conf
-shared_preload_libraries = 'pg_stat_statements'
-pg_stat_statements.track = all
-log_min_duration_statement = 250
-
--- 每个业务数据库执行一次
-CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-```
-
-常用检查：
-
-```sql
-SELECT queryid, calls, total_exec_time, mean_exec_time,
-       rows, shared_blks_hit, shared_blks_read
-FROM pg_stat_statements
-ORDER BY total_exec_time DESC
-LIMIT 20;
-
-SELECT pid, wait_event_type, wait_event, state, query_start
-FROM pg_stat_activity
-WHERE wait_event_type IS NOT NULL;
-```
+采集诊断信息时删除连接凭据、查询参数中的敏感数据及个人信息。
 
 ## 初始化与备份
 
-首次安装对空数据库执行 `npm run db:migrate`，命令按文件名顺序自动执行
-全部数据库脚本并记录状态，然后启动 API 和 worker，无需逐个执行脚本。
-已有数据库升级时，先停止 API 和 worker，执行迁移后再启动对应版本的服务。
-七维标签迁移会重建目录标签投影，需要独占相关表；约 10 秒内无法取得锁时会回滚并提示暂停服务后重试，不能与旧版应用混跑。
-生产使用定期 `pg_dump` 或云数据库备份，并至少演练一次恢复到隔离实例。
+初始化和升级统一运行 `npm run db:migrate`，无需逐个执行迁移文件。升级前备份数据库、停止相关服务；迁移完成后启动同一版本的 API 和 worker。具体流程见 [开发与部署](../../WORKFLOW.md)。
+
+使用定期 `pg_dump` 或托管数据库备份，并在隔离实例上演练恢复。迁移失败时先检查原因及数据库状态，不要在业务库中手工删除迁移记录或反复执行不明脚本。

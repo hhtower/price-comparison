@@ -1,63 +1,44 @@
-# 开发与部署流程
+# 开发与部署
 
 ## 本地开发
 
-按 [README](README.md)安装依赖、配置 PostgreSQL/Redis 并初始化数据库。`npm run dev`统一启动 API 和前端；AI worker 是否启动由环境开关及模型配置决定。不要将实际密钥写入源码、测试或提交记录。
+按 [README](README.md)安装依赖、配置数据库与 Redis，并执行 `npm run db:migrate`。配置项见 [.env.example](.env.example)，不要将密钥或业务数据提交到仓库。
 
-首次安装时，对新建的空数据库执行一次 `npm run db:migrate`，命令自动按顺序建立完整数据库结构并记录执行状态，无需手动选择或逐个执行脚本。API、crawler 和各 worker 共用该数据库，初始化完成后再启动进程；各进程需使用一致的配置及代码版本。
+`npm run dev` 启动 API、前端和目录 worker，并按配置启动已启用的 AI 与官方参考价 worker。采集商品需另行运行 `npm run worker:crawler`。修改 `.env` 后重启进程。
 
-可选能力按 [.env.example](.env.example)配置，默认不启用模型调用。标准化使用 `AI_STANDARDIZATION_ENABLED`，导购使用 `ASSISTANT_ENABLED` 和 `ASSISTANT_MODEL`，共用现有服务商和代理；导购独立执行，不占用共享 `AI_CONCURRENCY`，不设模型并发上限。`npm run dev`会启动已启用能力所需的 worker；单独调试导购可运行 `npm run worker:assistant`。
+## 可选能力
 
-先完成商品标准化，再处理特性和标签。特性仅适用于 AI 会员报价；“未分类”仅展示当前特性任务处理失败且没有有效分类的报价，尚未处理、排队中和处理中的报价不纳入。
+AI 功能默认关闭，启用后会调用配置的模型服务并可能产生费用，也会处理已有的排队任务。
 
-标准商品归类只匹配已准入目录，归类和复核均不能创建标准。未匹配结果携带原文证据进入现有“待处理”；复核确认未匹配后解除旧自动归属，保留原始商品、报价和审计记录。持续人工锁定及当前证据版本的人工决定仍受保护。
-
-模型中转站的 API 额度、余额、请求套餐和号池接口继续按现有高置信规则在调用模型前排除，不进入待处理或重试池；排除记录随商品证据版本失效，不删除原商品、报价或人工决定。
-
-售后标签仅用于 AI 会员订阅商品，分为订阅保障和使用保障；未识别到明确保障时不展示。标签不是无条件承诺，具体限制须核对商家说明。
-
-标签任务仅写入本轮通过的结果，部分成功时可在后台查看失败项；整轮失败不覆盖已有标签，完整的空结果会清空标签。标题和正文的文案巡检可在后台独立创建和查看。
-
-在后台“商品管理 → 标准商品”中修改“浏览排序”可调整前台默认展示顺序，数字越小越靠前。
-
-MCP 服务的账号申请、邮件配置与客户端接入见 [MCP 报价服务](docs/mcp.md)，无需额外 worker。
-
-## 版本迭代
-
-版本采用 `年.月.当月发布序号`，月份和序号不补零，每月序号从 1 开始。每个版本迭代开始前，先统一更新根项目、各工作区包及锁文件中的版本号，后续功能开发沿用该迭代版本。
+- 商品标准化：配置模型服务并启用 `AI_STANDARDIZATION_ENABLED`。启用前准备已审核的标准商品目录；已有数据不会自动完成目录审核。
+- AI 导购：配置模型服务、`ASSISTANT_MODEL`，并启用 `ASSISTANT_ENABLED`。单独调试可运行 `npm run worker:assistant`。
+- Skill / MCP：由 API 提供，无需额外 worker，接入与邮件配置见 [Skill](docs/skill.md)和 [MCP](docs/mcp.md)。
 
 ## 验证
 
-运行 `npm run typecheck`、`npm run build`及受影响测试。`npm test`包含 Node 测试与 Vitest 前端测试；集成测试仅使用专用的 `TEST_DATABASE_URL`、`TEST_REDIS_URL`，或测试自动创建的 Docker 临时容器，不回退使用部署连接。未提供测试连接时，部分测试会跳过或提示缺少配置；使用临时容器的测试需要 Docker。
+代码修改后运行受影响测试、`npm run typecheck` 和 `npm run build`；仅文档修改时核对内容与链接即可。`npm test` 包含后端和前端测试。
 
-LLM 开发约束见 [AGENTS.md](AGENTS.md#llm-调用不变量)。相关测试使用 mock 或免费本地模型；真实模型效果需单独评测，付费调用须另行授权。导购资料的更新要求和推荐边界见 [导购能力资料](docs/assistant-capabilities.md)。
+数据库与 Redis 集成测试只使用专用的 `TEST_DATABASE_URL`、`TEST_REDIS_URL` 或测试创建的临时容器，不使用业务连接。缺少测试服务时，部分测试会跳过或报错；容器测试需要 Docker。
 
-## 生产部署
+LLM 测试使用 mock 或免费本地模型，不调用付费模型。开发约束见 [AGENTS.md](AGENTS.md)，贡献要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-目录评分、常用汇总与覆盖统计由 `worker:catalog` 在数据变化后更新；开发启动及 Compose 已包含该进程。
-首次升级时后台补齐已有数据，未准备好的汇总暂不展示；查询不等待或触发补算。
+## 部署与升级
 
-服务器使用本仓库的源码与目录结构。npm 部署从项目根目录安装依赖并重新构建；Docker 部署从项目根目录构建镜像，容器内运行编译产物。
+部署前配置 `.env`，确认数据库和 Redis 可访问，替换示例管理密码，并设置站点 HTTPS 地址。仅在可信反向代理覆盖转发头且 API 无法被绕过时启用 `TRUST_PROXY`。
 
-更新部署前备份业务数据库，停止相关进程后清除旧 `dist/`，再执行 `npm ci`、`npm run db:migrate` 和 `npm run build`，完成后启动 API 与所需 worker。Docker 部署重新构建镜像并重建容器。保留部署环境的 `.env`、业务数据库和持久化卷，不用源码覆盖它们。
+升级前备份数据库并验证可恢复性，停止相关服务后执行迁移、构建并启动新版本。保留部署环境的 `.env`、数据库和持久化卷。迁移可能使旧标签、巡检结果或任务失效，升级前应核对影响，必要时在后台重新处理。
 
-升级售后标签时，迁移会清理旧格式及冲突的保障标签，需要重新创建标签任务。保持 API 与 worker 版本一致，取消旧版本未完成任务后重新处理。
+npm 部署升级时先清理旧 `dist/`，从项目根目录执行 `npm ci`、`npm run db:migrate`、`npm run build`，再运行 `npm start`。目录和采集任务需分别运行 `node dist/server/workers/catalog.worker.js` 与 `node dist/server/workers/crawler.worker.js`；其他 worker 的启动入口见 [package.json](package.json)。
 
-升级布尔文案巡检需执行 `041_boolean_text_review_20261114`，刷新商铺评分投影。旧格式文案结果保留为历史记录，不再计入文字评分；可在后台创建文案巡检任务重新处理。
-
-切换只匹配标准商品流程前，执行 `045_standard_catalog_definition_20261119` 建立独立的目录定义字段，再独立完成准入目录、旧报价归属、隐藏身份和人工决定适用范围核对。只有填写已审核目录定义且处于有效验证状态的标准可被归类引用；迁移不会将旧标准自动准入，也不改变前台展示。关闭旧任务及检查点后，按当前证据创建新任务，旧协议和旧任务不会继续执行。离线核对工具为 `apps/api/scripts/plan-standardization-migration.mjs`，只生成核对材料，不执行数据库迁移；目录清单不能直接作为展示白名单。切换期间不重算已有特性。
-
-`docker-compose.yml`提供 API 与独立 worker 的示例，数据库与 Redis 由部署者提供。先创建 `.env`，配置容器可访问的数据库地址、强管理密码、站点 HTTPS origin 及所需 worker 开关。设置反向代理时，应仅在代理覆盖转发头且 API 不可被绕过时启用 `TRUST_PROXY`。
-
-编译部署按需运行 `dist/server/workers/` 下的对应入口，例如 `node dist/server/workers/assistant.worker.js`。Compose 中导购 worker 属于 `assistant` profile，启用时使用 `docker compose --profile assistant up -d --build`；环境开关和 worker 必须同时启用，入口状态不代表模型可用。
-
-构建镜像前确认构建上下文不含环境文件、备份或本地产物。配置好外部 PostgreSQL 和 Redis 后执行：
+使用外部数据库的 Docker 部署：
 
 ```bash
 docker compose run --rm --build migrate
 docker compose up -d --build
 ```
 
-初始化命令只建立表结构与必要的系统默认值，不导入业务数据。服务启动后，通过 `/health`及容器日志验证。停机时给 worker 留出 Compose 配置的退出宽限时间。备份、恢复、反向代理及监控由部署者按环境配置；数据库与 Redis 的建议见 [PostgreSQL](docs/deployment/postgresql.md) 和 [Redis](docs/deployment/redis.md)。
+启用导购时，启动命令改为 `docker compose --profile assistant up -d --build`；npm 部署另行运行 `node dist/server/workers/assistant.worker.js`。API 与所有启用的 worker 必须使用同一版本，升级时同步重建，不能只重启旧容器。
 
-停用导购时，先关闭 `ASSISTANT_ENABLED` 并重启 API，再停止对应 worker；保留数据库，不自动回滚迁移。停用期间可运行 `npm run assistant:cleanup` 清理过期会话。故障排查结合任务状态与 worker 日志，不记录会话凭证、对话正文或密钥。
+启动后检查 `/health`、容器日志和所需任务是否正常处理。停用导购时，先关闭 `ASSISTANT_ENABLED` 并重启 API，再停止导购 worker。排查时不要记录密钥、会话凭证或对话正文。
+
+数据库与缓存的配置、监控和备份建议见 [PostgreSQL](docs/deployment/postgresql.md)、[Redis](docs/deployment/redis.md)。报价展示和性能限制见 [性能说明](docs/performance.md)。

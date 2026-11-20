@@ -48,7 +48,7 @@ The same subscription, multiple offers. Filter by platform, delivery method, acc
 
 ### Build and run with npm
 
-Use Node.js 26 LTS, PostgreSQL 16+, and Redis 7+. Create a PostgreSQL database and start Redis, then run from the repository root:
+Use a Node.js version supported by the `engines` field in [package.json](package.json), PostgreSQL 16+, and Redis 7+. Create a PostgreSQL database and start Redis, then run from the repository root:
 
 ```bash
 git clone https://github.com/hhtower/price-comparison.git
@@ -64,9 +64,7 @@ npm start
 
 In PowerShell, copy the configuration with `Copy-Item .env.example .env`. Replace the example admin password and set `PUBLIC_SITE_URL` to your site's HTTPS origin. Open `http://localhost:3000`; the admin dashboard is at `/admin`. A fresh installation has no business data: add and approve shops in the dashboard before crawling products.
 
-For development, run `npm run dev` and open the frontend address printed in the terminal. See [.env.example](.env.example) for settings and [WORKFLOW.md](WORKFLOW.md) for worker and deployment details. AI is disabled by default; enabling it sends product evidence to your configured provider and may incur charges.
-
-The AI shopping assistant requires a separate feature switch and worker; see the [deployment workflow](WORKFLOW.md) for setup. When enabled, it sends shopping conversations and candidate product evidence to the configured model provider.
+For development, run `npm run dev` and open the frontend address printed in the terminal. See [.env.example](.env.example) for settings and [WORKFLOW.md](WORKFLOW.md) for worker and assistant setup. AI is disabled by default; enabling it sends relevant product data or shopping conversations to your configured provider and may incur charges.
 
 ### Install with Docker
 
