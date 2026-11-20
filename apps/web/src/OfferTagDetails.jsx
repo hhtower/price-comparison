@@ -10,6 +10,7 @@ export function offerConditions(offer, formatValue = displayPurchaseTagValue) {
   for (const raw of offer.tags || []) {
     for (const tag of normalizePurchaseTag(raw)) {
       if (!tag || !PURCHASE_GUIDE_FIELDS[tag.name]) continue;
+      if (tag.name === 'subscription_warranty' && ['account', 'top_up'].includes(offer.membershipKind)) continue;
       const value = formatValue(tag);
       facts.set(`${tag.name}:${value}`, { ...tag, value, ...PURCHASE_GUIDE_FIELDS[tag.name] });
     }
@@ -20,8 +21,8 @@ export function offerConditions(offer, formatValue = displayPurchaseTagValue) {
 
 const OFFER_SUMMARY_PRIORITY = { subscription_warranty: -4, usage_warranty: -3, subscription_override: -2, settlement_quantity: -1 };
 
-export function OfferFacts({ tags, settlementQuantity, formatValue = displayPurchaseTagValue, limit = 2, onOpenDetails }) {
-  const facts = offerConditions({ tags, settlementQuantity }, formatValue);
+export function OfferFacts({ tags, settlementQuantity, membershipKind, formatValue = displayPurchaseTagValue, limit = 2, onOpenDetails }) {
+  const facts = offerConditions({ tags, settlementQuantity, membershipKind }, formatValue);
   const values = facts.sort((a, b) => (OFFER_SUMMARY_PRIORITY[a.name] ?? a.summaryPriority)
     - (OFFER_SUMMARY_PRIORITY[b.name] ?? b.summaryPriority)).map(fact => ({
     key: `${fact.name}:${fact.value}`, name: fact.name, text: displayPurchaseTagText(fact, fact.value), group: fact.displayGroup, warranty: ['subscription_warranty', 'usage_warranty'].includes(fact.name),

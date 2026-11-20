@@ -1,4 +1,4 @@
-import OfferTagDetails, { OfferFacts } from './OfferTagDetails.jsx';
+import OfferTagDetails, { OfferFacts, offerConditions } from './OfferTagDetails.jsx';
 import ModalDialog from './components/ModalDialog.jsx';
 import PurchaseGuide, { PurchaseGuideLink } from './PurchaseGuide.jsx';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -42,7 +42,7 @@ const membershipFilterLabel = kind => kind === 'rental' ? '租号（共享）' :
 function MembershipHint({ kind }) {
   if (kind !== 'account' && kind !== 'top_up') return null;
   return <>
-    <span className="membership-note">商家质保订阅</span>
+    <span className="membership-note">商家保订阅</span>
     <span aria-hidden="true"> · </span>
   </>;
 }
@@ -395,9 +395,8 @@ function trapDialogFocus(event) {
 
 const COMPARISON_FACTS = [...TAG_GROUPS.map(group => [group.id, group.label]), ['settlement_quantity', '起购数量']];
 function offerFact(offer, name) {
-  if (name === 'settlement_quantity') return offer.settlementQuantity > 1 ? `${offer.settlementQuantity}件起购` : '';
-  const facts = uniqueTags([offer.tags]).filter(tag => tag.name === name || name === 'access_channel' && tag.name === 'supported_client');
-  return [...new Set(facts.map(displayPurchaseValue))].join(' · ');
+  const facts = offerConditions(offer, displayPurchaseValue).filter(tag => tag.name === name || name === 'access_channel' && tag.name === 'supported_client');
+  return [...new Set(facts.map(fact => fact.value))].join(' · ');
 }
 
 function offerIdentity(offer, index) {
@@ -465,7 +464,7 @@ function OfferCard({ offer, item, rank, onOfferDetails, comparison, onCompare, b
           <span className="offer-updated">{formatRelativeTime(offer.capturedAt)}</span>
         </span>
         <strong className="offer-name" title={offer.name || item.name}>{offer.name || item.name}</strong>
-        <OfferFacts formatValue={displayPurchaseValue} tags={offer.tags} settlementQuantity={offer.settlementQuantity} limit={factLimit} onOpenDetails={() => onOfferDetails(offer, item)} />
+        <OfferFacts formatValue={displayPurchaseValue} tags={offer.tags} settlementQuantity={offer.settlementQuantity} membershipKind={offer.membershipKind} limit={factLimit} onOpenDetails={() => onOfferDetails(offer, item)} />
         <span className="offer-footer">
           <OfferPrice offer={offer} className={`tile-price ${best && availableOffer(offer) ? 'best' : ''}`} />
           <span className="offer-actions">{onCompare ? <label><input type="checkbox" aria-label={`对比报价 ${offer.name || item.name}`} checked={Boolean(checked)} disabled={!checked && comparison.length >= 3} onChange={() => onCompare(offer, item)} />对比</label> : null}<button type="button" className="offer-details-button" onClick={() => onOfferDetails(offer, item)}>商品说明</button>{offer.productUrl ? <a href={offer.productUrl} target="_blank" rel="noreferrer" onClick={() => trackUsage('outbound')}>去商家</a> : null}</span>

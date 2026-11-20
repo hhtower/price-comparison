@@ -87,7 +87,7 @@ test('independent coverage labels show only current fields without a retired ter
   ];
   const open = vi.fn();
   const view = render(<OfferFacts tags={tags} onOpenDetails={open} />);
-  expect([...view.container.querySelectorAll('span')].map(item => item.textContent)).toEqual(['质保 12 天', '首登']);
+  expect([...view.container.querySelectorAll('span')].map(item => item.textContent)).toEqual(['订阅质保12天', '首登']);
   expect(screen.queryByRole('button', { name: '保障条款' })).not.toBeInTheDocument();
   expect(open).not.toHaveBeenCalled();
   view.unmount();
@@ -103,6 +103,52 @@ test('malformed warranty values leave an empty summary and preserve the original
   render(<OfferTagDetails offer={{ ...offer, tags, settlementQuantity: 1 }} item={{}} onClose={() => {}} />);
   expect(screen.getByRole('dialog')).toHaveTextContent('10个一包；禁止改密');
   expect(screen.getByText('暂无商品条件信息')).toBeInTheDocument();
+});
+
+test('equal warranty durations remain distinct in badges and details', () => {
+  const tags = [
+    { name: 'subscription_warranty', value: '质保 30 天' },
+    { name: 'usage_warranty', value: '质保 30 天' },
+  ];
+  const view = render(<OfferFacts tags={tags} />);
+  expect([...screen.getByLabelText('商品标签').querySelectorAll('span')].map(tag => tag.textContent))
+    .toEqual(['订阅质保30天', '使用质保30天']);
+  view.unmount();
+  render(<OfferTagDetails offer={{ ...offer, tags }} item={{}} onClose={() => {}} />);
+  expect(within(screen.getByRole('dialog')).getByText('订阅质保30天')).toBeVisible();
+  expect(within(screen.getByRole('dialog')).getByText('使用质保30天')).toBeVisible();
+});
+
+test.each(['account', 'top_up'])('%s omits subscription warranty and preserves usage coverage', membershipKind => {
+  const tags = [
+    { name: 'subscription_warranty', value: '质保 30 天' },
+    { name: 'usage_warranty', value: '质保 7 天' },
+    { name: 'region', value: 'us' },
+  ];
+  const view = render(<OfferFacts tags={tags} membershipKind={membershipKind} />);
+  expect([...screen.getByLabelText('商品标签').querySelectorAll('span')].map(tag => tag.textContent))
+    .toEqual(['使用质保7天', '美区']);
+  expect(screen.queryByRole('button', { name: /查看全部商品条件/ })).not.toBeInTheDocument();
+  view.unmount();
+  render(<OfferTagDetails offer={{ ...offer, tags, membershipKind }} item={{}} onClose={() => {}} />);
+  expect(screen.queryByRole('heading', { name: '订阅保障' })).not.toBeInTheDocument();
+  expect(within(screen.getByRole('dialog')).getByText('使用质保7天')).toBeVisible();
+  expect(tags).toHaveLength(3);
+});
+
+test.each(['account', 'top_up'])('%s never turns subscription warranty into usage warranty', membershipKind => {
+  const tags = [{ name: 'subscription_warranty', value: '质保（期限未注明）' }];
+  const view = render(<OfferFacts tags={tags} membershipKind={membershipKind} />);
+  expect(screen.queryByLabelText('商品标签')).not.toBeInTheDocument();
+  view.rerender(<OfferFacts tags={[...tags, { name: 'usage_warranty', value: '首登' }]} membershipKind={membershipKind} />);
+  expect(screen.getByLabelText('商品标签')).toHaveTextContent(/^首登$/);
+});
+
+test.each(['rental', 'short_term', null, undefined])('%s retains both warranties without inferring kind from the name', membershipKind => {
+  const facts = offerConditions({ name: '成品号 代充', membershipKind, tags: [
+    { name: 'subscription_warranty', value: '质保 30 天' }, { name: 'usage_warranty', value: '质保 7 天' },
+  ] });
+  expect(facts.map(fact => fact.name)).toEqual(['subscription_warranty', 'usage_warranty']);
 });
 
 test.each([30, 90, 365, 360, 31, 0.5, { kind: 'range', min: 30, max: 90 }, { kind: 'min', days: 30 }, { kind: 'permanent' }])('typed duration %j renders safely in details', value => {

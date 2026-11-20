@@ -609,13 +609,13 @@ describe('PublicPage', () => {
     await user.click(screen.getByRole('button', { name: 'ChatGPT Plus' }));
     const facts = within(screen.getByLabelText('商品标签'));
     expect(facts.getByText('已接码')).toBeInTheDocument();
-    expect(facts.getByText('质保 12 天')).toBeInTheDocument();
+    expect(facts.getByText('订阅质保12天')).toBeInTheDocument();
     expect(facts.queryByText('网页')).not.toBeInTheDocument();
     expect(facts.queryByText(/有质保|未注明/)).not.toBeInTheDocument();
     await user.click(facts.getByRole('button', { name: '查看全部商品条件，另有 1 项' }));
     const details = screen.getByRole('dialog', { name: 'Plus 报价' });
     expect(within(details).getByText('网页')).toBeVisible();
-    expect(within(details).getByText('质保 12 天')).toBeVisible();
+    expect(within(details).getByText('订阅质保12天')).toBeVisible();
     await user.click(within(details).getByRole('button', { name: '确认', exact: true }));
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('checkbox', { name: /已接码/ }));

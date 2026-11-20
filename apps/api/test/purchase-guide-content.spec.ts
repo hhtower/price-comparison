@@ -25,7 +25,7 @@ test('consumer descriptions distinguish product region from network advice and e
   assert.equal(PURCHASE_GUIDE_FIELDS.warranty_terms, undefined);
   for (const name of ['subscription_warranty', 'usage_warranty']) {
     assert.equal(PURCHASE_GUIDE_FIELDS[name].appliesTo, 'AI 会员商品');
-    assert.match(PURCHASE_GUIDE_FIELDS[name].explanation, /质保 X 小时.*质保 X 天.*质保（期限未注明）/u);
+    assert.match(PURCHASE_GUIDE_FIELDS[name].explanation, /质保X小时.*质保X天.*期限未注明/u);
     assert.match(PURCHASE_GUIDE_FIELDS[name].explanation, /未明确保障时省略/u);
     assert.match(PURCHASE_GUIDE_FIELDS[name].explanation, /无条件/u);
     assert.match(PURCHASE_GUIDE_FIELDS[name].explanation, /商家说明/u);

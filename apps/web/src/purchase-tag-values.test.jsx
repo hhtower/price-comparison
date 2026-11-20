@@ -30,14 +30,24 @@ test('keeps bulk meanings distinct and rejects retired warranty conditions', () 
   expect(displayPurchaseTagValue({ name: 'warranty_terms', value })).toBe('');
 });
 
-test.each(['质保 2.5 小时', '质保 12 天', '首登', '质保（期限未注明）'])('displays canonical warranty %s verbatim', value => {
-  expect(displayPurchaseTagValue({ name: 'usage_warranty', value })).toBe(value);
-  expect(displayPurchaseTagText({ name: 'usage_warranty', value })).toBe(value);
+test.each([
+  ['subscription_warranty', '质保 12 天', '订阅质保12天'],
+  ['subscription_warranty', '质保 2.5 小时', '订阅质保2.5小时'],
+  ['subscription_warranty', '质保（期限未注明）', '订阅质保'],
+  ['usage_warranty', '质保 12 天', '使用质保12天'],
+  ['usage_warranty', '质保 2.5 小时', '使用质保2.5小时'],
+  ['usage_warranty', '首登', '首登'],
+  ['usage_warranty', '质保（期限未注明）', '使用质保'],
+])('identifies the coverage of %s:%s without changing its value', (name, value, text) => {
+  expect(displayPurchaseTagValue({ name, value })).toBe(value);
+  expect(displayPurchaseTagText({ name, value })).toBe(text);
+  expect(displayPurchaseTagText({ name, value }, value)).toBe(text);
 });
 
 test.each([
   ['duration', '1 month'], ['warranty_days', '30'], ['delivery', 'account'],
   ['warranty', ''], ['warranty', 'x'.repeat(251)], ['subscription_override', '有'],
+  ['subscription_warranty', ''], ['usage_warranty', '无售后'], ['subscription_warranty', '首登'],
 ])('does not display obsolete or invalid %s:%s', (name, value) => {
   expect(displayPurchaseTagText({ name, value })).toBe('');
 });

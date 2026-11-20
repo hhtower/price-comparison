@@ -13,7 +13,7 @@ const product = { id: '42', name: 'Codex 手机接码', platform: 'openai', kind
 const quote = { productId: '9', shop: '示例店', name: '接码服务', spec: '月付 · 已接码 · 质保30天', price: '12.50', listedPrice: '9.00', currency: 'CNY',
   priceStatus: 'verified', priceVerifiedAt: new Date().toISOString(), priceExpiresAt: new Date(Date.now() + 3600000).toISOString(),
   inventoryExpiresAt: new Date(Date.now() + 3600000).toISOString(), paymentMethod: '支付宝', productUrl: 'https://example.com/buy', tags: [], capturedAt: new Date().toISOString() };
-function mockApi({ status = 200, merged = false, expires = false, inventoryExpiresAt = quote.inventoryExpiresAt, priceStatus = quote.priceStatus, tags = [], settlementQuantity, paymentMethod = quote.paymentMethod, price = quote.price, listedPrice = quote.listedPrice, facets = [{ name: 'bulk_purchase', value: 'supported' }], products = [product, { id: '43', name: 'Claude Max 20x', platform: 'anthropic', kind: '账号与订阅' }] } = {}) {
+function mockApi({ status = 200, merged = false, expires = false, inventoryExpiresAt = quote.inventoryExpiresAt, priceStatus = quote.priceStatus, tags = [], membershipKind, settlementQuantity, paymentMethod = quote.paymentMethod, price = quote.price, listedPrice = quote.listedPrice, facets = [{ name: 'bulk_purchase', value: 'supported' }], products = [product, { id: '43', name: 'Claude Max 20x', platform: 'anthropic', kind: '账号与订阅' }] } = {}) {
   let reads = 0;
   const calls = [];
   vi.stubGlobal('fetch', vi.fn(async input => {
@@ -25,7 +25,7 @@ function mockApi({ status = 200, merged = false, expires = false, inventoryExpir
     if (url.pathname === '/api/catalog') {
       reads++;
       if (url.searchParams.has('detailKind') && url.searchParams.get('standardProductId') !== product.id) return Response.json({ error: 'standardProductId required for detail' }, { status: 400 });
-      const offer = expires ? { ...quote, inventoryExpiresAt, priceExpiresAt: new Date(Date.now() + (reads === 1 ? 200 : -1)).toISOString() } : { ...quote, inventoryExpiresAt, priceStatus, tags, settlementQuantity, price, listedPrice, paymentMethod };
+      const offer = expires ? { ...quote, inventoryExpiresAt, priceExpiresAt: new Date(Date.now() + (reads === 1 ? 200 : -1)).toISOString() } : { ...quote, inventoryExpiresAt, priceStatus, tags, membershipKind, settlementQuantity, price, listedPrice, paymentMethod };
       return Response.json({ nextExpiryAt: expires && reads === 1 ? offer.priceExpiresAt : offer.inventoryExpiresAt, total: 1, platformFacets: ['openai', 'anthropic'], items: [{ ...product, offers: [offer, { ...quote, inventoryExpiresAt, productId: '10', price: '18.00', listedPrice: '18.00', priceStatus: 'estimated', paymentMethod: '支付价（预估：售价）' }], minPrice: '12.50', productCount: 25, shopCount: 2,
         ...(url.searchParams.has('detailKind') ? { detail: { kind: url.searchParams.get('detailKind'), page: Number(url.searchParams.get('detailPage')),
           pageSize: Number(url.searchParams.get('detailPageSize')), entries: [offer], total: 25 } } : {}) }] });
@@ -252,7 +252,7 @@ test('all eight dimensions remain available with separate warranty fields', asyn
     { name: 'usage_warranty', value: '首登' }] });
   await renderWithOffers(); await screen.findByRole('button', { name: product.name });
   const facts = screen.getByLabelText('商品标签');
-  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['质保 12 天', '首登']);
+  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['订阅质保12天', '首登']);
   fireEvent.click(within(facts).getByRole('button', { name: '查看全部商品条件，另有 7 项' }));
   const dialog = screen.getByRole('dialog', { name: quote.name });
   expect(dialog.querySelectorAll('.offer-tag-details-groups section')).toHaveLength(8);
@@ -277,9 +277,31 @@ test('detail badges distinguish use duration from a complete warranty promise', 
   window.history.replaceState({}, '', '/products/42');
   mockApi({ tags: [{ name: 'duration', value: 30 }, { name: 'subscription_warranty', value: '质保 2 天' }] });
   await renderWithOffers(); await screen.findByText('¥12.5');
-  expect(screen.getByLabelText('商品标签')).toHaveTextContent('质保 2 天1个月');
+  expect(screen.getByLabelText('商品标签')).toHaveTextContent('订阅质保2天1个月');
   fireEvent.click(screen.getByRole('button', { name: '商品说明', exact: true }));
   expect(screen.getByRole('dialog')).toHaveTextContent('1个月');
+});
+
+test.each([
+  ['/', 'account'], ['/', 'top_up'], ['/products/42', 'account'], ['/products/42', 'top_up'],
+])('%s hides implicit subscription coverage for %s across badges, details and comparison', async (path, membershipKind) => {
+  window.history.replaceState({}, '', path);
+  mockApi({ membershipKind, tags: [
+    { name: 'subscription_warranty', value: '质保 30 天' }, { name: 'usage_warranty', value: '质保 7 天' },
+  ] });
+  await renderWithOffers();
+  const facts = await screen.findByLabelText('商品标签');
+  expect(facts).toHaveTextContent(/^使用质保7天$/);
+  fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
+  const details = screen.getByRole('dialog', { name: quote.name });
+  expect(within(details).getByText('使用质保7天')).toBeVisible();
+  expect(within(details).queryByRole('heading', { name: '订阅保障' })).not.toBeInTheDocument();
+  fireEvent.click(within(details).getByRole('button', { name: '关闭商品说明' }));
+  fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
+  fireEvent.click(screen.getAllByRole('button', { name: '对比（1）' })[0]);
+  const comparison = within(screen.getByRole('dialog', { name: '报价对比' }));
+  expect(comparison.queryByRole('rowheader', { name: '订阅保障' })).not.toBeInTheDocument();
+  expect(comparison.getByRole('rowheader', { name: '使用保障' }).closest('tr')).toHaveTextContent('质保 7 天');
 });
 
 test.each(['/', '/products/42'])('shows both dedicated and shared access explicitly on %s', async path => {
@@ -307,7 +329,7 @@ test.each([
   ] }); await renderWithOffers();
   await screen.findByRole('button', { name: product.name });
   expect([...screen.getByLabelText('商品标签').querySelectorAll('span')].map(tag => tag.textContent))
-    .toEqual(['质保 12 天', '已接码']);
+    .toEqual(['订阅质保12天', '已接码']);
   expect(within(screen.getByLabelText('商品标签')).getByRole('button', { name: `查看全部商品条件，另有 ${label ? 3 : 2} 项` })).toHaveTextContent(`+${label ? 3 : 2}`);
   fireEvent.click(screen.getAllByRole('button', { name: '商品说明', exact: true })[0]);
   const details = screen.getByRole('dialog', { name: quote.name });
@@ -330,12 +352,12 @@ test('shows the same region in detail badges and quote comparison', async () => 
 
 test.each([
   [[], null, '订阅保障'], [[{ name: 'subscription_warranty', value: { days: 30 } }], null, '订阅保障'],
-  [[{ name: 'usage_warranty', value: '首登' }], '首登', '使用保障'],
-  [[{ name: 'usage_warranty', value: '质保 2.5 小时' }], '质保 2.5 小时', '使用保障'],
-  [[{ name: 'subscription_warranty', value: '质保 12 天' }], '质保 12 天', '订阅保障'],
-])('coverage %j keeps its own scope in cards and comparison', async (tags, warranty, label) => {
+  [[{ name: 'usage_warranty', value: '首登' }], '首登', '使用保障', '首登'],
+  [[{ name: 'usage_warranty', value: '质保 2.5 小时' }], '质保 2.5 小时', '使用保障', '使用质保2.5小时'],
+  [[{ name: 'subscription_warranty', value: '质保 12 天' }], '质保 12 天', '订阅保障', '订阅质保12天'],
+])('coverage %j keeps its own scope in cards and comparison', async (tags, warranty, label, badge) => {
   mockApi({ tags }); await renderWithOffers(); await screen.findByRole('button', { name: product.name });
-  if (warranty) expect(screen.getByLabelText('商品标签')).toHaveTextContent(warranty);
+  if (warranty) expect(screen.getByLabelText('商品标签')).toHaveTextContent(badge);
   else expect(screen.queryByLabelText('商品标签')).not.toBeInTheDocument();
   fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[0]);
   fireEvent.click(screen.getAllByRole('checkbox', { name: /对比报价/ })[1]);
@@ -628,7 +650,7 @@ test.each(['/', '/products/42'])('opens SKU details without requests and keeps n
   const before = calls.length; fireEvent.click(trigger);
   let details = screen.getByRole('dialog', { name: quote.name });
   expect(details).toHaveTextContent(quote.spec);
-  expect(details).toHaveTextContent('质保 12 天'); expect(details).toHaveTextContent('1个月');
+  expect(details).toHaveTextContent('订阅质保12天'); expect(details).toHaveTextContent('1个月');
   expect(calls).toHaveLength(before);
   fireEvent.click(within(details).getByRole('button', { name: '举报此报价' }));
   const report = screen.getByRole('dialog', { name: '举报此报价' });
@@ -651,7 +673,7 @@ test('aggregate details reuse the selected SKU and closing its explanation prese
   const parent = await screen.findByRole('dialog', { name: /报价/ });
   const trigger = (await within(parent).findAllByRole('button', { name: '商品说明', exact: true }))[0]; trigger.focus(); fireEvent.click(trigger);
   const details = screen.getByRole('dialog', { name: quote.name });
-  expect(details).toHaveTextContent('质保 12 天'); expect(details).toHaveTextContent(quote.spec);
+  expect(details).toHaveTextContent('订阅质保12天'); expect(details).toHaveTextContent(quote.spec);
   fireEvent.keyDown(details, { key: 'Escape' });
   expect(parent).toBeInTheDocument(); expect(trigger).toHaveFocus();
 });
@@ -660,9 +682,9 @@ test('switching merchant products never carries conditions from the previous SKU
   mockApi({ tags: [{ name: 'subscription_warranty', value: '质保 12 天' }] }); await renderWithOffers();
   await screen.findByRole('button', { name: product.name });
   const triggers = screen.getAllByRole('button', { name: '商品说明', exact: true });
-  fireEvent.click(triggers[0]); expect(screen.getByRole('dialog', { name: quote.name })).toHaveTextContent('质保 12 天');
+  fireEvent.click(triggers[0]); expect(screen.getByRole('dialog', { name: quote.name })).toHaveTextContent('订阅质保12天');
   fireEvent.click(screen.getByRole('button', { name: '关闭商品说明' })); fireEvent.click(triggers[1]);
-  expect(screen.getByRole('dialog', { name: quote.name })).not.toHaveTextContent('质保 12 天');
+  expect(screen.getByRole('dialog', { name: quote.name })).not.toHaveTextContent('订阅质保12天');
 });
 
 test.each(['/', '/products/42'])('prioritizes short coverage and actual minimum purchase on %s', async path => {
@@ -670,7 +692,7 @@ test.each(['/', '/products/42'])('prioritizes short coverage and actual minimum 
   mockApi({ settlementQuantity: 5, tags: [{ name: 'subscription_warranty', value: '质保 12 天' }, { name: 'bulk_purchase', value: 'required' }, { name: 'sms_verification', value: 'unverified' }] });
   await renderWithOffers(); await screen.findAllByText('¥12.5');
   const facts = screen.getByLabelText('商品标签');
-  expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual(['质保 12 天', '5件起购']);
+  expect([...facts.querySelectorAll('span')].map(element => element.textContent)).toEqual(['订阅质保12天', '5件起购']);
   fireEvent.click(within(facts).getByRole('button', { name: '查看全部商品条件，另有 2 项' }));
   expect(screen.getByRole('dialog')).toHaveTextContent('需批量购买');
 });
@@ -752,12 +774,12 @@ test.each(['/', '/products/42'])('resizing switches the one/two-condition budget
   ] });
   await renderWithOffers();
   const facts = await screen.findByRole('group', { name: '商品标签' });
-  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['质保 12 天']);
+  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['订阅质保12天']);
   fireEvent.click(within(facts).getByRole('button', { name: '查看全部商品条件，另有 3 项' }));
   const details = screen.getByRole('dialog', { name: quote.name });
-  for (const text of ['质保 12 天', '不可覆盖订阅', '未接码', '支持批量购买']) expect(details).toHaveTextContent(text);
+  for (const text of ['订阅质保12天', '不可覆盖订阅', '未接码', '支持批量购买']) expect(details).toHaveTextContent(text);
   fireEvent.click(within(details).getByRole('button', { name: '关闭商品说明' }));
   await act(async () => { media.matches = true; listeners.forEach(listener => listener({ matches: true })); });
-  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['质保 12 天', '不可覆盖订阅']);
+  expect([...facts.querySelectorAll('span')].map(tag => tag.textContent)).toEqual(['订阅质保12天', '不可覆盖订阅']);
   expect(within(facts).getByRole('button', { name: '查看全部商品条件，另有 2 项' })).toHaveTextContent('+2');
 });

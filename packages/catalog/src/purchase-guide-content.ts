@@ -19,8 +19,8 @@ const definitions: Array<[string, string, DisplayGroup, string, string]> = [
   ['supported_client', '支持工具', 'usage', '明确支持软件或工具的商品', '原文明确支持的工具名称；支持不能扩展为仅支持。'],
   ['subscription_override', '覆盖现有订阅', 'subscription', '订阅充值商品', '仅明确不能覆盖现有订阅时显示不可覆盖订阅，未说明或允许覆盖时省略。'],
   ['bulk_purchase', '批量购买', 'bulk', '明确批量销售的商品', '区分支持批量、多件起购和固定打包，不由库存或价格推断，不代替实际结算数量。'],
-  ['subscription_warranty', '订阅保障', 'subscription_warranty', 'AI 会员商品', '表示订阅权益的质保，显示为“质保 X 小时”“质保 X 天”或“质保（期限未注明）”。未明确保障时省略；不代表登录、封号或无条件赔付保障，具体条件请核对商家说明。'],
-  ['usage_warranty', '使用保障', 'usage_warranty', 'AI 会员商品', '表示账号或服务使用的质保，显示为“质保 X 小时”“质保 X 天”“首登”或“质保（期限未注明）”。首登仅指首次登录，未明确保障时省略；标签不是无条件承诺，具体条件请核对商家说明。'],
+  ['subscription_warranty', '订阅保障', 'subscription_warranty', 'AI 会员商品', '表示订阅权益的质保，显示为“订阅质保X小时”“订阅质保X天”；期限未注明时显示“订阅质保”，不据此推定天数。成品号、代充默认包含订阅保障，商品标签不再重复展示。未明确保障时省略；不代表登录、封号或无条件赔付保障，具体条件请核对商家说明。'],
+  ['usage_warranty', '使用保障', 'usage_warranty', 'AI 会员商品', '表示账号或服务使用的质保，显示为“使用质保X小时”“使用质保X天”或“首登”；期限未注明时显示“使用质保”，不据此推定天数。首登仅指首次登录，未明确保障时省略；标签不是无条件承诺，具体条件请核对商家说明。'],
 ];
 export const PURCHASE_GUIDE_FIELDS: Readonly<Record<string, PurchaseGuideField>> = Object.fromEntries(definitions.map(([name, label, displayGroup, appliesTo, explanation], index) => [name, {
   label, explanation, appliesTo, displayGroup, collectionGroup: PURCHASE_GUIDE_GROUPS.find(g => g.id === displayGroup)!.label,

@@ -7,6 +7,7 @@ import {
   ASSISTANT_LIMITS, emptyShoppingNeeds, isTurnTerminal, validateAssistantReply,
 } from '@price-comparison/catalog/assistant-contract';
 import { normalizePurchaseTag, purchaseTagLabel } from '@price-comparison/catalog/purchase-attributes';
+import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import { isFilterableProductTag } from '@price-comparison/catalog/product-tag-policy';
 import Brand from './Brand.jsx';
 import { assistantApi, ASSISTANT_SERVICE_ERROR } from './assistant-api.js';
@@ -137,8 +138,10 @@ function QuoteCard({ card, catalog }) {
   const representedNotes = new Set(facts.flatMap(fact => [fact.value, displayPurchaseTagText(fact, fact.value),
     `${fact.label}：${fact.value}`, `${fact.label}：${displayPurchaseTagText(fact, fact.value)}`]));
   for (const tag of offer.tags.flatMap(normalizePurchaseTag)) {
-    const fact = facts.find(fact => fact.name === tag.name);
+    const fact = PURCHASE_GUIDE_FIELDS[tag.name];
     if (!fact) continue;
+    representedNotes.add(purchaseTagLabel(tag));
+    representedNotes.add(displayPurchaseTagText(tag));
     representedNotes.add(`${fact.label}：${purchaseTagLabel(tag)}`);
   }
   representedNotes.add('报价、库存与完整售后条款请在商品详情核对。');

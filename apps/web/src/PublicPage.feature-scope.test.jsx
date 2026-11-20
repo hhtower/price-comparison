@@ -92,7 +92,7 @@ test.each(kinds.filter(kind => kind !== 'unclassified'))('%s cards, both dialogs
   const link = await screen.findByRole('button', { name: `ChatGPT GO · ${labels[group]}` });
   const card = link.closest('article');
   function checkHint(scope) {
-    const label = scope.queryByText('商家质保订阅');
+    const label = scope.queryByText('商家保订阅');
     if (!['account', 'top_up'].includes(kind)) {
       expect(label).not.toBeInTheDocument();
       return;

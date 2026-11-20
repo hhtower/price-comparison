@@ -349,7 +349,7 @@ test.each(['offers', 'shops'])('opening %s inherits list filters and restores th
   fireEvent.click(dialog.getByRole('button', { name: kind === 'shops' ? '关闭商铺详情' : '关闭报价详情' }));
   expect(screen.getByRole('textbox', { name: '搜索商品' })).toHaveValue('Plus 已接码');
   expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('美区');
-  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('质保 12 天');
+  expect(screen.getByLabelText('已选筛选条件')).toHaveTextContent('订阅质保12天');
   fireEvent.click(screen.getByRole('button', { name: trigger }));
   const reopened = within(screen.getByRole('dialog'));
   expect(await reopened.findByText(kind === 'shops' ? '匹配店' : 'Plus 匹配报价')).toBeInTheDocument();

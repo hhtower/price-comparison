@@ -367,7 +367,7 @@ test('each recommendation opens its exact merchant quote and returns focus on cl
     const dialog = screen.getByRole('dialog', { name: cards[index].offer.name });
     expect(dialog).toHaveTextContent(cards[index].offer.shop);
     expect(dialog).toHaveTextContent(`¥${cards[index].price}`);
-    expect(dialog).toHaveTextContent('质保 12 天');
+    expect(dialog).toHaveTextContent('订阅质保12天');
     expect(within(dialog).getByRole('link', { name: '前往商家核对报价' })).toHaveAttribute('href', cards[index].offer.productUrl);
     expect(within(dialog).queryByRole('button', { name: '举报此报价' })).not.toBeInTheDocument();
     fireEvent.keyDown(dialog, { key: 'Escape' });
@@ -395,10 +395,29 @@ test('quote cards preserve membership warranty and bulk conditions', async () =>
   expect(within(screen.getByRole('dialog')).getAllByText(warranty, { exact: false })).toHaveLength(1);
 });
 
-test.each(['质保 2.5 小时', '质保 12 天', '首登', '质保（期限未注明）'])('shows canonical warranty value: %s', async value => {
+test.each([
+  ['质保 2.5 小时', '使用质保2.5小时'], ['质保 12 天', '使用质保12天'],
+  ['首登', '首登'], ['质保（期限未注明）', '使用质保'],
+])('shows compact usage warranty: %s', async (value, text) => {
   await renderReferenceCards([], [{ ...referenceCard, offer: { ...referenceCard.offer, tags: [{ name: 'usage_warranty', value }] } }]);
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
-  expect(within(screen.getByRole('dialog')).getByText(value)).toBeVisible();
+  expect(within(screen.getByRole('dialog')).getByText(text)).toBeVisible();
+});
+
+test.each(['account', 'top_up'])('%s quote cards show usage coverage without repeating subscription tags', async membershipKind => {
+  await renderReferenceCards([], [{ ...referenceCard, reasons: ['订阅保障：质保 30 天'], offer: {
+    ...referenceCard.offer, membershipKind, tags: [
+      { name: 'subscription_warranty', value: '质保 30 天' }, { name: 'usage_warranty', value: '质保 7 天' },
+    ],
+  } }]);
+  const article = screen.getByRole('heading', { name: referenceCard.title }).closest('article');
+  fireEvent.click(within(article).getByText('购买须知'));
+  expect(article).toHaveTextContent('使用保障：质保 7 天');
+  expect(article).not.toHaveTextContent('订阅保障：');
+  fireEvent.click(within(article).getByRole('button', { name: '查看报价详情' }));
+  const dialog = screen.getByRole('dialog');
+  expect(within(dialog).getByText('使用质保7天')).toBeVisible();
+  expect(dialog).not.toHaveTextContent(/订阅质保30天|订阅保障：质保 30 天/);
 });
 
 test.each(['none', 'unknown', 'covered', '首次进入遇到异常，请提交截图，我们会重新发放一份'])('retired warranty text %s invalidates saved conditions without fallback', async value => {
@@ -433,7 +452,7 @@ test('quote details reuse cleaned merchant titles and facts, with the update tim
   fireEvent.click(screen.getByRole('button', { name: '查看报价详情' }));
   const dialog = screen.getByRole('dialog', { name: 'Plus 两个月独享成品号' });
   expect(dialog).not.toHaveTextContent(/现货|秒发|购买内容：成品号|使用期限：2个月|质保天数：|保障窗口45天|下单前核对|采集于/);
-  expect(within(dialog).getAllByText('质保 12 天')).toHaveLength(1);
+  expect(within(dialog).getAllByText('订阅质保12天')).toHaveLength(1);
   expect(within(dialog).getAllByText('2个月')).toHaveLength(1);
   expect(dialog).toHaveTextContent(extra);
   expect(dialog).toHaveTextContent('封号按剩余质保时间退款');
