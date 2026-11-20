@@ -236,6 +236,9 @@ for (const fenced of [false, true]) {
       assert.deepEqual(request.response_format, { type: 'json_object' });
       if (!input.candidates) return stream(fenced ? ['```json\n', recommendation, '\n```'] : [recommendation]);
       assert.equal(input.candidates.length, 5);
+      assert.equal(input.candidates[0].evidence[0].id, 'c1e1');
+      assert.equal(input.candidates[1].evidence[0].id, 'c2e1');
+      assert.doesNotMatch(JSON.stringify(input.candidates), /candidate:[a-f0-9]{32}/u);
       const response = JSON.stringify({ selections: input.candidates.slice(0, 3).map((candidate: { productId: string; evidence: Array<{ id: string }> }) => ({
         productId: candidate.productId, evidenceIds: [candidate.evidence[0]!.id],
       })) });
@@ -245,6 +248,8 @@ for (const fenced of [false, true]) {
     assert.equal(state.requests, 2);
     assert.equal(state.finishes, 2);
     assert.equal(state.committed, 1);
+    assert.ok(state.saved?.cards.length);
+    assert.ok(state.saved.cards.every(card => card.evidenceIds.every(id => /^candidate:[a-f0-9]{32}$/u.test(id))));
     assert.deepEqual(state.logs, []);
   });
 }

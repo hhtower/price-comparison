@@ -304,10 +304,19 @@ test('semantic selections reject invented candidates, duplicate selections and c
     standardProduct: { id: '42', name: 'Claude Pro', platform: 'anthropic', kind: '订阅' },
     offer: { ...fixture.offer, productId }, capabilityEvidence: [],
   }));
-  const valid = { productId: '1', evidenceIds: [candidateEvidence(candidates[0]!)[0]!.id] };
+  const valid = { productId: '1', evidenceIds: ['c1e1'] };
+  assert.deepEqual(parseExplanation({ selections: [valid] }, candidates), [
+    { productId: '1', evidenceIds: [candidateEvidence(candidates[0]!)[0]!.id] },
+  ]);
+  assert.deepEqual(parseExplanation({ selections: [{ productId: '2', evidenceIds: ['c2e2', 'c2e1'] }] }, candidates), [
+    { productId: '2', evidenceIds: [candidateEvidence(candidates[1]!)[1]!.id, candidateEvidence(candidates[1]!)[0]!.id] },
+  ]);
   for (const selections of [
     [valid, valid], [{ ...valid, productId: 'invented' }],
-    [{ ...valid, evidenceIds: [candidateEvidence(candidates[1]!)[0]!.id] }],
+    [{ ...valid, evidenceIds: ['c2e1'] }],
+    [{ ...valid, evidenceIds: ['c1e999'] }],
+    [{ ...valid, evidenceIds: ['c1e1', 'c1e1'] }],
+    [{ ...valid, evidenceIds: [candidateEvidence(candidates[0]!)[0]!.id] }],
   ]) assert.throws(() => parseExplanation({ selections }, candidates), /MODEL_INVALID_RESPONSE/u);
 });
 

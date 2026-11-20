@@ -88,6 +88,7 @@ subscription_warranty和usage_warranty仅用于AI会员，分别使用“质保 
 </understanding_example>`;
 
 type ExplanationSelection = { productId: string; evidenceIds: string[] };
+const explanationEvidenceId = (candidate: number, evidence: number) => `c${candidate + 1}e${evidence + 1}`;
 
 export function parseExplanation(value: unknown, candidates: AssistantCandidate[]): ExplanationSelection[] {
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -99,14 +100,17 @@ export function parseExplanation(value: unknown, candidates: AssistantCandidate[
       || !('productId' in entry) || typeof entry.productId !== 'string' || !('evidenceIds' in entry) || !Array.isArray(entry.evidenceIds)) throw failure('MODEL_INVALID_RESPONSE', 'selection_schema');
     if (entry.evidenceIds.length > 4 || entry.evidenceIds.length < 1) throw failure('MODEL_INVALID_RESPONSE', 'evidence_count');
     if (seen.has(entry.productId)) throw failure('MODEL_INVALID_RESPONSE', 'duplicate_product');
-    const candidate = candidates.find(candidate => candidate.offer.productId === entry.productId);
+    const candidateIndex = candidates.findIndex(candidate => candidate.offer.productId === entry.productId);
+    const candidate = candidates[candidateIndex];
     if (!candidate) throw failure('MODEL_INVALID_RESPONSE', 'unknown_product');
-    const allowed = new Set(candidateEvidence(candidate).map(evidence => evidence.id));
+    const allowed = new Map(candidateEvidence(candidate).map((evidence, index) => [
+      explanationEvidenceId(candidateIndex, index), evidence.id,
+    ]));
     const evidenceIds = entry.evidenceIds as unknown[];
     if (new Set(evidenceIds).size !== evidenceIds.length) throw failure('MODEL_INVALID_RESPONSE', 'duplicate_evidence');
     if (evidenceIds.some(id => typeof id !== 'string' || !allowed.has(id))) throw failure('MODEL_INVALID_RESPONSE', 'unknown_evidence');
     seen.add(entry.productId);
-    return { productId: entry.productId, evidenceIds: evidenceIds as string[] };
+    return { productId: entry.productId, evidenceIds: (evidenceIds as string[]).map(id => allowed.get(id)!) };
   });
 }
 
@@ -209,10 +213,13 @@ export class AssistantService {
           const preferred = selectCandidates(candidates, needs, this.now());
           const preferredIds = new Set(preferred.map(candidate => candidate.offer.productId));
           const prioritized = [...preferred, ...candidates.filter(candidate => !preferredIds.has(candidate.offer.productId))];
-          const evidence = prioritized.map(candidate => ({
+          const evidence = prioritized.map((candidate, candidateIndex) => ({
             productId: candidate.offer.productId, name: candidate.standardProduct.name,
             source: { name: candidate.offer.name, spec: candidate.offer.spec, tags: candidate.offer.tags.filter(isCanonicalProductTag) },
-            beginnerPreferred: isBeginnerRecommendation(candidate, needs), evidence: candidateEvidence(candidate),
+            beginnerPreferred: isBeginnerRecommendation(candidate, needs),
+            evidence: candidateEvidence(candidate).map((fact, index) => ({
+              id: explanationEvidenceId(candidateIndex, index), text: fact.text,
+            })),
           }));
           // Keep complete evidence for each candidate; shrink the pool rather than truncate purchase terms.
           while (evidence.length > 3 && bytes(evidence) > ASSISTANT_LIMITS.evidenceMaxBytes) evidence.pop();
@@ -220,6 +227,7 @@ export class AssistantService {
           const pool = prioritized.slice(0, evidence.length);
           const selection = parseExplanation(await this.call(job, signal,
             '只输出JSON：{"selections":[{"productId":"候选中的编号","evidenceIds":["该候选的证据编号"]}]}。'
+            + '证据编号使用输入中的短编号，例如c1e1；只能逐字照抄该候选evidence数组中的id，不输出证据正文、字段名或自行生成的编号。'
             + '候选已符合硬要求；首个是按用户偏好确定的首选，其余综合排序和多样性排列。从中选最多3个互补报价，首个候选必须保留并放在首位。'
             + '候选已在查询层应用会员商品特性范围，不能引入范围外商品；不解释内部筛选规则。'
             + '在满足用户明确要求的前提下，根据完整商品规格和当前标签比较购买门槛、使用入口、地区、期限和售后；省心偏好仅依据明确条件，不凭分类推断操作步骤。'
