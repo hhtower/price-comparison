@@ -61,9 +61,17 @@ function stream(parts: string[], finishReason = 'stop') {
 
 test('fragmented JSON is aggregated by shared transport and committed once only after validation', async () => {
   const state = fixture(async (_url, init) => {
-    assert.equal(JSON.parse(String(init?.body)).stream, true);
-    assert.deepEqual(JSON.parse(String(init?.body)).response_format, { type: 'json_object' });
-    assert.equal(JSON.parse(String(init?.body)).max_tokens, 8192);
+    const request = JSON.parse(String(init?.body));
+    assert.equal(request.stream, true);
+    assert.deepEqual(request.response_format, { type: 'json_object' });
+    assert.equal(request.max_tokens, 8192);
+    assert.deepEqual(request.messages.map((message: { role: string }) => message.role), ['system', 'user']);
+    const examples = [...request.messages[0].content.matchAll(/<output>\s*([\s\S]*?)<\/output>/gu)];
+    assert.equal(examples.length, 4);
+    for (const example of examples) {
+      assert.deepEqual(Object.keys(JSON.parse(example[1]!)).sort(), ['evidence', 'intent', 'options', 'patch', 'question']);
+    }
+    assert.equal(JSON.parse(request.messages[1].content).userText, '帮我选商品');
     return stream([output.slice(0, 8), output.slice(8, 30), output.slice(30)]);
   });
   await state.run();
@@ -73,6 +81,16 @@ test('fragmented JSON is aggregated by shared transport and committed once only 
   assert.deepEqual(state.thoughts, ['先看需求']);
   assert.equal(state.progressClosed, 1);
   assert.doesNotMatch(JSON.stringify(state.saved), /先看需求/u);
+});
+
+test('a conversational JSON reply cannot masquerade as a validated understanding', async () => {
+  const state = fixture(async () => stream(['{"reply":"private-model-text","next_question":"private-model-text"}']));
+  await assert.rejects(state.run(), /MODEL_INVALID_RESPONSE/u);
+  assert.equal(state.committed, 0);
+  assert.equal(state.requests, 1);
+  assert.equal(state.finishes, 1);
+  assert.equal(JSON.parse(state.logs[0]!).validationReason, 'understanding_fields');
+  assert.doesNotMatch(state.logs.join(''), /private-model-text/u);
 });
 
 for (const [label, opening, closing] of [

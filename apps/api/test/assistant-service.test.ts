@@ -54,7 +54,7 @@ test('understanding prompt examples validate evidence and preserve or explicitly
   assert.match(state.prompts[0]!, /租号、共享、合租=membershipKinds:\["rental"\]/u);
   assert.match(state.prompts[0]!, /未分类=membershipKinds:\["unclassified"\]/u);
   const examples = [...state.prompts[0]!.matchAll(/<understanding_example>\s*<input>([\s\S]*?)<\/input>\s*<output>([\s\S]*?)<\/output>\s*<\/understanding_example>/gu)];
-  assert.equal(examples.length, 2);
+  assert.equal(examples.length, 4);
   const needs = examples.map(example => {
     const input = JSON.parse(example[1]!);
     const understanding = parseUnderstanding(JSON.parse(example[2]!), input.userText);
@@ -66,6 +66,10 @@ test('understanding prompt examples validate evidence and preserve or explicitly
   });
   assert.deepEqual(needs[1], { purpose: '写代码', platform: 'openai', product: 'ChatGPT Plus', budget: null,
     requiredTags: [], preferences: [] });
+  assert.deepEqual(needs[2], { purpose: null, platform: 'openai', product: 'ChatGPT Plus', budget: null,
+    requiredTags: [{ name: 'duration', value: 30 }], preferences: [], membershipKinds: ['top_up'] });
+  assert.deepEqual(needs[3], { purpose: null, platform: 'openai', product: 'ChatGPT Plus', budget: null,
+    requiredTags: [{ name: 'duration', value: 30 }], preferences: [], membershipKinds: null, newcomer: false });
 });
 
 test('one complete understanding request can end in one question without querying arbitrary products', async () => {
@@ -647,7 +651,7 @@ test('warranty explanations use the final forms and never refer to retired suppo
     const state = harness([{ intent: 'explain', patch: {}, evidence: [], question: null, options: [] }], text);
     await state.run();
     assert.equal(state.saved?.kind, 'explanation');
-    assert.match(state.saved!.text, /质保 X 小时.*质保 X 天.*质保（期限未注明）/u);
+    assert.match(state.saved!.text, /质保X小时.*质保X天.*期限未注明/u);
     assert.match(state.saved!.text, /商家说明/u);
     assert.doesNotMatch(state.saved!.text, /warranty_terms|保障条款/u);
     if (!text.startsWith('订阅保障')) assert.match(state.saved!.text, /首登仅指首次登录/u);
