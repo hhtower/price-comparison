@@ -32,6 +32,31 @@ function fixture({ total = '111.00', rate = '2.95', fixed = '0.00', quantity = 1
   return { products, calls, reports, fetchImpl, run: (options = {}) => platform.settle(fixtureShop, products, fetchImpl, { onSettlementResult: row => reports.push(row), ...options }) };
 }
 
+test('GPTHUB settlement accepts current item links and legacy product links', async () => {
+  for (const prefix of ['/item/', '/products/']) {
+    const f = fixture({ url: 'https://gpthub.ciyuanapi.ai' });
+    f.products[0].url = `https://gpthub.ciyuanapi.ai${prefix}plus`;
+    const [product] = await f.run();
+    assert.equal(product.settlement?.totalAmount, '114.27');
+    assert.ok(f.calls.some(call => call.url === 'https://gpthub.ciyuanapi.ai/api/v1/public/products/plus'));
+  }
+});
+
+test('settlement rejects foreign origins, unsupported storefront paths and missing slugs', async () => {
+  for (const [shopUrl, productUrl] of [
+    ['https://gpthub.ciyuanapi.ai', 'https://other.example/item/plus'],
+    ['https://gpthub.ciyuanapi.ai', 'https://gpthub.ciyuanapi.ai/item/'],
+    ['https://gpthub.ciyuanapi.ai', 'https://gpthub.ciyuanapi.ai/item/plus/extra'],
+    ['https://next.example', 'https://next.example/item/plus'],
+    ['https://gpthub.ciyuanapi.ai.example.test', 'https://gpthub.ciyuanapi.ai.example.test/item/plus'],
+  ]) {
+    const f = fixture({ url: shopUrl });
+    f.products[0].url = productUrl;
+    assert.equal((await f.run())[0].settlement, undefined);
+    assert.ok(f.calls.every(call => new URL(call.url).pathname === '/api/v1/public/config'));
+  }
+});
+
 test('Next accepts a nonempty short list only as partial after every declared page', async () => {
   const f = fixture();
   let pages = [], partial = 0, stats;

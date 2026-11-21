@@ -13,7 +13,7 @@ const product = (overrides = {}) => ({
   ...overrides,
 });
 const response = body => Response.json(body);
-const page = (items, current = 1, total = items.length, pages = 1) => response({ status_code: 0, data: items, pagination: { page: current, page_size: 12, total, total_page: pages } });
+const page = (items, current = 1, total = items.length, pages = 1, pageSize = 12) => response({ status_code: 0, data: items, pagination: { page: current, page_size: pageSize, total, total_page: pages } });
 const crawl = fetchImpl => platformForUrl(shop.url).crawl(null, shop, fetchImpl);
 
 test('registry recognizes SuqiAI and uses an explicitly saved protocol on another domain', () => {
@@ -45,7 +45,7 @@ test('public products reads all pages and details, retaining sold-out SKUs', asy
   ] });
   const products = await crawl(async input => {
     const url = new URL(input);
-    if (url.search) return page(url.searchParams.get('page') === '1' ? [first] : [second], Number(url.searchParams.get('page')), 2, 2);
+    if (url.search) return page(url.searchParams.get('page') === '1' ? [first] : [second], Number(url.searchParams.get('page')), 2, 2, 1);
     return response({ status_code: 0, data: url.pathname.endsWith('/plus') ? second : first });
   });
   assert.deepEqual(products.map(item => [item.externalId, item.price, item.inStock]), [['5:6', '650.00', true], ['8:9', '99.00', false]]);

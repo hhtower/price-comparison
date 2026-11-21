@@ -11,6 +11,7 @@ const STOCK_STATUSES = ['in_stock', 'out_of_stock', 'low_stock', 'unlimited'];
 const fail = message => { throw new Error(`${id} goods API: ${message}`); };
 const validId = value => (typeof value === 'string' && value.trim().length > 0) || (Number.isSafeInteger(value) && value > 0);
 const productRules = new WeakMap();
+const productPathPrefix = shop => new URL(shop.url).hostname === 'gpthub.ciyuanapi.ai' ? '/item/' : '/products/';
 
 function localized(value) {
   if (typeof value === 'string') return value.trim();
@@ -118,7 +119,7 @@ function normalizeProduct(item, shop) {
       ...(ratingText ? { ratingText } : {}),
       ...rawProductContent(rawLocalized(item.title), rawLocalized(item.description), rawLocalized(item.content)),
       sourceCategory: localized(item.category?.name), sourceData, price,
-      url: new URL(`/products/${encodeURIComponent(item.slug)}`, shop.url).href,
+      url: new URL(`${productPathPrefix(shop)}${encodeURIComponent(item.slug)}`, shop.url).href,
       imageUrl: image && ['https:', 'http:'].includes(image.protocol) ? image.href : null,
       inStock: item.is_sold_out !== true && item.stock_status !== 'out_of_stock' && sku.is_sold_out !== true && available,
       stockQuantity: sku.stock_quantity_hidden !== true && item.stock_quantity_hidden !== true
@@ -231,8 +232,10 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       if (stopped) throw stopped;
       const url = new URL(product.url, shop.url), origin = new URL(shop.url).origin;
       const ids = String(product.externalId).split(':');
-      if (url.origin !== origin || !/^\/products\/[^/]+$/.test(url.pathname) || ids.length !== 2) fail('invalid settlement identity');
-      const fresh = (await readDetail(shop, { id: ids[0], slug: decodeURIComponent(url.pathname.slice('/products/'.length)) }, fetchImpl, options.signal))
+      const path = url.pathname.match(/^\/(products|item)\/([^/]+)$/);
+      if (url.origin !== origin || !path || ids.length !== 2
+        || path[1] !== 'products' && `/${path[1]}/` !== productPathPrefix(shop)) fail('invalid settlement identity');
+      const fresh = (await readDetail(shop, { id: ids[0], slug: decodeURIComponent(path[2]) }, fetchImpl, options.signal))
         .find(row => row.externalId === String(product.externalId));
       if (!fresh || !fresh.inStock || Number(product.price) !== Number(fresh.price)
         || !isDeepStrictEqual(normalizeProductEvidence({ ...fresh, ...product }), normalizeProductEvidence(fresh))) continue;

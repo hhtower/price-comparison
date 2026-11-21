@@ -3,6 +3,28 @@ import assert from 'node:assert/strict';
 import { crawl, probe } from '../src/platforms/public-products-v1.js';
 import { buildSourceEvidence, captureRatingText } from '../src/platforms/source-evidence.js';
 
+test('product links follow the storefront route while API detail paths stay unchanged', async () => {
+  const item = { id: 1, slug: 'claude pro/30', title: 'Claude Pro',
+    skus: [{ id: 2, is_active: true, stock_status: 'in_stock', price_amount: '5', spec_values: {} }] };
+  for (const [host, prefix] of [
+    ['gpthub.ciyuanapi.ai', '/item/'], ['cccrad.uk', '/products/'],
+    ['gpthub.ciyuanapi.ai.example.test', '/products/'],
+  ]) {
+    const shop = { url: `https://${host}/` }, calls = [];
+    const fetchImpl = async input => {
+      const url = new URL(input);
+      calls.push(url.pathname);
+      return Response.json({ status_code: 0, data: url.search ? [item] : item,
+        pagination: { page: 1, page_size: 12, total: 1, total_page: 1 } });
+    };
+    for (const run of [() => probe(shop, fetchImpl),
+      () => crawl(null, shop, fetchImpl, { settlementProductIds: new Set() })]) {
+      assert.equal((await run())[0].url, `${shop.url.slice(0, -1)}${prefix}claude%20pro%2F30`);
+    }
+    assert.deepEqual(calls, Array(2).fill(['/api/v1/public/products', '/api/v1/public/products/claude%20pro%2F30']).flat());
+  }
+});
+
 test('probe accepts missing list SKUs only with a verified product detail', async () => {
   const summary = { id: 1, slug: 'one', title: 'One' };
   const skus = [{ id: 2, is_active: true, stock_status: 'in_stock', price_amount: '5', spec_values: {} }];
