@@ -107,6 +107,14 @@ test('prompt examples obey the same strict batched schemas as real responses', (
     { id: '104', classificationDecision: true },
     { id: '105', classificationDecision: false },
     { id: '106', classificationDecision: false },
+    { id: '107', classificationDecision: false },
+    { id: '108', classificationDecision: true },
+    { id: '109', classificationDecision: false },
+  ]);
+  assert.deepEqual(extracted.items.slice(-3).map(({ id, membershipKind }) => ({ id, membershipKind })), [
+    { id: '107', membershipKind: 'top_up' },
+    { id: '108', membershipKind: 'top_up' },
+    { id: '109', membershipKind: 'short_term' },
   ]);
 });
 

@@ -28,10 +28,10 @@ test('tag prompt examples use the same sparse canonical protocol as worker respo
     [['duration', 30], ['subscription_override', '无']],
     [['supported_client', 'sub2api']],
     [],
-    [['duration', 360]],
+    [['duration', 30]],
     [['bulk_purchase', 'bundle']],
   ]);
-  assert.notEqual(inputs[3]!.name, inputs[3]!.spec, 'example distinguishes general title from selected SKU');
+  assert.notEqual(inputs[3]!.name, inputs[3]!.spec, 'explicit title duration wins over conflicting specification');
 
 });
 
@@ -63,8 +63,8 @@ test('compact context preserves only general fields with their applicability and
 });
 
 test('general prompt and protocol expire snapshots that included warranty extraction', () => {
-  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261117-v17');
-  assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261117-v13');
+  assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261121-v18');
+  assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261121-v14');
   assert.equal(TAG_EXTRACTION_PROTOCOL_VERSION, 'tag-json-typed-values-20261117-v7');
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261015-v5' }), false);
   assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261025-v7' }), false);

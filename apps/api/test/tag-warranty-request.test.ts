@@ -166,7 +166,7 @@ test('request rejects empty and multi-product batches and isolates successive si
   assert.deepEqual(JSON.parse(secondRequest.messages[1]!.content), { inputs: [second] });
 });
 
-test('prompt retains exactly the five approved examples with valid four-field outputs', () => {
+test('prompt examples preserve warranty scope and title priority with valid four-field outputs', () => {
   const examples = [...WARRANTY_PROMPT.matchAll(/^Product: (.+)\r?\nOutput: (.+)$/gmu)]
     .map(([, product, output]) => ({ product, labels: parseWarrantyResponse(output!) }));
   assert.deepEqual(examples, [
@@ -177,7 +177,9 @@ test('prompt retains exactly the five approved examples with valid four-field ou
     } },
     { product: '会员有效期30天，遇到问题请联系客服。', labels: absent },
     { product: '本次会员充值有官方账单。', labels: { ...absent, subscription_warranty_t: 'unspecified' } },
+    { product: '{"name":"保订阅30天","description":"不保订阅，仅保首登。"}',
+      labels: { subscription_warranty: 30, subscription_warranty_t: 'day', usage_warranty: null, usage_warranty_t: 'first_login' } },
   ]);
-  assert.match(TAG_WARRANTY_PROMPT_VERSION, /20261117/);
+  assert.match(TAG_WARRANTY_PROMPT_VERSION, /20261121/);
   assert.deepEqual(WARRANTY_TAG_NAMES, new Set(['subscription_warranty', 'usage_warranty', 'warranty_terms']));
 });

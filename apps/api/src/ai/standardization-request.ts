@@ -2,8 +2,9 @@ import type { JsonValue } from '../database/types.js';
 import type { CandidateDocument } from '../standardization/candidate-index.js';
 import { standardizationProtocolSchema, type StandardizationProtocolInput } from './ai.schemas.js';
 import { buildModelRequestOptions, readModelRequestOptions, type ModelRequestOptions } from './model-request-options.js';
+import { OFFER_EVIDENCE_POLICY } from './offer-evidence-policy.js';
 
-export const STANDARDIZATION_PROMPT_VERSION = 'standardization-match-prompt-20261119-v1';
+export const STANDARDIZATION_PROMPT_VERSION = 'standardization-match-prompt-20261121-v2';
 export interface StandardizationRequest {
   readonly model: string;
   readonly candidates: readonly CandidateDocument[];
@@ -90,19 +91,21 @@ Use only the current item's source to identify what is actually sold. Candidate 
 Each item's candidateStandardProductIds is its frozen allowed ID list. Return only an ID from that list or null, even if another item's candidate fits.
 ${alias ? `The opaque catalog name token ${alias} represents one exact source name segment. Preserve it verbatim in citation paths and quotes; do not translate, shorten or infer its meaning. Matching tokens in items and candidates refer to the same name segment.\n` : ''}
 # Matching
+${OFFER_EVIDENCE_POLICY}
 Read the full current source, including the selected specification, negations, conditions and conflicting product claims. Select an existing definition only when it describes the actual sold product and plan. Unknown or ambiguous product identity means null.
 Spelling variants and genuine synonyms can describe the same product. Regions, subscription terms, channels, seat counts, delivery formats, credentials and warranty terms are attributes; they do not create standard products. Missing optional attributes alone does not prevent a match. Delivery as JSON or account credentials does not by itself change the underlying product.
 If no supplied definition fits, return null with current evidence. Do not explain whether the catalog lacks a definition, suggest a new identity or make an admission decision.
 
 # Evidence
 Every result, including null, requires at least one citation to that item's current payload. Use an existing string or number leaf, its exact item-relative path (for example name, spec or sourceData.evidence), and a nonempty contiguous verbatim quote. Preserve case, punctuation and whitespace exactly.
+When the title resolves a conflict, cite the decisive title text; do not support the result only with conflicting body text.
 Do not cite IDs, candidate documents, whole objects, arrays or another item. Do not add items or payload prefixes. Array leaves may use numeric indices.
 
 # Example
 The following illustrates format only; its IDs and evidence are not current input.
 Input:
 \`\`\`json
-{"candidates":[{"id":"91","family":"openai","product":"chatgpt","tier":"plus","aliases":[]}],"items":[{"id":"101","name":"ChatGPT Plus 月付 JSON交付","candidateStandardProductIds":["91"]},{"id":"102","name":"未知商品","candidateStandardProductIds":["91"]}]}
+{"candidates":[{"id":"91","family":"openai","product":"chatgpt","tier":"plus","aliases":[]}],"items":[{"id":"101","name":"ChatGPT Plus 月付 JSON交付","description":"Claude Pro 年付账号","candidateStandardProductIds":["91"]},{"id":"102","name":"未知商品","candidateStandardProductIds":["91"]}]}
 \`\`\`
 Output:
 \`\`\`json
