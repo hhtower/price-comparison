@@ -1,4 +1,5 @@
 import { REFERENCE_APPS, REFERENCE_REGIONS } from './official-reference.catalog.js';
+import { REFERENCE_WEBSITES } from '@price-comparison/catalog/official-reference';
 import { parseExchangeRates } from './official-reference.sources.js';
 import { validateRegionSnapshot } from './official-reference.snapshot.js';
 import type { ReferenceCatalog, ReferenceCatalogPlan } from './official-reference.types.js';
@@ -20,6 +21,7 @@ export class OfficialReferenceService {
     const fxStale = Boolean(fxRow?.last_error) || !exchange || now - Date.parse(exchange.date) > 2 * DAY;
     let newest = 0;
     const apps = REFERENCE_APPS.map(app => {
+      const website = REFERENCE_WEBSITES.find(source => source.id === app.id);
       const plans = new Map<string, ReferenceCatalogPlan>();
       const regions = new Set<string>();
       // US provides a consistent English display name; ID, kind and period define identity.
@@ -31,13 +33,13 @@ export class OfficialReferenceService {
         if (snapshot.appId !== app.id || row.task_key !== 'prices:' + app.id + ':' + snapshot.country) continue;
         regions.add(snapshot.country);
         newest = Math.max(newest, Date.parse(snapshot.capturedAt));
-        const region = REFERENCE_REGIONS.find(r => r[0] === snapshot.country)!;
+        const countryName = website ? '官网美元价' : REFERENCE_REGIONS.find(r => r[0] === snapshot.country)![1];
         const rate = snapshot.currency === 'CNY' ? 1 : exchange?.rates[snapshot.currency.toLowerCase()];
         for (const offer of snapshot.offers) {
           const key = JSON.stringify([offer.id, offer.kind, offer.period]);
           let plan = plans.get(key);
           if (!plan) { plan = { id: key, name: offer.kind === 'app' ? '软件本体' : offer.name, period: offer.period, kind: offer.kind, prices: [] }; plans.set(key, plan); }
-          plan.prices.push({ country: snapshot.country, countryName: region[1], currency: snapshot.currency,
+          plan.prices.push({ country: snapshot.country, countryName, currency: snapshot.currency,
             amount: offer.amount, formatted: offer.formatted,
             cnyAmount: rate ? Math.round(offer.amount / rate * 100) / 100 : null,
             capturedAt: snapshot.capturedAt, sourceUrl: snapshot.sourceUrl,
@@ -56,7 +58,7 @@ export class OfficialReferenceService {
         if (occurrence > 1) plan.name += ' #' + occurrence;
         plan.prices.sort((a, b) => (a.cnyAmount ?? Infinity) - (b.cnyAmount ?? Infinity) || a.country.localeCompare(b.country));
       }
-      return { id: app.id, name: app.name, website: app.website, totalRegions: REFERENCE_REGIONS.length,
+      return { id: app.id, name: app.name, website: app.website, totalRegions: website ? 1 : REFERENCE_REGIONS.length,
         availableRegions: regions.size, plans: ordered };
     });
     return { apps, updatedAt: newest ? new Date(newest).toISOString() : null, exchangeDate: exchange?.date ?? null };

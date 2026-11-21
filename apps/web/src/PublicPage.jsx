@@ -15,6 +15,7 @@ import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-
 import { FilterRow, SearchFilterRow } from './components/PurchaseFilterRow.jsx';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
 import { MEMBERSHIP_GROUPS, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
+import { REFERENCE_WEBSITES } from '@price-comparison/catalog/official-reference';
 import { updatePageMetadata } from './page-metadata.js';
 import { PRODUCT_PAGE_SIZE, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
 import { formatMoney } from './money.js';
@@ -727,6 +728,11 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   </Container>;
 }
 
+function hasOfficialReference(item, group) {
+  return group ? group.kind === 'account' || group.kind === 'top_up'
+    : REFERENCE_WEBSITES.some(source => source.plans.some(plan => plan.name === item.name));
+}
+
 const StandardProductCard = memo(function StandardProductCard({ item, group, expanded, onToggle, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, newcomer, factLimit, referenceCatalog }) {
   const kind = group?.kind || '';
   const currency = group?.offers[0]?.currency || 'CNY';
@@ -745,8 +751,8 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
   const offersId = `${titleId}-offers`;
   const detailParams = new URLSearchParams({ newcomer: String(newcomer && !kind) });
   const detailHref = kind ? productPagePath(item.id, 1, kind) : productPagePath(item.id) + '?' + detailParams;
-  const reference = kind === 'account' || kind === 'top_up'
-    ? catalogOfficialPrice(item.name, { price: group.minPrice, currency }, referenceCatalog) : null;
+  const reference = hasOfficialReference(item, group)
+    ? catalogOfficialPrice(item.name, group ? { price: group.minPrice, currency } : minOffer, referenceCatalog) : null;
   const discount = formatOfficialDiscount(reference?.percentage);
 
   return (
@@ -771,7 +777,7 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
           </div>
           <svg className="product-offers-indicator" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </div>
-        {reference ? <div className="product-official-reference" role="note" aria-label="官方最低参考价" title="已采集地区中的 App Store 最低参考价，人民币金额为折算参考；折扣为商家最低价与官方最低价的金额之比，购买周期与条件可能不同">
+        {reference ? <div className="product-official-reference" role="note" aria-label="官方最低参考价" title={`已采集的${reference.country === 'global' ? '官网' : ' App Store '}最低参考价，人民币金额为折算参考；折扣为商家最低价与官方最低价的金额之比，购买周期与条件可能不同`}>
           <span>官方 {formatMoney(reference.cnyAmount)}/{formatPeriod(reference.period).replace(/^每/u, '')}</span>
           <span>· {reference.countryName}</span>
           {discount ? <span className="product-official-percentage" data-price-relation={reference.percentage < 100 ? 'lower' : reference.percentage > 100 ? 'higher' : 'same'}>· {discount}</span> : null}
@@ -791,7 +797,7 @@ const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDe
   const [expandedProducts, setExpandedProducts] = useState(() => new Set());
   const referenceQuery = useQuery({
     queryKey: ['official-reference'], queryFn: ({ signal }) => readCatalog(signal), staleTime: 60_000,
-    enabled: items.some(entry => entry.group?.kind === 'account' || entry.group?.kind === 'top_up'),
+    enabled: items.some(entry => hasOfficialReference(entry.item, entry.group)),
   });
   const toggleProduct = useCallback(key => {
     setExpandedProducts(current => {

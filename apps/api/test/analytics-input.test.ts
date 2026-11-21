@@ -60,3 +60,19 @@ test('reference actions accept only known products and bounded official SKU iden
     ...['https://private.example', 'sk-secret', '["6744120541","app",null]', '["6744120541","purchase","P1M"]', '["6744120541","subscription","private text"]'].map(planId => ({ name: 'reference_plan_select', reference: { ...app, planId } })),
   ]) assert.throws(() => parseCollection({ ...collection, actions: [{ id: collection.visitId, ...action }] }));
 });
+
+test('website reference analytics accept only registered plan IDs for the selected provider', () => {
+  const event = (appId: string, planId: string) => ({ ...collection,
+    actions: [{ id: collection.visitId, name: 'reference_plan_select', reference: { appId, planId } }],
+  });
+  for (const [appId, planId] of [['cursor', 'premium'], ['cursor', 'plus'], ['kiro', 'pro'], ['kiro', 'pro_max']]) {
+    const value = event(appId, JSON.stringify([planId, 'subscription', 'P1M']));
+    assert.deepEqual(parseCollection(value), value);
+  }
+  for (const [appId, planId] of [
+    ['kiro', '["premium","subscription","P1M"]'], ['cursor', '["pro_max","subscription","P1M"]'],
+    ['kiro', '["pro","subscription","P1Y"]'], ['kiro', '["pro","purchase",null]'],
+    ['kiro', '["6744120541","subscription","P1M"]'], ['6448311069', '["premium","subscription","P1M"]'],
+    ['cursor', 'https://private.example/token'],
+  ]) assert.throws(() => parseCollection(event(appId, planId)));
+});

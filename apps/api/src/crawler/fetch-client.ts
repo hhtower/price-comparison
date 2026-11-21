@@ -128,6 +128,7 @@ export function createRunFetchFactory(options: RunFetchFactoryOptions): (signal:
           }
           // A complete HTTP response proves transport recovery, not source-site acceptance.
           current?.reportSuccess();
+          if (init.redirect === 'manual' && [301, 302, 303, 307, 308].includes(checked.status)) return checked;
           return await handle(checked, host, new Headers(headers).get('accept') === 'text/html');
         } finally { current?.release(); }
       }

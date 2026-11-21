@@ -28,6 +28,51 @@ const offer = {
   tags: [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }],
 };
 
+const websiteCatalog = { ...catalog, apps: [
+  { id: 'cursor', name: 'Cursor', plans: [{ id: 'premium', name: 'Cursor Premium', kind: 'subscription', period: 'P1M',
+    prices: [{ ...price, country: 'global', countryName: '官网美元价', currency: 'USD', amount: 30,
+      cnyAmount: 210, sourceUrl: 'https://cursor.com/pricing' }],
+  }] },
+  { id: 'kiro', name: 'Kiro', plans: [{ id: 'pro', name: 'Kiro Pro', kind: 'subscription', period: 'P1M',
+    prices: [{ ...price, country: 'global', countryName: '官网美元价', currency: 'USD', amount: 20,
+      cnyAmount: 140, sourceUrl: 'https://kiro.dev/pricing/' }],
+  }] },
+] };
+
+test.each([
+  ['Cursor Premium', 'https://cursor.com/pricing', 210],
+  ['Grok·X·Cursor Premium（统一订阅）', 'https://cursor.com/pricing', 210],
+  ['Kiro Pro', 'https://kiro.dev/pricing/', 140],
+])('matches %s to its verified website source', (title, sourceUrl, cnyAmount) => {
+  expect(reference.catalogOfficialPrice(title, offer, websiteCatalog)).toMatchObject({ sourceUrl, cnyAmount });
+});
+
+test.each(['Cursor Pro', 'Cursor Pro+', 'Kiro Free', 'Kiro Students', 'Kiro Pro 试用权益账号'])('does not invent current official equivalents for %s', title => {
+  expect(reference.catalogOfficialPrice(title, offer, websiteCatalog)).toBeNull();
+});
+
+test('website references reject mismatched providers and unexpected URLs', () => {
+  for (const sourceUrl of ['https://cursor.com/pricing', 'https://kiro.dev/other', 'https://kiro.dev.evil.example/pricing/']) {
+    const app = websiteCatalog.apps[1];
+    const plan = app.plans[0];
+    expect(reference.catalogOfficialPrice('Kiro Pro', offer, { ...websiteCatalog, apps: [
+      { ...app, plans: [{ ...plan, prices: [{ ...plan.prices[0], sourceUrl }] }] },
+    ] })).toBeNull();
+  }
+});
+
+test('known Grok legacy SKUs compare together without treating unified Premium as SuperGrok', () => {
+  const grok = { apps: [{ id: '6670324846', name: 'Grok', plans: ['6741437612', '6744708035'].map((id, index) => ({
+    id: JSON.stringify([id, 'subscription', 'P1M']), name: index ? 'SuperGrok #2' : 'SuperGrok', kind: 'subscription', period: 'P1M',
+    prices: [{ ...price, cnyAmount: index ? 80 : 100, sourceUrl: 'https://apps.apple.com/ph/app/id6670324846' }],
+  })) }] };
+  expect(reference.catalogOfficialPrice('SuperGrok（旧版）', offer, grok)).toMatchObject({ cnyAmount: 80 });
+  expect(reference.catalogOfficialPrice('Grok·X·Cursor Premium（统一订阅）', offer, grok)).toBeNull();
+  expect(reference.catalogOfficialPrice('SuperGrok（旧版）', offer, { apps: [
+    { ...grok.apps[0], plans: [...grok.apps[0].plans, { ...grok.apps[0].plans[0], id: 'unknown-variant' }] },
+  ] })).toBeNull();
+});
+
 test('catalog reference compares the lowest fresh official price across regions', () => {
   expect(reference.catalogOfficialPrice('ChatGPT Plus', offer, catalog)).toMatchObject({
     country: 'ph', cnyAmount: 100, period: 'P1M', percentage: 88,
@@ -85,19 +130,19 @@ test.each([
   })).toBeNull();
 });
 
-function renderCatalog({ groups, referenceFailure = false } = {}) {
+function renderCatalog({ groups, referenceFailure = false, product = {}, referenceCatalog = catalog } = {}) {
   const requests = [];
   const item = { id: '42', name: 'ChatGPT Plus', platform: 'openai', isAiMembership: true,
     offers: [offer], shopCount: 2, productCount: 2, membershipGroups: groups || ['account', 'top_up'].map(kind => ({
       kind, minPrice: '88', maxPrice: '88', shopCount: 1, productCount: 1,
       offers: [{ ...offer, membershipKind: kind, productId: kind }],
-    })),
+    })), ...product,
   };
   vi.stubGlobal('fetch', vi.fn(async input => {
     const url = new URL(input, 'http://localhost');
     requests.push(url.pathname);
     if (url.pathname === '/api/official-reference/catalog') {
-      return referenceFailure ? new Response(null, { status: 503 }) : Response.json(catalog);
+      return referenceFailure ? new Response(null, { status: 503 }) : Response.json(referenceCatalog);
     }
     if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
     if (url.pathname.endsWith('/price-history')) return Response.json({ points: [] });
@@ -108,6 +153,15 @@ function renderCatalog({ groups, referenceFailure = false } = {}) {
   render(<VirtuosoMockContext.Provider value={{ viewportHeight: 1600, itemHeight: 300 }}><PublicPage /></VirtuosoMockContext.Provider>);
   return requests;
 }
+
+test('Kiro paid products show website references even before they have membership groups', async () => {
+  renderCatalog({ referenceCatalog: websiteCatalog, product: { name: 'Kiro Pro', platform: 'kiro', isAiMembership: false, membershipGroups: undefined } });
+  const official = await screen.findByLabelText('官方最低参考价');
+  expect(official).toHaveTextContent('¥140/月');
+  expect(official).toHaveTextContent('官网美元价');
+  expect(official).toHaveTextContent('6.29折');
+  expect(official).not.toHaveAttribute('title', expect.stringContaining('App Store'));
+});
 
 test('membership cards show the estimate beside the lowest price and share one official reference request', async () => {
   const requests = renderCatalog();

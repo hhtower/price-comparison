@@ -1,4 +1,5 @@
 import { REFERENCE_APPS } from '../official-reference/official-reference.catalog.js';
+import { REFERENCE_WEBSITES } from '@price-comparison/catalog/official-reference';
 
 // Keep categories and reference identities bounded: never accept URLs or free-form labels.
 export const ANALYTICS_PAGES = { catalog: '商品比价', tools_ai: 'AI 检测', tools_ip: 'IP 检测', guide: '选购指南', assistant: '导购助手' } as const;
@@ -21,6 +22,8 @@ export function validReferenceContext(name: unknown, value: unknown): boolean {
   const allowed = hasPlan ? ['appId', 'planId'] : ['appId'];
   if (Object.keys(context).some(key => !allowed.includes(key)) || !REFERENCE_APPS.some(app => app.id === context.appId)) return false;
   if (!hasPlan) return true;
+  const website = REFERENCE_WEBSITES.find(source => source.id === context.appId);
+  if (website) return website.plans.some(plan => context.planId === JSON.stringify([plan.id, 'subscription', 'P1M']));
   // This is the exact catalog key: stable numeric Apple SKU, purchase kind, ISO period.
   return typeof context.planId === 'string' && context.planId.length <= 96
     && /^\["[0-9]{5,14}",(?:(?:"subscription",(?:null|"P[1-9][0-9]{0,3}[DWMY]"))|(?:"purchase",null))\]$/.test(context.planId);

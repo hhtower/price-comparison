@@ -8,6 +8,21 @@ import { migrationProvider } from '../scripts/migrate.js';
 import { OfficialReferenceRepository } from '../src/official-reference/official-reference.repository.js';
 import { REFERENCE_APPS, REFERENCE_REGIONS } from '../src/official-reference/official-reference.catalog.js';
 
+test('reference seeding adds Grok storefronts and one global task per official website', async () => {
+  let tasks: Array<{ task_key: string; app_id: string | null; country: string | null }> = [];
+  const repository = new OfficialReferenceRepository({ query: async (_query: string, values: string[]) => {
+    tasks = JSON.parse(values[0]);
+    return { rows: [] };
+  } } as unknown as Pool);
+  await repository.seed();
+  assert.ok(tasks.some(task => task.task_key === 'prices:6670324846:us'));
+  assert.equal(tasks.filter(task => task.app_id === '6670324846').length, REFERENCE_REGIONS.length);
+  assert.deepEqual(tasks.filter(task => task.app_id === 'cursor' || task.app_id === 'kiro'), [
+    { task_key: 'prices:cursor:global', app_id: 'cursor', country: 'global' },
+    { task_key: 'prices:kiro:global', app_id: 'kiro', country: 'global' },
+  ]);
+});
+
 test('reference queue isolates claims, atomically publishes, preserves failures and fences obsolete workers', { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1, connectionTimeoutMillis: 10_000 });
   const schema = 'ref_test_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
@@ -21,8 +36,8 @@ test('reference queue isolates claims, atomically publishes, preserves failures 
     if (error) throw error;
     const first = new OfficialReferenceRepository(pool); const second = new OfficialReferenceRepository(pool);
     await first.seed(); await first.seed();
-    assert.equal(Number((await pool.query('select count(*) from official_reference_jobs')).rows[0].count), REFERENCE_APPS.length * REFERENCE_REGIONS.length + 1);
-    assert.equal(Number((await pool.query("select count(*) from official_reference_jobs where country = 'cl'")).rows[0].count), 8);
+    assert.equal(Number((await pool.query('select count(*) from official_reference_jobs')).rows[0].count), (REFERENCE_APPS.length - 2) * REFERENCE_REGIONS.length + 3);
+    assert.equal(Number((await pool.query("select count(*) from official_reference_jobs where country = 'cl'")).rows[0].count), 9);
     const [one, two] = await Promise.all([first.claimNext('fetch_run', 'one', 30_000), second.claimNext('fetch_run', 'two', 30_000)]);
     assert.ok(one); assert.ok(two); assert.notEqual(one.id, two.id);
     const fx = one.row.task_key === 'fx' ? one : two;

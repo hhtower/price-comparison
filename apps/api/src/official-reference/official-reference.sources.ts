@@ -16,14 +16,15 @@ export function parseExchangeRates(input: unknown): ExchangeRates {
   return { date: payload.date, rates };
 }
 
-export async function fetchSourceText(url: string, fetcher: (url: string | URL, init?: RequestInit) => Promise<Response>, externalSignal?: AbortSignal): Promise<string> {
+export async function fetchSourceText(url: string, fetcher: (url: string | URL, init?: RequestInit) => Promise<Response>, externalSignal?: AbortSignal,
+  accept = 'text/html,application/json'): Promise<string> {
   const source = new URL(url);
   const signal = AbortSignal.any([AbortSignal.timeout(12_000), ...(externalSignal ? [externalSignal] : [])]);
   signal.throwIfAborted();
   let target = source; let response: Response | undefined;
   for (let hop = 0; hop < 3; hop++) {
     response = await fetcher(target.href, { signal, redirect: 'manual',
-      headers: { Accept: 'text/html,application/json', 'Accept-Language': 'en-US,en;q=0.9', 'User-Agent': 'OfficialPriceReference/1.0' } });
+      headers: { Accept: accept, 'Accept-Language': 'en-US,en;q=0.9', 'User-Agent': 'OfficialPriceReference/1.0' } });
     if (![301, 302, 303, 307, 308].includes(response.status)) break;
     await response.body?.cancel();
     const location = response.headers.get('location');

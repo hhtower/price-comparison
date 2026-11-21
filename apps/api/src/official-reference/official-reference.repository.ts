@@ -5,6 +5,7 @@ import { PG_POOL } from '../database/database.providers.js';
 import type { ClaimedJob, QueueKind } from '../jobs/jobs.repository.js';
 import type { WorkerRuntimeService } from '../workers/worker-runtime.js';
 import { REFERENCE_APPS, REFERENCE_REGIONS } from './official-reference.catalog.js';
+import { REFERENCE_WEBSITES } from '@price-comparison/catalog/official-reference';
 import type { PublishedReferenceRow, ReferenceSnapshotReader } from './official-reference.service.js';
 import { parseExchangeRates } from './official-reference.sources.js';
 import { validateRegionSnapshot } from './official-reference.snapshot.js';
@@ -18,8 +19,9 @@ export class OfficialReferenceRepository implements ReferenceSnapshotReader, Wor
 
   async seed(): Promise<void> {
     const tasks: Array<{ task_key: string; app_id: string | null; country: string | null }> = [{ task_key: 'fx', app_id: null, country: null }];
-    for (const app of REFERENCE_APPS) for (const [country] of REFERENCE_REGIONS) {
-      tasks.push({ task_key: 'prices:' + app.id + ':' + country, app_id: app.id, country });
+    for (const app of REFERENCE_APPS) {
+      const countries = REFERENCE_WEBSITES.some(source => source.id === app.id) ? ['global'] : REFERENCE_REGIONS.map(([country]) => country);
+      for (const country of countries) tasks.push({ task_key: 'prices:' + app.id + ':' + country, app_id: app.id, country });
     }
     await this.pool.query('insert into official_reference_jobs (task_key, app_id, country) select task_key, app_id, country '
       + 'from jsonb_to_recordset($1::jsonb) as tasks(task_key text, app_id text, country text) on conflict (task_key) do nothing', [JSON.stringify(tasks)]);

@@ -148,7 +148,7 @@ function QuoteCard({ card, catalog }) {
     '商家未明确质保时长与保障范围，请在商品详情核实不保事项和售后条款。']) representedNotes.add(note);
   const detailNotes = [...new Set([...card.reasons, ...card.caveats])].filter(note => !representedNotes.has(note));
   const officialPrice = reference && <p className="assistant-official-price">
-    <span>官方内购参考 · {reference.countryName} · {formatPeriod(reference.period)}</span>
+    <span>{reference.country === 'global' ? '官网订阅参考' : '官方内购参考'} · {reference.countryName} · {formatPeriod(reference.period)}</span>
     <span>{formatMoney(reference.amount, '')} {reference.currency}
       {reference.currency !== 'CNY' && `（约 ${formatMoney(reference.cnyAmount)}）`}</span>
   </p>;

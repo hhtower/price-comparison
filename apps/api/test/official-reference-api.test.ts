@@ -16,7 +16,7 @@ test('public catalog reads stored snapshots and retires visitor-triggered upstre
   t.after(() => app.close()); const http = app.getHttpAdapter().getInstance();
   const response = await http.inject({ method: 'GET', url: '/v1/official-reference/catalog' });
   assert.equal(response.statusCode, 200); assert.equal(response.headers['cache-control'], 'public, max-age=60');
-  assert.equal(response.json().apps.length, 8); assert.equal(response.json().updatedAt, null); assert.equal(reads, 1);
+  assert.equal(response.json().apps.length, 11); assert.equal(response.json().updatedAt, null); assert.equal(reads, 1);
   for (const url of ['/v1/official-reference/apps?q=ChatGPT', '/v1/official-reference/prices?appId=6448311069&country=us']) {
     assert.equal((await http.inject({ method: 'GET', url })).statusCode, 404);
   }

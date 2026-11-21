@@ -29,7 +29,7 @@ function PriceCard({ price, minimum }) {
     </div>
     <div className="reference-country">{flag
       ? <img className="reference-flag" src={flag} width="30" height="22" alt="" aria-hidden="true" />
-      : <span className="reference-flag" aria-hidden="true">{price.country.toUpperCase()}</span>}<span>{price.countryName}</span></div>
+      : <span className="reference-flag" aria-hidden="true">{price.country === 'global' ? '官网' : price.country.toUpperCase()}</span>}<span>{price.countryName}</span></div>
     <div className="reference-cny-price">{converted
       ? <><span className="reference-currency" aria-label="人民币">¥</span><strong>{price.cnyAmount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></>
       : <span className="reference-no-rate">暂无折算</span>}</div>

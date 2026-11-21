@@ -23,7 +23,7 @@ test('catalog reads saved snapshots, groups only matching SKU IDs, converts and 
     row({ date: '2026-09-27', cny: { cny: 1, usd: 0.125, inr: 10, clp: 100 } }, 'fx'),
   ] }, () => Date.parse(capturedAt));
   const result = await service.catalog();
-  assert.equal(result.apps.length, 8);
+  assert.equal(result.apps.length, 11);
   const app = result.apps[0];
   assert.equal(app.availableRegions, 3); assert.equal(app.totalRegions, REFERENCE_REGIONS.length);
   assert.equal(app.plans.length, 2, 'same-name SKU variants must remain distinct');
@@ -31,6 +31,41 @@ test('catalog reads saved snapshots, groups only matching SKU IDs, converts and 
   assert.equal(app.plans[0].prices[2].countryName, '智利');
   assert.equal(new Set(app.plans.map(p => p.name)).size, 2, 'duplicate plan labels must be distinguishable');
   assert.equal(result.exchangeDate, '2026-09-27');
+});
+
+test('website subscriptions share the catalog, conversion and stale handling without inventing a region', async () => {
+  const website = { appId: 'kiro', country: 'global', currency: 'USD', capturedAt,
+    sourceUrl: 'https://kiro.dev/pricing/', offers: [
+      { id: 'pro', name: 'Kiro Pro', amount: 21, formatted: '$21', period: 'P1M', kind: 'subscription' },
+      { id: 'pro_plus', name: 'Kiro Pro+', amount: 41, formatted: '$41', period: 'P1M', kind: 'subscription' },
+      { id: 'pro_max', name: 'Kiro Pro Max', amount: 101, formatted: '$101', period: 'P1M', kind: 'subscription' },
+      { id: 'power', name: 'Kiro Power', amount: 201, formatted: '$201', period: 'P1M', kind: 'subscription' },
+    ] };
+  const result = await new OfficialReferenceService({ readPublished: async () => [
+    row(website, 'prices:kiro:global'),
+    row({ date: '2026-09-27', cny: { cny: 1, usd: 0.125 } }, 'fx'),
+  ] }, () => Date.parse(capturedAt)).catalog();
+  const app = result.apps.find(app => app.id === 'kiro')!;
+  assert.equal(app.name, 'Kiro');
+  assert.equal(app.availableRegions, 1);
+  assert.equal(app.totalRegions, 1);
+  assert.equal(app.plans.length, 4);
+  const price = app.plans.find(plan => plan.name === 'Kiro Pro')!.prices[0];
+  assert.deepEqual([price.country, price.countryName, price.amount, price.cnyAmount, price.stale],
+    ['global', '官网美元价', 21, 168, false]);
+  assert.equal(price.sourceUrl, website.sourceUrl);
+  for (const changes of [
+    { sourceUrl: 'https://evil.example/pricing/' },
+    { sourceUrl: 'https://kiro.dev/other/' },
+    { sourceUrl: 'https://cursor.com/pricing' },
+    { country: 'us' }, { currency: 'EUR' },
+    { offers: [{ ...website.offers[0], name: 'Kiro Power' }, ...website.offers.slice(1)] },
+    { offers: website.offers.slice(1) },
+    { offers: [{ ...website.offers[0], period: 'P1Y' }, ...website.offers.slice(1)] },
+  ]) assert.throws(() => validateRegionSnapshot({ ...website, ...changes }));
+  const stale = await new OfficialReferenceService({ readPublished: async () => [row(website, 'prices:kiro:global', 'failed')] },
+    () => Date.parse(capturedAt)).catalog();
+  assert.equal(stale.apps.find(app => app.id === 'kiro')!.plans[0].prices[0].stale, true);
 });
 
 test('missing exchange rates retain original quotes with null CNY instead of zero', async () => {

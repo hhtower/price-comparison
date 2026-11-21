@@ -1,5 +1,5 @@
 export interface ReferenceSnapshotOffer {
-  /** Stable Apple SKU ID, scoped to an app. Never merge ambiguous same-name offers. */
+  /** Stable provider SKU/plan ID, scoped to an app. Never merge ambiguous same-name offers. */
   id: string;
   name: string;
   amount: number;

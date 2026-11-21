@@ -20,6 +20,24 @@ const availableOnly = { markUnavailable: async () => { throw new Error('unexpect
 const job = (fx = false) => ({ id: 1n, kind: 'fetch_run', attempts: 1n, claimed_by: 'test', lease_until: new Date(),
   row: fx ? { task_key: 'fx' } : { task_key: 'prices:6448311069:us', app_id: '6448311069', country: 'us' } }) as ClaimedJob;
 
+test('website jobs use the shared worker publication and cancellation path without Apple collection', async () => {
+  const published: unknown[] = [];
+  const websiteJob = { ...job(), row: { task_key: 'prices:kiro:global', app_id: 'kiro', country: 'global' } };
+  const handler = createOfficialReferenceHandler({ ...availableOnly, publish: async (_job, value) => { published.push(value); } },
+    () => async () => new Response('unused'),
+    async () => { assert.fail('website job cannot call Apple'); },
+    async (appId, _fetcher, signal) => {
+      assert.equal(appId, 'kiro'); signal.throwIfAborted(); return { appId } as never;
+    });
+  await handler(websiteJob, new AbortController().signal);
+  assert.deepEqual(published, [{ appId: 'kiro' }]);
+  const controller = new AbortController();
+  const cancelled = createOfficialReferenceHandler({ ...availableOnly, publish: async () => { assert.fail('cancelled snapshot cannot publish'); } },
+    () => async () => new Response('unused'), undefined,
+    async () => { controller.abort(); return {} as never; });
+  await assert.rejects(cancelled(websiteJob, controller.signal));
+});
+
 test('reference config reuses AI proxy and allows a dedicated override without exposing credentials', () => {
   assert.equal(readOfficialReferenceConfig({ AI_PROXY_URL: 'http://localhost:7890' }).proxyUrl, 'http://localhost:7890');
   assert.equal(readOfficialReferenceConfig({ AI_PROXY_URL: 'http://a:80', OFFICIAL_REFERENCE_PROXY_URL: 'socks5://b:1080' }).proxyUrl, 'socks5://b:1080');

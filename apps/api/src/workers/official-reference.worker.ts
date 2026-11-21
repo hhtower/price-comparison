@@ -15,6 +15,8 @@ import { OfficialReferenceRepository } from '../official-reference/official-refe
 import { readOfficialReferenceConfig } from '../official-reference/official-reference.config.js';
 import { fetchReferenceRegion, ReferenceUnavailableError } from '../official-reference/official-reference.collector.js';
 import { fetchSourceText, parseExchangeRates } from '../official-reference/official-reference.sources.js';
+import { fetchWebsiteReference } from '../official-reference/official-reference.website.js';
+import { REFERENCE_WEBSITES } from '@price-comparison/catalog/official-reference';
 import { WorkerRuntime } from './worker-runtime.js';
 
 export const REFERENCE_FX_URL = 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/cny.json';
@@ -23,6 +25,7 @@ export function createOfficialReferenceHandler(
   store: Pick<OfficialReferenceRepository, 'publish' | 'markUnavailable'>,
   fetchFactory: (signal: AbortSignal) => CrawlerFetch,
   collectRegion = fetchReferenceRegion,
+  collectWebsite = fetchWebsiteReference,
 ) {
   return async (job: ClaimedJob, signal: AbortSignal): Promise<void> => {
     signal.throwIfAborted();
@@ -33,6 +36,8 @@ export function createOfficialReferenceHandler(
       if (job.row.task_key === 'fx') {
         const rates = parseExchangeRates(JSON.parse(await fetchSourceText(REFERENCE_FX_URL, fetcher, bounded)));
         snapshot = { date: rates.date, cny: rates.rates };
+      } else if (REFERENCE_WEBSITES.some(source => source.id === job.row.app_id)) {
+        snapshot = await collectWebsite(String(job.row.app_id), fetcher, bounded);
       } else {
         snapshot = await collectRegion(String(job.row.app_id), String(job.row.country), fetcher, bounded);
       }
@@ -69,7 +74,8 @@ async function main(): Promise<void> {
     const pool = new ProxyPool([config.proxyUrl], { dispatcherFactory: url => {
       const dispatcher = createDispatcher(url); dispatchers.push(dispatcher); return dispatcher;
     } });
-    const limiter = new HostRateLimiter(new Map([['apps.apple.com', 1000], ['cdn.jsdelivr.net', 1000]]));
+    const limiter = new HostRateLimiter(new Map([['apps.apple.com', 1000], ['cdn.jsdelivr.net', 1000],
+      ...REFERENCE_WEBSITES.map(source => [new URL(source.website).hostname, 1000] as [string, number])]));
     worker = new WorkerRuntime({ service: repository, kind: 'fetch_run', workerId: 'official-reference-' + randomUUID(),
       concurrency: config.concurrency, pollMs: 1000, transientMaxAttempts: 3,
       handler: createOfficialReferenceHandler(repository, createRunFetchFactory({ pool, limiter, maxResponseBytes: 4 * 1024 * 1024 })),

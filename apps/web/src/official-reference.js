@@ -1,5 +1,6 @@
 import { durationToDays, normalizePurchaseTag } from '@price-comparison/catalog/purchase-attributes';
 import { normalizeProductTag } from '@price-comparison/catalog/product-tag-policy';
+import { REFERENCE_WEBSITES } from '@price-comparison/catalog/official-reference';
 
 export async function readCatalog(signal) {
   const response = await fetch('/api/official-reference/catalog', {
@@ -36,6 +37,25 @@ export function formatPlanName(plan) {
 
 const identity = value => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase() : '';
 
+function referenceTitle(title, appId) {
+  const name = identity(title);
+  const unified = /^grok·x·cursor (plus|premium|super|ultra)\(统一订阅\)$/u.exec(name);
+  if (appId === 'cursor' && unified) return `cursor ${unified[1]}`;
+  if (appId === '6670324846') {
+    if (name === identity('SuperGrok（旧版）')) return 'supergrok';
+    if (name === identity('Grok Heavy（旧版）')) return 'supergrok heavy';
+  }
+  return name;
+}
+
+function knownSuperGrokSku(plan) {
+  if (plan.appId !== '6670324846' || identity(formatPlanName(plan).replace(/\s+#\d+$/u, '')) !== 'supergrok') return false;
+  try {
+    // Confirmed official SKU variants share the legacy SuperGrok subscription, not unified Premium.
+    return ['6741437612', '6744708035', '6741437697'].includes(JSON.parse(plan.id)[0]);
+  } catch { return false; }
+}
+
 function planDuration(period) {
   const match = /^P([1-9][0-9]*)([DWMY])$/u.exec(period);
   if (!match) return '';
@@ -60,21 +80,24 @@ export function findOfficialPrice(title, purchaseTags, catalog) {
     if (plan.kind !== 'subscription' || !planDuration(plan.period)) return false;
     // Duplicate SKU labels are not distinct product identities; ambiguity must suppress the reference.
     const name = identity(formatPlanName(plan).replace(/\s+#\d+$/u, ''));
-    return name === identity(title) || identity(`${app.name} ${name}`) === identity(title);
-  }));
+    const target = referenceTitle(title, app.id);
+    return name === target || identity(`${app.name} ${name}`) === target;
+  }).map(plan => ({ ...plan, appId: app.id })));
   const samePeriod = candidates.filter(plan => planDuration(plan.period) === duration);
   const matches = samePeriod.length ? samePeriod : candidates;
-  if (!matches.length || new Set(matches.map(plan => planDuration(plan.period))).size !== matches.length) return null;
-  const prices = matches.flatMap(plan => plan.prices.map(price => price && ({ ...price, period: plan.period }))).filter(price => {
-    if (!price || (region && price.country !== region) || price.stale !== false || !Number.isFinite(price.amount) || price.amount <= 0
+  if (!matches.length || (new Set(matches.map(plan => planDuration(plan.period))).size !== matches.length && !matches.every(knownSuperGrokSku))) return null;
+  const prices = matches.flatMap(plan => plan.prices.map(price => price && ({ ...price, period: plan.period, appId: plan.appId }))).filter(price => {
+    if (!price || (region && price.country !== region && price.country !== 'global') || price.stale !== false || !Number.isFinite(price.amount) || price.amount <= 0
       || !Number.isFinite(price.cnyAmount) || price.cnyAmount <= 0 || !/^[A-Z]{3}$/u.test(price.currency)) return false;
+    const website = REFERENCE_WEBSITES.find(source => source.id === price.appId);
+    if (website) return price.sourceUrl === website.website && price.country === 'global' && price.currency === 'USD';
     try {
       const url = new URL(price.sourceUrl);
       return url.protocol === 'https:' && url.hostname === 'apps.apple.com';
     } catch { return false; }
   });
   const price = prices.sort((a, b) => a.cnyAmount - b.cnyAmount || a.country.localeCompare(b.country))[0];
-  return price ? { ...price, exchangeDate: catalog.exchangeDate, regionMatched: Boolean(region), periodMatched: planDuration(price.period) === duration } : null;
+  return price ? { ...price, exchangeDate: catalog.exchangeDate, regionMatched: Boolean(region) && price.country === region, periodMatched: planDuration(price.period) === duration } : null;
 }
 
 export function catalogOfficialPrice(title, offer, catalog) {

@@ -1,9 +1,13 @@
+import { REFERENCE_WEBSITES } from '@price-comparison/catalog/official-reference';
+
 // App IDs and publisher identities verified against Apple's public lookup on 2026-09-27.
 // These are navigation metadata, never hardcoded prices.
 export const REFERENCE_APPS = [
   { id: '6448311069', name: 'ChatGPT', developer: 'OpenAI', website: 'https://chatgpt.com/pricing/', category: 'AI 助手' },
   { id: '6473753684', name: 'Claude', developer: 'Anthropic', website: 'https://claude.com/pricing', category: 'AI 助手' },
   { id: '6477489729', name: 'Gemini', developer: 'Google', website: 'https://one.google.com/about/google-ai-plans/', category: 'AI 助手' },
+  { id: '6670324846', name: 'Grok', developer: 'X Corp.', website: 'https://grok.com/', category: 'AI 助手' },
+  ...REFERENCE_WEBSITES,
   { id: '1232780281', name: 'Notion', developer: 'Notion Labs', website: 'https://www.notion.com/pricing', category: '效率工具' },
   { id: '897446215', name: 'Canva', developer: 'Canva', website: 'https://www.canva.com/pricing/', category: '设计工具' },
   { id: '544007664', name: 'YouTube', developer: 'Google', website: 'https://www.youtube.com/premium', category: '视频音乐' },

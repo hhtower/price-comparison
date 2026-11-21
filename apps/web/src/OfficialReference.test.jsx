@@ -464,6 +464,32 @@ test('an empty catalog explains missing snapshots without inventing free prices'
   expect(screen.queryByRole('tab')).not.toBeInTheDocument();
 });
 
+test('Grok, Cursor and Kiro are selectable in the official price panel with their own source prices', async () => {
+  const apps = [
+    { id: '6670324846', name: 'Grok', title: 'SuperGrok', amount: 30, sourceUrl: 'https://apps.apple.com/us/app/id6670324846' },
+    { id: 'cursor', name: 'Cursor', title: 'Cursor Premium', amount: 31, sourceUrl: 'https://cursor.com/pricing' },
+    { id: 'kiro', name: 'Kiro', title: 'Kiro Pro', amount: 21, sourceUrl: 'https://kiro.dev/pricing/' },
+  ];
+  respondWith({ ...catalog, apps: apps.map(app => ({ ...app, plans: [{
+    ...monthly, name: app.title, prices: [{ ...price, amount: app.amount, cnyAmount: app.amount * 7,
+      formatted: `$${app.amount}`, sourceUrl: app.sourceUrl,
+      ...(app.id !== '6670324846' ? { country: 'global', countryName: '官网美元价' } : {}),
+    }],
+  }] })) });
+  render(<OfficialReference />); open();
+  await screen.findByRole('button', { name: 'Grok', pressed: true });
+  for (const app of apps) {
+    fireEvent.click(screen.getByRole('button', { name: app.name, exact: true }));
+    const panel = screen.getByRole('tabpanel', { name: `${app.title} · 每月` });
+    expect(panel).toHaveTextContent(String(app.amount * 7) + '.00');
+    expect(panel).toHaveTextContent(`$${app.amount}`);
+    if (app.id !== '6670324846') {
+      expect(within(panel).getByRole('article', { name: '官网美元价官方价格' })).toBeVisible();
+      expect(panel).not.toHaveTextContent('GLOBAL');
+    }
+  }
+});
+
 test('malformed catalog responses show a recoverable error instead of crashing', async () => {
   respondWith({ apps: [{ id: 'bad', name: 'Broken', plans: null }] });
   render(<OfficialReference />); open();
