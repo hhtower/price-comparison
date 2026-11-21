@@ -9,8 +9,7 @@ afterEach(() => { cleanup(); window.history.replaceState({}, '', '/'); });
 test('guide is directly readable with stable field anchors and ordinary navigation links', () => {
   window.history.replaceState({}, '', '/guide/?from=offer#duration');
   const { container } = render(<App />);
-  expect(screen.getByRole('heading', { level: 1, name: '新手选购指南' })).toBeInTheDocument();
-  expect(screen.getByRole('navigation', { name: '按购买需求阅读' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { level: 1, name: '选购指南' })).toBeInTheDocument();
   for (const [name, field] of Object.entries(PURCHASE_GUIDE_FIELDS)) {
     expect(document.getElementById(name)).toHaveTextContent(field.explanation);
   }
@@ -19,11 +18,11 @@ test('guide is directly readable with stable field anchors and ordinary navigati
   expect(document.querySelector('link[rel="canonical"]')).toHaveAttribute('href', 'https://price.yufu.pub/guide');
 });
 
-test('guide opens the matching glossary group before scrolling to field and group anchors', () => {
+test('guide opens additional terms before scrolling to field and group anchors', () => {
   window.history.replaceState({}, '', '/guide#duration');
   const { container } = render(<App />);
   expect(document.getElementById('duration').closest('details')).toHaveAttribute('open');
-  expect(document.getElementById('region').closest('details')).not.toHaveAttribute('open');
+  expect(document.getElementById('region')).toBeVisible();
   const delivery = document.getElementById('region');
   delivery.scrollIntoView = vi.fn();
   window.history.replaceState({}, '', '/guide#region');
@@ -31,11 +30,20 @@ test('guide opens the matching glossary group before scrolling to field and grou
   expect(delivery.scrollIntoView).toHaveBeenCalledOnce();
   expect(delivery).toBeVisible();
   expect(delivery.closest('details')).toHaveAttribute('open');
-  window.history.replaceState({}, '', '/guide#guide-usage_warranty');
+  document.getElementById('guide-more').open = false;
+  window.history.replaceState({}, '', '/guide#guide-usage');
   window.dispatchEvent(new HashChangeEvent('hashchange'));
-  expect(container.querySelector('#guide-usage_warranty')).toHaveAttribute('open');
+  expect(document.getElementById('access_channel')).toBeVisible();
+  expect(document.getElementById('guide-more')).toHaveAttribute('open');
   expect(container.querySelector('#guide-warranty_terms')).toBeNull();
   expect(container.querySelector('#guide-scenarios').tagName).toBe('H2');
+});
+
+test.each(['guide-checklist', 'guide-fields', 'guide-2fa'])('guide opens more information for the %s anchor', anchor => {
+  window.history.replaceState({}, '', `/guide#${anchor}`);
+  render(<App />);
+  expect(document.getElementById(anchor)).toBeVisible();
+  expect(document.getElementById('guide-more')).toHaveAttribute('open');
 });
 
 
@@ -87,7 +95,7 @@ test.each(['https://example.com/products/42', '//example.com/products/42', '/adm
   expect(screen.getByRole('link', { name: '返回商品列表' })).toHaveAttribute('href', '/');
 });
 
-test('guide helps choose a purchase type, compare conditions and ask concrete questions', () => {
+test('guide shows purchase types and protections upfront with optional examples and terms', () => {
   window.history.replaceState({}, '', '/guide');
   const { container } = render(<App />);
   expect(document.body).toHaveClass('guide-shell');
@@ -98,23 +106,33 @@ test('guide helps choose a purchase type, compare conditions and ask concrete qu
   expect(screen.queryByRole('navigation', { name: '网站导航' })).not.toBeInTheDocument();
   expect(screen.queryByRole('link', { name: '商品比价' })).not.toBeInTheDocument();
   expect(screen.queryByRole('link', { name: '检测工具' })).not.toBeInTheDocument();
-  expect(container).toHaveTextContent(PURCHASE_GUIDE_CONTENT.introduction);
-  const navigation = screen.getByRole('navigation', { name: '按购买需求阅读' });
+  expect(screen.queryByRole('navigation', { name: '按购买需求阅读' })).not.toBeInTheDocument();
+  for (const name of ['短期', '租号', '成品号', '代充']) {
+    expect(screen.getByRole('heading', { level: 3, name })).toBeVisible();
+  }
   for (const scenario of PURCHASE_GUIDE_CONTENT.scenarios) {
-    const link = navigation.querySelector(`a[href="#${scenario.id}"]`);
-    expect(link).toHaveTextContent(scenario.title);
     const target = document.getElementById(scenario.id);
     expect(target).toBeVisible();
-    expect(target).toHaveTextContent(scenario.question);
+    expect(target).toHaveTextContent(scenario.text);
   }
-  expect(screen.getByRole('table', { name: '同样写着一个月，为什么不能只比价格？' })).toBeVisible();
+  for (const name of ['subscription_warranty', 'usage_warranty']) {
+    expect(document.getElementById(name)).toBeVisible();
+    expect(document.getElementById(name).closest('details')).toBeNull();
+  }
+  const more = document.getElementById('guide-more');
+  expect(more).not.toHaveAttribute('open');
+  expect(document.getElementById('guide-checklist')).not.toBeVisible();
+  expect(document.getElementById('guide-fields')).not.toBeVisible();
+  expect(container.querySelector('table')).not.toBeVisible();
+  fireEvent.click(screen.getByText('购买前了解更多', { selector: 'summary' }));
+  expect(document.getElementById('guide-checklist')).toBeVisible();
+  expect(screen.getByRole('table', { name: PURCHASE_GUIDE_CONTENT.comparison.title })).toBeVisible();
   expect(container).toHaveTextContent('以下为虚构示例，不是实时报价。');
   for (const item of PURCHASE_GUIDE_CONTENT.checklist) expect(container).toHaveTextContent(item.text);
   for (const group of PURCHASE_GUIDE_GROUPS) {
-    const details = document.getElementById(`guide-${group.id}`);
-    expect(details.tagName).toBe('DETAILS');
-    expect(details).not.toHaveAttribute('open');
-    fireEvent.click(details.querySelector('summary'));
-    expect(details).toHaveAttribute('open');
+    expect(document.getElementById(`guide-${group.id}`)).toBeVisible();
   }
+  fireEvent.click(more.querySelector('summary'));
+  expect(document.getElementById('guide-checklist')).not.toBeVisible();
+  expect(document.getElementById('duration')).not.toBeVisible();
 });

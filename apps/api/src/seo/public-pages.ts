@@ -80,27 +80,28 @@ function catalogContent(page: CatalogPage): string {
 }
 
 function guideContent(): string {
-  return '<header class="product-page-heading guide-page-heading"><a class="product-back-link" href="/">返回商品列表</a><h1>' + escapeHtml(guide.title) + '</h1></header>'
-    + '<div class="purchase-guide-content"><div class="guide-introduction"><p class="guide-headline">' + escapeHtml(guide.headline) + '</p><p>' + escapeHtml(guide.introduction) + '</p></div>'
-    + '<h2 id="guide-scenarios">' + escapeHtml(guide.scenariosTitle) + '</h2><nav class="guide-choices" aria-label="按购买需求阅读">'
-    + guide.scenarios.map(scenario => '<a href="#' + escapeHtml(scenario.id) + '">' + escapeHtml(scenario.title) + '<span aria-hidden="true"> ↓</span></a>').join('') + '</nav><div class="guide-grid">'
+  return '<header class="product-page-heading guide-page-heading"><h1>' + escapeHtml(guide.title) + '</h1><a class="product-back-link" href="/">返回商品列表</a></header>'
+    + '<div class="purchase-guide-content">'
+    + '<h2 id="guide-scenarios">' + escapeHtml(guide.scenariosTitle) + '</h2><div class="guide-grid">'
     + guide.scenarios.map(scenario => '<article class="guide-card guide-scenario" id="' + escapeHtml(scenario.id) + '"><h3>' + escapeHtml(scenario.title)
-      + '</h3><p class="guide-choice">' + escapeHtml(scenario.choice) + '</p><p>' + escapeHtml(scenario.text) + '</p><p><strong>重点确认：</strong>'
-      + escapeHtml(scenario.check) + '</p><div class="guide-question"><strong>可以这样问商家</strong><p>' + escapeHtml(scenario.question)
-      + '</p></div><p class="guide-pitfall">' + escapeHtml(scenario.pitfall) + '</p></article>').join('') + '</div>'
+      + '</h3><p class="guide-choice">' + escapeHtml(scenario.choice) + '</p><p>' + escapeHtml(scenario.text) + '</p></article>').join('') + '</div>'
+    + '<h2 id="guide-warranties">' + escapeHtml(guide.warrantiesTitle) + '</h2><div class="guide-warranties">'
+    + ['subscription_warranty', 'usage_warranty'].map(name => '<dl id="guide-' + name + '"><div id="' + name + '"><dt>'
+      + escapeHtml(PURCHASE_GUIDE_FIELDS[name]!.label) + '</dt><dd>' + escapeHtml(PURCHASE_GUIDE_FIELDS[name]!.explanation) + '</dd></div></dl>').join('') + '</div>'
+    + '<details class="guide-more" id="guide-more"><summary>' + escapeHtml(guide.moreTitle) + '</summary>'
+    + '<h2 id="guide-checklist">' + escapeHtml(guide.checklistTitle) + '</h2><dl class="guide-checklist">'
+    + guide.checklist.map(item => '<div><dt>' + escapeHtml(item.title) + '</dt><dd>' + escapeHtml(item.text) + '</dd></div>').join('') + '</dl>'
     + '<div class="guide-comparison"><div class="guide-table-scroll" tabindex="0" role="region" aria-label="报价条件对比"><table><caption>'
     + escapeHtml(guide.comparison.title) + '</caption><thead><tr>'
     + guide.comparison.columns.map(column => '<th scope="col">' + escapeHtml(column) + '</th>').join('') + '</tr></thead><tbody>'
     + guide.comparison.rows.map(([label, a, b]) => '<tr><th scope="row">' + escapeHtml(label) + '</th><td>' + escapeHtml(a) + '</td><td>' + escapeHtml(b) + '</td></tr>').join('')
     + '</tbody></table></div><p class="guide-example-note">' + escapeHtml(guide.comparison.note) + '</p><p class="guide-takeaway">' + escapeHtml(guide.comparison.takeaway) + '</p></div>'
-    + '<h2 id="guide-checklist">' + escapeHtml(guide.checklistTitle) + '</h2><dl class="guide-checklist">'
-    + guide.checklist.map(item => '<div><dt>' + escapeHtml(item.title) + '</dt><dd>' + escapeHtml(item.text) + '</dd></div>').join('') + '</dl>'
-    + '<div class="guide-next"><h2>' + escapeHtml(guide.nextTitle) + '</h2><p>' + escapeHtml(guide.nextText) + '</p><p class="guide-caution">' + escapeHtml(guide.caution) + '</p></div></div>'
-    + '<h2 id="guide-fields">' + escapeHtml(guide.glossaryTitle) + '</h2><p class="guide-glossary-introduction">' + escapeHtml(guide.glossaryIntroduction) + '</p><div class="guide-glossary">'
-    + PURCHASE_GUIDE_GROUPS.map(group => '<details class="guide-card" id="guide-' + group.id + '"><summary>' + escapeHtml(group.label) + '</summary><dl class="guide-field-list">'
+    + '<div id="guide-fields"><h2>' + escapeHtml(guide.glossaryTitle) + '</h2>'
+    + '<dl class="guide-field-list"><div id="guide-2fa"><dt>' + escapeHtml(guide.twoFactor.title) + '</dt><dd>' + escapeHtml(guide.twoFactor.text) + '</dd></div></dl>'
+    + PURCHASE_GUIDE_GROUPS.filter(group => !['subscription_warranty', 'usage_warranty'].includes(group.id)).map(group => '<dl class="guide-field-list" id="guide-' + group.id + '">'
       + Object.entries(PURCHASE_GUIDE_FIELDS).filter(([, field]) => field.displayGroup === group.id)
-        .map(([name, field]) => '<div id="' + escapeHtml(name) + '"><dt>' + escapeHtml(field.label) + '</dt><dd>' + escapeHtml(field.explanation) + '</dd></div>').join('') + '</dl></details>').join('')
-    + '</div><a class="guide-return" href="/">返回商品列表，开始选购<span aria-hidden="true"> →</span></a>';
+        .map(([name, field]) => '<div id="' + escapeHtml(name) + '"><dt>' + escapeHtml(field.label) + '</dt><dd>' + escapeHtml(field.explanation) + '</dd></div>').join('') + '</dl>').join('')
+    + '</div></details></div><a class="guide-return" href="/">返回商品列表，开始选购<span aria-hidden="true"> →</span></a>';
 }
 
 function toolsContent(): string {

@@ -19,8 +19,8 @@ const definitions: Array<[string, string, DisplayGroup, string, string]> = [
   ['supported_client', '支持工具', 'usage', '明确支持软件或工具的商品', '原文明确支持的工具名称；支持不能扩展为仅支持。'],
   ['subscription_override', '覆盖现有订阅', 'subscription', '订阅充值商品', '仅明确不能覆盖现有订阅时显示不可覆盖订阅，未说明或允许覆盖时省略。'],
   ['bulk_purchase', '批量购买', 'bulk', '明确批量销售的商品', '区分支持批量、多件起购和固定打包，不由库存或价格推断，不代替实际结算数量。'],
-  ['subscription_warranty', '订阅保障', 'subscription_warranty', 'AI 会员商品', '表示订阅权益的质保，显示为“订阅质保X小时”“订阅质保X天”；期限未注明时显示“订阅质保”，不据此推定天数。成品号、代充默认包含订阅保障，商品标签不再重复展示。未明确保障时省略；不代表登录、封号或无条件赔付保障，具体条件请核对商家说明。'],
-  ['usage_warranty', '使用保障', 'usage_warranty', 'AI 会员商品', '表示账号或服务使用的质保，显示为“使用质保X小时”“使用质保X天”或“首登”；期限未注明时显示“使用质保”，不据此推定天数。首登仅指首次登录，未明确保障时省略；标签不是无条件承诺，具体条件请核对商家说明。'],
+  ['subscription_warranty', '订阅保障', 'subscription_warranty', 'AI 会员商品', '商家承诺真实充值，提供可核对的充值订单，并兑现约定的会员权益。'],
+  ['usage_warranty', '使用保障', 'usage_warranty', 'AI 会员商品', '商家对正常登录和约定期限内持续使用提供的保障。“首登”仅保首次登录。'],
 ];
 export const PURCHASE_GUIDE_FIELDS: Readonly<Record<string, PurchaseGuideField>> = Object.fromEntries(definitions.map(([name, label, displayGroup, appliesTo, explanation], index) => [name, {
   label, explanation, appliesTo, displayGroup, collectionGroup: PURCHASE_GUIDE_GROUPS.find(g => g.id === displayGroup)!.label,
@@ -29,24 +29,24 @@ export const PURCHASE_GUIDE_FIELDS: Readonly<Record<string, PurchaseGuideField>>
 }]));
 
 export const PURCHASE_GUIDE_CONTENT = {
-  title: '新手选购指南',
-  headline: '先选对，再比价。',
-  introduction: '先分清你是要给已有账号开通权益，还是购买商家提供的账号。代充、发兑换码是完成购买的方式，不能单凭这些名称判断买完能得到什么。',
-  scenariosTitle: '你想怎么买？',
+  title: '选购指南',
+  scenariosTitle: '商品类型',
   scenarios: [
     {
-      id: 'guide-top-up', title: '我有账号，想开通或续费', choice: '先确认「用自己的账号」',
-      text: '买完后，权益应开到你指定的账号上。商家可能代充，也可能发码让你兑换，要确认适用条件。“成品号”通常是另给一个账号，不是给你的账号续费。',
-      check: '核对账号地区和现有订阅，问清能否叠加时长、是否覆盖现有权益，还是需要到期后操作；如果发兑换码，还要确认兑换截止时间。',
-      question: '这个规格能在我的账号开通或续费吗？如果已有订阅会覆盖还是延长？买完怎么操作，开通后能用多久？',
-      pitfall: '兑换截止时间不等于会员时长；“30 天内兑换”不代表能用 30 天。“接码”只收验证码，不等于开通会员。',
+      id: 'guide-account', title: '成品号', choice: '用商家提供的账号',
+      text: '已包含订阅保障，会员权益在商家提供的账号上。',
     },
     {
-      id: 'guide-account', title: '我想买一个账号用', choice: '找「成品账号」，再分独享和共享',
-      text: '独享是自己使用，共享是和别人共用。收到账号密码，不代表你能改密码、换邮箱，也不代表账号只归你使用。',
-      check: '确认从哪里登录、能用哪些设备、有没有地区或网络要求。只想自己用，就先排除共享商品。',
-      question: '这个账号会和别人共用吗？能改密码或邮箱吗？我用的设备和地区能登录吗？登不上或中途不能用了怎么处理？',
-      pitfall: '“独享”描述使用方式，不是永久可用或账号所有权的承诺。',
+      id: 'guide-top-up', title: '代充', choice: '用你自己的账号',
+      text: '已包含订阅保障，为自己的账号开通或续费会员。',
+    },
+    {
+      id: 'guide-rental', title: '租号', choice: '使用商家账号，按约定租用',
+      text: '可为独享或多人共享，按约定的期限和方式使用。',
+    },
+    {
+      id: 'guide-short-term', title: '短期', choice: '保障较短，或条件尚不明确',
+      text: '包括保障不足 25 天，以及保障或交付方式不明确的商品。',
     },
   ],
   comparison: {
@@ -55,23 +55,25 @@ export const PURCHASE_GUIDE_CONTENT = {
     columns: ['要看什么', '示例报价 A', '示例报价 B'],
     rows: [
       ['标价', '19 元 / 个', '29 元 / 个'],
-      ['买到什么', '成品账号', '成品账号'],
+      ['使用哪个账号', '商家提供的账号', '商家提供的账号'],
       ['谁在使用', '多人共享', '一人独享'],
       ['使用多久', '一个月', '一个月'],
-      ['出了问题保什么', '仅保首次登录', '7 天内无法登录可换号'],
+      ['使用保障', '仅保首次登录', '7 天内无法登录可换号'],
     ],
-    takeaway: '如果你想一个人用，A 就不符合需求。B 的售后也只写了 7 天内的登录问题，不代表整个月的所有问题都保。先选符合需求的条件，再比较价格。',
+    takeaway: '想独享就先排除 A。B 的使用期限是一个月，登录问题保障是 7 天。比较价格时，也要比较使用方式和保障期限。',
   },
-  checklistTitle: '下单前，把这 4 件事问清楚',
+  warrantiesTitle: '两种保障，分开看',
+  moreTitle: '购买前了解更多',
+  checklistTitle: '下单前，确认四件事',
   checklist: [
-    { title: '我能不能用？', text: '把自己的设备、地区、账号和现有订阅情况告诉商家，确认是否适用。页面没写的条件，不代表没有限制。' },
-    { title: '这次一共付多少？', text: '看清所选规格、币种和起购数量。“每件 5 元，10 件起购”至少要付 50 元；别把单价当总价。' },
-    { title: '什么时候拿到、能用多久？', text: '问清是自动发货还是等待人工处理，使用期限从付款、激活还是首次登录开始算，是否还有次数或额度限制。' },
-    { title: '出问题找谁、怎么处理？', text: '“首登”就是首次登录；“仅保首登”不是保整个月。问清可反馈的期限、哪些情况不保、是补发、换号还是退款，并保留下单规格和商家承诺。' },
+    { title: '能不能用', text: '设备、地区、网络和现有订阅是否适用，有无次数或额度限制。' },
+    { title: '一共多少钱', text: '核对规格、币种和起购数量，单价不一定是实付总价。' },
+    { title: '能用多久', text: '何时交付、从何时计时；兑换截止时间不等于使用期限。' },
+    { title: '出问题怎么办', text: '问清保障期限、补发或退款方式，保留订单与商家承诺。' },
   ],
-  nextTitle: '回到报价里，按这个顺序看',
-  nextText: '搜索商品 → 选具体商家和规格 → 打开“商品说明”核对条件 → 比较符合需求的报价 → 点“去商家”确认后再下单。',
-  caution: '本站汇总第三方报价，不参与交易或提供售后。价格、库存和条件可能变化，下单前以商家当前页面为准；报价有误可在该报价举报。',
-  glossaryTitle: '有词看不懂？按需查这里',
-  glossaryIntroduction: '按需查看商品标签的含义；AI 会员的订阅保障与使用保障分别比较，免责和退款条件请核对商家说明。',
+  glossaryTitle: '其他商品术语',
+  twoFactor: {
+    title: '2FA（双重验证）',
+    text: '登录时，除了账号密码，还需通过第二种方式验证身份，例如输入验证器生成的动态验证码。',
+  },
 } as const;

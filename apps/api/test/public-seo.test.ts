@@ -512,10 +512,13 @@ test('guide is static and complete before JavaScript, with canonical navigation'
   const response = await server.inject('/guide?from=offer');
   assert.equal(response.statusCode, 200);
   const document = new JSDOM(response.body).window.document;
-  assert.equal(document.querySelector('h1')!.textContent, '新手选购指南');
+  assert.equal(document.querySelector('h1')!.textContent, '选购指南');
   assert.equal(document.querySelector('link[rel="canonical"]')!.getAttribute('href'), 'https://price.yufu.pub/guide');
-  assert.equal(document.querySelectorAll('nav[aria-label="按购买需求阅读"] a').length, 2);
-  assert.equal(document.querySelectorAll('details').length, 7);
+  assert.equal(document.querySelectorAll('.guide-scenario').length, 4);
+  assert.equal(document.querySelectorAll('details').length, 1);
+  for (const selector of ['#guide-checklist', '.guide-comparison', '#guide-fields', '#guide-2fa']) {
+    assert.equal(document.querySelector(selector)!.closest('details'), document.getElementById('guide-more'));
+  }
   assert.equal(document.querySelectorAll('.guide-field-list > div').length, 8);
   assert.equal(document.querySelectorAll('details[open]').length, 0);
   assert.equal(document.getElementById('guide-scenarios')!.tagName, 'H2');
@@ -528,9 +531,14 @@ test('guide is static and complete before JavaScript, with canonical navigation'
     assert.ok(document.getElementById(name)!.textContent!.includes(field.explanation));
   }
   for (const scenario of PURCHASE_GUIDE_CONTENT.scenarios) {
-    assert.ok(document.getElementById(scenario.id)!.textContent!.includes(scenario.question));
-    assert.ok(document.querySelector(`a[href="#${scenario.id}"]`));
+    assert.ok(document.getElementById(scenario.id)!.textContent!.includes(scenario.text));
+    assert.equal(document.getElementById(scenario.id)!.closest('details'), null);
   }
+  for (const name of ['subscription_warranty', 'usage_warranty']) {
+    assert.equal(document.getElementById(name)!.closest('details'), null);
+  }
+  assert.ok(document.getElementById('subscription_warranty')!.textContent!.includes('真实充值'));
+  assert.ok(document.getElementById('subscription_warranty')!.textContent!.includes('订单'));
   assert.ok(document.querySelector('table caption')!.textContent!.includes(PURCHASE_GUIDE_CONTENT.comparison.title));
   for (const item of PURCHASE_GUIDE_CONTENT.checklist) assert.ok(document.body.textContent!.includes(item.text));
   assert.ok(document.querySelector('a[href="/"]'));
@@ -541,14 +549,14 @@ test('guide is static and complete before JavaScript, with canonical navigation'
 
 test('guide escapes shared display text instead of treating it as HTML', async t => {
   const { PURCHASE_GUIDE_FIELDS } = await import('@price-comparison/catalog/purchase-guide-content');
-  const field = PURCHASE_GUIDE_FIELDS.warranty;
+  const field = PURCHASE_GUIDE_FIELDS.usage_warranty;
   const original = field.explanation;
   try {
     field.explanation = '<img src=x onerror=alert(1)> & "条件"';
     const response = await setup(t).inject('/guide');
     const document = new JSDOM(response.body).window.document;
-    assert.equal(document.querySelector('#warranty dd')!.textContent, field.explanation);
-    assert.equal(document.querySelector('#warranty img'), null);
+    assert.equal(document.querySelector('#usage_warranty dd')!.textContent, field.explanation);
+    assert.equal(document.querySelector('#usage_warranty img'), null);
     assert.ok(response.body.includes('&lt;img'));
   } finally { field.explanation = original; }
 });

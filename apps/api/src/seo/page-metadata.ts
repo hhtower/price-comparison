@@ -15,7 +15,7 @@ export const PAGE_METADATA = {
     path: '/tools', title: `AI 与 IP 检测工具 - ${SITE_NAME}`,
     description: '检测 OpenAI-compatible API 的响应、模型能力与稳定性，查询 IP 网络、风险及服务可达性。检测结果仅供参考，不作为模型来源证明。',
   },
-  guide: { path: '/guide', title: `新手选购指南 - ${SITE_NAME}`, description: '给已有账号开通或续费，还是买一个账号使用？按自己的需求挑商品，用报价示例看懂独享共享、使用期限和售后范围，下单前问清费用与使用条件。' },
+  guide: { path: '/guide', title: `选购指南 - ${SITE_NAME}`, description: '看懂成品号、代充、租号和短期的区别，分清订阅保障与使用保障，核对真实充值、订单凭证、使用期限和售后条件，再比较价格。' },
   admin: { path: '/admin', title: `${SITE_NAME} · 管理端`, description: `${SITE_NAME}管理端。` },
   assistant: { path: '/assistant', title: `导购助手 - ${SITE_NAME}`, description: '说说你的用途和购买要求，通过独立对话了解选购条件与本站真实报价。' },
 } as const;
