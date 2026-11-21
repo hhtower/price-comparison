@@ -202,9 +202,15 @@
 
 .compact-catalog .product-heading h2 { grid-column: 1; grid-row: 1; }
 .compact-catalog .product-heading .product-counts { grid-column: 1 / -1; grid-row: 2; margin: 0; }
+.compact-catalog .standard-product-header:has(.product-official-reference) .product-counts { grid-column: 1; }
 .membership-note { color: #315d93; cursor: text; }
 .compact-catalog .product-heading .product-active-tags { grid-column: 1 / -1; }
-.product-estimate { margin-left: auto; color: #64748b; }
+.product-lowest-price { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.product-estimate { padding: 0 3px; border: 1px solid #dce5e5; border-radius: 3px; color: #64748b; font-size: 11px; line-height: 1.4; }
+.product-official-reference { grid-column: 2; grid-row: 2; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; gap: 2px 5px; color: var(--catalog-muted); font-size: 12px; line-height: 1.6; }
+.product-official-percentage { color: var(--catalog-muted); white-space: nowrap; }
+.product-official-percentage[data-price-relation="lower"] { color: var(--catalog-accent); }
+.product-official-percentage[data-price-relation="higher"] { color: #b54735; }
 
 .compact-catalog .standard-product-header h2 {
   flex-wrap: wrap;
@@ -807,6 +813,8 @@
   .catalog-virtual-item { padding: 0 0 10px; }
   .catalog-virtual-item:has(.product-offers-panel) { padding-bottom: 24px; }
   .compact-catalog .product-heading .product-counts { font-size: 11px; }
+  .compact-catalog .standard-product-header:has(.product-official-reference) .product-counts { grid-column: 1 / -1; }
+  .product-official-reference { grid-column: 1 / -1; grid-row: 3; justify-content: flex-start; font-size: 11px; }
 
   .compact-catalog .standard-product-header h2 {
     font-size: 16px;

@@ -96,7 +96,7 @@ test('all products start collapsed with prices and counts, then independently sh
   expect(first).toHaveAttribute('aria-expanded', 'false');
   expect(second).toHaveAttribute('aria-expanded', 'false');
   expect(within(card).getByText('¥10')).toBeInTheDocument();
-  expect(within(card).getByText('预估')).toBeInTheDocument();
+  expect(within(card).getByLabelText('预估价')).toHaveTextContent('估');
   expect(within(card).getByRole('button', { name: '5 家商铺' })).toBeInTheDocument();
   expect(within(card).getByRole('button', { name: '9 条报价' })).toBeInTheDocument();
   expect(screen.queryByRole('link', { name: '去商家' })).not.toBeInTheDocument();
@@ -172,23 +172,24 @@ test('summary whitespace and price toggle quotes without navigating away', async
   expect(window.location.pathname).toBe('/');
 });
 
-test.each([false, true])('estimated starting prices are labeled in the counts row (membership: %s)', async membership => {
+test.each([false, true])('estimated starting prices keep a compact label beside the price (membership: %s)', async membership => {
   mount(membership);
   const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充' : 'ChatGPT Plus', exact: true });
   const card = trigger.closest('article');
   expect(card.querySelector('.lowest-note')).toHaveTextContent('¥10 起');
   expect(card.querySelector('.lowest-note')).not.toHaveTextContent('预估');
-  expect(card.querySelector('.product-counts')).toHaveTextContent('预估');
+  expect(card.querySelector('.product-counts')).not.toHaveTextContent('估');
+  expect(within(card.querySelector('.product-lowest-price')).getByLabelText('预估价')).toHaveTextContent('估');
   expect(within(card).queryByRole('link', { name: '去商家' })).not.toBeInTheDocument();
   fireEvent.click(trigger);
-  expect(card.querySelector('.product-counts')).toHaveTextContent('预估');
+  expect(within(card.querySelector('.product-lowest-price')).getByLabelText('预估价')).toHaveTextContent('估');
   expect(card.querySelector('.tile-price')).toHaveTextContent('¥10预估');
 });
 
-test.each([false, true])('verified starting prices have no estimate label in the counts row (membership: %s)', async membership => {
+test.each([false, true])('verified starting prices have no estimate label (membership: %s)', async membership => {
   mount(membership, undefined, true, undefined, 'verified');
   const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充' : 'ChatGPT Plus', exact: true });
-  expect(trigger.closest('header')).not.toHaveTextContent('预估');
+  expect(within(trigger.closest('header')).queryByLabelText('预估价')).not.toBeInTheDocument();
 });
 
 test('product names toggle the preview and keep a separate detail link', async () => {

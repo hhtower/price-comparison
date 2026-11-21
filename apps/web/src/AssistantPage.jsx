@@ -16,8 +16,7 @@ import { usePageAnalytics } from './usePageAnalytics.js';
 import ContactAdminButton from './ContactAdminButton.jsx';
 import { displayPurchaseTagText } from './purchase-tag-values.js';
 import { formatMoney } from './money.js';
-import { readCatalog, formatPeriod } from './official-reference.js';
-import { assistantOfficialPrice } from './assistant-official-price.js';
+import { readCatalog, formatPeriod, findOfficialPrice } from './official-reference.js';
 import OfferTagDetails, { offerConditions } from './OfferTagDetails.jsx';
 import AssistantLoading from './AssistantLoading.jsx';
 import { AssistantHeader, AssistantWelcome, AssistantPlatformChip, AssistantSendIcon, ASSISTANT_STARTERS, selectedAssistantPlatform } from './AssistantControls.jsx';
@@ -124,7 +123,7 @@ function QuoteCard({ card, catalog }) {
   const [open, setOpen] = useState(false);
   const offer = card.offer ?? { name: card.title, shop: `商铺 #${card.shopId}`, tags: [] };
   const price = <p className="assistant-price">{formatMoney(card.price, card.currency)}</p>;
-  const reference = assistantOfficialPrice(card, catalog);
+  const reference = findOfficialPrice(card.title, card.offer?.tags ?? [], catalog);
   const facts = offerConditions(offer);
   const summary = facts.filter(fact => ['sms_verification', 'region', 'duration'].includes(fact.name))
     .map(fact => displayPurchaseTagText(fact, fact.value)).join(' · ');

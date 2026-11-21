@@ -1,0 +1,169 @@
+import { afterEach, expect, test, vi } from 'vitest';
+import { cleanup, render, screen, within } from '@testing-library/react';
+import { VirtuosoMockContext } from 'react-virtuoso';
+import PublicPage from './PublicPage.jsx';
+import * as reference from './official-reference.js';
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+const price = {
+  country: 'ph', countryName: '菲律宾', currency: 'PHP', amount: 800, cnyAmount: 100,
+  formatted: '₱800', capturedAt: '2026-11-21T10:00:00Z',
+  sourceUrl: 'https://apps.apple.com/ph/app/id6448311069', stale: false,
+};
+const monthly = { id: 'plus-month', name: 'Plus - Monthly', kind: 'subscription', period: 'P1M', prices: [
+  { ...price, country: 'us', countryName: '美国', currency: 'USD', amount: 28, cnyAmount: 200 },
+  { ...price, country: 'cn', countryName: '中国大陆', currency: 'CNY', amount: 10, cnyAmount: 10, stale: true },
+  price,
+] };
+const catalog = { exchangeDate: '2026-11-21', apps: [{ id: '6448311069', name: 'ChatGPT', plans: [monthly,
+  { ...monthly, id: 'plus-year', name: 'Plus - Annual', period: 'P1Y', prices: [{ ...price, cnyAmount: 1000 }] },
+] }] };
+const offer = {
+  productId: '1', shopId: '1', shop: '测试店铺', name: 'Plus 月卡', membershipKind: 'account',
+  price: '88', currency: 'CNY', priceStatus: 'estimated', inStock: true, stale: false, settlementQuantity: 1,
+  tags: [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }],
+};
+
+test('catalog reference compares the lowest fresh official price across regions', () => {
+  expect(reference.catalogOfficialPrice('ChatGPT Plus', offer, catalog)).toMatchObject({
+    country: 'ph', cnyAmount: 100, period: 'P1M', percentage: 88,
+  });
+});
+
+test('catalog comparison uses both minima even when the official billing period differs', () => {
+  const annual = { ...monthly, id: 'plus-year', name: 'Plus - Annual', period: 'P1Y', prices: [{ ...price, cnyAmount: 20 }] };
+  const result = reference.catalogOfficialPrice('ChatGPT Plus', offer, {
+    ...catalog, apps: [{ ...catalog.apps[0], plans: [monthly, annual] }],
+  });
+  expect(result).toMatchObject({ period: 'P1Y', cnyAmount: 20 });
+  expect(result.percentage).toBeCloseTo(440);
+});
+
+test.each([
+  ['higher merchant price', { price: '112' }, 112],
+  ['zero merchant price', { price: '0' }, 0],
+  ['same foreign currency', { currency: 'PHP', price: '704' }, 88],
+  ['RMB alias', { currency: 'RMB' }, 88],
+  ['different foreign currency', { currency: 'USD' }, null],
+  ['missing duration', { tags: [] }, 88],
+  ['warranty is not duration', { tags: [{ name: 'subscription_warranty', value: '质保30天' }] }, 88],
+  ['different duration', { tags: [{ name: 'duration', value: 60 }] }, 88],
+  ['qualified duration', { tags: [{ name: 'duration', value: { kind: 'min', days: 30 } }] }, 88],
+  ['conflicting duration', { tags: [{ name: 'duration', value: 30 }, { name: 'duration', value: 365 }] }, 88],
+  ['missing price', { price: null }, null],
+  ['blank price', { price: ' ' }, null],
+  ['negative price', { price: '-1' }, null],
+  ['invalid price', { price: 'Infinity' }, null],
+  ['bulk minimum uses the existing unit price', { settlementQuantity: 10 }, 88],
+])('catalog percentage handles %s without changing its comparison basis', (_name, changes, percentage) => {
+  const actual = reference.catalogOfficialPrice('ChatGPT Plus', { ...offer, ...changes }, catalog)?.percentage;
+  if (percentage === null) expect(actual).toBeNull();
+  else expect(actual).toBeCloseTo(percentage);
+});
+
+test.each([
+  [88.2, '8.82折'], [88.26, '8.83折'], [88, '8.8折'], [80, '8折'], [99, '9.9折'], [100, '同价'], [112, '贵 12%'],
+  [0, '0折'], [0.01, '0折'], [null, ''], [undefined, ''], [Infinity, ''],
+])('official comparison formats %s as a familiar price label', (percentage, label) => {
+  expect(reference.formatOfficialDiscount(percentage)).toBe(label);
+});
+
+test.each([
+  ['other tier', [{ ...monthly, name: 'Pro' }]],
+  ['ambiguous SKU', [monthly, { ...monthly, id: 'duplicate', name: 'Plus - Monthly #2' }]],
+  ['stale prices', [{ ...monthly, prices: [{ ...price, stale: true }] }]],
+  ['missing exchange rate', [{ ...monthly, prices: [{ ...price, cnyAmount: null }] }]],
+  ['zero reference', [{ ...monthly, prices: [{ ...price, cnyAmount: 0 }] }]],
+  ['untrusted source', [{ ...monthly, prices: [{ ...price, sourceUrl: 'https://shop.invalid' }] }]],
+])('catalog omits unreliable official references: %s', (_name, plans) => {
+  expect(reference.catalogOfficialPrice('ChatGPT Plus', offer, {
+    ...catalog, apps: [{ ...catalog.apps[0], plans }],
+  })).toBeNull();
+});
+
+function renderCatalog({ groups, referenceFailure = false } = {}) {
+  const requests = [];
+  const item = { id: '42', name: 'ChatGPT Plus', platform: 'openai', isAiMembership: true,
+    offers: [offer], shopCount: 2, productCount: 2, membershipGroups: groups || ['account', 'top_up'].map(kind => ({
+      kind, minPrice: '88', maxPrice: '88', shopCount: 1, productCount: 1,
+      offers: [{ ...offer, membershipKind: kind, productId: kind }],
+    })),
+  };
+  vi.stubGlobal('fetch', vi.fn(async input => {
+    const url = new URL(input, 'http://localhost');
+    requests.push(url.pathname);
+    if (url.pathname === '/api/official-reference/catalog') {
+      return referenceFailure ? new Response(null, { status: 503 }) : Response.json(catalog);
+    }
+    if (url.pathname === '/api/analytics/collect') return new Response(null, { status: 204 });
+    if (url.pathname.endsWith('/price-history')) return Response.json({ points: [] });
+    if (url.pathname === '/api/catalog/coverage') return Response.json({ shopCount: 2, productCount: 2 });
+    if (url.pathname === '/api/catalog/products') return Response.json({ items: [item] });
+    return Response.json({ items: [item], total: 1, offerTotal: 2, platformFacets: ['openai'] });
+  }));
+  render(<VirtuosoMockContext.Provider value={{ viewportHeight: 1600, itemHeight: 300 }}><PublicPage /></VirtuosoMockContext.Provider>);
+  return requests;
+}
+
+test('membership cards show the estimate beside the lowest price and share one official reference request', async () => {
+  const requests = renderCatalog();
+  await screen.findAllByLabelText('官方最低参考价');
+  for (const kind of ['成品号', '代充']) {
+    const card = screen.getByRole('button', { name: `ChatGPT Plus · ${kind}` }).closest('article');
+    const lowest = card.querySelector('.product-lowest-price');
+    expect(lowest).toHaveTextContent('¥88 起');
+    expect(within(lowest).getByLabelText('预估价')).toHaveTextContent('估');
+    expect(within(lowest).getByLabelText('预估价')).toHaveAttribute('title', '预估价');
+    expect(card.querySelector('.product-counts')).not.toHaveTextContent('估');
+    const official = within(card).getByLabelText('官方最低参考价');
+    expect(official).toHaveAttribute('title', expect.stringContaining('App Store 最低参考价'));
+    expect(official).toHaveTextContent('¥100');
+    expect(official).toHaveTextContent('菲律宾');
+    expect(official).toHaveTextContent('¥100/月');
+    expect(official).toHaveTextContent('8.8折');
+  }
+  expect(requests.filter(path => path === '/api/official-reference/catalog')).toHaveLength(1);
+});
+
+test('the percentage uses the card minimum even if its quote is not in the preview', async () => {
+  renderCatalog({ groups: [{ kind: 'account', minPrice: '50', maxPrice: '88', shopCount: 1, productCount: 2,
+    offers: [offer],
+  }] });
+  const official = await screen.findByLabelText('官方最低参考价');
+  const card = screen.getByRole('button', { name: 'ChatGPT Plus · 成品号' }).closest('article');
+  expect(card.querySelector('.product-lowest-price')).toHaveTextContent('¥50 起');
+  expect(within(card).queryByLabelText('预估价')).not.toBeInTheDocument();
+  expect(official).toHaveTextContent('5折');
+});
+
+test.each([
+  ['88.2', 'lower', '8.82折'], ['112', 'higher', '贵 12%'], ['100', 'same', '同价'],
+])('comparison labels distinguish %s with both text and color state', async (amount, relation, label) => {
+  renderCatalog({ groups: [{ kind: 'account', minPrice: amount, maxPrice: amount, shopCount: 1, productCount: 1,
+    offers: [{ ...offer, price: amount, tags: [] }],
+  }] });
+  const official = await screen.findByLabelText('官方最低参考价');
+  const comparison = official.querySelector('.product-official-percentage');
+  expect(comparison).toHaveTextContent(label);
+  expect(comparison).toHaveAttribute('data-price-relation', relation);
+});
+
+test.each(['rental', 'short_term'])('other membership groups do not load official references: %s', async kind => {
+  const requests = renderCatalog({ groups: [{ kind, minPrice: '88', maxPrice: '88', shopCount: 1, productCount: 1,
+    offers: [{ ...offer, membershipKind: kind }],
+  }] });
+  await screen.findByRole('button', { name: `ChatGPT Plus · ${kind === 'rental' ? '租号' : '短期'}` });
+  expect(screen.queryByLabelText('官方最低参考价')).not.toBeInTheDocument();
+  expect(requests).not.toContain('/api/official-reference/catalog');
+});
+
+test('reference service failure leaves merchant prices available', async () => {
+  renderCatalog({ referenceFailure: true });
+  const card = (await screen.findByRole('button', { name: 'ChatGPT Plus · 成品号' })).closest('article');
+  expect(card).toHaveTextContent('¥88 起');
+  expect(screen.queryByLabelText('官方最低参考价')).not.toBeInTheDocument();
+});

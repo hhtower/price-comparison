@@ -72,7 +72,7 @@ test('route kind overrides malicious query and stays fixed after reset, clear, s
   expect(screen.queryByRole('switch', { name: '新手' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '筛选（1）' }));
   expect(screen.queryByRole('group', { name: 'AI会员类型' })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: '清除全部', exact: true }));
+  fireEvent.click(await screen.findByRole('button', { name: '清除全部', exact: true }));
   fireEvent.click(screen.getByRole('button', { name: '应用筛选', exact: true }));
   expect(screen.getByRole('button', { name: '筛选', exact: true })).toBeInTheDocument();
   fireEvent.change(screen.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '成品号' } });

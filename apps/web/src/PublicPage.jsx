@@ -18,6 +18,7 @@ import { MEMBERSHIP_GROUPS, membershipKindLabel } from '@price-comparison/catalo
 import { updatePageMetadata } from './page-metadata.js';
 import { PRODUCT_PAGE_SIZE, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
 import { formatMoney } from './money.js';
+import { readCatalog, formatPeriod, catalogOfficialPrice, formatOfficialDiscount } from './official-reference.js';
 import PriceHistory from './PriceHistory.jsx';
 import PlatformIcon from './PlatformIcon.jsx';
 import { CatalogSeoIntro, CatalogSeoFaq } from './CatalogSeoContent.jsx';
@@ -726,13 +727,14 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
   </Container>;
 }
 
-const StandardProductCard = memo(function StandardProductCard({ item, group, expanded, onToggle, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, newcomer, factLimit }) {
+const StandardProductCard = memo(function StandardProductCard({ item, group, expanded, onToggle, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, newcomer, factLimit, referenceCatalog }) {
   const kind = group?.kind || '';
   const currency = group?.offers[0]?.currency || 'CNY';
   const offers = group?.offers || item.offers || EMPTY_LIST;
   const shopOffers = offers.filter(currentInventory);
   const visible = shopOffers.slice(0, OFFER_PAGE_SIZE);
-  const minOffer = shopOffers.find(availableOffer);
+  const minOffer = shopOffers.find(offer => availableOffer(offer)
+    && (!group || group.minPrice != null && Number(offer.price) === Number(group.minPrice) && offer.currency === currency));
   const estimated = (group ? group.minPrice != null : availableOffer(minOffer))
     && (minOffer?.priceStatus === 'estimated' || minOffer?.paymentMethod?.includes('预估'));
   const latestCapturedAt = group ? group.latestCapturedAt : item.latestCapturedAt;
@@ -743,6 +745,9 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
   const offersId = `${titleId}-offers`;
   const detailParams = new URLSearchParams({ newcomer: String(newcomer && !kind) });
   const detailHref = kind ? productPagePath(item.id, 1, kind) : productPagePath(item.id) + '?' + detailParams;
+  const reference = kind === 'account' || kind === 'top_up'
+    ? catalogOfficialPrice(item.name, { price: group.minPrice, currency }, referenceCatalog) : null;
+  const discount = formatOfficialDiscount(reference?.percentage);
 
   return (
     <article className="standard-product-card" aria-labelledby={titleId}>
@@ -756,13 +761,21 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
             <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'shops', kind ? [kind] : [])}>{shopCount} 家商铺</button><span aria-hidden="true">·</span>
             <button type="button" className="count-link" onClick={() => onOpenDetail(item, 'offers', kind ? [kind] : [])}>{productCount} 条报价</button><span aria-hidden="true">·</span>
             {updatedLabel === '更新时间未知' ? <span className="product-updated">{updatedLabel}</span> : <time className="product-updated" dateTime={latestCapturedAt} title={'最近采集：' + new Date(latestCapturedAt).toLocaleString('zh-CN')}>{updatedLabel}</time>}
-            {estimated ? <span className="product-estimate">预估</span> : null}
           </p>
           {activeTagLabels.length ? <div className="product-active-tags">{activeTagLabels.map((label) => <span key={label}>{label}</span>)}</div> : null}
         </div>
-        <div className="standard-product-summary">{group ? <span className="offer-price lowest-note"><span>{formatMoney(group.minPrice, currency)}</span>{group.minPrice != null ? <span className="offer-price-suffix"> 起</span> : null}</span> : <OfferPrice offer={minOffer} className="lowest-note" starting />}
+        <div className="standard-product-summary">
+          <div className="product-lowest-price">
+            {group ? <span className="offer-price lowest-note"><span>{formatMoney(group.minPrice, currency)}</span>{group.minPrice != null ? <span className="offer-price-suffix"> 起</span> : null}</span> : <OfferPrice offer={minOffer} className="lowest-note" starting />}
+            {estimated ? <span className="product-estimate" aria-label="预估价" title="预估价">估</span> : null}
+          </div>
           <svg className="product-offers-indicator" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </div>
+        {reference ? <div className="product-official-reference" role="note" aria-label="官方最低参考价" title="已采集地区中的 App Store 最低参考价，人民币金额为折算参考；折扣为商家最低价与官方最低价的金额之比，购买周期与条件可能不同">
+          <span>官方 {formatMoney(reference.cnyAmount)}/{formatPeriod(reference.period).replace(/^每/u, '')}</span>
+          <span>· {reference.countryName}</span>
+          {discount ? <span className="product-official-percentage" data-price-relation={reference.percentage < 100 ? 'lower' : reference.percentage > 100 ? 'higher' : 'same'}>· {discount}</span> : null}
+        </div> : null}
       </header>
       {expanded ? <div className="product-offers-panel" id={offersId}>
         <div className="shop-grid">
@@ -776,6 +789,10 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
 
 const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDetail, onOfferDetails, onEndReached, comparison, onCompare, priceRevision, onHeightChanged, newcomer, factLimit }) {
   const [expandedProducts, setExpandedProducts] = useState(() => new Set());
+  const referenceQuery = useQuery({
+    queryKey: ['official-reference'], queryFn: ({ signal }) => readCatalog(signal), staleTime: 60_000,
+    enabled: items.some(entry => entry.group?.kind === 'account' || entry.group?.kind === 'top_up'),
+  });
   const toggleProduct = useCallback(key => {
     setExpandedProducts(current => {
       const next = new Set(current);
@@ -784,8 +801,8 @@ const CatalogList = memo(function CatalogList({ items, activeTagLabels, onOpenDe
     });
   }, []);
   const renderItem = useCallback((_index, entry) => (
-    <div className="catalog-virtual-item"><StandardProductCard item={entry.item} group={entry.group} expanded={expandedProducts.has(entry.key)} onToggle={toggleProduct} priceRevision={priceRevision} activeTagLabels={activeTagLabels} onOpenDetail={onOpenDetail} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} newcomer={newcomer} factLimit={factLimit} /></div>
-  ), [expandedProducts, toggleProduct, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, priceRevision, newcomer, factLimit]);
+    <div className="catalog-virtual-item"><StandardProductCard item={entry.item} group={entry.group} expanded={expandedProducts.has(entry.key)} onToggle={toggleProduct} priceRevision={priceRevision} activeTagLabels={activeTagLabels} onOpenDetail={onOpenDetail} onOfferDetails={onOfferDetails} comparison={comparison} onCompare={onCompare} newcomer={newcomer} factLimit={factLimit} referenceCatalog={referenceQuery.data} /></div>
+  ), [expandedProducts, toggleProduct, activeTagLabels, onOpenDetail, onOfferDetails, comparison, onCompare, priceRevision, newcomer, factLimit, referenceQuery.data]);
   if (!items.length) return null;
   return <div className="catalog-list-surface"><Virtuoso useWindowScroll data={items} computeItemKey={catalogItemKey} itemContent={renderItem} endReached={onEndReached} totalListHeightChanged={onHeightChanged} increaseViewportBy={CATALOG_OVERSCAN} /></div>;
 });

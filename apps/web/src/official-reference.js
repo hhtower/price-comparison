@@ -1,3 +1,6 @@
+import { durationToDays, normalizePurchaseTag } from '@price-comparison/catalog/purchase-attributes';
+import { normalizeProductTag } from '@price-comparison/catalog/product-tag-policy';
+
 export async function readCatalog(signal) {
   const response = await fetch('/api/official-reference/catalog', {
     signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]), credentials: 'omit',
@@ -29,4 +32,66 @@ export function formatPlanName(plan) {
   return plan.kind === 'subscription' && /^P[1-9][0-9]*[DWMY]$/.test(plan.period)
     ? plan.name.replace(suffix, '$1').trim() || plan.name
     : plan.name;
+}
+
+const identity = value => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase() : '';
+
+function planDuration(period) {
+  const match = /^P([1-9][0-9]*)([DWMY])$/u.exec(period);
+  if (!match) return '';
+  const [, count, unit] = match;
+  try { return durationToDays(Number(count), { D: 'day', W: 'week', M: 'month', Y: 'year' }[unit]); } catch { return null; }
+}
+
+function offerDuration(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export function findOfficialPrice(title, purchaseTags, catalog) {
+  if (!catalog) return null;
+  const tags = purchaseTags.flatMap(normalizePurchaseTag);
+  const regions = [...new Set(tags.filter(tag => tag.name === 'region')
+    .map(tag => normalizeProductTag(tag)?.find(item => item.name === 'region')?.value))];
+  const region = regions.length === 1 && /^[a-z]{2}$/u.test(regions[0]) && regions[0] !== 'eu' ? regions[0] : null;
+  const durations = [...new Set(tags
+    .filter(tag => tag.name === 'duration').map(tag => offerDuration(tag.value)))];
+  const duration = durations.length === 1 && durations[0] ? durations[0] : null;
+  const candidates = catalog.apps.flatMap(app => app.plans.filter(plan => {
+    if (plan.kind !== 'subscription' || !planDuration(plan.period)) return false;
+    // Duplicate SKU labels are not distinct product identities; ambiguity must suppress the reference.
+    const name = identity(formatPlanName(plan).replace(/\s+#\d+$/u, ''));
+    return name === identity(title) || identity(`${app.name} ${name}`) === identity(title);
+  }));
+  const samePeriod = candidates.filter(plan => planDuration(plan.period) === duration);
+  const matches = samePeriod.length ? samePeriod : candidates;
+  if (!matches.length || new Set(matches.map(plan => planDuration(plan.period))).size !== matches.length) return null;
+  const prices = matches.flatMap(plan => plan.prices.map(price => price && ({ ...price, period: plan.period }))).filter(price => {
+    if (!price || (region && price.country !== region) || price.stale !== false || !Number.isFinite(price.amount) || price.amount <= 0
+      || !Number.isFinite(price.cnyAmount) || price.cnyAmount <= 0 || !/^[A-Z]{3}$/u.test(price.currency)) return false;
+    try {
+      const url = new URL(price.sourceUrl);
+      return url.protocol === 'https:' && url.hostname === 'apps.apple.com';
+    } catch { return false; }
+  });
+  const price = prices.sort((a, b) => a.cnyAmount - b.cnyAmount || a.country.localeCompare(b.country))[0];
+  return price ? { ...price, exchangeDate: catalog.exchangeDate, regionMatched: Boolean(region), periodMatched: planDuration(price.period) === duration } : null;
+}
+
+export function catalogOfficialPrice(title, offer, catalog) {
+  const reference = findOfficialPrice(title, [], catalog);
+  if (!reference) return null;
+  const currency = offer?.currency?.toUpperCase();
+  const base = currency === 'CNY' || currency === 'RMB' ? reference.cnyAmount
+    : currency === reference.currency ? reference.amount : null;
+  const amount = offer?.price != null && String(offer.price).trim() ? Number(offer.price) : NaN;
+  const percentage = base > 0 && Number.isFinite(amount) && amount >= 0 ? amount / base * 100 : null;
+  return { ...reference, percentage: Number.isFinite(percentage) ? percentage : null };
+}
+
+export function formatOfficialDiscount(percentage) {
+  if (!Number.isFinite(percentage) || percentage < 0) return '';
+  if (percentage === 100) return '同价';
+  const value = percentage < 100 ? percentage / 10 : percentage - 100;
+  const formatted = value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+  return percentage < 100 ? `${formatted}折` : `贵 ${formatted}%`;
 }
