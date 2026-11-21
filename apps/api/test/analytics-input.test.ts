@@ -69,10 +69,22 @@ test('website reference analytics accept only registered plan IDs for the select
     const value = event(appId, JSON.stringify([planId, 'subscription', 'P1M']));
     assert.deepEqual(parseCollection(value), value);
   }
+  for (const [appId, planId, period] of [
+    ['6448311069', 'business-standard-month', 'P1M'],
+    ['6448311069', 'business-premium-year', 'P1Y'],
+    ['6473753684', 'team-premium-month', 'P1M'],
+    ['6477489729', 'google-ai-ultra-5x-month', 'P1M'],
+  ]) {
+    const value = event(appId, JSON.stringify([planId, 'subscription', period]));
+    assert.deepEqual(parseCollection(value), value);
+  }
   for (const [appId, planId] of [
     ['kiro', '["premium","subscription","P1M"]'], ['cursor', '["pro_max","subscription","P1M"]'],
     ['kiro', '["pro","subscription","P1Y"]'], ['kiro', '["pro","purchase",null]'],
     ['kiro', '["6744120541","subscription","P1M"]'], ['6448311069', '["premium","subscription","P1M"]'],
     ['cursor', 'https://private.example/token'],
+    ['6448311069', '["business-premium-year","subscription","P1M"]'],
+    ['6473753684', '["business-standard-month","subscription","P1M"]'],
+    ['chatgpt-business', '["business-standard-month","subscription","P1M"]'],
   ]) assert.throws(() => parseCollection(event(appId, planId)));
 });

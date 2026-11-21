@@ -6,6 +6,7 @@ export interface ReferenceSnapshotOffer {
   formatted: string;
   period: string | null;
   kind: 'app' | 'subscription' | 'purchase';
+  unit?: 'seat';
 }
 
 export interface ReferenceRegionSnapshot {
@@ -34,6 +35,7 @@ export interface ReferenceCatalogPlan {
   name: string;
   period: string | null;
   kind: 'app' | 'subscription' | 'purchase';
+  unit?: 'seat';
   /** Already sorted on the server by CNY price; unknown rates are last. */
   prices: ReferenceCatalogPrice[];
 }

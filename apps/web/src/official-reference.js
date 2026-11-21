@@ -19,12 +19,13 @@ export async function readCatalog(signal) {
   };
 }
 
-export function formatPeriod(period) {
+export function formatPeriod(period, billingUnit) {
   const match = /^P([1-9][0-9]*)([DWMY])$/.exec(period);
   if (!match) return period;
   const [, count, unit] = match;
   const units = { D: ['天', '天'], W: ['周', '周'], M: ['月', '个月'], Y: ['年', '年'] };
-  return count === '1' ? '每' + units[unit][0] : '每' + count + units[unit][1];
+  const label = count === '1' ? '每' + units[unit][0] : '每' + count + units[unit][1];
+  return billingUnit === 'seat' ? '每席位 · ' + label : label;
 }
 
 export function formatPlanName(plan) {
@@ -37,8 +38,10 @@ export function formatPlanName(plan) {
 
 const identity = value => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase() : '';
 
-function referenceTitle(title, appId) {
+export function referenceTitle(title, appId) {
   const name = identity(title);
+  if (appId === '6477489729' && name === 'gemini plus') return 'google ai plus';
+  if (appId === '6473753684' && name === 'claude team premium 席位') return 'claude team premium';
   const unified = /^grok·x·cursor (plus|premium|super|ultra)\(统一订阅\)$/u.exec(name);
   if (appId === 'cursor' && unified) return `cursor ${unified[1]}`;
   if (appId === '6670324846') {
@@ -54,6 +57,17 @@ function knownSuperGrokSku(plan) {
     // Confirmed official SKU variants share the legacy SuperGrok subscription, not unified Premium.
     return ['6741437612', '6744708035', '6741437697'].includes(JSON.parse(plan.id)[0]);
   } catch { return false; }
+}
+
+function googlePlanIdentity(appId, plan) {
+  if (appId !== '6477489729') return null;
+  const name = identity(formatPlanName(plan).replace(/\s+#\d+$/u, ''));
+  // Google's comparison table ties Plus to 400 GB/2 TB, Pro to 5 TB, and Ultra 5x/20x to 20/30 TB.
+  if (name === 'gemini plus' || name === 'google ai plus' || /^google ai plus \((400 gb|2 tb)\)$/u.test(name)) return 'google ai plus';
+  if (name === 'gemini pro' || name === 'google ai pro (5 tb)') return 'gemini pro';
+  if (name === 'gemini ultra 5x' || name === 'google ai ultra (20 tb)') return 'gemini ultra 5x';
+  if (name === 'gemini ultra 20x' || name === 'google ai ultra (30 tb)') return 'gemini ultra 20x';
+  return null;
 }
 
 function planDuration(period) {
@@ -79,25 +93,32 @@ export function findOfficialPrice(title, purchaseTags, catalog) {
   const candidates = catalog.apps.flatMap(app => app.plans.filter(plan => {
     if (plan.kind !== 'subscription' || !planDuration(plan.period)) return false;
     // Duplicate SKU labels are not distinct product identities; ambiguity must suppress the reference.
-    const name = identity(formatPlanName(plan).replace(/\s+#\d+$/u, ''));
+    const name = googlePlanIdentity(app.id, plan) || referenceTitle(formatPlanName(plan).replace(/\s+#\d+$/u, ''), app.id);
     const target = referenceTitle(title, app.id);
     return name === target || identity(`${app.name} ${name}`) === target;
-  }).map(plan => ({ ...plan, appId: app.id })));
+  }).map(plan => ({ ...plan, appId: app.id, comparisonIdentity: googlePlanIdentity(app.id, plan) })));
   const samePeriod = candidates.filter(plan => planDuration(plan.period) === duration);
   const matches = samePeriod.length ? samePeriod : candidates;
-  if (!matches.length || (new Set(matches.map(plan => planDuration(plan.period))).size !== matches.length && !matches.every(knownSuperGrokSku))) return null;
-  const prices = matches.flatMap(plan => plan.prices.map(price => price && ({ ...price, period: plan.period, appId: plan.appId }))).filter(price => {
+  const sameGoogleTier = matches.length && matches.every(plan => plan.comparisonIdentity
+    && plan.comparisonIdentity === matches[0].comparisonIdentity);
+  if (!matches.length || (new Set(matches.map(plan => planDuration(plan.period))).size !== matches.length
+    && !matches.every(knownSuperGrokSku) && !sameGoogleTier)) return null;
+  const prices = matches.flatMap(plan => plan.prices.map(price => price && ({
+    ...price, period: plan.period, unit: plan.unit, appId: plan.appId,
+  }))).filter(price => {
     if (!price || (region && price.country !== region && price.country !== 'global') || price.stale !== false || !Number.isFinite(price.amount) || price.amount <= 0
       || !Number.isFinite(price.cnyAmount) || price.cnyAmount <= 0 || !/^[A-Z]{3}$/u.test(price.currency)) return false;
-    const website = REFERENCE_WEBSITES.find(source => source.id === price.appId);
-    if (website) return price.sourceUrl === website.website && price.country === 'global' && price.currency === 'USD';
+    const website = REFERENCE_WEBSITES.find(source => source.appId === price.appId && source.website === price.sourceUrl);
+    if (website) return price.country === website.country && price.currency === 'USD';
+    if (REFERENCE_WEBSITES.some(source => source.id === price.appId)) return false;
     try {
       const url = new URL(price.sourceUrl);
       return url.protocol === 'https:' && url.hostname === 'apps.apple.com';
     } catch { return false; }
   });
   const price = prices.sort((a, b) => a.cnyAmount - b.cnyAmount || a.country.localeCompare(b.country))[0];
-  return price ? { ...price, exchangeDate: catalog.exchangeDate, regionMatched: Boolean(region) && price.country === region, periodMatched: planDuration(price.period) === duration } : null;
+  return price ? { ...price, sourceKind: REFERENCE_WEBSITES.some(source => source.appId === price.appId && source.website === price.sourceUrl) ? 'website' : 'app_store',
+    exchangeDate: catalog.exchangeDate, regionMatched: Boolean(region) && price.country === region, periodMatched: planDuration(price.period) === duration } : null;
 }
 
 export function catalogOfficialPrice(title, offer, catalog) {

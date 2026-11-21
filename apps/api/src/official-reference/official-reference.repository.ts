@@ -20,9 +20,10 @@ export class OfficialReferenceRepository implements ReferenceSnapshotReader, Wor
   async seed(): Promise<void> {
     const tasks: Array<{ task_key: string; app_id: string | null; country: string | null }> = [{ task_key: 'fx', app_id: null, country: null }];
     for (const app of REFERENCE_APPS) {
-      const countries = REFERENCE_WEBSITES.some(source => source.id === app.id) ? ['global'] : REFERENCE_REGIONS.map(([country]) => country);
-      for (const country of countries) tasks.push({ task_key: 'prices:' + app.id + ':' + country, app_id: app.id, country });
+      if (REFERENCE_WEBSITES.some(source => source.id === app.id)) continue;
+      for (const [country] of REFERENCE_REGIONS) tasks.push({ task_key: 'prices:' + app.id + ':' + country, app_id: app.id, country });
     }
+    for (const source of REFERENCE_WEBSITES) tasks.push({ task_key: `prices:${source.id}:${source.country}`, app_id: source.id, country: source.country });
     await this.pool.query('insert into official_reference_jobs (task_key, app_id, country) select task_key, app_id, country '
       + 'from jsonb_to_recordset($1::jsonb) as tasks(task_key text, app_id text, country text) on conflict (task_key) do nothing', [JSON.stringify(tasks)]);
   }

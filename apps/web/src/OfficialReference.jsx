@@ -6,6 +6,7 @@ import './official-reference.css';
 import { readCatalog, formatPeriod, formatPlanName } from './official-reference.js';
 
 const referenceFlags = import.meta.glob('./assets/reference-flags/*.svg', { eager: true, query: '?url', import: 'default' });
+const displayCountry = price => price.country === 'global' ? 'us' : price.country.toLowerCase();
 
 function defaultPlan(app) {
   return app?.plans.find(plan => plan.kind === 'subscription' && plan.prices.length)
@@ -14,13 +15,13 @@ function defaultPlan(app) {
 }
 
 function formatPlanLabel(plan) {
-  return formatPlanName(plan) + (plan.period ? ' · ' + formatPeriod(plan.period) : '');
+  return formatPlanName(plan) + (plan.period ? ' · ' + formatPeriod(plan.period, plan.unit) : '');
 }
 
 function PriceCard({ price, minimum }) {
   const converted = Number.isFinite(price.cnyAmount);
   const lowest = converted && !price.stale && price.cnyAmount === minimum;
-  const flag = referenceFlags['./assets/reference-flags/' + price.country.toLowerCase() + '.svg'];
+  const flag = referenceFlags['./assets/reference-flags/' + displayCountry(price) + '.svg'];
   return <article className={'reference-price-card' + (lowest ? ' reference-price-card-lowest' : '')}
     aria-label={price.countryName + '官方价格'}>
     <div className="reference-card-badges">
@@ -29,7 +30,7 @@ function PriceCard({ price, minimum }) {
     </div>
     <div className="reference-country">{flag
       ? <img className="reference-flag" src={flag} width="30" height="22" alt="" aria-hidden="true" />
-      : <span className="reference-flag" aria-hidden="true">{price.country === 'global' ? '官网' : price.country.toUpperCase()}</span>}<span>{price.countryName}</span></div>
+      : <span className="reference-flag" aria-hidden="true">{displayCountry(price).toUpperCase()}</span>}<span>{price.countryName}</span></div>
     <div className="reference-cny-price">{converted
       ? <><span className="reference-currency" aria-label="人民币">¥</span><strong>{price.cnyAmount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></>
       : <span className="reference-no-rate">暂无折算</span>}</div>
@@ -114,8 +115,8 @@ function PlanPrices({ app, plan, onSelect }) {
   const [countryQuery, setCountryQuery] = useState('');
   const usePicker = app.plans.length > 6;
   const query = countryQuery.trim().toLowerCase();
-  const prices = plan.prices.filter(price => price.countryName.toLowerCase().includes(query) || price.country.toLowerCase().includes(query));
-  const commonCountries = ['cn', 'hk', 'tw', 'us', 'jp', 'sg'].map(country => plan.prices.find(price => price.country.toLowerCase() === country)).filter(Boolean);
+  const prices = plan.prices.filter(price => price.countryName.toLowerCase().includes(query) || displayCountry(price).includes(query));
+  const commonCountries = ['cn', 'hk', 'tw', 'us', 'jp', 'sg'].map(country => plan.prices.find(price => displayCountry(price) === country)).filter(Boolean);
   const freshPrices = plan.prices.filter(price => !price.stale && Number.isFinite(price.cnyAmount));
   const minimum = freshPrices.length ? Math.min(...freshPrices.map(price => price.cnyAmount)) : null;
   function moveTab(event, index) {
@@ -140,8 +141,8 @@ function PlanPrices({ app, plan, onSelect }) {
       <input type="search" aria-label="搜索国家或地区" placeholder="搜索国家 / 地区" value={countryQuery} onChange={event => setCountryQuery(event.target.value)} />
       <div className="reference-country-shortcuts" role="group" aria-label="常用地区">
         <button type="button" aria-pressed={!query} onClick={() => setCountryQuery('')}>全部</button>
-        {commonCountries.map(price => <button type="button" key={price.country} aria-pressed={query === price.country.toLowerCase()}
-          onClick={() => setCountryQuery(price.country)}>{price.countryName}</button>)}
+        {commonCountries.map(price => <button type="button" key={price.country} aria-pressed={query === displayCountry(price)}
+          onClick={() => setCountryQuery(displayCountry(price))}>{price.countryName}</button>)}
       </div>
       <span className="reference-country-count" role="status">{prices.length} / {plan.prices.length} 个地区</span>
       {countryQuery && <button type="button" className="reference-filter-clear" onClick={() => setCountryQuery('')}>清除筛选</button>}

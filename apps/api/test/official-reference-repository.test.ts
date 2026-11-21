@@ -21,6 +21,11 @@ test('reference seeding adds Grok storefronts and one global task per official w
     { task_key: 'prices:cursor:global', app_id: 'cursor', country: 'global' },
     { task_key: 'prices:kiro:global', app_id: 'kiro', country: 'global' },
   ]);
+  assert.deepEqual(tasks.filter(task => ['chatgpt-business', 'claude-team', 'google-ai'].includes(task.app_id ?? '')), [
+    { task_key: 'prices:chatgpt-business:global', app_id: 'chatgpt-business', country: 'global' },
+    { task_key: 'prices:claude-team:global', app_id: 'claude-team', country: 'global' },
+    { task_key: 'prices:google-ai:us', app_id: 'google-ai', country: 'us' },
+  ]);
 });
 
 test('reference queue isolates claims, atomically publishes, preserves failures and fences obsolete workers', { skip: !process.env.TEST_DATABASE_URL }, async () => {
@@ -36,7 +41,7 @@ test('reference queue isolates claims, atomically publishes, preserves failures 
     if (error) throw error;
     const first = new OfficialReferenceRepository(pool); const second = new OfficialReferenceRepository(pool);
     await first.seed(); await first.seed();
-    assert.equal(Number((await pool.query('select count(*) from official_reference_jobs')).rows[0].count), (REFERENCE_APPS.length - 2) * REFERENCE_REGIONS.length + 3);
+    assert.equal(Number((await pool.query('select count(*) from official_reference_jobs')).rows[0].count), (REFERENCE_APPS.length - 2) * REFERENCE_REGIONS.length + 6);
     assert.equal(Number((await pool.query("select count(*) from official_reference_jobs where country = 'cl'")).rows[0].count), 9);
     const [one, two] = await Promise.all([first.claimNext('fetch_run', 'one', 30_000), second.claimNext('fetch_run', 'two', 30_000)]);
     assert.ok(one); assert.ok(two); assert.notEqual(one.id, two.id);

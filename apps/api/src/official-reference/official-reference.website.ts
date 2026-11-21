@@ -2,6 +2,8 @@ import { REFERENCE_WEBSITES } from '@price-comparison/catalog/official-reference
 import { parse } from 'parse5';
 import { fetchSourceText } from './official-reference.sources.js';
 import type { ReferenceRegionSnapshot } from './official-reference.types.js';
+import { parseTeamReference } from './official-reference.team.js';
+import { fetchGoogleReference } from './official-reference.google.js';
 
 type HtmlNode = {
   nodeName: string;
@@ -15,9 +17,16 @@ function website(appId: string) {
   const source = REFERENCE_WEBSITES.find(item => item.id === appId);
   if (!source) throw new Error('Unsupported reference website');
   const url = new URL(source.website);
-  const origin = source.id === 'cursor' ? 'https://cursor.com' : 'https://kiro.dev';
-  if (url.origin !== origin || url.username || url.password || url.search || url.hash
-    || !/^\/pricing\/?$/u.test(url.pathname)) throw new Error('Invalid reference website URL');
+  const allowed: Record<string, [string, string, string]> = {
+    cursor: ['https://cursor.com', '/pricing', ''],
+    kiro: ['https://kiro.dev', '/pricing', ''],
+    'chatgpt-business': ['https://openai.com', '/business/pricing', ''],
+    'claude-team': ['https://claude.com', '/pricing', '?currency=USD'],
+    'google-ai': ['https://one.google.com', '/intl/en/about/google-ai-plans', '?gl=US&hl=en'],
+  };
+  const [origin, path, search] = allowed[source.id] ?? [];
+  if (url.origin !== origin || url.username || url.password || url.search !== search || url.hash
+    || url.pathname.replace(/\/$/u, '') !== path) throw new Error('Invalid reference website URL');
   return source;
 }
 
@@ -48,6 +57,8 @@ function priceBlocks(heading: HtmlNode, appId: string): HtmlNode[] {
 
 export function parseWebsiteReference(appId: string, html: string): ReferenceRegionSnapshot {
   const source = website(appId);
+  if (appId === 'chatgpt-business' || appId === 'claude-team') return parseTeamReference(appId, html);
+  if (appId === 'google-ai') throw new Error('Google pricing requires the official price feed');
   if (Buffer.byteLength(html, 'utf8') > 4 * 1024 * 1024) throw new Error('Website HTML exceeds size limit');
   const headings: HtmlNode[] = [];
   const visit = (node: HtmlNode): void => {
@@ -91,6 +102,7 @@ export async function fetchWebsiteReference(appId: string,
   fetcher: (url: string | URL, init?: RequestInit) => Promise<Response>,
   signal: AbortSignal): Promise<ReferenceRegionSnapshot> {
   const source = website(appId);
+  if (appId === 'google-ai') return fetchGoogleReference(fetcher, signal);
   const html = await fetchSourceText(source.website, fetcher, signal, 'text/html');
   signal.throwIfAborted();
   return parseWebsiteReference(appId, html);

@@ -473,7 +473,7 @@ test('Grok, Cursor and Kiro are selectable in the official price panel with thei
   respondWith({ ...catalog, apps: apps.map(app => ({ ...app, plans: [{
     ...monthly, name: app.title, prices: [{ ...price, amount: app.amount, cnyAmount: app.amount * 7,
       formatted: `$${app.amount}`, sourceUrl: app.sourceUrl,
-      ...(app.id !== '6670324846' ? { country: 'global', countryName: '官网美元价' } : {}),
+      ...(app.id !== '6670324846' ? { country: 'global', countryName: '美国' } : {}),
     }],
   }] })) });
   render(<OfficialReference />); open();
@@ -484,10 +484,29 @@ test('Grok, Cursor and Kiro are selectable in the official price panel with thei
     expect(panel).toHaveTextContent(String(app.amount * 7) + '.00');
     expect(panel).toHaveTextContent(`$${app.amount}`);
     if (app.id !== '6670324846') {
-      expect(within(panel).getByRole('article', { name: '官网美元价官方价格' })).toBeVisible();
+      expect(within(panel).getByRole('article', { name: '美国官方价格' })).toBeVisible();
       expect(panel).not.toHaveTextContent('GLOBAL');
+      expect(panel.querySelector('.reference-country img')).toBeInTheDocument();
+      fireEvent.click(within(screen.getByRole('group', { name: '常用地区' })).getByRole('button', { name: '美国' }));
+      expect(screen.getByRole('searchbox', { name: '搜索国家或地区' })).toHaveValue('us');
+      expect(screen.getByRole('article', { name: '美国官方价格' })).toBeVisible();
     }
   }
+});
+
+test('team subscriptions distinguish per-seat monthly prices from full annual charges in the same app', async () => {
+  respondWith({ ...catalog, apps: [{ ...catalog.apps[1], plans: [
+    { ...monthly, name: 'ChatGPT Team', unit: 'seat', prices: [{ ...price, country: 'global', countryName: '美国', amount: 25, formatted: '$25.00', cnyAmount: 175 }] },
+    { ...monthly, id: 'team-year', name: 'ChatGPT Team', unit: 'seat', period: 'P1Y',
+      prices: [{ ...price, country: 'global', countryName: '美国', amount: 240, formatted: '$240.00', cnyAmount: 1680 }] },
+  ] }] });
+  render(<OfficialReference />); open();
+  expect(await screen.findByRole('tab', { name: 'ChatGPT Team · 每席位 · 每月', selected: true })).toBeVisible();
+  fireEvent.click(screen.getByRole('tab', { name: 'ChatGPT Team · 每席位 · 每年' }));
+  const panel = screen.getByRole('tabpanel', { name: 'ChatGPT Team · 每席位 · 每年' });
+  expect(panel).toHaveTextContent('$240.00');
+  expect(panel).toHaveTextContent('1,680.00');
+  expect(panel).not.toHaveTextContent('$20.00');
 });
 
 test('malformed catalog responses show a recoverable error instead of crashing', async () => {

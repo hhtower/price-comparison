@@ -25,7 +25,7 @@ test('catalog reads saved snapshots, groups only matching SKU IDs, converts and 
   const result = await service.catalog();
   assert.equal(result.apps.length, 11);
   const app = result.apps[0];
-  assert.equal(app.availableRegions, 3); assert.equal(app.totalRegions, REFERENCE_REGIONS.length);
+  assert.equal(app.availableRegions, 3); assert.equal(app.totalRegions, REFERENCE_REGIONS.length + 1);
   assert.equal(app.plans.length, 2, 'same-name SKU variants must remain distinct');
   assert.deepEqual(app.plans[0].prices.map(p => [p.country, p.cnyAmount]), [['in', 80], ['us', 160], ['cl', 199.9]]);
   assert.equal(app.plans[0].prices[2].countryName, '智利');
@@ -52,7 +52,7 @@ test('website subscriptions share the catalog, conversion and stale handling wit
   assert.equal(app.plans.length, 4);
   const price = app.plans.find(plan => plan.name === 'Kiro Pro')!.prices[0];
   assert.deepEqual([price.country, price.countryName, price.amount, price.cnyAmount, price.stale],
-    ['global', '官网美元价', 21, 168, false]);
+    ['global', '美国', 21, 168, false]);
   assert.equal(price.sourceUrl, website.sourceUrl);
   for (const changes of [
     { sourceUrl: 'https://evil.example/pricing/' },
@@ -66,6 +66,34 @@ test('website subscriptions share the catalog, conversion and stale handling wit
   const stale = await new OfficialReferenceService({ readPublished: async () => [row(website, 'prices:kiro:global', 'failed')] },
     () => Date.parse(capturedAt)).catalog();
   assert.equal(stale.apps.find(app => app.id === 'kiro')!.plans[0].prices[0].stale, true);
+});
+
+test('business website prices join the existing ChatGPT app and preserve seat units and annual totals', async () => {
+  const business = { appId: 'chatgpt-business', country: 'global', currency: 'USD', capturedAt,
+    sourceUrl: 'https://openai.com/business/pricing/', offers: [
+      { id: 'business-standard-month', name: 'ChatGPT Team', amount: 25, formatted: '$25', period: 'P1M', kind: 'subscription', unit: 'seat' },
+      { id: 'business-standard-year', name: 'ChatGPT Team', amount: 240, formatted: '$240', period: 'P1Y', kind: 'subscription', unit: 'seat' },
+      { id: 'business-premium-month', name: 'ChatGPT Premium', amount: 125, formatted: '$125', period: 'P1M', kind: 'subscription', unit: 'seat' },
+      { id: 'business-premium-year', name: 'ChatGPT Premium', amount: 1200, formatted: '$1200', period: 'P1Y', kind: 'subscription', unit: 'seat' },
+    ] };
+  const result = await new OfficialReferenceService({ readPublished: async () => [
+    row(snapshot()), row(business, 'prices:chatgpt-business:global'),
+    row({ date: '2026-09-27', cny: { cny: 1, usd: 0.125 } }, 'fx'),
+  ] }, () => Date.parse(capturedAt)).catalog();
+  assert.equal(result.apps.length, 11);
+  assert.equal(result.apps.some(app => app.id === 'chatgpt-business'), false);
+  const chatgpt = result.apps.find(app => app.id === '6448311069')!;
+  assert.equal(chatgpt.plans.length, 6);
+  const annual = chatgpt.plans.find(plan => plan.name === 'ChatGPT Team' && plan.period === 'P1Y')!;
+  assert.equal(annual.unit, 'seat');
+  assert.equal(annual.prices[0].amount, 240);
+  assert.equal(annual.prices[0].cnyAmount, 1920);
+  assert.equal(annual.prices[0].countryName, '美国');
+  for (const changes of [
+    { country: 'us' }, { sourceUrl: 'https://claude.com/pricing?currency=USD' },
+    { offers: business.offers.map(offer => ({ ...offer, unit: undefined })) },
+    { offers: business.offers.map(offer => ({ ...offer, period: 'P1M' })) },
+  ]) assert.throws(() => validateRegionSnapshot({ ...business, ...changes }));
 });
 
 test('missing exchange rates retain original quotes with null CNY instead of zero', async () => {

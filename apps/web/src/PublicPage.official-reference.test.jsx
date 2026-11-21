@@ -3,6 +3,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import { VirtuosoMockContext } from 'react-virtuoso';
 import PublicPage from './PublicPage.jsx';
 import * as reference from './official-reference.js';
+import { canonicalProductDisplayName } from '@price-comparison/catalog/catalog-display';
 
 afterEach(() => {
   cleanup();
@@ -30,14 +31,76 @@ const offer = {
 
 const websiteCatalog = { ...catalog, apps: [
   { id: 'cursor', name: 'Cursor', plans: [{ id: 'premium', name: 'Cursor Premium', kind: 'subscription', period: 'P1M',
-    prices: [{ ...price, country: 'global', countryName: '官网美元价', currency: 'USD', amount: 30,
+    prices: [{ ...price, country: 'global', countryName: '美国', currency: 'USD', amount: 30,
       cnyAmount: 210, sourceUrl: 'https://cursor.com/pricing' }],
   }] },
   { id: 'kiro', name: 'Kiro', plans: [{ id: 'pro', name: 'Kiro Pro', kind: 'subscription', period: 'P1M',
-    prices: [{ ...price, country: 'global', countryName: '官网美元价', currency: 'USD', amount: 20,
+    prices: [{ ...price, country: 'global', countryName: '美国', currency: 'USD', amount: 20,
       cnyAmount: 140, sourceUrl: 'https://kiro.dev/pricing/' }],
   }] },
 ] };
+
+const googleCatalog = { apps: [{ id: '6477489729', name: 'Gemini', plans: [
+  { id: 'pro-a', name: 'Google AI Pro (5 TB)', kind: 'subscription', period: 'P1M',
+    prices: [{ ...price, cnyAmount: 120, sourceUrl: 'https://apps.apple.com/ph/app/id6477489729' }] },
+  { id: 'pro-b', name: 'Google AI Pro (5 TB) #2', kind: 'subscription', period: 'P1M',
+    prices: [{ ...price, cnyAmount: 100, sourceUrl: 'https://apps.apple.com/ph/app/id6477489729' }] },
+  { id: 'plus-a', name: 'Google AI Plus (400 GB)', kind: 'subscription', period: 'P1M',
+    prices: [{ ...price, cnyAmount: 25, sourceUrl: 'https://apps.apple.com/ph/app/id6477489729' }] },
+  { id: 'plus-b', name: 'Google AI Plus (2 TB)', kind: 'subscription', period: 'P1M',
+    prices: [{ ...price, cnyAmount: 30, sourceUrl: 'https://apps.apple.com/ph/app/id6477489729' }] },
+  { id: 'ultra-store', name: 'Google AI Ultra (30 TB)', kind: 'subscription', period: 'P1M',
+    prices: [{ ...price, cnyAmount: 900, sourceUrl: 'https://apps.apple.com/ph/app/id6477489729' }] },
+  ...[['Gemini Pro', 140], ['Gemini Ultra 5x', 700], ['Gemini Ultra 20x', 1400]].map(([name, cnyAmount]) => ({
+    id: name, name, kind: 'subscription', period: 'P1M', prices: [{ ...price, cnyAmount, currency: 'USD',
+      country: 'us', countryName: '美国', sourceUrl: 'https://one.google.com/intl/en/about/google-ai-plans/?gl=US&hl=en' }],
+  })),
+] }] };
+
+test.each([
+  ['Gemini Pro', 100, 'app_store'], ['Google AI Plus', 25, 'app_store'],
+  ['Gemini Ultra 5x', 700, 'website'], ['Gemini Ultra 20x', 900, 'app_store'],
+])('Google matches %s across approved SKU variants and website prices without mixing tiers', (name, cnyAmount, sourceKind) => {
+  expect(reference.catalogOfficialPrice(name, offer, googleCatalog)).toMatchObject({ cnyAmount, sourceKind });
+});
+
+test('unidentified Google Ultra and unrelated capacities cannot supply an Ultra 5x price', () => {
+  const plans = googleCatalog.apps[0].plans.filter(plan => !plan.name.startsWith('Gemini'));
+  for (const name of ['Google AI Ultra', 'Google AI Ultra (5 TB)', 'Gemini Ultra']) {
+    plans.push({ ...plans[0], id: name, name, prices: [{ ...plans[0].prices[0], cnyAmount: 1 }] });
+  }
+  expect(reference.catalogOfficialPrice('Gemini Ultra 5x', offer, { apps: [{ ...googleCatalog.apps[0], plans }] })).toBeNull();
+});
+
+const businessCatalog = { apps: [{ id: '6448311069', name: 'ChatGPT', plans: [
+  { id: 'team-month', name: 'ChatGPT Team', unit: 'seat', kind: 'subscription', period: 'P1M',
+    prices: [{ ...price, country: 'global', currency: 'USD', amount: 25, cnyAmount: 175, sourceUrl: 'https://openai.com/business/pricing/' }] },
+  { id: 'team-year', name: 'ChatGPT Team', unit: 'seat', kind: 'subscription', period: 'P1Y',
+    prices: [{ ...price, country: 'global', currency: 'USD', amount: 240, cnyAmount: 1680, sourceUrl: 'https://openai.com/business/pricing/' }] },
+] }] };
+
+test('team reference preserves per-seat billing and compares the actual monthly amount', () => {
+  expect(reference.catalogOfficialPrice('ChatGPT Team', offer, businessCatalog))
+    .toMatchObject({ unit: 'seat', period: 'P1M', amount: 25, cnyAmount: 175, sourceKind: 'website' });
+});
+
+test('canonical Gemini Plus title matches the historical Google AI Plus pricing identity', () => {
+  const title = canonicalProductDisplayName({ family: 'google', product: 'gemini', tier: 'plus' });
+  expect(title).toBe('Gemini Plus');
+  expect(reference.catalogOfficialPrice(title, offer, googleCatalog)).toMatchObject({ cnyAmount: 25 });
+});
+
+test('canonical Claude Premium title matches seat-labelled prices and enables an ordinary card', async () => {
+  const title = canonicalProductDisplayName({ family: 'anthropic', product: 'claude', tier: 'team_5x' });
+  const claude = { apps: [{ id: '6473753684', name: 'Claude', plans: [{
+    id: 'team-premium-month', name: 'Claude Team Premium 席位', period: 'P1M', kind: 'subscription', unit: 'seat',
+    prices: [{ ...price, country: 'global', countryName: '美国', currency: 'USD', amount: 125, cnyAmount: 875,
+      sourceUrl: 'https://claude.com/pricing?currency=USD' }],
+  }] }] };
+  expect(reference.catalogOfficialPrice(title, offer, claude)).toMatchObject({ amount: 125, unit: 'seat' });
+  renderCatalog({ product: { name: title, isAiMembership: false, membershipGroups: undefined }, referenceCatalog: claude });
+  expect(await screen.findByLabelText('官方最低参考价')).toHaveTextContent('¥875/席位/月');
+});
 
 test.each([
   ['Cursor Premium', 'https://cursor.com/pricing', 210],
@@ -158,9 +221,28 @@ test('Kiro paid products show website references even before they have membershi
   renderCatalog({ referenceCatalog: websiteCatalog, product: { name: 'Kiro Pro', platform: 'kiro', isAiMembership: false, membershipGroups: undefined } });
   const official = await screen.findByLabelText('官方最低参考价');
   expect(official).toHaveTextContent('¥140/月');
-  expect(official).toHaveTextContent('官网美元价');
+  expect(official).toHaveTextContent('美国');
   expect(official).toHaveTextContent('6.29折');
   expect(official).not.toHaveAttribute('title', expect.stringContaining('App Store'));
+});
+
+test('Notion Business ordinary cards show their existing official price', async () => {
+  renderCatalog({ product: { name: 'Notion Business', platform: 'notion', isAiMembership: false, membershipGroups: undefined },
+    referenceCatalog: { apps: [{ id: '1232780281', name: 'Notion', plans: [{
+      id: 'business', name: 'Business', kind: 'subscription', period: 'P1M',
+      prices: [{ ...price, sourceUrl: 'https://apps.apple.com/ph/app/id1232780281' }],
+    }] }] },
+  });
+  const official = await screen.findByLabelText('官方最低参考价');
+  expect(official).toHaveTextContent('¥100/月');
+  expect(official).toHaveTextContent('8.8折');
+});
+
+test('business card labels the official price as a single seat rather than a whole workspace', async () => {
+  renderCatalog({ product: { name: 'ChatGPT Team' }, referenceCatalog: businessCatalog });
+  const prices = await screen.findAllByLabelText('官方最低参考价');
+  expect(prices[0]).toHaveTextContent('¥175/席位/月');
+  expect(prices[0]).not.toHaveAttribute('title', expect.stringContaining('App Store'));
 });
 
 test('membership cards show the estimate beside the lowest price and share one official reference request', async () => {

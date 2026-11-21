@@ -22,8 +22,9 @@ export function validReferenceContext(name: unknown, value: unknown): boolean {
   const allowed = hasPlan ? ['appId', 'planId'] : ['appId'];
   if (Object.keys(context).some(key => !allowed.includes(key)) || !REFERENCE_APPS.some(app => app.id === context.appId)) return false;
   if (!hasPlan) return true;
-  const website = REFERENCE_WEBSITES.find(source => source.id === context.appId);
-  if (website) return website.plans.some(plan => context.planId === JSON.stringify([plan.id, 'subscription', 'P1M']));
+  const websites = REFERENCE_WEBSITES.filter(source => source.appId === context.appId);
+  if (websites.some(source => source.plans.some(plan => context.planId === JSON.stringify([plan.id, 'subscription', plan.period])))) return true;
+  if (websites.some(source => source.id === context.appId)) return false;
   // This is the exact catalog key: stable numeric Apple SKU, purchase kind, ISO period.
   return typeof context.planId === 'string' && context.planId.length <= 96
     && /^\["[0-9]{5,14}",(?:(?:"subscription",(?:null|"P[1-9][0-9]{0,3}[DWMY]"))|(?:"purchase",null))\]$/.test(context.planId);
