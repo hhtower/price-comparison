@@ -273,7 +273,7 @@ function findAliases(segment: IndexSegment, query: string): Set<string> {
       const child = node.children.get(characters[index]!);
       if (!child) break;
       node = child;
-      if (node.documentId !== undefined) matches.add(node.documentId);
+      if (node.documentId !== undefined && characters[index + 1] !== '+') matches.add(node.documentId);
     }
   }
   return matches;

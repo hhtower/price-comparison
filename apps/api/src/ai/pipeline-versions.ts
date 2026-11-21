@@ -12,7 +12,7 @@ import { MEMBERSHIP_FEATURE_PROMPT_VERSION, MEMBERSHIP_FEATURE_REVIEW_PROMPT_VER
 import { PRODUCT_TEXT_REVIEW_PROMPT_VERSION } from './product-text-review-request.js';
 
 export const EVIDENCE_PROJECTION_VERSION = 'evidence-visible-text-20261007-v3';
-export const CANDIDATE_RETRIEVAL_VERSION = 'approved-definitions-20261119-v1';
+export const CANDIDATE_RETRIEVAL_VERSION = 'approved-definitions-20261121-v2';
 export const EVIDENCE_VALIDATION_VERSION = 'match-only-boundary-20261119-v1';
 export const TAG_VALIDATION_VERSION = 'tag-explicit-warranty-20261117-v5';
 export const STANDARDIZATION_POLICY_VERSION = 'standardization-match-only-20261119-v2';

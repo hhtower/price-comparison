@@ -2,7 +2,7 @@ import { sql } from 'kysely';
 import type { CatalogDatabase } from '../catalog/catalog-version.repository.js';
 import { compactSearchText } from './text-features.js';
 
-export const CATALOG_ALIAS_VERSION = 'catalog-aliases-20260928-v1';
+export const CATALOG_ALIAS_VERSION = 'catalog-aliases-20261121-v2';
 
 export interface CatalogAlias {
   standard_product_id: bigint;

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ASSISTANT_LIMITS, emptyShoppingNeeds, type AssistantReply, type ShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
+import { catalogIdentityNames } from '@price-comparison/catalog/catalog-search';
 import { AssistantService, parseExplanation } from '../src/assistant/assistant.service.js';
 import { applyNeedsPatch, parseUnderstanding } from '../src/assistant/assistant.schemas.js';
 import { candidateEvidence } from '../src/assistant/assistant-candidates.js';
@@ -588,6 +589,97 @@ test('platform browsing skips standards without matching reference quotes before
   assert.deepEqual(read, ['1', '2', '3', '4', '5', '6']);
   assert.equal(state.saved?.kind, 'recommendation');
   assert.equal(state.saved?.cards[0]?.standardProductId, '6');
+});
+
+for (const alias of [false, true]) test(`complete product identity precedes partial matches before the standard limit (alias: ${alias})`, async () => {
+  const fixture = shoppingFixture();
+  const read: string[] = [];
+  const identity = { family: 'zorvex', product: 'zorvex', tier: 'pro' };
+  const name = alias ? 'Zorvex 优享' : 'Zorvex Pro';
+  const products = [
+    ...Array.from({ length: 5 }, (_, index) => ({
+      id: String(index + 1), name: `Zorvex Pro 服务${index + 1}`, platform: 'fictional', kind: 'subscription',
+    })),
+    { id: '6', name, platform: 'fictional', kind: 'subscription', identity,
+      identityNames: catalogIdentityNames(name, identity, alias ? ['Zorvex Pro'] : []) },
+  ];
+  const state = harness([
+    { intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
+      selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+    }),
+  ], '找 Zorvex Pro', { ...emptyShoppingNeeds(), product: 'Zorvex Pro' }, {
+    getProducts: async () => ({ items: products }),
+    getReferenceOffers: async query => {
+      read.push(String(query.standardProductId));
+      return [{ ...fixture.offer, productId: String(query.standardProductId), price: query.standardProductId === '6' ? '1.00' : '30.00' }];
+    },
+  });
+  await state.run();
+  assert.equal(state.saved?.kind, 'recommendation');
+  assert.ok(state.saved?.cards.some(card => card.standardProductId === '6'));
+  assert.equal(read[0], '6');
+  assert.equal(read.length, 5);
+});
+
+for (const [query, expectedId] of [
+  ['Cursor Pro', '1'], ['Cursor Pro+', '2'], ['Cursor Pro Plus', '2'], ['Cursor pro_plus', '2'],
+]) test(`generated Cursor identity metadata stays within the requested tier: ${query}`, async () => {
+  const fixture = shoppingFixture();
+  const read: string[] = [];
+  const products = ['pro', 'pro_plus'].map((tier, index) => {
+    const name = index ? 'Cursor Super' : 'Cursor Premium';
+    const identity = { family: 'cursor', product: 'cursor', tier };
+    return { id: String(index + 1), name, platform: 'Cursor', platformGroup: 'xai', kind: 'subscription', identity,
+      identityNames: catalogIdentityNames(name, identity, index ? ['Cursor Pro+', 'Cursor Pro Plus'] : ['Cursor Pro']) };
+  });
+  const state = harness([
+    { intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
+      selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+    }),
+  ], `找 ${query}`, { ...emptyShoppingNeeds(), platform: 'xai', product: query }, {
+    getProducts: async () => ({ items: products }),
+    getReferenceOffers: async input => {
+      read.push(String(input.standardProductId));
+      return [{ ...fixture.offer, productId: String(input.standardProductId), price: input.standardProductId === '2' ? '1.00' : '30.00' }];
+    },
+  });
+  await state.run();
+  assert.equal(state.saved?.kind, 'recommendation');
+  assert.deepEqual(state.saved?.cards.map(card => card.standardProductId), [expectedId]);
+  assert.deepEqual(read, [expectedId]);
+});
+
+for (const rejection of ['bulk', 'monthly-budget']) test(`ineligible ${rejection} quotes do not consume the standard limit`, async () => {
+  const fixture = shoppingFixture();
+  const read: string[] = [];
+  const request: ShoppingNeeds = { ...emptyShoppingNeeds(), platform: 'openai',
+    ...(rejection === 'monthly-budget' ? { budget: { amount: '80', currency: 'CNY', basis: 'month' as const } } : {}) };
+  const state = harness([
+    { intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
+    (input: { candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => ({
+      selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+    }),
+  ], '看看这个平台', request, {
+    getProducts: async () => ({ items: Array.from({ length: 11 }, (_, index) => ({
+      id: String(index + 1), name: `套餐${index + 1}`, platform: 'openai', kind: 'subscription',
+    })) }),
+    getReferenceOffers: async query => {
+      const id = String(query.standardProductId);
+      read.push(id);
+      return [{ ...fixture.offer, productId: id,
+        settlementQuantity: rejection === 'bulk' && Number(id) <= 5 ? 10 : 1,
+        tags: [{ name: 'duration', value: rejection === 'monthly-budget' && Number(id) <= 5 ? 365 : 30 }],
+      }];
+    },
+  });
+  await state.run();
+  assert.equal(state.saved?.kind, 'recommendation');
+  assert.equal(state.saved?.cards.length, 3);
+  assert.ok(state.saved?.cards.some(card => card.standardProductId === '6'));
+  assert.ok(state.saved?.cards.every(card => Number(card.standardProductId) >= 6));
+  assert.deepEqual(read, ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
 });
 
 test('explicit platform overrides page context and survives a follow-up with the old page filter', async () => {

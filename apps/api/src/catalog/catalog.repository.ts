@@ -7,7 +7,8 @@ import { type ShopRatingDetails } from '../shops/shop-rating.js';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
 import { catalogPlatformGroup } from './catalog-order.js';
 import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './quote-policy.js';
-import { CATALOG_DISPLAY_SEARCH_LABELS, CATALOG_PRODUCT_ALIASES, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
+import { CATALOG_DISPLAY_SEARCH_LABELS, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
+import { catalogIdentityNames } from '@price-comparison/catalog/catalog-search';
 import { PriceHistoryRepository } from './price-history.repository.js';
 import { isAiMembership, MEMBERSHIP_GROUPS, MEMBERSHIP_POLICY_VERSION, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { failedMembershipFeatures } from '../standardization/membership-classification.js';
@@ -32,8 +33,7 @@ function productMetadata(row: { id: string; name: string; platform: string; plat
   return { id: row.id, name: standardProductDisplayName(row.name), platform: row.platform, platformGroup: row.platform_group,
     identity: { family: row.family ?? '', product: row.product ?? '', tier: row.tier ?? '' },
     isAiMembership: isAiMembership({ family: row.family ?? '', product: row.product ?? '', tier: row.tier ?? '' }),
-    identityNames: [row.name, [row.family, row.product, row.tier].filter(Boolean).join(' '),
-      ...CATALOG_PRODUCT_ALIASES[`${row.family}/${row.product}/${row.tier}`] ?? [], ...row.aliases],
+    identityNames: catalogIdentityNames(row.name, { family: row.family ?? '', product: row.product ?? '', tier: row.tier ?? '' }, row.aliases),
     kind: standardProductKind({ family: row.family ?? '', product: row.product ?? '', tier: row.tier ?? '' }),
     ...(row.merged_into_id ? { mergedIntoId: row.merged_into_id } : {}) };
 }

@@ -63,6 +63,18 @@ function fixture(standards: Standard[]) {
     transferred: () => aliasRowsTransferred };
 }
 
+test('distinct symbolic plan aliases remain owned by their respective standards', async () => {
+  const f = fixture([
+    { id: 1n, aliases: ['Studio Pro'], active: true },
+    { id: 2n, aliases: ['Studio Pro+'], active: true },
+  ]);
+  try {
+    const aliases = await loadCatalogAliases(f.database);
+    assert.deepEqual(aliases.map(alias => [alias.standard_product_id, alias.normalized_alias]),
+      [[1n, 'studiopro'], [2n, 'studiopro+']]);
+  } finally { await f.database.destroy(); }
+});
+
 test('refreshing a standard without aliases transfers no unrelated aliases and reads the snapshot once', async () => {
   const f = fixture([
     { id: 1n, aliases: [], active: true },

@@ -1,4 +1,5 @@
 import { canonicalizeMatchText } from './fingerprint.js';
+import { catalogSearchTerms, compactCatalogSearchText, normalizeCatalogSearchText } from '@price-comparison/catalog/catalog-search';
 
 export interface TextFeatures {
   readonly normalized: string;
@@ -13,16 +14,16 @@ export interface TextFeatureOptions {
 }
 
 export function normalizeSearchText(value: unknown): string {
-  return canonicalizeMatchText(value).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  return normalizeCatalogSearchText(canonicalizeMatchText(value));
 }
 
 export function compactSearchText(value: unknown): string {
-  return normalizeSearchText(value).replace(/\s+/gu, '');
+  return compactCatalogSearchText(canonicalizeMatchText(value));
 }
 
 export function extractTokenTerms(text: string): Map<string, number> {
   const result = new Map<string, number>();
-  for (const term of normalizeSearchText(text).match(/[a-z0-9]+|[\p{Script=Han}]+/gu) ?? []) {
+  for (const term of catalogSearchTerms(text)) {
     result.set(term, (result.get(term) ?? 0) + 1);
   }
   return result;
@@ -45,14 +46,13 @@ export function extractTextFeatures(text: string, options: TextFeatureOptions = 
   }
   const tokenTerms = new Map<string, number>();
   let truncated = false;
-  for (const match of normalized.matchAll(/[a-z0-9]+|[\p{Script=Han}]+/gu)) {
-    const term = match[0];
+  for (const term of catalogSearchTerms(normalized)) {
     const count = tokenTerms.get(term);
     if (count !== undefined) tokenTerms.set(term, count + 1);
     else if (tokenTerms.size < maxFeatures) tokenTerms.set(term, 1);
     else truncated = true;
   }
-  const compact = normalized.replace(/\s+/gu, '');
+  const compact = compactSearchText(normalized);
   const ngrams = new Set<string>();
   outer: for (const width of [2, 3]) {
     for (let index = 0; index + width <= compact.length; index++) {

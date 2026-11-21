@@ -103,7 +103,10 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
       assert.equal((await service.getProducts()).items.find(item => item.id === String(sample.standard.id))?.platformGroup, platformGroup);
       for (const metadata of [resolved, await service.getProduct(String(sample.standard.id)),
         (await service.getProducts()).items.find(item => item.id === String(sample.standard.id))]) {
-        assert.deepEqual(metadata?.identityNames, ['Fictional product', `${family} ${product} pro`, '标准商品别名']);
+        for (const name of ['Fictional product', `${family} ${product} pro`, '标准商品别名']) {
+          assert.ok(metadata?.identityNames?.includes(name), name);
+        }
+        if (family === 'google' && product === 'email') assert.ok(metadata?.identityNames?.includes('Google 邮箱 Pro'));
       }
       await database.insertInto('offers').values({
         product_id: sample.source.id, price: '10.00', settlement_price: '10.00',

@@ -1,5 +1,6 @@
 import { buildCanonicalStandardKey } from './canonical-key.js';
 import { compactSearchText, extractCharacterNgrams, extractTokenTerms } from './text-features.js';
+import { catalogIdentityNames, catalogNameMatch } from '@price-comparison/catalog/catalog-search';
 
 export interface CandidateDocument {
   readonly id: string;
@@ -74,13 +75,13 @@ const GENERIC_TERMS = new Set(['a', 'an', 'the', 'of', 'for', 'and', 'with', 'ac
   'month', 'months', 'year', 'years', 'one', 'shared', 'private', 'plan', '邮箱账号', '账号', '服务', '会员']);
 
 function reliableTextMatch(text: string, indexed: IndexedCandidateDocument): boolean {
-  const terms = [...extractTokenTerms(text).keys()].filter(term => !GENERIC_TERMS.has(term));
+  const terms = [...extractTokenTerms(text).keys()].filter(term => !GENERIC_TERMS.has(term.replace(/\++$/u, '')));
   for (const term of terms) if (indexed.tokenTerms?.has(term)) return true;
   // Ngrams retrieve spellings and Han phrases, but a shared two-letter fragment
   // (or generic plan word) is not enough to make a catalog identity relevant.
   const names = [indexed.document.family, indexed.document.product, indexed.document.displayName ?? '', ...indexed.document.aliases];
   for (const name of names) {
-    const nameTerms = [...extractTokenTerms(name).keys()].filter(term => term.length >= 2 && !GENERIC_TERMS.has(term));
+    const nameTerms = [...extractTokenTerms(name).keys()].filter(term => term.length >= 2 && !GENERIC_TERMS.has(term.replace(/\++$/u, '')));
     for (const term of terms) for (const candidate of nameTerms) {
       const han = /\p{Script=Han}/u.test(term) && /\p{Script=Han}/u.test(candidate);
       if (Math.min(term.length, candidate.length) >= (han ? 2 : 4) && (term.includes(candidate) || candidate.includes(term))) return true;
@@ -105,7 +106,8 @@ export function searchCandidateSource<Key>(
   const queryTokens = extractTokenTerms(query.text);
   const queryNgrams = extractCharacterNgrams(query.text);
   const routes = new Map<Key, Set<CandidateRoute>>();
-  const primaryAliases = new Set(source.aliases(compactSearchText(primaryText)));
+  const primaryKey = compactSearchText(primaryText);
+  const primaryAliases = new Set(source.aliases(primaryKey));
   let scanned = 0;
   let truncated = source.budgetTruncated ?? false;
   const add = (key: Key, route: CandidateRoute) => {
@@ -149,9 +151,14 @@ export function searchCandidateSource<Key>(
   for (const [key, documentRoutes] of routes) {
     const indexed = source.document(key);
     const primaryMatch = reliableTextMatch(primaryText, indexed);
-    if (!documentRoutes.has('canonical') && !documentRoutes.has('alias') && !primaryMatch && !reliableTextMatch(query.text, indexed)) continue;
-    priority.set(key, documentRoutes.has('canonical') && query.canonicalKeyConfidence !== 'heuristic' ? 5
-      : primaryAliases.has(key) ? 4 : primaryMatch ? 3 : documentRoutes.has('canonical') ? 2 : documentRoutes.has('alias') ? 1 : 0);
+    const exactName = candidateDocumentNames(indexed.document).some(name => catalogNameMatch(name, primaryText) === 2);
+    const exactDeclaredName = catalogNameMatch(indexed.document.displayName ?? '', primaryText) === 2;
+    const exactAlias = primaryAliases.has(key) && indexed.aliases.includes(primaryKey);
+    if (!documentRoutes.has('canonical') && !documentRoutes.has('alias') && !exactName && !primaryMatch && !reliableTextMatch(query.text, indexed)) continue;
+    // Complete catalog names beat partial aliases; generated names remain search hints.
+    priority.set(key, documentRoutes.has('canonical') && query.canonicalKeyConfidence !== 'heuristic' ? 9
+      : exactAlias ? 8 : exactDeclaredName ? 7 : primaryAliases.has(key) ? 6 : exactName ? 5
+      : primaryMatch ? 3 : documentRoutes.has('canonical') ? 2 : documentRoutes.has('alias') ? 1 : 0);
     primaryCoverage.set(key, [...primaryTokens.keys()].reduce((sum, term) =>
       sum + (indexed.tokenTerms?.has(term) ? 1 : 0), 0));
     relevant.push(key);
@@ -160,7 +167,15 @@ export function searchCandidateSource<Key>(
     || primaryCoverage.get(right)! - primaryCoverage.get(left)!
     || compareIds(source.document(left).document.id, source.document(right).document.id));
   if (relevant.length > limits.maxCompared) truncated = true;
-  const compared = relevant.slice(0, limits.maxCompared);
+  const heuristic = query.canonicalKeyConfidence === 'heuristic'
+    ? relevant.find(key => routes.get(key)!.has('canonical')) : undefined;
+  // Preserve both signals when capacity permits; a heuristic never replaces the best title match.
+  const retainHint = <T>(items: T[], hint: T | undefined, limit: number): T[] => {
+    const selected = items.slice(0, limit);
+    if (hint !== undefined && limit > 1 && !selected.includes(hint)) selected.splice(limit - 1, 1, hint);
+    return selected;
+  };
+  const compared = retainHint(relevant, heuristic, limits.maxCompared);
   const matches = compared.map(key => {
     const indexed = source.document(key);
     const documentRoutes = routes.get(key)!;
@@ -185,7 +200,8 @@ export function searchCandidateSource<Key>(
   });
   matches.sort((left, right) => right.score - left.score || compareIds(left.id, right.id));
   if (matches.length > limits.topK) truncated = true;
-  return { candidates: matches.slice(0, limits.topK), stats: { scanned, compared: compared.length, truncated,
+  const hint = heuristic === undefined ? undefined : matches.find(match => match.id === source.document(heuristic).document.id);
+  return { candidates: retainHint(matches, hint, limits.topK), stats: { scanned, compared: compared.length, truncated,
     indexBytes: source.indexBytes, indexedCanonicalKeys: source.indexedCanonicalKeys, indexedAliases: source.indexedAliases } };
 }
 
@@ -218,7 +234,11 @@ function compareIds(left: string, right: string): number {
 }
 
 export function candidateDocumentText(document: CandidateDocument): string {
-  return [document.family, document.product, document.tier, document.displayName ?? '', ...document.aliases].join(' ');
+  return candidateDocumentNames(document).join(' ');
+}
+
+function candidateDocumentNames(document: CandidateDocument): string[] {
+  return catalogIdentityNames(document.displayName ?? '', document, document.aliases);
 }
 
 function approximateEntryBytes(feature: string, isNew: boolean): number {
@@ -391,7 +411,7 @@ export class BoundedCandidateIndex {
         const child = node.children.get(characters[index]!);
         if (!child) break;
         node = child;
-        if (node.documentIndex !== undefined) matches.add(node.documentIndex);
+        if (node.documentIndex !== undefined && characters[index + 1] !== '+') matches.add(node.documentIndex);
       }
     }
     return matches;

@@ -26,6 +26,43 @@ const catalog: CandidateDocument[] = [
   { id: '3', family: 'google', product: 'gmail', tier: 'email_account', displayName: '谷歌邮箱成品', aliases: ['谷歌邮件账户'] },
 ];
 
+test('a heuristic identity retains a bounded slot alongside stronger lexical candidates', () => {
+  const target: CandidateDocument = { id: '999', family: 'acme', product: 'studio', tier: 'plus', displayName: 'Acme Studio Plus', aliases: [] };
+  const documents = [target, ...Array.from({ length: 30 }, (_, i) => ({
+    id: String(i + 1), family: 'other', product: `source_tool_${i}`, tier: 'standard',
+    displayName: `Source Tool ${i}`, aliases: [],
+  }))];
+  const query = { text: 'Source Tool', primaryText: 'Source Tool',
+    canonicalKey: buildCanonicalStandardKey(target), canonicalKeyConfidence: 'heuristic' as const };
+  for (const options of [{ maxCompared: 4, topK: 3 }, { maxCompared: 2, topK: 2 }]) {
+    for (const index of [new BoundedCandidateIndex(documents, options),
+      VersionedCandidateIndex.build({ version: 1n, aliasPolicyVersion: 'v1', documents }, options)]) {
+      const result = index.search(query);
+      assert.notEqual(result.candidates[0]?.id, target.id, 'a heuristic must not displace the strongest title evidence');
+      assert.ok(result.candidates.some(candidate => candidate.id === target.id));
+      assert.ok(result.candidates.length <= options.topK);
+      assert.ok(result.stats.compared <= options.maxCompared);
+    }
+  }
+});
+
+test('exact plan names and distinct plus aliases survive full and incremental retrieval', () => {
+  const documents: CandidateDocument[] = [
+    { id: '1', family: 'acme', product: 'studio', tier: 'pro', displayName: 'Acme Pro', aliases: ['Studio Pro'] },
+    { id: '2', family: 'acme', product: 'studio', tier: 'pro_plus', displayName: 'Acme Pro+', aliases: ['Studio Pro+'] },
+  ];
+  const full = new BoundedCandidateIndex(documents, { topK: 1 });
+  const incremental = VersionedCandidateIndex.build({ version: 1n, aliasPolicyVersion: 'v1', documents: [documents[0]!] }, { topK: 1 });
+  incremental.applyChanges([{ version: 2n, standardProductId: '2', operation: 'upsert', document: documents[1]! }], 2n);
+  for (const text of ['Acme Pro+', 'Studio Pro+', 'StudioProPlus', 'Ａｃｍｅ Ｐｒｏ＋']) {
+    assert.equal(full.search({ text }).candidates[0]?.id, '2', text);
+    assert.deepEqual(incremental.search({ text }), full.search({ text }));
+  }
+  assert.equal(full.search({ text: 'Studio Pro' }).candidates[0]?.id, '1');
+  const alternatives = new BoundedCandidateIndex(documents).search({ text: 'Studio Pro+ annual' }).candidates;
+  assert.equal(alternatives.find(candidate => candidate.id === '1')?.routes.includes('alias') ?? false, false);
+});
+
 test('weak canonical evidence cannot suppress a different relevant sales-title candidate', () => {
   const query = { text: `ChatGPT Plus ${'SMS activation '.repeat(60)}`, primaryText: 'ChatGPT Plus',
     canonicalKey: buildCanonicalStandardKey(catalog[1]!), canonicalKeyConfidence: 'heuristic' as const };
@@ -40,6 +77,7 @@ test('Chinese display names and confirmed aliases recall their catalog identity'
   const index = new BoundedCandidateIndex(catalog);
   assert.equal(new BoundedCandidateIndex([{ ...catalog[2]!, aliases: [] }]).search({ text: '谷歌邮箱成品独享' }).candidates[0]?.id, '3');
   assert.equal(index.search({ text: '购买谷歌邮件账户' }).candidates[0]?.id, '3');
+  assert.equal(index.search({ text: '谷 歌 邮 箱 成 品' }).candidates[0]?.id, '3');
 });
 
 test('relevance filtering preserves short exact brands and two-character Chinese display names', () => {
@@ -56,6 +94,46 @@ test('generic terms and accidental ngrams do not fill unrelated candidate slots'
   ]);
   assert.deepEqual(index.search({ text: 'handmade ceramic vase account' }).candidates, []);
   assert.deepEqual(index.search({ text: 'Netflix' }).candidates, []);
+});
+
+test('symbolic plan suffixes cannot establish relevance for an unrelated brand', () => {
+  const documents = [
+    { id: '1', family: 'acme', product: 'studio', tier: 'pro_plus', displayName: 'Acme Pro+', aliases: [] },
+    { id: '2', family: 'other', product: 'studio', tier: 'premium_plus', displayName: 'Other Premium+', aliases: [] },
+  ];
+  for (const index of [new BoundedCandidateIndex(documents),
+    VersionedCandidateIndex.build({ version: 1n, aliasPolicyVersion: 'v1', documents })]) {
+    assert.deepEqual(index.search({ text: 'Unrelatedbrand Pro+' }).candidates, []);
+    assert.deepEqual(index.search({ text: 'Unrelatedbrand Premium Plus' }).candidates, []);
+  }
+});
+
+test('a frozen unique alias outranks a generated search name of another identity', () => {
+  const documents: CandidateDocument[] = [
+    { id: '1', family: 'anthropic', product: 'claude', tier: 'max_5x', displayName: 'Claude Max', aliases: [] },
+    { id: '2', family: 'acme', product: 'other_plan', tier: 'standard', displayName: 'Reviewed identity', aliases: ['Claude Max 100'] },
+  ];
+  const full = new BoundedCandidateIndex(documents, { maxCompared: 1, topK: 1 });
+  const incremental = VersionedCandidateIndex.build({ version: 1n, aliasPolicyVersion: 'v1', documents: [documents[0]!] },
+    { maxCompared: 1, topK: 1 });
+  incremental.applyChanges([{ version: 2n, standardProductId: '2', operation: 'upsert', document: documents[1]! }], 2n);
+  for (const index of [full, incremental]) {
+    assert.equal(index.search({ text: 'Claude Max 100' }).candidates[0]?.id, '2');
+  }
+});
+
+test('a complete declared name outranks a shorter alias of a different plan', () => {
+  const documents: CandidateDocument[] = [
+    { id: '1', family: 'acme', product: 'studio', tier: 'pro', displayName: 'Acme Pro', aliases: ['Studio Pro'] },
+    { id: '2', family: 'acme', product: 'studio', tier: 'pro_max', displayName: 'Studio Pro Max', aliases: [] },
+  ];
+  for (const maxCompared of [1, 2]) {
+    const full = new BoundedCandidateIndex(documents, { maxCompared, topK: 1 });
+    const incremental = VersionedCandidateIndex.build({ version: 1n, aliasPolicyVersion: 'v1', documents: [documents[0]!] },
+      { maxCompared, topK: 1 });
+    incremental.applyChanges([{ version: 2n, standardProductId: '2', operation: 'upsert', document: documents[1]! }], 2n);
+    for (const index of [full, incremental]) assert.equal(index.search({ text: 'Studio Pro Max' }).candidates[0]?.id, '2');
+  }
 });
 
 test('a reliable name match survives long unrelated context and a one-candidate comparison limit', () => {

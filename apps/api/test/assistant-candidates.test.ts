@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { catalogIdentityNames } from '@price-comparison/catalog/catalog-search';
 import { ASSISTANT_CAPABILITIES, capabilitySupportsPurpose, selectCapabilities, type CapabilityEvidence } from '../src/assistant/assistant-capabilities.js';
 import { candidateEvidence, selectCandidates, type AssistantCandidate } from '../src/assistant/assistant-candidates.js';
 import type { CatalogOffer } from '../src/catalog/catalog.repository.js';
@@ -240,6 +241,38 @@ test('explicit product matches standard names, never merchant names or offer mar
   assert.deepEqual(selectCandidates(candidates, { ...needs, purpose: null, product: 'Claude Pro' }, now)
     .map(candidate => candidate.standardProduct.name), ['Claude Pro']);
   assert.deepEqual(selectCandidates(candidates, { ...needs, purpose: null, product: 'ChatGPT Business' }, now), []);
+});
+
+for (const [brand, family] of [['Zorvex', 'zorvex'], ['Cursor', 'cursor']] as const) test(`Pro and Pro+ stay separate with generated identity metadata: ${brand}`, () => {
+  const candidates = ['pro', 'pro_plus'].map((tier, index) => {
+    const identity = { family, product: family, tier };
+    const name = `${brand} ${index ? 'Super' : 'Premium'}`;
+    const aliases = index ? [`${brand} Pro+`, `${brand} Pro Plus`] : [`${brand} Pro`];
+    return {
+      ...fixture(String(index + 1), { membershipKind: 'account' }),
+      standardProduct: { id: String(index + 1), name, platform: family, kind: 'subscription', identity,
+        identityNames: catalogIdentityNames(name, identity, aliases) },
+    };
+  });
+  for (const [product, expected] of [
+    [`${brand} Pro`, '1'], [`${brand} Pro+`, '2'], [`${brand} Pro Plus`, '2'],
+    [`${brand} pro_plus`, '2'], [`${brand} Ｐｒｏ＋`, '2'],
+  ]) {
+    assert.deepEqual(selectCandidates(candidates, { ...needs, purpose: null, product }, now)
+      .map(candidate => candidate.standardProduct.id), [expected], product);
+  }
+});
+
+for (const [name, product] of [
+  ['青岚邮箱服务', '青岚 邮箱'],
+  ['Zorvex高级会员', 'Zorvex 高级会员'],
+  ['Zorvex Pro', 'ZorvexPro'],
+]) test(`product spelling survives final selection: ${product}`, () => {
+  const candidate = { ...fixture(), standardProduct: { id: '1', name, platform: 'fictional', kind: 'subscription' } };
+  const request = { ...needs, purpose: null, product, platform: 'fictional' };
+  assert.deepEqual(selectCandidates([candidate], request, now).map(item => item.standardProduct.id), ['1']);
+  assert.deepEqual(selectCandidates([candidate], { ...request, platform: 'other-brand' }, now), []);
+  assert.deepEqual(selectCandidates([candidate], { ...request, product: 'Unrelated Pro' }, now), []);
 });
 
 test('explicit products also match canonical identities and standard aliases behind display names', () => {

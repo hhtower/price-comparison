@@ -1,4 +1,5 @@
 import { ASSISTANT_LIMITS, ASSISTANT_PREFERENCES, validateAssistantReply, type AssistantReply, type ShoppingNeeds, type Understanding } from '@price-comparison/catalog/assistant-contract';
+import { catalogNameMatch } from '@price-comparison/catalog/catalog-search';
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import { PRODUCT_TAG_RULES, isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
 import { CATALOG_PLATFORMS } from '@price-comparison/catalog/platform-groups';
@@ -341,8 +342,14 @@ export class AssistantService {
     }
     products = products.filter((product, index, all) => matchesRequestedProduct(product, needs)
       && all.findIndex(item => item.id === product.id) === index);
+    const productQuery = needs.product;
+    if (productQuery) {
+      const exact = (product: PublicCatalogProduct) => [product.name, ...product.identityNames ?? []]
+        .some(name => catalogNameMatch(name, productQuery) === 2);
+      products.sort((a, b) => Number(exact(b)) - Number(exact(a)));
+    }
     const candidates: AssistantCandidate[] = [];
-    let productsWithOffers = 0;
+    let productsWithEligibleOffers = 0;
     for (const product of products) {
       signal.throwIfAborted();
       const offers = await this.catalog.getReferenceOffers({ standardProductId: product.id,
@@ -350,13 +357,13 @@ export class AssistantService {
         tags: needs.requiredTags,
         newcomer: needs.newcomer ?? true, membershipKinds: needs.membershipKinds ?? undefined });
       signal.throwIfAborted();
-      for (const offer of offers) {
-        candidates.push({
-          standardProduct: product, offer,
-          capabilityEvidence: resolved.filter(item => item.products.some(resolved => resolved.id === product.id)).map(item => item.evidence),
-        });
-      }
-      if (offers.length && ++productsWithOffers >= ASSISTANT_LIMITS.standardProductsMax) break;
+      const productCandidates = offers.map(offer => ({
+        standardProduct: product, offer,
+        capabilityEvidence: resolved.filter(item => item.products.some(resolved => resolved.id === product.id)).map(item => item.evidence),
+      }));
+      if (!selectCandidates(productCandidates, needs, this.now(), 1).length) continue;
+      for (const candidate of productCandidates) candidates.push(candidate);
+      if (++productsWithEligibleOffers >= ASSISTANT_LIMITS.standardProductsMax) break;
     }
     return selectCandidates(candidates, needs, this.now(), RERANK_CANDIDATES);
   }

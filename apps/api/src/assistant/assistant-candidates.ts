@@ -1,4 +1,5 @@
 import { validateShoppingNeeds, type ShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
+import { catalogNameMatch } from '@price-comparison/catalog/catalog-search';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms, normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
@@ -49,14 +50,8 @@ function matchesPlatform(product: PublicCatalogProduct, requested: string): bool
 export function matchesRequestedProduct(product: PublicCatalogProduct, needs: ShoppingNeeds): boolean {
   if (needs.platform && !matchesPlatform(product, needs.platform)) return false;
   if (!needs.product) return true;
-  const words = (text: string) => text.normalize('NFKC').toLowerCase().replace(/\bgpt\b/gu, 'chatgpt')
-    .split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  const requested = words(needs.product);
   // Only standard identities establish product matches, never merchant names or offer marketing.
-  return requested.length > 0 && [product.name, ...product.identityNames ?? []].some(name => {
-    const terms = words(name);
-    return requested.every(word => terms.includes(word));
-  });
+  return [product.name, ...product.identityNames ?? []].some(name => catalogNameMatch(name, needs.product!) > 0);
 }
 
 function money(value: string | null): bigint | undefined {
