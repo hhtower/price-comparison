@@ -19,6 +19,36 @@ test('explicit model API relay products are excluded before an LLM request', asy
   assert.equal(isExcludedApiRelay(frozen, 'text'), true);
 });
 
+for (const name of [
+  '【官方充值】Codex 500额度 非Api',
+  '【官方直充】Codex 250点使用额度｜非API额度｜直充自己号｜官方点数补充',
+  'Codex 500额度 非 API',
+  'Codex 500额度 并非 API',
+  'Codex 500额度 不是 API',
+  'Codex 500额度 并不是 API',
+]) test('negated API claims do not exclude credits: ' + name, () => {
+  for (const fields of [{ name, spec: '' }, { name: 'Codex 点数补充', spec: name }]) {
+    assert.equal(isExcludedApiRelay(fields), false);
+    assert.equal(isExcludedApiRelay(buildExtractionPayload({ id: 'credits', ...fields }), 'text'), false);
+  }
+});
+
+test('negated API and official claims do not bypass positive relay evidence', () => {
+  for (const fields of [
+    { name: '【官方充值】Codex API 500额度' },
+    { name: 'Codex 非API额度；Claude API 中转充值' },
+    { name: 'Claude API 号池充值；Codex 非API额度' },
+    { name: 'Codex 非API额度', spec: 'Claude API 中转充值' },
+    { name: 'Codex 非API额度', category: '模型 API 中转' },
+    { name: 'Codex 非API额度', sourceData: { category: '额度兑换码' } },
+    { name: '【官方充值】Codex 非API额度', sourceData: { evidence: '实际交付 Claude 中转 API 余额。' } },
+    { name: '【官方充值】Codex 非API额度', sourceData: { evidence: '实际交付 API URL 和 API KEY，Claude 号池余额。' } },
+  ]) {
+    assert.equal(isExcludedApiRelay(fields), true, JSON.stringify(fields));
+    assert.equal(isExcludedApiRelay(buildExtractionPayload({ id: 'mixed-relay', spec: '', ...fields }), 'text'), true, JSON.stringify(fields));
+  }
+});
+
 test('explicit relay categories exclude listings without requiring title or endpoint evidence', () => {
   for (const category of ['额度兑换码', '中转', 'API 中转', '模型 API 中转', '中转站', 'API relay']) {
     for (const fields of [{ category }, { sourceCategory: category }, { sourceData: { category } }]) {

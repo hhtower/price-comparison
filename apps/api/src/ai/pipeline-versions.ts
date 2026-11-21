@@ -15,7 +15,7 @@ export const EVIDENCE_PROJECTION_VERSION = 'evidence-visible-text-20261007-v3';
 export const CANDIDATE_RETRIEVAL_VERSION = 'approved-definitions-20261121-v2';
 export const EVIDENCE_VALIDATION_VERSION = 'match-only-boundary-20261119-v1';
 export const TAG_VALIDATION_VERSION = 'tag-explicit-warranty-20261117-v5';
-export const STANDARDIZATION_POLICY_VERSION = 'standardization-match-only-20261119-v2';
+export const STANDARDIZATION_POLICY_VERSION = 'standardization-match-only-20261121-v3';
 export const PIPELINE_VERSIONS = Object.freeze({
   contentFingerprint: 'name-description-spec-20261028-v1',
   prompt: STANDARDIZATION_PROMPT_VERSION, schema: STANDARDIZATION_SCHEMA_VERSION,

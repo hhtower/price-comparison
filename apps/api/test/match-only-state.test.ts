@@ -62,5 +62,5 @@ test('old model refusal reasons are never handled outcomes', () => {
 test('only the local relay exclusion is a handled result', () => {
   assert.equal(productProcessingSummary({ reasonCode: 'api_relay_excluded' }).processingDisposition, 'handled');
   const snapshot = versions.pipelineVersionSnapshot('mock') as Record<string, string>;
-  assert.equal(versions.isCurrentPipeline({ ...snapshot, standardizationPolicy: 'standardization-match-only-20261119-v1' }), false);
+  assert.equal(versions.isCurrentPipeline({ ...snapshot, standardizationPolicy: 'standardization-match-only-20261119-v2' }), false);
 });
