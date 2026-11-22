@@ -144,7 +144,7 @@ function failedResponse(events: unknown[][]) {
   assert.ok(metadata.firstContentMs === null || (Number.isInteger(metadata.firstContentMs) && metadata.firstContentMs >= 0));
   assert.deepEqual(Object.keys(metadata).sort(), [
     'model', 'parentJobId', 'batchId', 'responseModel', 'responseId', 'responseMs', 'firstContentMs',
-    'chunkCount', 'contentChunks', 'outputBytes', 'finishReason', 'usage', 'failureReason',
+    'chunkCount', 'contentChunks', 'outputBytes', 'finishReason', 'usage', 'failureReason', 'validationReason',
   ].sort());
   return metadata;
 }
@@ -153,8 +153,67 @@ const diagnosticContext = {
   parentJobId: 'job-1', batchId: 'batch-2', model: 'untrusted-context-model',
   messages: 'private prompt', apiKey: 'private credential', baseURL: 'https://private.invalid',
   content: 'private response', error: { message: 'private error body' },
-  responseMs: -1, outputBytes: -1, failureReason: 'spoofed',
+  responseMs: -1, outputBytes: -1, failureReason: 'spoofed', validationReason: 'spoofed',
 };
+
+const diagnosticFirstChunk = { id: 'response-1', model: 'actual-model', choices: [{ delta: { role: 'assistant' } }] };
+for (const scenario of [
+  { reason: 'response_id_changed', chunks: [diagnosticFirstChunk, { ...diagnosticFirstChunk, id: 'private-id' }] },
+  { reason: 'response_model_changed', chunks: [diagnosticFirstChunk, { ...diagnosticFirstChunk, model: 'private-model' }] },
+  { reason: 'invalid_choices', chunks: [diagnosticFirstChunk, { choices: 'private choices' }] },
+  { reason: 'invalid_chunk', chunks: [null] },
+  { reason: 'choices_after_finish', chunks: [
+    { choices: [{ delta: {}, finish_reason: 'stop' }] }, { choices: [{ delta: { content: 'private content' } }] },
+  ] },
+  { reason: 'invalid_usage', confirmed: true, chunks: [
+    { choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 20 } },
+  ] },
+  { reason: 'invalid_reasoning', confirmed: true, chunks: [
+    { choices: [{ delta: { reasoning_content: { text: 'private reasoning' } }, finish_reason: 'stop' }] },
+  ] },
+  { reason: 'invalid_content', confirmed: true, chunks: [
+    { choices: [{ delta: { content: { text: 'private content' } }, finish_reason: 'stop' }] },
+  ] },
+  { reason: 'output_limit', chunks: [{ choices: [{ delta: { content: 'private content' } }] }], maxBytes: '5' },
+  { reason: 'reasoning_limit', chunks: [{ choices: [{ delta: { reasoning_content: 'x'.repeat(1_048_577) } }] }] },
+  { reason: 'invalid_tool_calls', chunks: [{ choices: [{ delta: { tool_calls: { text: 'private tool' } } }] }] },
+  { reason: 'invalid_tool_entry', chunks: [{ choices: [{ delta: { tool_calls: [null] } }] }] },
+  { reason: 'invalid_tool_index', chunks: [{ choices: [{ delta: { tool_calls: [{ index: -1 }] } }] }] },
+  { reason: 'invalid_tool_type', chunks: [{ choices: [{ delta: { tool_calls: [{ index: 0, type: 'private-type' }] } }] }] },
+  { reason: 'invalid_tool_fragment', chunks: [{ choices: [{ delta: { tool_calls: [{ index: 0, id: { text: 'private-id' } }] } }] }] },
+  { reason: 'finish_reason', confirmed: true, chunks: [{ choices: [{ delta: {}, finish_reason: 'private finish reason' }] }] },
+  { reason: 'missing_tool_calls', confirmed: true, chunks: [{ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }] },
+  { reason: 'tool_finish_reason', confirmed: true, chunks: [
+    { choices: [{ delta: { tool_calls: [{ index: 0 }] }, finish_reason: 'stop' }] },
+  ] },
+  { reason: 'incomplete_tool_metadata', confirmed: true, chunks: [
+    { choices: [{ delta: { tool_calls: [{ index: 0 }] }, finish_reason: 'tool_calls' }] },
+  ] },
+  { reason: 'invalid_tool_arguments', confirmed: true, chunks: [
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 'f', arguments: 'private invalid JSON' } }] }, finish_reason: 'tool_calls' }] },
+  ] },
+]) {
+  test(`failure diagnostics identify ${scenario.reason} without logging model values`, async () => {
+    const events: unknown[][] = [];
+    let requests = 0;
+    const call = createStreamingCall({ ...environment, AI_MAX_OUTPUT_BYTES: scenario.maxBytes ?? '16384' }, async () => {
+      requests++;
+      return eventStream(scenario.chunks);
+    }, { log: (...args) => { events.push(args); } });
+    await assert.rejects(call({ ...input, context: diagnosticContext }), (error: unknown) => {
+      assert.deepEqual(classify(error), scenario.confirmed
+        ? { retryClass: 'invalid_response', requestOutcome: 'confirmed', retryable: false }
+        : { retryClass: 'provider_unknown', requestOutcome: 'unknown', retryable: false });
+      return true;
+    });
+    const metadata = failedResponse(events);
+    assert.equal(metadata.failureReason, 'validation_error');
+    assert.equal(metadata.validationReason, scenario.reason);
+    assert.equal(metadata.chunkCount, scenario.chunks.length);
+    assert.equal(requests, 1);
+    assert.doesNotMatch(JSON.stringify(events.filter(([event]) => event === 'ai.response_failed')), /private|untrusted|spoofed|test-key|model\.invalid/);
+  });
+}
 
 test('failure diagnostics distinguish clean missing completion with body, empty choices or no chunks', async () => {
   for (const chunks of [
@@ -167,6 +226,7 @@ test('failure diagnostics distinguish clean missing completion with body, empty 
     await assert.rejects(call({ ...input, context: diagnosticContext }), /missing finish reason/);
     const metadata = failedResponse(events);
     assert.equal(metadata.failureReason, 'missing_finish_reason');
+    assert.equal(metadata.validationReason, null);
     assert.equal(metadata.model, 'model');
     assert.equal(metadata.parentJobId, 'job-1');
     assert.equal(metadata.batchId, 'batch-2');
@@ -199,6 +259,7 @@ test('completed invalid responses log validation failure and only valid usage', 
     await assert.rejects(call({ ...input, context: diagnosticContext }), (error: any) => error.retryClass === 'invalid_response');
     const metadata = failedResponse(events);
     assert.equal(metadata.failureReason, 'validation_error');
+    assert.equal(metadata.validationReason, 'finish_reason');
     assert.equal(metadata.finishReason, 'length');
     assert.equal(metadata.outputBytes, 16);
     assert.deepEqual(metadata.usage, finalUsage?.total_tokens === 3 && !('completion_tokens_details' in finalUsage)
@@ -231,6 +292,7 @@ test('timeout and caller cancellation diagnostics preserve abort reasons and par
       assert.equal(fetchSignal!.aborted, true);
       const metadata = failedResponse(events);
       assert.equal(metadata.failureReason, cancel ? 'cancelled' : 'timeout');
+      assert.equal(metadata.validationReason, null);
       assert.equal(metadata.chunkCount, partial ? 1 : 0);
       assert.equal(metadata.contentChunks, partial ? 1 : 0);
       assert.equal(metadata.outputBytes, partial ? 16 : 0);
@@ -270,6 +332,7 @@ test('HTTP, provider and transport diagnostics never include error bodies or res
     const metadata = failedResponse(events);
     assert.equal(metadata.failureReason, scenario === 'invalid' ? 'validation_error'
       : scenario === 'http' ? 'http_error' : scenario === 'provider' ? 'provider_error' : 'transport_error');
+    assert.equal(metadata.validationReason, scenario === 'invalid' ? 'invalid_choices' : null);
     assert.equal(metadata.chunkCount, scenario === 'transport' || scenario === 'invalid' ? 1 : 0);
     assert.equal(metadata.responseId, scenario === 'invalid' ? 'response-1' : null);
     assert.equal(metadata.responseModel, scenario === 'invalid' ? 'actual-model' : null);
@@ -317,6 +380,7 @@ test('preflight cancellation and invalid request diagnostics preserve rejection 
     assert.equal(requests, 0);
     const metadata = failedResponse(events);
     assert.equal(metadata.failureReason, cancelled ? 'cancelled' : 'validation_error');
+    assert.equal(metadata.validationReason, cancelled ? null : 'request_options');
     assert.equal(metadata.firstContentMs, null);
     assert.equal(metadata.chunkCount, 0);
     assert.equal(metadata.contentChunks, 0);

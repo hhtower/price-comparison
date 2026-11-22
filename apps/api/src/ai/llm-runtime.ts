@@ -104,17 +104,23 @@ export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env
     const calls = new Map<number, StreamingToolCall>();
     const responseModels = new Set<string>();
     let responseId: string | null = null; let chunkCount = 0; let contentChunks = 0; let usage: StreamingUsage | null = null;
-    let validationFailure: string | undefined; let invalidUsage = false; let failureReason = 'transport_error';
-    const invalidStream = (message: string) => { failureReason = 'validation_error'; return new Error(message); };
+    let validationFailure: { message: string; reason: string } | undefined; let invalidUsage = false; let failureReason = 'transport_error';
+    let validationReason: string | null = null;
+    // Log only fixed labels, never provider error messages or invalid field values.
+    const invalidStream = (message: string, reason: string) => {
+      failureReason = 'validation_error'; validationReason = reason; return new Error(message);
+    };
     // Confirm validation only after clean completion; transport failures remain unknown.
-    const invalidResponse = (message: string) => Object.assign(invalidStream(message), finishReason === null ? {} : {
+    const invalidResponse = (message: string, reason: string) => Object.assign(invalidStream(message, reason), finishReason === null ? {} : {
       retryClass: 'invalid_response' as const, retryable: false as const, requestOutcome: 'confirmed' as const,
     });
     try {
       signal.throwIfAborted();
       failureReason = 'validation_error';
+      validationReason = 'request_options';
       const requestOptions = buildModelRequestOptions(model, modelOptions, maxOutputTokens);
       failureReason = 'transport_error';
+      validationReason = null;
       const stream = await client.chat.completions.create({ model, stream: true, messages,
         ...(responseFormat ? { response_format: responseFormat as never } : {}),
         ...(tools ? { tools } : {}), ...(toolChoice ? { tool_choice: toolChoice } : {}),
@@ -124,22 +130,22 @@ export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env
         outputBytes += Buffer.byteLength(text, 'utf8');
         if (outputBytes > maxOutputBytes) {
           stream.controller.abort();
-          throw invalidStream(`AI output exceeds ${maxOutputBytes} bytes limit`);
+          throw invalidStream(`AI output exceeds ${maxOutputBytes} bytes limit`, 'output_limit');
         }
       };
       for await (const chunk of stream) {
         combined.throwIfAborted();
         chunkCount++;
-        if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) throw invalidStream('AI response has invalid chunk');
+        if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) throw invalidStream('AI response has invalid chunk', 'invalid_chunk');
         if (typeof chunk.model === 'string' && chunk.model.length <= 256) {
-          if (responseModels.size && !responseModels.has(chunk.model)) throw invalidStream('AI response model identity changed during streaming');
+          if (responseModels.size && !responseModels.has(chunk.model)) throw invalidStream('AI response model identity changed during streaming', 'response_model_changed');
           responseModels.add(chunk.model);
         }
         if (typeof chunk.id === 'string' && chunk.id.length <= 256) {
-          if (responseId !== null && responseId !== chunk.id) throw invalidStream('AI response message identity changed during streaming');
+          if (responseId !== null && responseId !== chunk.id) throw invalidStream('AI response message identity changed during streaming', 'response_id_changed');
           responseId ??= chunk.id;
         }
-        if (!Array.isArray(chunk.choices)) throw invalidStream('AI response has invalid choices');
+        if (!Array.isArray(chunk.choices)) throw invalidStream('AI response has invalid choices', 'invalid_choices');
         const choice = chunk.choices[0];
         if (choice?.finish_reason === 'content_filter' || (typeof choice?.delta?.refusal === 'string' && choice.delta.refusal.trim())) {
           finishReason = choice.finish_reason ?? finishReason;
@@ -147,33 +153,33 @@ export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env
           failureReason = 'provider_error';
           throw providerPolicyRejection();
         }
-        if (choice && finishReason !== null) throw invalidStream('AI response contains choices after completion');
+        if (choice && finishReason !== null) throw invalidStream('AI response contains choices after completion', 'choices_after_finish');
         if (choice?.finish_reason) finishReason = choice.finish_reason;
         if (chunk.usage) {
           const current = chunk.usage;
           if (![current.prompt_tokens, current.completion_tokens, current.total_tokens].every(value => Number.isSafeInteger(value) && value >= 0) || current.total_tokens !== current.prompt_tokens + current.completion_tokens) invalidUsage = true;
           const reasoning = current.completion_tokens_details?.reasoning_tokens;
           if (reasoning != null && (!Number.isSafeInteger(reasoning) || reasoning < 0 || reasoning > current.completion_tokens)) invalidUsage = true;
-          if (invalidUsage) validationFailure ??= 'AI response has invalid token usage';
+          if (invalidUsage) validationFailure ??= { message: 'AI response has invalid token usage', reason: 'invalid_usage' };
           if (!invalidUsage) usage = { promptTokens: current.prompt_tokens, completionTokens: current.completion_tokens, totalTokens: current.total_tokens, ...(reasoning != null ? { reasoningTokens: reasoning } : {}) };
         }
         const toolDeltas = choice?.delta?.tool_calls ?? [];
-        if (!Array.isArray(toolDeltas)) throw invalidStream('AI response has invalid tool calls');
+        if (!Array.isArray(toolDeltas)) throw invalidStream('AI response has invalid tool calls', 'invalid_tool_calls');
         const delta = choice?.delta?.content ?? '';
         const reasoning = choice?.delta as { reasoning_content?: unknown; reasoning?: unknown } | undefined;
         const thought = reasoning?.reasoning_content ?? reasoning?.reasoning ?? '';
-        if (typeof thought !== 'string') validationFailure ??= 'AI response has invalid reasoning';
+        if (typeof thought !== 'string') validationFailure ??= { message: 'AI response has invalid reasoning', reason: 'invalid_reasoning' };
         if (typeof thought === 'string' && thought) {
           // Reasoning must not consume the smaller structured-answer budget.
           reasoningBytes += Buffer.byteLength(thought, 'utf8');
           if (reasoningBytes > 1_048_576) {
             stream.controller.abort();
-            throw invalidStream('AI reasoning exceeds bytes limit');
+            throw invalidStream('AI reasoning exceeds bytes limit', 'reasoning_limit');
           }
           if (!validationFailure) await onReasoning?.(thought);
           combined.throwIfAborted();
         }
-        if (typeof delta !== 'string') validationFailure ??= 'AI response has invalid content';
+        if (typeof delta !== 'string') validationFailure ??= { message: 'AI response has invalid content', reason: 'invalid_content' };
         if (!validationFailure && (delta || toolDeltas.length) && firstContentMs === null) { firstContentMs = Math.round(performance.now() - startedAt); logger?.log?.('ai.first_content', { ...context, firstContentMs }); }
         if (typeof delta === 'string' && delta) {
           trackOutput(delta);
@@ -183,12 +189,12 @@ export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env
           }
         }
         for (const tool of toolDeltas) {
-          if (!tool || typeof tool !== 'object' || Array.isArray(tool)) throw invalidStream('AI response has invalid tool entry');
-          if (!Number.isSafeInteger(tool.index) || tool.index < 0 || tool.index > 127) throw invalidStream('AI response has invalid tool index');
+          if (!tool || typeof tool !== 'object' || Array.isArray(tool)) throw invalidStream('AI response has invalid tool entry', 'invalid_tool_entry');
+          if (!Number.isSafeInteger(tool.index) || tool.index < 0 || tool.index > 127) throw invalidStream('AI response has invalid tool index', 'invalid_tool_index');
           const current = calls.get(tool.index) ?? { id: '', type: 'function' as const, function: { name: '', arguments: '' } };
-          if (tool.type && tool.type !== 'function') throw invalidStream('AI response has invalid tool type');
+          if (tool.type && tool.type !== 'function') throw invalidStream('AI response has invalid tool type', 'invalid_tool_type');
           for (const value of [tool.id, tool.function?.name, tool.function?.arguments]) if (value !== undefined) {
-            if (typeof value !== 'string') throw invalidStream('AI response has invalid tool fragment');
+            if (typeof value !== 'string') throw invalidStream('AI response has invalid tool fragment', 'invalid_tool_fragment');
             trackOutput(value);
           }
           if (validationFailure) continue;
@@ -200,16 +206,16 @@ export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env
       }
       combined.throwIfAborted();
       if (finishReason === null) { failureReason = 'missing_finish_reason'; throw new Error('AI response incomplete: missing finish reason'); }
-      if (finishReason !== 'stop' && finishReason !== 'tool_calls') throw invalidResponse(`AI response incomplete: ${finishReason ?? 'missing finish reason'}`);
-      if (validationFailure) throw invalidResponse(validationFailure);
+      if (finishReason !== 'stop' && finishReason !== 'tool_calls') throw invalidResponse(`AI response incomplete: ${finishReason ?? 'missing finish reason'}`, 'finish_reason');
+      if (validationFailure) throw invalidResponse(validationFailure.message, validationFailure.reason);
       const toolCalls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, value]) => value);
-      if (finishReason === 'tool_calls' && !toolCalls.length) throw invalidResponse('AI response has no completed tool calls');
-      if (toolCalls.length && finishReason !== 'tool_calls') throw invalidResponse('AI tool response has an invalid finish reason');
+      if (finishReason === 'tool_calls' && !toolCalls.length) throw invalidResponse('AI response has no completed tool calls', 'missing_tool_calls');
+      if (toolCalls.length && finishReason !== 'tool_calls') throw invalidResponse('AI tool response has an invalid finish reason', 'tool_finish_reason');
       for (const tool of toolCalls) {
-        if (!tool.id || !tool.function.name) throw invalidResponse('AI response has incomplete tool metadata');
+        if (!tool.id || !tool.function.name) throw invalidResponse('AI response has incomplete tool metadata', 'incomplete_tool_metadata');
         let args: unknown;
-        try { args = JSON.parse(tool.function.arguments); } catch { throw invalidResponse('AI response has invalid tool JSON arguments'); }
-        if (!args || typeof args !== 'object' || Array.isArray(args)) throw invalidResponse('AI response has invalid tool JSON arguments');
+        try { args = JSON.parse(tool.function.arguments); } catch { throw invalidResponse('AI response has invalid tool JSON arguments', 'invalid_tool_arguments'); }
+        if (!args || typeof args !== 'object' || Array.isArray(args)) throw invalidResponse('AI response has invalid tool JSON arguments', 'invalid_tool_arguments');
       }
       const responseMs = Math.round(performance.now() - startedAt);
       const content = parts.join('');
@@ -228,6 +234,7 @@ export function createStreamingCall(environment: NodeJS.ProcessEnv = process.env
           responseMs: Math.round(performance.now() - startedAt), firstContentMs, chunkCount, contentChunks,
           outputBytes, finishReason: ['stop', 'length', 'tool_calls', 'content_filter', 'function_call'].includes(finishReason ?? '') ? finishReason : null,
           usage: invalidUsage ? null : usage,
+          validationReason: combined.aborted ? null : validationReason,
           failureReason: combined.aborted ? (signal.aborted ? 'cancelled' : 'timeout')
             : failureReason === 'transport_error' && error instanceof OpenAI.APIError && !(error instanceof OpenAI.APIConnectionError)
               ? (Number.isInteger(error.status) ? 'http_error' : 'provider_error') : failureReason,
