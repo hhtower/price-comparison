@@ -24,8 +24,8 @@ test('first open shows only a skeleton and remains dismissible while the module 
   const launcher = await screen.findByRole('button', { name: '打开导购助手' });
   fireEvent.click(launcher);
   const dialog = screen.getByRole('dialog', { name: '导购助手' });
-  expect(within(dialog).getByRole('heading', { name: '选购' })).toBeVisible();
-  expect(within(dialog).queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(within(dialog).getByRole('heading', { name: '咨询' })).toBeVisible();
+  expect(within(dialog).queryByRole('heading', { name: '想了解什么？' })).not.toBeInTheDocument();
   expect(within(dialog).queryByRole('button', { name: '写代码' })).not.toBeInTheDocument();
   expect(within(dialog).getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
   expect(within(dialog).getByRole('status')).toHaveTextContent('');
@@ -45,7 +45,7 @@ test('standalone route keeps navigation and a skeleton visible until the module 
   expect(screen.getByRole('main')).toBeVisible();
   expect(screen.getByRole('link', { name: '选购指南' })).toHaveAttribute('href', '/guide');
   expect(screen.getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
-  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想了解什么？' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '收起导购助手' })).not.toBeInTheDocument();
   await act(async () => assistantChunk.resolve());
   expect(await screen.findByRole('heading', { name: '助手已就绪' })).toBeVisible();

@@ -79,7 +79,7 @@ test('launcher opens an accessible dialog and Escape collapses it with focus ret
   const dialog = await screen.findByRole('dialog', { name: '导购助手' });
   await within(dialog).findByRole('textbox', { name: '告诉助手你的需求' });
   expect(within(dialog).getAllByRole('heading', { level: 1 })).toHaveLength(1);
-  expect(within(dialog).getByRole('heading', { name: '选购' })).toBeVisible();
+  expect(within(dialog).getByRole('heading', { name: '咨询' })).toBeVisible();
   expect(within(dialog).queryByText('对话选项')).not.toBeInTheDocument();
   expect(screen.getByRole('textbox')).toHaveFocus();
   expect(launcher).toHaveAttribute('aria-expanded', 'true');
@@ -166,7 +166,7 @@ test('App mounts a single launcher on public routes and omits it on admin and st
   await screen.findByText('管理正文');
   window.history.pushState({}, '', '/assistant');
   fireEvent(window, new PopStateEvent('popstate'));
-  await screen.findByRole('heading', { name: '选购' });
+  await screen.findByRole('heading', { name: '咨询' });
   expect(screen.queryByRole('button', { name: '打开导购助手' })).not.toBeInTheDocument();
   view.unmount();
 });

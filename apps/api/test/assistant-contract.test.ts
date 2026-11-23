@@ -8,6 +8,53 @@ import {
 } from '@price-comparison/catalog/assistant-contract';
 import { applyNeedsPatch, parseUnderstanding, separateProductAttributes } from '../src/assistant/assistant.schemas.js';
 
+test('consultation plans accept only bounded read requests and never update shopping needs', () => {
+  const plan = { intent: 'answer', patch: {}, evidence: [], question: null, options: [],
+    requests: [{ tool: 'knowledge' }, { tool: 'statistics', scope: 'catalog', groupBy: 'membership',
+      filters: { membershipKinds: ['account', 'short_term'] }, evidence: [{ field: 'membershipKinds', quote: '这两类' }] }] };
+  assert.deepEqual(parseUnderstanding(plan, '解释区别并统计这两类数量'), plan);
+  for (const requests of [
+    [{ tool: 'sql', query: 'select * from users' }],
+    [{ tool: 'statistics', scope: 'admin' }],
+    [{ tool: 'statistics', scope: 'catalog', filters: { sql: 'x' } }],
+    [{ tool: 'statistics', scope: 'catalog', currency: 'usd' }],
+    [{ tool: 'history', scope: 'current', groupBy: 'membership' }],
+    [{ tool: 'statistics', scope: 'current', filters: { budget: null } }],
+    [{ tool: 'statistics', scope: 'catalog', currency: 'USD', currencyQuote: '美元' }],
+    [{ tool: 'statistics', scope: 'catalog', filters: { platform: 'openai' }, evidence: [{ field: 'platform', quote: '不存在原文' }] }],
+    Array.from({ length: 5 }, () => ({ tool: 'knowledge' })),
+  ]) assert.throws(() => parseUnderstanding({ ...plan, requests }, '问题'));
+  assert.throws(() => parseUnderstanding({ ...plan, patch: { membershipKinds: ['account'] },
+    evidence: [{ field: 'membershipKinds', quote: '成品号' }] }, '成品号是什么'));
+});
+
+test('temporary query filters keep current-turn evidence without writing a needs patch', () => {
+  const plan = { intent: 'answer', patch: {}, evidence: [], question: null, options: [],
+    requests: [{ tool: 'statistics', scope: 'current', filters: { budget: null },
+      evidence: [{ field: 'budget', quote: '本次取消预算' }], currency: 'USD', currencyQuote: '美元' }] };
+  assert.deepEqual(parseUnderstanding(plan, '本次取消预算，查美元报价'), plan);
+});
+
+test('answer sources survive validation and reject external or unsafe paths', () => {
+  const sources = [{ title: '选购指南', path: '/guide' }, { title: '商品详情', path: '/products/42' }];
+  assert.deepEqual(validateAssistantReply({ ...reply(), sources }).sources, sources);
+  for (const path of ['https://evil.invalid', '//evil.invalid', '/admin', '/products/0', '/guide?redirect=evil']) {
+    assert.throws(() => validateAssistantReply({ ...reply(), sources: [{ title: '来源', path }] }));
+  }
+});
+
+test('short answer messages are bounded and match the backwards-compatible text exactly', () => {
+  const messages = ['先说明分类。', '再看适用条件。', '需要时继续选购。'];
+  const details = [{ title: '完整依据', text: '较长的查询口径与原始说明。' }];
+  const value = { ...reply(), text: messages.join('\n\n'), messages, details };
+  assert.deepEqual(validateAssistantReply(value), value);
+  for (const changed of [
+    { messages: [] }, { messages: [...messages, '额外回复。'] }, { messages: ['字'.repeat(201)] },
+    { text: '不匹配的正文' }, { details: [{ title: '依据', text: '' }] },
+  ]) assert.throws(() => validateAssistantReply({ ...value, ...changed }));
+  assert.doesNotThrow(() => validateAssistantReply(reply()));
+});
+
 test('rental needs, understanding and quote snapshots accept the fourth kind', () => {
   const membershipKinds = ['account', 'top_up', 'rental', 'short_term'];
   assert.deepEqual(validateNeedsPatch({ membershipKinds }), { membershipKinds });
@@ -334,7 +381,7 @@ test('message and nested payload bounds reject excessive data without truncation
   for (const text of ['', ' \n ', 'x'.repeat(2001), 'x\u0000', 12]) {
     assert.throws(() => validateAssistantInput(text));
   }
-  for (const value of [{ ...reply(), text: 'x'.repeat(1201) },
+  for (const value of [{ ...reply(), text: 'x'.repeat(ASSISTANT_LIMITS.replyMaxChars + 1) },
     { ...reply(), cards: Array(4).fill(card) }, { ...reply(), options: Array(5).fill('A') },
     { ...reply(), options: ['x'.repeat(10000)] },
     { ...reply(), cards: [{ ...card, reasons: ['x'.repeat(10000)] }] },

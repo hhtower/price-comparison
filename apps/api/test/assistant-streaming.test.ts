@@ -297,3 +297,68 @@ for (const cancel of [false, true]) {
     assert.equal(state.committed, 0);
   });
 }
+
+const consultation = JSON.stringify({ intent: 'answer', patch: {}, evidence: [], question: null, options: [],
+  requests: [{ tool: 'knowledge' }] });
+
+test('consultation uses two fragmented shared streams and commits sourced facts once', async () => {
+  const state = fixture(async (_url, init) => {
+    const request = JSON.parse(String(init?.body));
+    assert.equal(request.stream, true);
+    const input = JSON.parse(request.messages.at(-1).content);
+    if (!input.facts) return stream([consultation.slice(0, 17), consultation.slice(17)]);
+    const fact = input.facts.find((item: { title: string }) => item.title === '短期');
+    const result = JSON.stringify({ answer: { text: `{{${fact.id}}}`, evidenceIds: [fact.id] } });
+    return stream([result.slice(0, 15), result.slice(15, 33), result.slice(33)]);
+  });
+  await state.run();
+  assert.equal(state.requests, 2);
+  assert.equal(state.committed, 1);
+  assert.equal(state.saved?.kind, 'explanation');
+  assert.match(state.saved!.text, /保障或交付方式不明确/u);
+  assert.equal(state.saved?.sources?.[0]?.path, '/guide');
+});
+
+for (const [label, response, reason] of [
+  ['truncated', '{"answer":', 'length'],
+  ['invalid JSON', '{"answer":', 'stop'],
+  ['unknown source', '{"answer":{"text":"{{d999}}","evidenceIds":["d999"]}}', 'stop'],
+  ['invented number', '{"answer":{"text":"有9999条报价","evidenceIds":[]}}', 'stop'],
+  ['four messages', JSON.stringify({ answer: { text: '甲\n\n乙\n\n丙\n\n丁', evidenceIds: [] } }), 'stop'],
+  ['long message', JSON.stringify({ answer: { text: '字'.repeat(201), evidenceIds: [] } }), 'stop'],
+] as const) {
+  test(`consultation ${label} never saves a partial explanation`, async () => {
+    const state = fixture(async (_url, init) => {
+      const input = JSON.parse(JSON.parse(String(init?.body)).messages.at(-1).content);
+      return input.facts ? stream([response], reason) : stream([consultation]);
+    });
+    await assert.rejects(state.run(), /MODEL_INVALID_RESPONSE/u);
+    assert.equal(state.requests, 2);
+    assert.equal(state.committed, 0);
+  });
+}
+
+for (const cancel of [false, true]) {
+  test(`consultation answer ${cancel ? 'cancellation' : 'timeout'} uses the shared abort without persistence`, async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    let aborted = false;
+    const state = fixture(async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      assert.equal(request.stream, true);
+      if (!JSON.parse(request.messages.at(-1).content).facts) return stream([consultation]);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => { aborted = true; reject(init.signal?.reason); }, { once: true });
+        started();
+      });
+    }, { ...environment, AI_TIMEOUT_MS: cancel ? '2000' : '20' });
+    const pending = state.run(controller.signal);
+    await ready;
+    if (cancel) controller.abort(new Error('cancelled'));
+    await assert.rejects(pending);
+    assert.equal(aborted, true);
+    assert.equal(state.requests, 2);
+    assert.equal(state.committed, 0);
+  });
+}

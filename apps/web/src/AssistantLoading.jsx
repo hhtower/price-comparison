@@ -9,7 +9,7 @@ export default function AssistantLoading({ embedded = false, onCollapse, error, 
   return <Container className={'assistant-page assistant-loading' + (embedded ? ' assistant-embedded' : '')}>
     {!embedded && <header className="assistant-header"><Brand /><a href="/guide">选购指南</a></header>}
     <header className="assistant-conversation-header">
-      <h1>选购</h1>
+      <h1>咨询</h1>
       <AssistantCollapseButton onCollapse={onCollapse} />
     </header>
     {notice}

@@ -1,7 +1,7 @@
 import {
   ASSISTANT_INTENTS, ASSISTANT_LIMITS, SHOPPING_NEEDS_FIELDS,
   emptyShoppingNeeds, validateAssistantInput, validateAssistantReply, validateNeedsPatch, validateShoppingNeeds,
-  type NeedsPatch, type ShoppingNeeds, type Understanding,
+  type AssistantDataRequest, type NeedsPatch, type ShoppingNeeds, type Understanding,
 } from '@price-comparison/catalog/assistant-contract';
 import { parseCatalogSearch } from '@price-comparison/catalog/purchase-attributes';
 import { isDeepStrictEqual } from 'node:util';
@@ -29,9 +29,13 @@ export function parseUnderstanding(value: unknown, userText: string): Understand
   validateAssistantInput(userText);
   const serialized = JSON.stringify(value);
   if (!serialized || new TextEncoder().encode(serialized).length > ASSISTANT_LIMITS.outputMaxBytes) invalid('output size');
-  const source = record(value, ['intent', 'patch', 'evidence', 'question', 'options']);
+  const hasRequests = value !== null && typeof value === 'object' && Object.hasOwn(value, 'requests');
+  const source = record(value, ['intent', 'patch', 'evidence', 'question', 'options', ...(hasRequests ? ['requests'] : [])]);
   if (!ASSISTANT_INTENTS.includes(source.intent as Understanding['intent'])) invalid('intent');
   const patch = validateNeedsPatch(source.patch);
+  if (['answer', 'explain'].includes(String(source.intent)) && Object.keys(patch).length) invalid('consultation patch');
+  const requests = hasRequests ? parseDataRequests(source.requests, userText) : undefined;
+  if (source.intent === 'clarify' && requests?.length) invalid('requests');
   if (!Array.isArray(source.evidence) || source.evidence.length > ASSISTANT_LIMITS.evidenceEntriesMax) invalid('evidence');
   const evidence = Array.from(source.evidence, value => {
     const entry = record(value, ['field', 'quote']);
@@ -59,7 +63,7 @@ export function parseUnderstanding(value: unknown, userText: string): Understand
       invalid('preference as requirement');
     }
   }
-  const question = source.question === null ? null : text(source.question, ASSISTANT_LIMITS.replyMaxChars);
+  const question = source.question === null ? null : text(source.question, ASSISTANT_LIMITS.messageMaxChars);
   if (!Array.isArray(source.options) || source.options.length > ASSISTANT_LIMITS.optionsMax) invalid('options');
   const options = Array.from(source.options, option => text(option, ASSISTANT_LIMITS.optionMaxChars));
   if (new Set(options).size !== options.length || (source.intent === 'clarify') !== (question !== null)
@@ -67,7 +71,45 @@ export function parseUnderstanding(value: unknown, userText: string): Understand
   if (question !== null) {
     validateAssistantReply({ kind: 'question', text: question, options, needs: emptyShoppingNeeds(), cards: [] });
   }
-  return { intent: source.intent as Understanding['intent'], patch, evidence, question, options };
+  return { intent: source.intent as Understanding['intent'], patch, evidence, question, options,
+    ...(requests ? { requests } : {}) };
+}
+
+function parseDataRequests(value: unknown, userText: string): AssistantDataRequest[] {
+  if (!Array.isArray(value) || value.length > 4) invalid('requests');
+  const seen = new Set<string>();
+  return value.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) invalid('requests');
+    const tool = Reflect.get(item, 'tool');
+    const allowed = tool === 'knowledge' ? ['tool'] : ['tool', 'scope', 'filters', 'evidence', 'currency', 'currencyQuote',
+      ...(tool === 'statistics' ? ['groupBy'] : [])];
+    if (!['knowledge', 'statistics', 'history'].includes(tool)
+      || Object.keys(item).some(key => !allowed.includes(key))) invalid('requests');
+    if (tool === 'knowledge') {
+      if (seen.has('knowledge')) invalid('requests');
+      seen.add('knowledge');
+      return { tool: 'knowledge' };
+    }
+    const entry = item as Record<string, unknown>;
+    if (!['catalog', 'current'].includes(String(entry.scope))) invalid('requests');
+    const filters = Object.hasOwn(entry, 'filters') ? validateNeedsPatch(entry.filters) : undefined;
+    if (filters && Object.keys(filters).some(key => !['platform', 'product', 'budget', 'requiredTags', 'membershipKinds', 'newcomer'].includes(key))) invalid('requests');
+    const filterPlan = parseUnderstanding({ intent: 'recommend', patch: filters ?? {},
+      evidence: Object.hasOwn(entry, 'evidence') ? entry.evidence : [], question: null, options: [] }, userText);
+    if (Object.hasOwn(entry, 'currency') && (typeof entry.currency !== 'string' || !/^[A-Z]{3}$/u.test(entry.currency))) invalid('requests');
+    if (Object.hasOwn(entry, 'currency') !== Object.hasOwn(entry, 'currencyQuote')
+      || (entry.currency && !userText.includes(text(entry.currencyQuote, ASSISTANT_LIMITS.userTextMaxChars)))) invalid('requests');
+    if (Object.hasOwn(entry, 'groupBy') && !['none', 'membership', 'platform'].includes(String(entry.groupBy))) invalid('requests');
+    const request: AssistantDataRequest = { tool, scope: entry.scope as 'catalog' | 'current',
+      ...(filters ? { filters } : {}),
+      ...(Object.hasOwn(entry, 'evidence') ? { evidence: filterPlan.evidence } : {}),
+      ...(entry.currency ? { currency: entry.currency as string, currencyQuote: entry.currencyQuote as string } : {}),
+      ...(entry.groupBy ? { groupBy: entry.groupBy as 'none' | 'membership' | 'platform' } : {}) };
+    const key = JSON.stringify(request);
+    if (seen.has(key)) invalid('requests');
+    seen.add(key);
+    return request;
+  });
 }
 
 export function applyNeedsPatch(current: ShoppingNeeds, patch: NeedsPatch): ShoppingNeeds {

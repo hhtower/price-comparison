@@ -31,6 +31,29 @@ function mockApi(overrides = {}) {
 }
 afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+test('consultation renders explanations and source links without quote cards', async () => {
+  const messages = ['可以先了解分类。', '短期也包括保障或交付方式不明确的商品。'];
+  const answer = { kind: 'explanation', text: messages.join('\n\n'), messages,
+    options: [], needs: emptyShoppingNeeds(), cards: [], sources: [{ title: '选购指南', path: '/guide' }],
+    details: [{ title: '完整分类依据', text: '这是供展开核对的完整分类说明。' }] };
+  const api = mockApi({ subscribeTurn: vi.fn(async (_credentials, active, onSnapshot) => {
+    const result = { ...active, status: 'succeeded', phase: 'succeeded', eventVersion: 2, reply: answer };
+    onSnapshot(result); return result;
+  }) });
+  render(<AssistantPage api={api} />);
+  const input = await screen.findByRole('textbox', { name: '告诉助手你的需求' });
+  fireEvent.change(input, { target: { value: '成品号和短期有什么区别？' } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  expect(await screen.findByText(messages[0])).toBeVisible();
+  expect(screen.getByText(messages[1])).toBeVisible();
+  expect(screen.getByText(answer.details[0].text)).not.toBeVisible();
+  fireEvent.click(screen.getByText('查看依据和统计口径'));
+  expect(screen.getByText(answer.details[0].text)).toBeVisible();
+  const sources = screen.getByRole('navigation', { name: '回答来源' });
+  expect(within(sources).getByRole('link', { name: '选购指南' })).toHaveAttribute('href', '/guide');
+  expect(screen.queryByText('预算大概是多少？')).not.toBeInTheDocument();
+});
+
 test('an open SSE connection updates visible reasoning before the final answer arrives', async () => {
   let stream;
   let active;
@@ -510,11 +533,11 @@ test('new conversation stays on the skeleton until the empty session is confirme
   const api = mockApi({ createSession: vi.fn(() => new Promise(resolve => { connect = resolve; })) });
   render(<AssistantPage api={api} enabled />);
   expect(screen.getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
-  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想了解什么？' })).not.toBeInTheDocument();
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   await act(async () => connect({ ...credentials, revision: 0 }));
   expect(await screen.findByRole('textbox', { name: '告诉助手你的需求' })).toBeVisible();
-  expect(screen.getByRole('heading', { name: '想用来做什么？' })).toBeVisible();
+  expect(screen.getByRole('heading', { name: '想了解什么？' })).toBeVisible();
   expect(api.sendTurn).not.toHaveBeenCalled();
 });
 
@@ -527,11 +550,11 @@ test('failed session restoration keeps the skeleton and retries without showing 
   render(<AssistantPage api={api} />);
   expect(screen.getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
   await waitFor(() => expect(api.readSession).toHaveBeenCalledTimes(1));
-  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想了解什么？' })).not.toBeInTheDocument();
   await act(async () => fail(new Error('连接失败')));
   expect(screen.getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
-  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想了解什么？' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '重试连接' }));
   expect(await screen.findByRole('textbox', { name: '告诉助手你的需求' })).toBeVisible();
   expect(api.createSession).not.toHaveBeenCalled();
@@ -544,11 +567,11 @@ test('existing conversation stays on the skeleton until history is restored', as
   render(<AssistantPage api={api} />);
   await waitFor(() => expect(api.readSession).toHaveBeenCalledTimes(1));
   expect(screen.getByRole('status', { name: '正在加载导购助手' })).toBeVisible();
-  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想了解什么？' })).not.toBeInTheDocument();
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   await act(async () => restore({ id: sessionId, revision: 1, needs: emptyShoppingNeeds(), turns: [done] }));
   expect(await screen.findByText('预算大概是多少？')).toBeVisible();
-  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想了解什么？' })).not.toBeInTheDocument();
 });
 
 test('platform chip and settings share state, track catalog changes, and control sent context', async () => {
@@ -623,7 +646,7 @@ test('real assistant-ui composer sends only current text and quick options as th
   fireEvent.change(input, { target: { value: '写代码' } });
   fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
   expect(await screen.findByText('预算大概是多少？')).toBeInTheDocument();
-  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想了解什么？' })).not.toBeInTheDocument();
   expect(api.sendTurn.mock.calls[0][1]).toEqual({ clientMessageId: expect.any(String), expectedRevision: 0, text: '写代码' });
   fireEvent.click(screen.getByRole('button', { name: '50元以内' }));
   await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(2));
@@ -735,7 +758,7 @@ test('assistant route applies client noindex and its own title', async () => {
   window.history.replaceState({}, '', '/assistant/');
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ enabled: false })));
   render(<App />);
-  expect(await screen.findByRole('heading', { name: '选购' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: '咨询' })).toBeInTheDocument();
   expect(document.title).toMatch(/导购助手/);
   expect(document.querySelector('meta[name="robots"]')).toHaveAttribute('content', 'noindex, nofollow');
 });
@@ -875,7 +898,7 @@ test('starter choices send a short message immediately and update the conversati
   await waitFor(() => expect(api.sendTurn).toHaveBeenCalledTimes(1));
   expect(api.sendTurn.mock.calls[0][1].text).toBe('写代码');
   expect(screen.getByRole('heading', { name: '写代码' })).toBeVisible();
-  expect(screen.queryByRole('heading', { name: '想用来做什么？' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '想了解什么？' })).not.toBeInTheDocument();
 });
 
 test('standalone mobile page does not automatically focus the input', async () => {
@@ -913,7 +936,7 @@ test('empty conversation disables clearing and settings dismisses outside or on 
   const onCollapse = vi.fn();
   render(<AssistantPage api={mockApi()} embedded catalogPlatform="anthropic" onCollapse={onCollapse} />);
   const input = await screen.findByRole('textbox', { name: '告诉助手你的需求' });
-  expect(input).toHaveAttribute('placeholder', '说说你的需求…');
+  expect(input).toHaveAttribute('placeholder', '问知识、查统计，或说说选购需求…');
   expect(input.closest('.assistant-composer')).toContainElement(screen.getByRole('button', { name: '不参考 Claude' }));
   expect(screen.getByRole('button', { name: '日常办公' })).toBeVisible();
   const settings = screen.getByRole('button', { name: '设置' });
@@ -959,14 +982,14 @@ test.each([false, true])('running progress stays in the reply area, including re
   await waitFor(() => expect(api.subscribeTurn).toHaveBeenCalled());
   act(() => update(active));
   const progress = screen.getByRole('status');
-  expect(progress).toHaveTextContent('正在查找报价');
+  expect(progress).toHaveTextContent('正在查询资料');
   expect(progress.closest('.assistant-viewport')).not.toBeNull();
   if (!restored) expect(progress.closest('.assistant-message-assistant')).not.toBeNull();
   expect(screen.queryByText('拾价助手')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '发送' })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: '停止' })).toBeEnabled();
   act(() => update({ ...active, phase: 'explaining', eventVersion: 2 }));
-  expect(progress).toHaveTextContent('正在整理推荐');
+  expect(progress).toHaveTextContent('正在整理回答');
   await act(async () => finish(done));
   expect(await screen.findByText('预算大概是多少？')).toBeVisible();
   expect(screen.queryByRole('status')).not.toBeInTheDocument();

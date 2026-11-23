@@ -25,7 +25,7 @@ import './assistant.css';
 const STORAGE_KEY = 'shopping-assistant';
 const REASONING_EXPANDED_KEY = 'shopping-assistant-reasoning-expanded';
 const ConversationContext = createContext(null);
-const PHASES = { queued: '正在准备查询', understanding: '正在理解需求', searching: '正在查找报价', explaining: '正在整理推荐' };
+const PHASES = { queued: '正在准备查询', understanding: '正在理解需求', searching: '正在查询资料', explaining: '正在整理回答' };
 const PREFERENCES = { lower_price: '价格优先', simple_setup: '操作简单' };
 
 function needsLabels(needs) {
@@ -193,15 +193,25 @@ function Message() {
   const running = useAuiState(state => state.message.status?.type === 'running');
   const turnId = useAuiState(state => state.message.metadata.custom?.turnId);
   const { sendOption, retry, blocked, reasoning, activeTurnId } = useContext(ConversationContext);
-  return <MessagePrimitive.Root className={'assistant-message assistant-message-' + role}>
+  return <MessagePrimitive.Root className={'assistant-message assistant-message-' + role + (reply?.messages ? ' assistant-message-group' : '')}>
     {role === 'assistant' && <Reasoning text={reasoning[running ? activeTurnId : turnId]} running={running} />}
-    {running ? <RunStatus /> : <MessagePrimitive.Parts />}
+    {running ? <RunStatus /> : reply?.messages ? reply.messages.map((text, index) =>
+      <p className="assistant-reply-part" key={index}>{text}</p>) : <MessagePrimitive.Parts />}
     {contactAdmin && <div className="assistant-options"><ContactAdminButton /></div>}
     {retryText && last && <div className="assistant-options">
       <button type="button" disabled={blocked} onClick={() => retry(retryText)}>重试</button>
     </div>}
     {reply?.needsInvalidated && <p role="status">本条历史推荐的筛选条件已失效，请重新说明需求。</p>}
     {reply && <QuoteCards cards={reply.cards} />}
+    {reply?.sources?.length > 0 && <nav className="assistant-sources" aria-label="回答来源">
+      <span>依据：</span>{reply.sources.map(source => <a key={source.path} href={source.path}>{source.title}</a>)}
+    </nav>}
+    {reply?.details?.length > 0 && <details className="assistant-answer-details">
+      <summary>查看依据和统计口径</summary>
+      <dl>{reply.details.map((detail, index) => <React.Fragment key={index}>
+        <dt>{detail.title}</dt><dd>{detail.text}</dd>
+      </React.Fragment>)}</dl>
+    </details>}
     {reply && last && reply.options.length > 0 && <div className="assistant-options" aria-label="快捷回答">
       {reply.options.map(option => <button type="button" key={option} disabled={blocked} onClick={() => sendOption(option)}>{option}</button>)}
     </div>}
@@ -386,7 +396,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
   const labels = needsLabels(needs);
   const platform = recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null;
   const purpose = needs.purpose || topic;
-  const title = purpose || '选购';
+  const title = purpose || '咨询';
   function messageWithContext(text) {
     if (blocked || !text.trim()) return null;
     const selected = recognizeFilters ? selectedAssistantPlatform(embedded, catalogPlatform) : null;
@@ -436,7 +446,7 @@ function Conversation({ api, credentials, initialSession, onNew, locked, focusIn
         <ComposerPrimitive.Root className="assistant-composer" onSubmit={sendDraft}>
           <AssistantPlatformChip platform={platform} disabled={blocked} onRemove={() => { onRecognizeFilters(false); setDraftError(''); }} />
           <div className="assistant-composer-row">
-            <ComposerPrimitive.Input ref={input} aria-label="告诉助手你的需求" placeholder="说说你的需求…" minRows={1} maxRows={4}
+            <ComposerPrimitive.Input ref={input} aria-label="告诉助手你的需求" placeholder="问知识、查统计，或说说选购需求…" minRows={1} maxRows={4}
               maxLength={ASSISTANT_LIMITS.userTextMaxChars} disabled={uncertain || locked} addAttachmentOnPaste={false}
               cancelOnEscape={false} unstable_focusOnRunStart={false} unstable_focusOnScrollToBottom={false}
               unstable_focusOnThreadSwitched={false}

@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { emptyShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
+import { ASSISTANT_LIMITS, emptyShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
 import { createAssistantApi } from './assistant-api.js';
 
 const sessionId = '11111111-1111-4111-8111-111111111111';
@@ -100,7 +100,7 @@ test('abort closes only the SSE reader and does not call cancel or replay', asyn
 });
 
 test('malformed successful response is never accepted as a final answer', async () => {
-  const api = createAssistantApi(async () => Response.json({ snapshot: { ...finished, reply: { ...reply, text: 'x'.repeat(1201) } }, created: true }));
+  const api = createAssistantApi(async () => Response.json({ snapshot: { ...finished, reply: { ...reply, text: 'x'.repeat(ASSISTANT_LIMITS.replyMaxChars + 1) } }, created: true }));
   await expect(api.sendTurn(credentials, { clientMessageId: messageId, expectedRevision: 0, text: '写代码' })).rejects.toThrow(/无法读取回复/);
 });
 

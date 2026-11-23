@@ -11,6 +11,8 @@ export const ASSISTANT_LIMITS = Object.freeze({
   outputMaxBytes: 16 * 1024,
   reasoningMaxChars: 8000,
   replyMaxChars: 1200,
+  messagesMax: 3,
+  messageMaxChars: 200,
   optionsMax: 4,
   optionMaxChars: 120,
   cardsMax: 3,
@@ -46,7 +48,7 @@ export const ASSISTANT_LIMITS = Object.freeze({
 });
 
 export const ASSISTANT_PREFERENCES = ['lower_price', 'simple_setup'] as const;
-export const ASSISTANT_INTENTS = ['clarify', 'recommend', 'compare', 'explain'] as const;
+export const ASSISTANT_INTENTS = ['clarify', 'recommend', 'compare', 'explain', 'answer'] as const;
 export const ASSISTANT_REPLY_KINDS = ['question', 'recommendation', 'comparison', 'explanation', 'no_match'] as const;
 export const ASSISTANT_TURN_STATUSES = ['queued', 'running', 'succeeded', 'failed', 'cancelled'] as const;
 export const ASSISTANT_TURN_PHASES = ['queued', 'understanding', 'searching', 'explaining', 'succeeded', 'failed', 'cancelled'] as const;
@@ -64,12 +66,18 @@ export type ShoppingNeeds = {
   newcomer?: boolean;
 };
 export type NeedsPatch = Partial<ShoppingNeeds>;
+export type AssistantDataRequest =
+  | { tool: 'knowledge' }
+  | { tool: 'statistics' | 'history'; scope: 'catalog' | 'current'; filters?: NeedsPatch;
+    evidence?: Array<{ field: keyof ShoppingNeeds; quote: string }>;
+    currency?: string; currencyQuote?: string; groupBy?: 'none' | 'membership' | 'platform' };
 export type Understanding = {
   intent: typeof ASSISTANT_INTENTS[number];
   patch: NeedsPatch;
   evidence: Array<{ field: keyof ShoppingNeeds; quote: string }>;
   question: string | null;
   options: string[];
+  requests?: AssistantDataRequest[];
 };
 export type AssistantReply = {
   kind: typeof ASSISTANT_REPLY_KINDS[number];
@@ -77,6 +85,9 @@ export type AssistantReply = {
   options: string[];
   needs: ShoppingNeeds;
   needsInvalidated?: boolean;
+  messages?: string[];
+  details?: Array<{ title: string; text: string }>;
+  sources?: Array<{ title: string; path: string }>;
   cards: Array<{
     standardProductId: string;
     productId: string;
@@ -269,7 +280,7 @@ export function validateShoppingNeeds(value: unknown): ShoppingNeeds {
 
 export function validateAssistantReply(value: unknown): AssistantReply {
   const keys = ['kind', 'text', 'options', 'needs', 'cards'];
-  const source = record(value, [...keys, 'needsInvalidated'], true);
+  const source = record(value, [...keys, 'needsInvalidated', 'sources', 'messages', 'details'], true);
   if (keys.some(key => !Object.hasOwn(source, key))
     || (Object.hasOwn(source, 'needsInvalidated') && typeof source.needsInvalidated !== 'boolean')) invalid('fields');
   const kind = choice(source.kind, ASSISTANT_REPLY_KINDS, 'kind');
@@ -317,12 +328,27 @@ export function validateAssistantReply(value: unknown): AssistantReply {
   });
   unique(cards.map(card => card.productId));
   if ((kind === 'question' || kind === 'no_match') && cards.length) invalid('cards for reply kind');
+  const sources = Object.hasOwn(source, 'sources') ? list(source.sources, 12, value => {
+    const item = record(value, ['title', 'path']);
+    const path = text(item.path, 'source path', 120);
+    if (!/^(?:\/|\/guide|\/products\/[1-9][0-9]{0,18})$/u.test(path)) invalid('source path');
+    return { title: text(item.title, 'source title', 120), path };
+  }) : undefined;
+  const messages = Object.hasOwn(source, 'messages') ? list(source.messages, ASSISTANT_LIMITS.messagesMax,
+    value => text(value, 'message', ASSISTANT_LIMITS.messageMaxChars, true), 1) : undefined;
+  if (messages && messages.join('\n\n') !== source.text) invalid('messages/text');
+  const details = Object.hasOwn(source, 'details') ? list(source.details, 64, value => {
+    const item = record(value, ['title', 'text']);
+    return { title: text(item.title, 'detail title', 120), text: text(item.text, 'detail text', 4000, true) };
+  }) : undefined;
+  if (details && new TextEncoder().encode(JSON.stringify(details)).length > ASSISTANT_LIMITS.evidenceMaxBytes) invalid('details size');
   return { kind, text: kind === 'question'
     ? clarificationText(source.text, ASSISTANT_LIMITS.replyMaxChars, true)
     : text(source.text, 'reply text', ASSISTANT_LIMITS.replyMaxChars, true),
     options: unique(list(source.options, ASSISTANT_LIMITS.optionsMax,
       item => clarificationText(item, ASSISTANT_LIMITS.optionMaxChars))),
-    needs: validateShoppingNeeds(source.needs), cards,
+    needs: validateShoppingNeeds(source.needs), cards, ...(sources ? { sources } : {}),
+    ...(messages ? { messages } : {}), ...(details ? { details } : {}),
     ...(Object.hasOwn(source, 'needsInvalidated') ? { needsInvalidated: source.needsInvalidated as boolean } : {}) };
 }
 

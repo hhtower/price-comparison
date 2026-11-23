@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { CATALOG_PLATFORMS } from '@price-comparison/catalog/platform-groups';
 
-export const ASSISTANT_STARTERS = ['写代码', '读论文', '日常办公'];
+export const ASSISTANT_STARTERS = ['成品号和短期有什么区别？', '本站收录了多少商品？', '写代码', '读论文', '日常办公'];
 
 export function selectedAssistantPlatform(embedded, value) {
   if (!embedded) return null;
@@ -12,7 +12,7 @@ export function selectedAssistantPlatform(embedded, value) {
   return CATALOG_PLATFORMS.find(item => item.id === normalized || item.aliases.includes(normalized)) ?? null;
 }
 
-export function AssistantHeader({ title = '选购', labels = [], recognizeFilters, onRecognizeFilters,
+export function AssistantHeader({ title = '咨询', labels = [], recognizeFilters, onRecognizeFilters,
   expandReasoning, onExpandReasoning,
   blocked = false, clearDisabled = false, onClear, onCollapse }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -72,7 +72,7 @@ export function AssistantSendIcon() {
 
 export function AssistantWelcome({ disabled, onStart }) {
   return <div className="assistant-welcome">
-    <h2>想用来做什么？</h2>
+    <h2>想了解什么？</h2>
     <div className="assistant-starters">{ASSISTANT_STARTERS.map(text =>
       <button type="button" key={text} disabled={disabled} onClick={() => onStart(text)}>{text}</button>)}</div>
   </div>;

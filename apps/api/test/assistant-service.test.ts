@@ -749,15 +749,182 @@ test('membership evidence and deterministic warranty values fit the card budget'
 
 test('warranty explanations use the final forms and never refer to retired supporting tags', async () => {
   for (const text of ['什么是质保？', '订阅保障是什么意思？', '使用保障是什么意思？']) {
-    const state = harness([{ intent: 'explain', patch: {}, evidence: [], question: null, options: [] }], text);
+    const state = harness([{ intent: 'explain', patch: {}, evidence: [], question: null, options: [] },
+      (input: { facts: Array<{ id: string; title: string }> }) => {
+        const ids = input.facts.filter(fact => /保障/u.test(fact.title)).map(fact => fact.id);
+        return { answer: { text: ids.map(id => `{{${id}}}`).join('\n'), evidenceIds: ids } };
+      }], text);
     await state.run();
     assert.equal(state.saved?.kind, 'explanation');
-    assert.match(state.saved!.text, /质保X小时.*质保X天.*期限未注明/u);
-    assert.match(state.saved!.text, /商家说明/u);
+    assert.match(state.saved!.text, /商家承诺真实充值/u);
+    assert.match(state.saved!.text, /约定期限内持续使用/u);
     assert.doesNotMatch(state.saved!.text, /warranty_terms|保障条款/u);
-    if (!text.startsWith('订阅保障')) assert.match(state.saved!.text, /首登仅指首次登录/u);
-    assert.equal(state.calls, 1);
+    if (!text.startsWith('订阅保障')) assert.match(state.saved!.text, /仅保首次登录/u);
+    assert.equal(state.calls, 2);
   }
+});
+
+test('consultation explains membership categories without changing shopping needs or querying quotes', async () => {
+  const needs = { ...emptyShoppingNeeds(), platform: 'openai', product: 'ChatGPT Plus',
+    budget: { amount: '100', currency: 'CNY', basis: 'purchase' as const }, membershipKinds: ['top_up' as const] };
+  const state = harness([
+    { intent: 'answer', patch: {}, evidence: [], question: null, options: [], requests: [{ tool: 'knowledge' }] },
+    (input: { userText: string; facts: Array<{ id: string; title: string; text: string }> }) => {
+      assert.equal(input.userText, '成品号和短期有什么区别？');
+      const facts = input.facts.filter(fact => ['成品号', '短期'].includes(fact.title));
+      assert.equal(facts.length, 2);
+      return { answer: { text: `可以先了解分类。\n${facts.map(fact => `{{${fact.id}}}`).join('\n')}`,
+        evidenceIds: facts.map(fact => fact.id) } };
+    },
+  ], '成品号和短期有什么区别？', needs, {
+    getProducts: async () => { throw new Error('knowledge must not search quotes'); },
+  });
+  await state.run();
+  assert.equal(state.saved?.kind, 'explanation');
+  assert.deepEqual(state.saved?.needs, needs);
+  assert.match(state.saved!.text, /25/u);
+  assert.match(state.saved!.text, /保障或交付方式不明确/u);
+  assert.doesNotMatch(state.saved!.text, /想买哪个|主要想用/u);
+  assert.ok(state.saved!.sources?.some(source => source.path === '/guide'));
+});
+
+test('statistics use catalog totals without inheriting the previous shopping budget', async () => {
+  const needs = { ...emptyShoppingNeeds(), platform: 'openai',
+    budget: { amount: '100', currency: 'CNY', basis: 'purchase' as const } };
+  const state = harness([
+    { intent: 'answer', patch: {}, evidence: [], question: null, options: [],
+      requests: [{ tool: 'statistics', scope: 'catalog' }] },
+    (input: { facts: Array<{ id: string; text: string }> }) => {
+      const facts = input.facts.filter(fact => fact.text.includes('987'));
+      assert.ok(facts.length);
+      return { answer: { text: facts.map(fact => `{{${fact.id}}}`).join('\n'), evidenceIds: facts.map(fact => fact.id) } };
+    },
+  ], '本站总共有多少报价？', needs, {
+    getCatalog: async input => {
+      assert.equal(input.priceMax, undefined);
+      assert.equal(input.platform, undefined);
+      return { items: [], total: 42, offerTotal: 987, platformFacets: [] };
+    },
+    getCoverage: async () => ({ shopCount: 12, productCount: 1111 }),
+  });
+  await state.run();
+  assert.deepEqual(state.saved?.needs, needs);
+  assert.match(state.saved!.text, /987/u);
+  assert.equal(state.calls, 2);
+});
+
+test('consultation validates answer references before committing any output', async () => {
+  for (const answer of [
+    { text: '有{{missing}}条报价', evidenceIds: ['missing'] },
+    { text: '共有999999条报价', evidenceIds: [] },
+    { text: '参考 https://untrusted.invalid', evidenceIds: [] },
+  ]) {
+    const state = harness([
+      { intent: 'answer', patch: {}, evidence: [], question: null, options: [] }, { answer },
+    ], '介绍一下本站');
+    await assert.rejects(state.run(), /MODEL_INVALID_RESPONSE/u);
+    assert.equal(state.saved, null);
+    assert.equal(state.calls, 2);
+  }
+});
+
+test('a page filter is context for consultation, not a permanent purchase constraint', async () => {
+  const state = harness([
+    { intent: 'answer', patch: {}, evidence: [], question: null, options: [] },
+    (input: { facts: Array<{ id: string; title: string }> }) => {
+      const fact = input.facts.find(fact => fact.title === '成品号')!;
+      return { answer: { text: `{{${fact.id}}}`, evidenceIds: [fact.id] } };
+    },
+  ], '当前页面筛选：ChatGPT / Codex\n成品号是什么？');
+  await state.run();
+  assert.deepEqual(state.saved?.needs, emptyShoppingNeeds());
+});
+
+test('an unresolved purchase product cannot block an unrelated knowledge question', async () => {
+  const needs = { ...emptyShoppingNeeds(), product: '30天' };
+  const state = harness([
+    { intent: 'answer', patch: {}, evidence: [], question: null, options: [] },
+    (input: { facts: Array<{ id: string; title: string }> }) => {
+      const fact = input.facts.find(fact => fact.title === '成品号')!;
+      return { answer: { text: `{{${fact.id}}}`, evidenceIds: [fact.id] } };
+    },
+  ], '成品号是什么？', needs);
+  await state.run();
+  assert.equal(state.saved?.kind, 'explanation');
+  assert.deepEqual(state.saved?.needs, needs);
+  assert.equal(state.calls, 2);
+});
+
+test('temporary statistics cannot silently clear confirmed restrictions', async () => {
+  const needs = { ...emptyShoppingNeeds(), budget: { amount: '80', currency: 'CNY', basis: 'month' as const },
+    requiredTags: [{ name: 'region', value: 'us' }] };
+  const state = harness([
+    { intent: 'answer', patch: {}, evidence: [], question: null, options: [],
+      requests: [{ tool: 'statistics', scope: 'current', filters: { budget: null, requiredTags: [] },
+        evidence: [{ field: 'budget', quote: '不要取消预算' }, { field: 'requiredTags', quote: '不要去掉地区要求' }] }] },
+    { answer: { text: '请说明本次希望调整的条件。', evidenceIds: [] } },
+  ], '按原条件统计，不要取消预算，不要去掉地区要求', needs, {
+    getCatalog: async () => { throw new Error('must not query a widened scope'); },
+  });
+  await state.run();
+  assert.match(state.saved!.text, /未.*明确|没有.*明确/u);
+  assert.deepEqual(state.saved?.needs, needs);
+});
+
+test('an explicitly temporary budget removal changes only the data query', async () => {
+  const needs = { ...emptyShoppingNeeds(), budget: { amount: '80', currency: 'CNY', basis: 'purchase' as const } };
+  const state = harness([
+    { intent: 'answer', patch: {}, evidence: [], question: null, options: [],
+      requests: [{ tool: 'statistics', scope: 'current', filters: { budget: null },
+        evidence: [{ field: 'budget', quote: '本次取消预算' }] }] },
+    (input: { facts: Array<{ id: string; title: string }> }) => {
+      const fact = input.facts.find(fact => fact.title === '目录总计')!;
+      return { answer: { text: `{{${fact.id}}}`, evidenceIds: [fact.id] } };
+    },
+  ], '本次取消预算，统计数量', needs, {
+    getCatalog: async input => {
+      assert.equal(input.priceMax, undefined);
+      return { items: [], total: 42, offerTotal: 987, platformFacets: [] };
+    },
+  });
+  await state.run();
+  assert.match(state.saved!.text, /987/u);
+  assert.deepEqual(state.saved?.needs, needs);
+});
+
+test('recommendations resume confirmed needs after an intervening explanation', async () => {
+  const fixture = shoppingFixture();
+  const needs = { ...emptyShoppingNeeds(), platform: 'anthropic' };
+  const history = [{ text: '成品号是什么？',
+    reply: { kind: 'explanation' as const, text: '使用商家提供的账号。', needs, cards: [], options: [],
+      sources: [{ title: '选购指南', path: '/guide' }] } }];
+  const state = harness([
+    { intent: 'recommend', patch: {}, evidence: [], question: null, options: [] },
+    (input: { history: typeof history; candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => {
+      assert.equal(input.history[0]?.text, history[0]!.text);
+      return { selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }] };
+    },
+  ], '继续按刚才条件推荐', needs, fixture.catalog, history);
+  await state.run();
+  assert.deepEqual(state.saved?.needs, needs);
+  assert.ok(state.saved?.cards.length);
+});
+
+test('mixed knowledge and recommendation share the second model call and preserve cards', async () => {
+  const fixture = shoppingFixture();
+  const state = harness([
+    { intent: 'recommend', patch: {}, evidence: [], question: null, options: [], requests: [{ tool: 'knowledge' }] },
+    (input: { facts: Array<{ id: string; title: string }>; candidates: Array<{ productId: string; evidence: Array<{ id: string }> }> }) => {
+      const fact = input.facts.find(fact => fact.title === '代充')!;
+      return { selections: [{ productId: input.candidates[0]!.productId, evidenceIds: [input.candidates[0]!.evidence[0]!.id] }],
+        answer: { text: `{{${fact.id}}}\n符合条件的报价见下方。`, evidenceIds: [fact.id] } };
+    },
+  ], '解释一下代充，再帮我选', { ...emptyShoppingNeeds(), platform: 'anthropic' }, fixture.catalog);
+  await state.run();
+  assert.equal(state.saved?.kind, 'recommendation');
+  assert.ok(state.saved!.cards.length);
+  assert.match(state.saved!.text, /自己的账号/u);
+  assert.equal(state.calls, 2);
 });
 
 test('recommendation retains the capability evidence captured by the initial query', async () => {
