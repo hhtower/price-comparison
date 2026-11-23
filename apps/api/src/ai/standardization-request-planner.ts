@@ -4,7 +4,9 @@ import { buildStandardizationRequest, estimateStandardizationRequest, type Stand
 export function planStandardizationRequests(request: StandardizationRequest, limits: StandardizationRequestLimits) {
   const make = (inputs: StandardizationRequest['inputs']) => {
     const ids = new Set(inputs.flatMap(input => [...input.candidateStandardProductIds]));
-    const subset: StandardizationRequest = { model: request.model, inputs, candidates: request.candidates.filter(candidate => ids.has(candidate.id)) };
+    const inputIds = new Set(inputs.map(input => String(input.productId)));
+    const subset: StandardizationRequest = { model: request.model, inputs, candidates: request.candidates.filter(candidate => ids.has(candidate.id)),
+      ...(request.repairFeedback ? { repairFeedback: request.repairFeedback.filter(item => inputIds.has(item.id)) } : {}) };
     const estimate = estimateStandardizationRequest(buildStandardizationRequest(subset), limits);
     return { request: subset, estimate, oversized: estimate.requestBytes > limits.maxRequestBytes || estimate.estimatedTotalTokens > limits.maxContextTokens };
   };

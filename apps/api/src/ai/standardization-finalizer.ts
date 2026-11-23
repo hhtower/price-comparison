@@ -52,7 +52,10 @@ async function materializeFailedBatch(
     .where('input_id', 'in', inputIds)
     .where('status', 'not in', ['classified', 'unclassified', 'cancelled'])
     .$if(review, query => query.where(sql<boolean>`not exists (select 1 from ai_standardization_results r
-      where r.job_id = ${jobId} and r.product_id = ai_job_input_members.product_id and r.batch_id = ${batch.id})`))
+      where r.job_id = ${jobId} and r.product_id = ai_job_input_members.product_id and r.batch_id = ${batch.id})`)
+      .where(sql<boolean>`not exists (select 1 from ai_job_batches repair
+        where repair.job_id = ${jobId} and repair.reference_snapshot->>'repairReviewBatchId' = ${String(batch.id)}
+          and repair.product_ids @> jsonb_build_array(ai_job_input_members.input_id::text))`))
     .orderBy('product_id')
     .execute();
   if (!members.length) return;
@@ -107,7 +110,7 @@ async function materializeFailedBatch(
     }))).execute();
   }
   await tx.updateTable('ai_job_inputs').set({ status: 'failed', reason_code: terminal.code, error: terminal.reason })
-    .where('job_id', '=', jobId).where('input_id', 'in', inputIds).execute();
+    .where('job_id', '=', jobId).where('input_id', 'in', members.map(member => member.input_id)).execute();
   for (const productIds of chunks(members.map(member => member.product_id), 500)) {
     await tx.updateTable('ai_job_input_members').set({ status: 'unclassified', reason_code: terminal.code })
       .where('job_id', '=', jobId).where('product_id', 'in', productIds).execute();

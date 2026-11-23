@@ -29,7 +29,8 @@ import { canonicalizeMatchText } from '../standardization/canonical-key.js';
 import { IDENTITY_POLICY_VERSION } from '../standardization/identity-policy.js';
 import { API_RELAY_EXCLUSION_CODE, API_RELAY_EXCLUSION_REASON, isExcludedApiRelay } from '../standardization/catalog-exclusion.js';
 import { assertCurrentPipeline, isCurrentPipeline, pipelineVersionSnapshot, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
-import { STANDARDIZATION_PROMPT_VERSION, readStandardizationRequestLimits, assertStandardizationRequestFits } from './standardization-request.js';
+import { STANDARDIZATION_PROMPT_VERSION, readStandardizationRequestLimits, assertStandardizationRequestFits, type StandardizationRequest } from './standardization-request.js';
+import { needsStandardizationRepair, planStandardizationRepairs } from './standardization-repair.js';
 import { buildTagExtractionRequest, type TagExtractionInput, type TagExtractionResponse } from './tag-extraction-request.js';
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest, assertMembershipFeatureRefs } from './membership-feature-request.js';
 import { buildTagReviewRequest } from './tag-review-request.js';
@@ -67,6 +68,7 @@ export interface AiBatchResultMetadata { firstContentMs?: number | null; respons
 export interface FrozenBatchReference {
   readonly standardizationStage?: 'review';
   readonly generationBatchId?: string;
+  readonly repairReviewBatchId?: string;
   readonly strategyVersion: 'approved-candidate-20261119-v1';
   readonly catalogVersion: string;
   readonly inputs: ReadonlyArray<{
@@ -87,6 +89,10 @@ function readFrozenReference(value: JsonValue | null): FrozenBatchReference {
   if (!reference || reference.strategyVersion !== 'approved-candidate-20261119-v1'
     || !Array.isArray(reference.inputs) || !Array.isArray(reference.candidates)) {
     throw new Error('standardization candidate snapshot is stale or invalid');
+  }
+  if (reference.repairReviewBatchId !== undefined
+    && (typeof reference.repairReviewBatchId !== 'string' || !/^[1-9]\d*$/u.test(reference.repairReviewBatchId))) {
+    throw new Error('standardization repair source is invalid');
   }
   const candidates = new Set(reference.candidates.map(candidate => candidate.id));
   const inputs = new Set(reference.inputs.map(input => input.id));
@@ -644,6 +650,7 @@ export class AiRepository {
           await tx.updateTable('ai_job_input_members').set({ status: 'classified', reason_code: reasonCode, output: jsonb(result as unknown as JsonValue) }).where('job_id', '=', located.job_id).where('product_id', '=', member.product_id).execute();
         }
       }
+      const currentReference = readFrozenReference(batch.reference_snapshot);
       const activeMembers = inputIds.length ? await tx.selectFrom('ai_job_input_members as m')
         .innerJoin('products as p', 'p.id', 'm.product_id')
         .innerJoin('shops as s', 's.id', 'p.shop_id')
@@ -653,10 +660,15 @@ export class AiRepository {
         .where(q => isAttributeJobType(job.job_type) ? q('m.output', 'is', null) : q.val(true))
         .where('p.deleted_at', 'is', null).where('s.deleted_at', 'is', null).where('s.enabled', '=', true)
         .where(hasUsableOffer())
+        .$if(!!currentReference.repairReviewBatchId, query => query
+          .whereRef('p.content_version', '=', 'm.content_version')
+          .whereRef('p.content_fingerprint', '=', 'm.fingerprint')
+          .whereRef('p.standardization_revision', '=', 'm.standardization_revision')
+          .where('p.standardization_locked', '=', false).where(sql<boolean>`not ${currentManualDecision}`)
+          .where('m.status', 'not in', ['classified', 'unclassified', 'cancelled']))
         .execute() : [];
       const activeInputIds = [...new Set(activeMembers.map(member => member.input_id.toString()))].map(BigInt);
       const activeProductCount = activeMembers.length;
-      const currentReference = readFrozenReference(batch.reference_snapshot);
       const referenceInputSet = new Set(currentReference.inputs.map(input => input.id));
       const activeInputSet = new Set(activeInputIds.map(String));
       const referenceNeedsRefresh = activeInputIds.length !== inputIds.length
@@ -686,7 +698,7 @@ export class AiRepository {
           for (const member of inactiveMembers) {
             const reason = member.offer_unavailable
               ? '最新报价缺货、过期或不可用，等待报价恢复后再处理，未调用模型'
-              : '商品或所属商铺已删除或停用，跳过模型判断';
+              : '商品资料、人工决定或商铺状态已变化，跳过模型判断';
             const reasonCode = member.offer_unavailable ? 'offer_unavailable' : 'source_changed';
             await tx.insertInto('ai_standardization_results').values({
               job_id: located.job_id, product_id: member.product_id, batch_id: batchId, input_id: member.input_id,
@@ -937,7 +949,10 @@ export class AiRepository {
     }) };
   }
 
-  async getBatchRequest(batchId: bigint, includeInactive = false): Promise<{ jobId: bigint; model: string; stage: 'generate' | 'review'; proposals?: ParsedStandardizationResponse; candidates: readonly CandidateDocument[]; inputs: Array<{ productId: bigint; fingerprint: string; payload: JsonValue; candidateStandardProductIds: readonly string[] }> }> {
+  async getBatchRequest(batchId: bigint, includeInactive = false): Promise<StandardizationRequest & {
+    jobId: bigint; stage: 'generate' | 'review'; proposals?: ParsedStandardizationResponse; repairReviewBatchId?: string;
+    inputs: Array<StandardizationRequest['inputs'][number] & { fingerprint: string }>;
+  }> {
     const batch = await this.database.selectFrom('ai_job_batches as b').innerJoin('ai_jobs as j', 'j.id', 'b.job_id').select(['b.job_id', 'b.product_ids', 'b.reference_snapshot', 'j.model', 'j.prompt_version', 'j.rule_version', 'j.pipeline_versions']).where('b.id', '=', batchId).executeTakeFirstOrThrow();
     assertCurrentPipeline(batch);
     if (batch.reference_snapshot === null) throw new Error('batch reference snapshot is not frozen');
@@ -966,7 +981,25 @@ export class AiRepository {
       const items = document.items.filter(item => active.has(item.id));
       proposals = { items, missingIds: document.missingIds.filter(id => active.has(id)) };
     }
+    let repairFeedback: StandardizationDecision[] | undefined;
+    if (reference.repairReviewBatchId && !proposals) {
+      const source = await this.database.selectFrom('ai_job_batches').select(['validated_decision', 'reference_snapshot', 'decision_saved_at', 'step'])
+        .where('id', '=', BigInt(reference.repairReviewBatchId)).where('job_id', '=', batch.job_id).executeTakeFirstOrThrow();
+      const sourceReference = readFrozenReference(source.reference_snapshot);
+      if (!source.decision_saved_at || !['publish', 'done'].includes(source.step)
+        || sourceReference.standardizationStage !== 'review' || sourceReference.repairReviewBatchId) {
+        throw new Error('standardization repair checkpoint is unavailable');
+      }
+      assertStandardizationCheckpoint(source.validated_decision);
+      const active = new Set(inputs.map(input => String(input.input_id)));
+      repairFeedback = source.validated_decision.items.filter(item => active.has(item.id));
+      if (repairFeedback.length !== active.size || repairFeedback.some(item => !needsStandardizationRepair(item))) {
+        throw new Error('standardization repair feedback does not match inputs');
+      }
+    }
     return { jobId: batch.job_id, model: batch.model, stage: proposals ? 'review' : 'generate', ...(proposals ? { proposals } : {}),
+      ...(reference.repairReviewBatchId ? { repairReviewBatchId: reference.repairReviewBatchId } : {}),
+      ...(repairFeedback ? { repairFeedback } : {}),
       candidates: reference.candidates, inputs: inputs.map((row) => ({ productId: row.input_id, fingerprint: row.fingerprint, payload: row.payload, candidateStandardProductIds: references.get(row.input_id.toString()) ?? [] })) };
   }
 
@@ -1273,6 +1306,10 @@ export class AiRepository {
       request.inputs.map(input => ({ id: String(input.productId), payload: input.payload, candidateStandardProductIds: input.candidateStandardProductIds })), request.candidates);
     const needsReview = decision.items.some(isReviewableStandardizationDecision);
     const reviewPlan = stage === 'generate' && needsReview ? planStandardizationReviewRequests(request, decision, readStandardizationRequestLimits()) : undefined;
+    const repairCatalog = stage === 'review' && !request.repairReviewBatchId && decision.items.some(needsStandardizationRepair)
+      ? await this.loadCandidateCatalog() : undefined;
+    const repairPlan = repairCatalog
+      ? planStandardizationRepairs(request, decision.items, repairCatalog.index, readStandardizationRequestLimits()) : [];
     await this.database.transaction().execute(async tx => {
       const job = await tx.selectFrom('ai_jobs').select(['prompt_version', 'rule_version', 'pipeline_versions', 'status', 'pause_requested', 'cancel_requested']).where('id', '=', jobId).forUpdate().executeTakeFirstOrThrow();
       if (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== STANDARDIZATION_POLICY_VERSION || !isCurrentPipeline(job.pipeline_versions)) throw new Error('AI policy version is stale');
@@ -1334,7 +1371,7 @@ export class AiRepository {
             job_id: jobId, batch_index: ++nextIndex, product_ids: jsonb([...ids]), product_count: BigInt(groupMembers.length),
             input_bytes: BigInt(group.request.inputs.reduce((sum, input) => sum + estimateInputSize(input.payload).inputBytes, 0)),
             estimated_tokens: BigInt(group.request.inputs.reduce((sum, input) => sum + estimateInputSize(input.payload).estimatedTokens, 0)),
-            round: 1, status: 'queued', step: 'request', request_budget_limit: 2,
+            round: 1, status: 'queued', step: 'request', request_budget_limit: reference.repairReviewBatchId ? 1 : 2,
             reference_snapshot: jsonb({ ...reference, standardizationStage: 'review', generationBatchId: String(batchId),
               inputs: reference.inputs.filter(input => ids.has(input.id)), candidates: group.request.candidates } as unknown as JsonValue),
             reference_version: batch.reference_version, planned_at: sql`now()`, request_estimate: jsonb({ ...group.estimate, oversized: group.oversized }),
@@ -1345,7 +1382,35 @@ export class AiRepository {
       }
 
       const document: ParsedStandardizationResponse = { items: decision.items, missingIds: decision.missingIds };
-      const members = await tx.selectFrom('ai_job_input_members').select(['product_id', 'input_id']).where('job_id', '=', jobId).where('input_id', 'in', [...expected].map(BigInt)).orderBy('product_id').execute();
+      const repairIds = new Set(repairPlan.flatMap(group => group.request.inputs.map(input => String(input.productId))));
+      if (repairPlan.length) {
+        const maximum = await tx.selectFrom('ai_job_batches').select(sql<bigint>`coalesce(max(batch_index), -1)`.as('index'))
+          .where('job_id', '=', jobId).executeTakeFirstOrThrow();
+        let nextIndex = maximum.index;
+        for (const group of repairPlan) {
+          const ids = group.request.inputs.map(input => input.productId);
+          const members = await tx.selectFrom('ai_job_input_members').select('product_id')
+            .where('job_id', '=', jobId).where('input_id', 'in', ids).execute();
+          const repairReference: FrozenBatchReference = {
+            strategyVersion: reference.strategyVersion, catalogVersion: String(repairCatalog!.version),
+            repairReviewBatchId: String(batchId), candidates: group.request.candidates,
+            inputs: group.request.inputs.map(input => ({
+              id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds, stats: group.stats,
+            })),
+          };
+          await tx.insertInto('ai_job_batches').values({
+            job_id: jobId, batch_index: ++nextIndex, product_ids: jsonb(ids.map(String)), product_count: BigInt(members.length),
+            input_bytes: BigInt(group.request.inputs.reduce((sum, input) => sum + estimateInputSize(input.payload).inputBytes, 0)),
+            estimated_tokens: BigInt(group.request.inputs.reduce((sum, input) => sum + estimateInputSize(input.payload).estimatedTokens, 0)),
+            round: 1, status: 'queued', step: 'request', request_budget_limit: 1,
+            reference_snapshot: jsonb(repairReference as unknown as JsonValue), reference_version: repairCatalog!.version,
+            planned_at: sql`now()`, request_estimate: jsonb(group.estimate),
+          }).execute();
+        }
+      }
+      const publishIds = [...expected].filter(id => !repairIds.has(id)).map(BigInt);
+      const members = publishIds.length ? await tx.selectFrom('ai_job_input_members').select(['product_id', 'input_id'])
+        .where('job_id', '=', jobId).where('input_id', 'in', publishIds).orderBy('product_id').execute() : [];
       const plan = planPublicationUnits(publicationMembers(members, document));
       if (plan.oversizedProductIds.length) {
         throw new Error('standardization publication exceeds configured limits');

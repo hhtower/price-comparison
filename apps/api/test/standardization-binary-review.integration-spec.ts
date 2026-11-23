@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
@@ -37,7 +37,10 @@ after(async () => {
 const claim = { workerId: 'review-worker', attempt: 1n, token: 'request-claim' };
 const metadata = { responseMs: 20, usage: { promptTokens: 100, completionTokens: 10, totalTokens: 110 } };
 
-const fixture = (names?: string[]) => seedMatchOnlyReviewFixture(db, names);
+const fixture = async (names?: string[]) => {
+  await db.updateTable('standard_products').set({ verification_state: 'quarantined' }).execute();
+  return seedMatchOnlyReviewFixture(db, names);
+};
 
 async function reviewBatch(f: Awaited<ReturnType<typeof fixture>>) {
   return db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id)
@@ -62,6 +65,30 @@ async function approve(f: Awaited<ReturnType<typeof fixture>>) {
   })) }), request.proposals!, request);
   await f.repo.persistBatchDecision(f.job.id, batch.id, decision, metadata, claim, 'review');
   return batch;
+}
+
+async function rejectCorrection(f: Awaited<ReturnType<typeof fixture>>, reviewId: bigint) {
+  const repair = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id)
+    .where(sql<string>`reference_snapshot->>'repairReviewBatchId'`, '=', String(reviewId)).executeTakeFirstOrThrow();
+  await claimBatch(repair.id);
+  await f.repo.reserveBatchRequest(repair.id, claim);
+  const request = await f.repo.getBatchRequest(repair.id);
+  const original = request.repairFeedback!;
+  const proposed = parseStandardizationProtocolResponse({ items: original.map(item => ({
+    id: item.id, ...item.review!.proposal, evidence: item.evidence,
+  })) }, request.inputs.map(input => ({ id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds })));
+  await f.repo.persistBatchDecision(f.job.id, repair.id, proposed, metadata, claim);
+  const second = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id)
+    .where(sql<string>`reference_snapshot->>'generationBatchId'`, '=', String(repair.id)).executeTakeFirstOrThrow();
+  await claimBatch(second.id);
+  await f.repo.reserveBatchRequest(second.id, claim);
+  const recheck = await f.repo.getBatchRequest(second.id);
+  const rejected = parseStandardizationReviewResponse(JSON.stringify({ items: original.map(item => ({
+    id: item.id, approved: false, code: item.review!.code, evidence: item.review!.evidence,
+  })) }), recheck.proposals!, recheck);
+  await f.repo.persistBatchDecision(f.job.id, second.id, rejected, metadata, claim);
+  await claimBatch(second.id);
+  await f.repo.publishBatch(second.id, claim);
 }
 
 for (const enabled of [false, true]) test(`identity completion schedules features independently of tag extraction (${enabled})`, async () => {
@@ -226,6 +253,7 @@ test('mixed binary review persists before publication and rejected proposals pre
   assert.equal(checkpoint.confirmed_requests, 1);
   await claimBatch(review.id);
   await new AiRepository(db).publishBatch(review.id, claim);
+  await rejectCorrection(f, review.id);
   const results = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).orderBy('product_id').execute();
   assert.equal(results[0]?.status, 'classified');
   assert.equal(results[1]?.reason_code, 'review_rejected');
@@ -494,6 +522,8 @@ test('review rejection of unmatched keeps the previous automatic assignment', as
   await f.repo.publishBatch(batch.id, claim);
   assert.equal((await db.selectFrom('standard_product_members').select('standard_product_id')
     .where('product_id', '=', f.products[0]!.id).executeTakeFirstOrThrow()).standard_product_id, f.standards[0]!.id);
+  assert.deepEqual(await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).execute(), []);
+  await rejectCorrection(f, batch.id);
   const result = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   assert.equal(result.reason_code, 'review_rejected');
   assert.equal(result.current_assignment_preserved, true);
