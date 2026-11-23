@@ -14,8 +14,8 @@ const request = { model: 'mock', candidates: [
   { productId: 12n, payload: { name: 'Claude Team' }, candidateStandardProductIds: ['92'] },
 ] };
 const wireItems = [
-  { id: '11', standardProductId: '91', evidence },
-  { id: '12', standardProductId: null, evidence: [{ path: 'name', quote: 'Claude Team' }] },
+  { id: '11', standardProductId: '91', nullReason: null, evidence },
+  { id: '12', standardProductId: null, nullReason: 'insufficient_source', evidence: [{ path: 'name', quote: 'Claude Team' }] },
 ];
 const parse = (value: unknown) => parseStandardizationProtocolResponse(value, buildStandardizationRequest(request).protocolInputs);
 
@@ -27,7 +27,7 @@ test('minimal protocol returns existing mappings or unmatched decisions in input
     { id: '11', status: 'classified', identity: { kind: 'existing', standardProductId: '91' },
       evidence, ruleIds: [], reasonCode: null, reason: '匹配已准入标准商品' },
     { id: '12', status: 'unclassified', evidence: wireItems[1]!.evidence,
-      ruleIds: [], reasonCode: 'unmatched', reason: '未匹配到已准入标准商品' },
+      ruleIds: [], reasonCode: 'insufficient_source', reason: '当前来源不足以确定售卖商品或套餐；需补充商品来源信息' },
   ]);
 });
 
@@ -38,7 +38,7 @@ test('schema binds each ID to only its frozen allowed candidate IDs and requires
   assert.equal(schema.properties.items.minItems, 2);
   assert.equal(schema.properties.items.maxItems, 2);
   for (const [index, branch] of schema.properties.items.items.anyOf.entries()) {
-    assert.deepEqual(branch.required, ['id', 'standardProductId', 'evidence']);
+    assert.deepEqual(branch.required, ['id', 'standardProductId', 'nullReason', 'evidence']);
     assert.equal(branch.additionalProperties, false);
     assert.equal(branch.properties.id.const, String(index + 11));
     assert.deepEqual(branch.properties.standardProductId.enum, [String(index + 91), null]);
@@ -143,7 +143,7 @@ test('source aliases remain collision free and restore literal names and citatio
   assert.match(body.items[0].name, /^catalogword3工具/u);
   assert.doesNotMatch(JSON.stringify(built.messages), /破甲/u);
   const parsed = parseStandardizationProtocolResponse(built.parseResponse(JSON.stringify({ items: [{
-    id: '11', standardProductId: '91', evidence: [{ path: 'sourceData.catalogword3说明', quote: 'catalogword3工具' }],
+    id: '11', standardProductId: '91', nullReason: null, evidence: [{ path: 'sourceData.catalogword3说明', quote: 'catalogword3工具' }],
   }] })), built.protocolInputs);
   assert.deepEqual(parsed.items[0]!.evidence, [{ path: 'sourceData.破甲说明', quote: '破甲工具' }]);
   assert.deepEqual(source, before);
@@ -167,11 +167,14 @@ test('checkpoint assertion accepts only exact current internal business shapes w
   const matched = { id: '11', status: 'classified', identity: { kind: 'existing', standardProductId: '91' },
     ruleIds: [], evidence, reasonCode: null, reason: '匹配已准入标准商品' };
   const unmatched = { id: '12', status: 'unclassified', ruleIds: [], evidence,
-    reasonCode: 'unmatched', reason: '未匹配到已准入标准商品' };
-  const rejected = { ...unmatched, reasonCode: 'review_rejected', reason: 'LLM 对该标准化提议判定为否',
-    review: { approved: false } };
-  for (const item of [matched, unmatched, { ...matched, review: { approved: true } },
-    { ...unmatched, review: { approved: true } }, rejected]) {
+    reasonCode: 'insufficient_source', reason: '当前来源不足以确定售卖商品或套餐；需补充商品来源信息' };
+  const matchedReview = { approved: true, code: null, evidence: [], proposal: { standardProductId: '91', nullReason: null } };
+  const unmatchedReview = { approved: true, code: null, evidence: [],
+    proposal: { standardProductId: null, nullReason: 'insufficient_source' } };
+  const rejected = { ...unmatched, reasonCode: 'review_rejected', reason: schemas.STANDARDIZATION_REVIEW_REASONS.source_conflict,
+    review: { ...unmatchedReview, approved: false, code: 'source_conflict', evidence } };
+  for (const item of [matched, unmatched, { ...matched, review: matchedReview },
+    { ...unmatched, review: unmatchedReview }, rejected]) {
     assert.doesNotThrow(() => check({ items: [item], missingIds: [] }));
   }
   for (const value of [
@@ -181,7 +184,7 @@ test('checkpoint assertion accepts only exact current internal business shapes w
       { ...matched, identity: { kind: 'new', ref: 'old', canonicalKey: 'old' } },
       { ...matched, identity: { kind: 'existing', standardProductId: '91', ref: 'old' } },
       { ...matched, identity: undefined }, { ...matched, evidence: [] },
-      { ...matched, reasonCode: 'unmatched' }, { ...matched, ruleIds: ['old-rule'] },
+      { ...matched, reasonCode: 'insufficient_source' }, { ...matched, ruleIds: ['old-rule'] },
       { ...matched, diagnostic: { stage: 'schema', code: 'invalid_type' } },
       { ...matched, review: { approved: false } }, { ...matched, review: { approved: true, extra: true } },
       { ...unmatched, identity: matched.identity }, { ...unmatched, reason: 'model explanation' },

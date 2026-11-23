@@ -1,4 +1,5 @@
 import { tagRows } from './tag-fixtures.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
@@ -56,6 +57,7 @@ async function fixture(name = 'ChatGPT Plus 成品账号 质保28天') {
     shop_id: shop.id, external_id: '1', name, spec: '', normalized_key: randomUUID(), url: 'https://test.invalid/product',
     source_data: jsonb({}), content_version: 1n, content_fingerprint: productContentFingerprint({ name, spec: '' }),
   }).returningAll().executeTakeFirstOrThrow();
+  await seedUsableOffers(db, [product.id]);
   const identity = { family: 'openai', product: 'chatgpt', tier: 'plus' };
   const key = buildCanonicalStandardKey(identity);
   let standard = await db.selectFrom('standard_products').select('id').where('standard_key', '=', key).executeTakeFirst();
@@ -131,7 +133,7 @@ async function publishIdentity(f: Awaited<ReturnType<typeof fixture>>, existingJ
     .where('standard_key', '=', buildCanonicalStandardKey(identity)).executeTakeFirstOrThrow();
   const generationRequest = await repo.getBatchRequest(batchId);
   assert.ok(generationRequest.inputs[0]!.candidateStandardProductIds.includes(String(target.id)));
-  const proposal = parseStandardizationProtocolResponse({ items: [{ id: String(product.id), standardProductId: String(target.id), evidence }] },
+  const proposal = parseStandardizationProtocolResponse({ items: [{ id: String(product.id), standardProductId: String(target.id), nullReason: null, evidence }] },
     generationRequest.inputs.map(input => ({ id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds })));
   await repo.persistBatchDecision(job.id, batchId, proposal, {}, claim, 'generate');
   assert.deepEqual(await children(), [], 'identity generation checkpoint must not schedule attribute jobs');
@@ -143,7 +145,10 @@ async function publishIdentity(f: Awaited<ReturnType<typeof fixture>>, existingJ
   await repo.prepareBatch(publishBatch);
   assert.equal(await repo.reserveBatchRequest(publishBatch, claim), 'reserved');
   const request = await repo.getBatchRequest(publishBatch);
-  const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: [{ id: String(product.id), approved: options.approved ?? true }] }), request.proposals!);
+  const approved = options.approved ?? true;
+  const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: [{
+    id: String(product.id), approved, code: approved ? null : 'source_conflict', evidence: approved ? [] : evidence,
+  }] }), request.proposals!, request);
   await repo.persistBatchDecision(job.id, publishBatch, reviewed, {}, claim, 'review');
   assert.deepEqual(await children(), [], 'identity review checkpoint must not schedule attribute jobs');
   await db.updateTable('ai_job_batches').set({ status: 'running', attempts: 1n, claimed_by: claim.workerId,

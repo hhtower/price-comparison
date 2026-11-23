@@ -218,9 +218,11 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
             .where(sql<boolean>`products.id <> all(${presentProductIds}::bigint[])`).execute();
           await softDeleteProductNames(transaction, missing.map(row => row.id), 'crawler_missing');
         }
-        const changed = changes.changedProducts.length ? await transaction.selectFrom('products')
+        const eventProductIds = [...new Set([...changes.changedProducts, ...changes.restockedProducts])];
+        const restockedIds = new Set(changes.restockedProducts);
+        const changed = eventProductIds.length ? await transaction.selectFrom('products')
           .select(['id', 'shop_id', 'content_version', 'content_fingerprint', 'source_name', 'source_description', 'name', 'spec', 'source_category', 'source_data'])
-          .where('id', 'in', changes.changedProducts).where('deleted_at', 'is', null).execute() : [];
+          .where('id', 'in', eventProductIds).where('deleted_at', 'is', null).execute() : [];
         for (let start = 0; start < changed.length; start += 500) {
           const events = await transaction.insertInto('product_change_events').values(changed.slice(start, start + 500).map(product => ({
             source_fetch_run_id: job.id,
@@ -228,7 +230,7 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
             shop_id: product.shop_id,
             content_version: product.content_version,
             fingerprint: product.content_fingerprint,
-            event_type: product.content_version === 1n ? 'created' : 'evidence_changed',
+            event_type: restockedIds.has(product.id) ? 'restored' : product.content_version === 1n ? 'created' : 'evidence_changed',
             payload: JSON.stringify({ sourceName: product.source_name, description: product.source_description,
               ...normalizeProductEvidence({ name: product.name, spec: product.spec, sourceCategory: product.source_category, sourceData: product.source_data }) }) as never,
           }))).returning(['id', 'product_id', 'fingerprint']).execute();

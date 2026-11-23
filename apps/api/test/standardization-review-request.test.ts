@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseStandardizationProtocolResponse, type ParsedStandardizationResponse } from '../src/ai/ai.schemas.js';
+import { parseStandardizationProtocolResponse, standardizationProposal, STANDARDIZATION_REVIEW_REASONS, type ParsedStandardizationResponse } from '../src/ai/ai.schemas.js';
 import { buildStandardizationReviewRequest, parseStandardizationReviewResponse, planStandardizationReviewRequests,
   isReviewableStandardizationDecision } from '../src/ai/standardization-review-request.js';
 import { estimateStandardizationRequest } from '../src/ai/standardization-request.js';
@@ -15,13 +15,15 @@ const request = { model: 'mock', candidates: [
     candidateStandardProductIds: ['92'], previousDecision: { reason: 'PRIVATE OLD HISTORY' } },
 ] };
 const wire = { items: [
-  { id: '11', standardProductId: '91', evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] },
-  { id: '12', standardProductId: null, evidence: [{ path: 'name', quote: 'Unknown offer' }] },
+  { id: '11', standardProductId: '91', nullReason: null, evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] },
+  { id: '12', standardProductId: null, nullReason: 'insufficient_source', evidence: [{ path: 'name', quote: 'Unknown offer' }] },
 ] };
 const proposals = (): ParsedStandardizationResponse => parseStandardizationProtocolResponse(wire,
   request.inputs.map(input => ({ id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds })));
-const parse = (value: unknown, source = proposals()) => parseStandardizationReviewResponse(JSON.stringify(value), source);
-const votes = (approved = true) => ({ items: wire.items.map(item => ({ id: item.id, approved })) });
+const parse = (value: unknown, source = proposals()) => parseStandardizationReviewResponse(JSON.stringify(value), source, request);
+const votes = (approved = true) => ({ items: wire.items.map(item => ({
+  id: item.id, approved, code: approved ? null : 'source_conflict', evidence: approved ? [] : item.evidence,
+})) });
 const limits = { maxRequestBytes: 1_000_000, maxContextTokens: 1_000_000, outputReserveTokens: 1024 };
 
 test('review sends only exact proposed mappings, approved candidates and complete current source', () => {
@@ -41,21 +43,23 @@ test('review sends only exact proposed mappings, approved candidates and complet
   assert.deepEqual({ request, source }, before);
 });
 
-test('binary approval preserves exact decisions in proposal order', () => {
+test('approval preserves exact decisions in proposal order', () => {
   const source = proposals();
   const result = parse({ items: votes().items.reverse() }, source);
-  assert.deepEqual(result, { items: source.items.map(item => ({ ...item, review: { approved: true } })), missingIds: [] });
+  assert.deepEqual(result, { items: source.items.map(item => ({ ...item,
+    review: { approved: true, code: null, evidence: [], proposal: standardizationProposal(item) } })), missingIds: [] });
   assert.equal(result.items[0]!.identity, source.items[0]!.identity);
   assert.equal(result.items[0]!.evidence, source.items[0]!.evidence);
   assert.ok(source.items.every(item => item.review === undefined));
 });
 
-test('binary rejection removes the mapping but preserves current evidence for pending handling', () => {
+test('rejection retains original mapping and evidence for pending handling', () => {
   const source = proposals();
   const result = parse(votes(false), source);
   assert.deepEqual(result.items, source.items.map(item => ({
     id: item.id, status: 'unclassified', reasonCode: 'review_rejected',
-    reason: 'LLM 对该标准化提议判定为否', ruleIds: [], evidence: item.evidence, review: { approved: false },
+    reason: STANDARDIZATION_REVIEW_REASONS.source_conflict, ruleIds: [], evidence: item.evidence,
+    review: { approved: false, code: 'source_conflict', evidence: item.evidence, proposal: standardizationProposal(item) },
   })));
   assert.equal(result.items[0]!.evidence, source.items[0]!.evidence);
   assert.equal(result.items[1]!.evidence, source.items[1]!.evidence);
@@ -74,7 +78,7 @@ test('binary parser rejects malformed, omitted, duplicate, corrected and coerced
     })),
   ]) assert.throws(() => parse(value));
   for (const content of ['', '{"items":', '```json\n{"items":[]}\n```', '{"items":[]} extra']) {
-    assert.throws(() => parseStandardizationReviewResponse(content, proposals()));
+    assert.throws(() => parseStandardizationReviewResponse(content, proposals(), request));
   }
 });
 
@@ -144,4 +148,39 @@ test('review aliases current names consistently across source candidates and exa
   assert.equal(body.inputs[0].payload.name, 'catalogword2 catalogword1');
   assert.equal(body.candidates[0].product, 'catalogword2');
   assert.equal(body.proposals.items[0].evidence[0].quote, 'catalogword2 catalogword1');
+});
+
+test('review restores feedback aliases before checking exact original paths and quotes', () => {
+  const source = proposals();
+  source.items[0]!.evidence = [{ path: 'name', quote: '破甲 catalogword1' }];
+  const frozen = { ...request,
+    candidates: [request.candidates[0]!],
+    inputs: [{ ...request.inputs[0]!, payload: {
+      name: '破甲 catalogword1', sourceData: { 破甲说明: '仅供破甲工具，不含订阅' },
+    } }],
+  };
+  const selected = { items: [source.items[0]!], missingIds: [] };
+  const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: [{
+    id: '11', approved: false, code: 'identity_mismatch',
+    evidence: [{ path: 'sourceData.catalogword2说明', quote: '仅供catalogword2工具，不含订阅' }],
+  }] }), selected, frozen);
+  assert.deepEqual(reviewed.items[0]!.review!.evidence, [{ path: 'sourceData.破甲说明', quote: '仅供破甲工具，不含订阅' }]);
+  assert.equal(reviewed.items[0]!.evidence, selected.items[0]!.evidence);
+  assert.equal(reviewed.items[0]!.review!.proposal.standardProductId, '91');
+});
+
+test('prompt examples distinguish buyer prerequisites, eligibility links, active subscriptions and unknowns', () => {
+  const prompt = buildStandardizationReviewRequest(request, proposals()).messages[0]!.content;
+  const input = JSON.parse(prompt.match(/<input>\n([\s\S]*?)\n<\/input>/u)![1]!);
+  const output = prompt.match(/<output>\n([\s\S]*?)\n<\/output>/u)![1]!;
+  const frozen = { model: 'mock', candidates: input.candidates,
+    inputs: input.inputs.map((item: any) => ({
+      productId: BigInt(item.id), payload: item.payload, candidateStandardProductIds: item.candidateStandardProductIds,
+    })) };
+  const source = parseStandardizationProtocolResponse(input.proposals, input.inputs);
+  const reviewed = parseStandardizationReviewResponse(output, source, frozen);
+  assert.deepEqual(reviewed.items.map(item => item.review!.approved), [false, false, true, true]);
+  assert.deepEqual(reviewed.items.map(item => item.review!.proposal.standardProductId), ['92', '91', '91', null]);
+  assert.deepEqual(reviewed.items.map(item => item.evidence), source.items.map(item => item.evidence));
+  assert.equal(reviewed.items[3]!.reasonCode, 'insufficient_source');
 });

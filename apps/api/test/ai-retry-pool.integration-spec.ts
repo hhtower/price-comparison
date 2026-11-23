@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import { randomUUID } from 'node:crypto';
 import { after, afterEach, before, describe, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
@@ -45,6 +46,7 @@ describe('global AI retry pool', () => {
       }).returning('id').executeTakeFirstOrThrow();
       ids.push(product.id);
     }
+    await seedUsableOffers(db, ids);
     return ids;
   }
   async function fail(jobId: bigint, source = 'provider_unknown') {

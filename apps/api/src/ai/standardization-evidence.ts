@@ -1,4 +1,5 @@
 import type { JsonValue } from '../database/types.js';
+import { projectSemanticEvidence } from './evidence-projection.js';
 import type { CandidateDocument } from '../standardization/candidate-index.js';
 import { assertStandardizationCheckpoint, StandardizationValidationError, type EvidenceCitation,
   type ParsedStandardizationResponse, type StandardizationResponseInput } from './ai.schemas.js';
@@ -56,8 +57,19 @@ export function validateStandardizationEvidence(
       throw new StandardizationValidationError('标准化身份不在本项冻结候选中', 'invalid_response',
         { stage: 'evidence', code: 'unknown_candidate_id', itemId: item.id, fieldPath: `items[${index}].identity.standardProductId` });
     }
+    const proposedId = item.review?.proposal.standardProductId;
+    if (proposedId != null && !input.candidateStandardProductIds.includes(proposedId)) {
+      throw new StandardizationValidationError('复核原始提议不在本项冻结候选中', 'invalid_response',
+        { stage: 'evidence', code: 'unknown_candidate_id', itemId: item.id, fieldPath: `items[${index}].review.proposal.standardProductId` });
+    }
     try {
       validateCitations(item.evidence, input.payload, `items[${index}].evidence`);
+      const transported = projectSemanticEvidence(input.payload as Record<string, JsonValue>);
+      validateCitations(item.evidence, transported, `items[${index}].evidence`);
+      if (item.review && !item.review.approved) {
+        validateCitations(item.review.evidence, input.payload, `items[${index}].review.evidence`);
+        validateCitations(item.review.evidence, transported, `items[${index}].review.evidence`);
+      }
     } catch (error) {
       if (error instanceof StandardizationValidationError) error.diagnostic.itemId = item.id;
       throw error;

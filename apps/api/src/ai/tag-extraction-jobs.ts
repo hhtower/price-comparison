@@ -3,7 +3,8 @@ import { sql, type Kysely, type Transaction, type RawBuilder } from 'kysely';
 import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
 import { isAttributeJobType, jsonb, type AttributeJobType as AttributeJobKind, type DatabaseSchema, type JsonValue } from '../database/types.js';
 import { readAiBatchLimits } from '../config/env.js';
-import { MEMBERSHIP_FEATURE_MAX_ITEMS } from './membership-feature-request.js';
+import { encodeMembershipFeatureInput, MEMBERSHIP_FEATURE_MAX_ITEMS } from './membership-feature-request.js';
+import { projectTagInput } from './tag-extraction-request.js';
 import { buildExtractionPayload, estimateInputSize, extractionContextKey } from './adaptive-batching.js';
 import { planBulkStandardizationBatches, planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { currentManualDecision } from './ai-retry-pool.js';
@@ -14,6 +15,7 @@ import { incrementJobProgress } from './ai-progress.repository.js';
 import { buildTagExtractionOutcome, tagExtractionVersions } from './tag-extraction-result.js';
 import { prepareTextReview, readTextEvidence } from '../shops/shop-text-review.js';
 import { readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
+import { hasUsableOffer } from './offer-eligibility.js';
 
 type Db = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 export interface TagJobScope { allPending?: boolean; productIds?: readonly bigint[]; scopeShopId?: bigint; retryOfJobId?: bigint }
@@ -30,8 +32,9 @@ function canonicalScope(input: TagJobScope) {
   if (input.scopeShopId !== undefined && input.scopeShopId <= 0n) throw new DomainValidationError('AI_TAG_SCOPE_INVALID', '店铺 ID 无效');
   return { ...(input.allPending ? { allPending: true } : {}), productIds: input.productIds?.map(String).sort((a,b)=>BigInt(a)<BigInt(b)?-1:1) ?? null, scopeShopId: input.scopeShopId?.toString() ?? null, retryOfJobId: input.retryOfJobId?.toString() ?? null };
 }
-async function selection(db: Db, input: TagJobScope, lock = false, kind: AttributeJobKind = 'tag_extraction') {
+async function selection(db: Db, input: TagJobScope, lock = false, kind: AttributeJobKind = 'tag_extraction', unfinishedOnly = false) {
   const scope = canonicalScope(input);
+  const pendingOnly = input.allPending || unfinishedOnly;
   if(input.retryOfJobId!==undefined && !input.productIds) throw new DomainValidationError('AI_TAG_RETRY_SCOPE_INVALID','重试必须明确选择商品');
   const aiMembership = sql<boolean>`is_ai_membership(standard.canonical_family,standard.canonical_product,standard.canonical_tier)`;
   let query = db.selectFrom('products as p').innerJoin('shops as s','s.id','p.shop_id')
@@ -40,6 +43,7 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
     .select(['p.id','p.external_id','p.name','p.source_name','p.source_description','p.spec','p.source_category','p.source_data','p.membership_features','p.text_review','p.content_version','p.content_fingerprint','p.standardization_revision','p.standardization_locked','p.deleted_at','s.enabled','s.deleted_at as shop_deleted_at'])
     .select(['assignment.standard_product_id', 's.url as shop_url', 's.protocol as shop_protocol', 's.platform as shop_platform'])
     .select(currentManualDecision.as('manual'))
+    .select(hasUsableOffer().as('offer_available'))
     .select(sql<boolean>`coalesce(assignment.assignment_source='ai'
       and assignment.publication_state='published'
       and standard.verification_state='verified' and standard.merged_into_id is null,false)`.as('published'))
@@ -48,7 +52,7 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
     .orderBy('p.id');
   if (input.productIds) query = query.where('p.id','in',input.productIds);
   else if (input.scopeShopId !== undefined) query = query.where('p.shop_id','=',input.scopeShopId);
-  if (input.allPending) {
+  if (pendingOnly) {
     query = query.where('p.deleted_at','is',null).where('s.deleted_at','is',null).where('s.enabled','=',true).where('p.standardization_locked','=',false)
       .where(sql<boolean>`not ${currentManualDecision}`)
       .where(sql<boolean>`assignment.assignment_source is distinct from 'human'`)
@@ -60,11 +64,13 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
       .where(sql<boolean>`not coalesce((
         select (${kind === 'tag_extraction'} and m.output->>'outcome' in ('updated','unchanged','empty','review'))
           or (j.status in ('queued','running','paused','ready') and m.status in ('queued','processing'))
+          or (${unfinishedOnly} and coalesce(m.output->>'reasonCode',m.reason_code)='request_outcome_unknown')
         from ai_job_input_members m join ai_jobs j on j.id=m.job_id
         where m.product_id=p.id and j.job_type=${kind}
           and m.content_version=p.content_version and m.standardization_revision=p.standardization_revision and m.fingerprint=p.content_fingerprint
           and ${kind === 'tag_extraction' ? currentTagMemberSource('m', aiMembership)
             : sql<boolean>`m.payload->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)`}
+          ${kind === 'text_review' ? sql`and m.payload->'shopText'->>'hash'=p.source_data->'ratingText'->>'hash'` : sql``}
           and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${STANDARDIZATION_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
         order by j.id desc limit 1
       ),false)`);
@@ -80,7 +86,7 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
     const allowed = new Set(members.map(m=>String(m.product_id)));
     if (products.some(p=>!allowed.has(String(p.id))) || scope.productIds?.some(id=>!allowed.has(id))) throw new DomainValidationError('AI_TAG_RETRY_SCOPE_INVALID','重试范围必须属于来源标签任务');
   }
-  const sized = products.filter(product => !(kind === 'membership_features' && input.allPending
+  const sized = products.filter(product => !(kind === 'membership_features' && pendingOnly
     && readCurrentMembershipFeatures(product.membership_features, product))).map(product => {
     const payload = buildExtractionPayload({id:String(product.id),name:product.name,sourceName:product.source_name,description:product.source_description || undefined,spec:product.spec,category:product.source_category,sourceData:product.source_data});
     if (kind === 'membership_features') delete payload.shopText;
@@ -88,12 +94,15 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
     payload.shopSource = { url: product.shop_url, protocol: product.shop_protocol, platform: product.shop_platform };
     const fingerprint = product.content_fingerprint;
     const text = kind === 'membership_features' ? null : readTextEvidence(payload);
-    const storedText = kind === 'text_review' && input.allPending ? prepareTextReview(product) : null;
+    const storedText = kind === 'text_review' && pendingOnly ? prepareTextReview(product) : null;
     const textCurrent = storedText?.source.url === product.shop_url && storedText.source.protocol === product.shop_protocol
       && storedText.source.platform === product.shop_platform;
     const inputKey = JSON.stringify([fingerprint,payload.warrantyEligible,extractionContextKey(payload),text ? [text.name,text.description,text.hash] : null]);
-    return {product,payload,fingerprint,inputKey,...estimateInputSize(payload), protected: !!(product.deleted_at || product.shop_deleted_at || !product.enabled || product.standardization_locked || product.manual || product.human
-      || !product.published || (kind === 'membership_features' && !product.ai_membership)
+    const taskInput = { ...payload, id: String(product.id), name: payload.name as string };
+    const transport = kind === 'text_review' ? { id: taskInput.id, shopText: text }
+      : kind === 'membership_features' ? encodeMembershipFeatureInput(taskInput) : projectTagInput(taskInput);
+    return {product,payload,fingerprint,inputKey,...estimateInputSize(transport as unknown as JsonValue), protected: !!(product.deleted_at || product.shop_deleted_at || !product.enabled || product.standardization_locked || product.manual || product.human
+      || product.offer_available === false || !product.published || (kind === 'membership_features' && !product.ai_membership)
       || (kind === 'text_review' && (!text || textCurrent)))};
   });
   return {scope,sized:input.allPending?sized.filter(item=>!item.protected):sized};
@@ -237,7 +246,7 @@ async function createAttributeJob(tx:Transaction<DatabaseSchema>,input:TagJobInp
   if (!input.productIds.length) throw new DomainNotFoundError('AI_TAG_SCOPE_EMPTY','范围内没有商品');
   // Automatic sources may exceed the manual preview bound; select in bounded pieces.
   const sized: Awaited<ReturnType<typeof selection>>['sized']=[];
-  for(let offset=0;offset<input.productIds.length;offset+=MAX_SCOPE) sized.push(...(await selection(tx,{productIds:input.productIds.slice(offset,offset+MAX_SCOPE)},true,kind)).sized);
+  for(let offset=0;offset<input.productIds.length;offset+=MAX_SCOPE) sized.push(...(await selection(tx,{productIds:input.productIds.slice(offset,offset+MAX_SCOPE)},true,kind,input.parentIdentityJobId != null)).sized);
   const pending = kind === 'membership_features'
     ? sized.filter(item => !readCurrentMembershipFeatures(item.product.membership_features, item.product))
     : kind === 'text_review' ? sized.filter(({ product }) => {

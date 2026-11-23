@@ -71,11 +71,11 @@ test('subscriptions without an allowed matching candidate retain evidence as unm
   const evidence = [{ path: 'name', quote: 'Cursor Premium会员' }];
   const inputs = [{ id: '1', payload: { name: 'Cursor Premium会员' }, candidateStandardProductIds: [] }];
   const result = parseStandardizationProtocolResponse({ items: [{
-    id: '1', standardProductId: null, evidence,
+    id: '1', standardProductId: null, nullReason: 'candidate_unavailable', evidence,
   }] }, inputs);
   assert.equal(validateStandardizationEvidence(result, inputs, []), result);
   assert.equal(result.items[0]?.status, 'unclassified');
-  assert.equal(result.items[0]?.reasonCode, 'unmatched');
+  assert.equal(result.items[0]?.reasonCode, 'candidate_unavailable');
   assert.deepEqual(result.items[0]?.evidence, evidence);
   assert.equal(Object.hasOwn(result, 'identities'), false);
 });

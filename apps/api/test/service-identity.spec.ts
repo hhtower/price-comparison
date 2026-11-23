@@ -113,7 +113,7 @@ test('service offers match an approved candidate without creating or normalizing
     id: String(index + 1), payload: { name }, candidateStandardProductIds: [candidate.id],
   }));
   const parsed = parseStandardizationProtocolResponse({ items: inputs.map(input => ({
-    id: input.id, standardProductId: candidate.id, evidence: [{ path: 'name', quote: input.payload.name }],
+    id: input.id, standardProductId: candidate.id, nullReason: null, evidence: [{ path: 'name', quote: input.payload.name }],
   })) }, inputs);
   assert.equal(validateStandardizationEvidence(parsed, inputs, [candidate]), parsed);
   assert.ok(parsed.items.every(item => item.status === 'classified'));

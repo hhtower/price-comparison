@@ -79,7 +79,7 @@ test('incremental creation reuses the AI transaction and acknowledges only curre
   const locks=f.queries.filter(query=>/for update|for share/.test(query.sql));
   assert.equal(locks.length,3);
   assert.match(locks[0]!.sql,/from "shops".*order by "id"(?: asc)? for share/);
-  assert.match(locks[1]!.sql,/from "products".*order by "id"(?: asc)? for share/);
+  assert.match(locks[1]!.sql,/from "products".*order by "id"(?: asc)? for share/s);
   assert.match(locks[2]!.sql,/from "standardization_outbox".*claimed_by.*lease_until.*clock_timestamp\(\).*order by "id"(?: asc)? for update/);
   assert.match(f.queries.at(-1)!.sql,/lease_until.*clock_timestamp\(\)/);
   await f.db.destroy();
@@ -134,7 +134,7 @@ test('mixed claims acknowledge only eligible products and lock eligibility until
   assert.match(shopEligibility.sql,/deleted_at.*enabled.*for share/);
   const productEligibility=f.queries.find(query=>query.sql.includes('"content_fingerprint" from "products"')&&query.sql.endsWith('for share'))!;
   assert.ok(productEligibility);
-  assert.match(productEligibility.sql,/shop_id.*deleted_at.*for share/);
+  assert.match(productEligibility.sql,/shop_id.*deleted_at.*for share/s);
   assert.doesNotMatch(productEligibility.sql,/standardization_locked/);
   await f.db.destroy();
 });

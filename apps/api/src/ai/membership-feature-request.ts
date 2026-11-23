@@ -1,4 +1,4 @@
-import type { TagExtractionInput } from './tag-extraction-request.js';
+import { projectTagInput, type TagExtractionInput } from './tag-extraction-request.js';
 import { MEMBERSHIP_KINDS, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { OFFER_EVIDENCE_POLICY } from './offer-evidence-policy.js';
 
@@ -46,6 +46,7 @@ function project(value: unknown): unknown {
 }
 
 export function encodeMembershipFeatureInput(input: TagExtractionInput) {
+  input = projectTagInput(input);
   const lines: Array<{ n: number; path: string; text: string }> = [{ n: 0, path: 'name', text: input.name }];
   function visit(value: unknown, path: string) {
     if (typeof value === 'string') {
@@ -54,7 +55,7 @@ export function encodeMembershipFeatureInput(input: TagExtractionInput) {
       for (const [key, child] of Object.entries(value)) visit(child, `${path}.${key}`);
     } else lines.push({ n: lines.length, path, text: JSON.stringify(value) ?? '' });
   }
-  for (const key of ['spec', 'sourceData', 'evidence', 'description', 'details', 'warranty'] as const) {
+  for (const key of ['spec', 'sourceData', 'evidence', 'description', 'details', 'warranty', 'originalText'] as const) {
     if (input[key] !== undefined) visit(project(input[key]), key);
   }
   return { id: input.id, name: input.name, lines };

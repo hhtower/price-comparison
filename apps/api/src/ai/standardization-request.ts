@@ -3,8 +3,9 @@ import type { CandidateDocument } from '../standardization/candidate-index.js';
 import { standardizationProtocolSchema, type StandardizationProtocolInput } from './ai.schemas.js';
 import { buildModelRequestOptions, readModelRequestOptions, type ModelRequestOptions } from './model-request-options.js';
 import { OFFER_EVIDENCE_POLICY } from './offer-evidence-policy.js';
+import { projectSemanticEvidence } from './evidence-projection.js';
 
-export const STANDARDIZATION_PROMPT_VERSION = 'standardization-match-prompt-20261121-v2';
+export const STANDARDIZATION_PROMPT_VERSION = 'standardization-match-prompt-20261123-v3';
 export interface StandardizationRequest {
   readonly model: string;
   readonly candidates: readonly CandidateDocument[];
@@ -63,7 +64,7 @@ export function buildStandardizationRequest(request: StandardizationRequest): Bu
     if (!input.payload || typeof input.payload !== 'object' || Array.isArray(input.payload)) throw new Error('standardization item payload must be an object');
     if (['candidates', 'candidateRefs', 'candidateStandardProductIds', 'historyContext', 'previousDecision']
       .some(key => Object.hasOwn(input.payload as object, key))) throw new Error('standardization item payload uses a reserved protocol field');
-    return { ...input.payload, id: protocolInputs[index]!.id,
+    return { ...projectSemanticEvidence(input.payload as Record<string, JsonValue>), id: protocolInputs[index]!.id,
       candidateStandardProductIds: protocolInputs[index]!.candidateStandardProductIds };
   });
   const { content, alias } = aliasStandardizationContent(JSON.stringify({
@@ -94,7 +95,8 @@ ${alias ? `The opaque catalog name token ${alias} represents one exact source na
 ${OFFER_EVIDENCE_POLICY}
 Read the full current source, including the selected specification, negations, conditions and conflicting product claims. Select an existing definition only when it describes the actual sold product and plan. Unknown or ambiguous product identity means null.
 Spelling variants and genuine synonyms can describe the same product. Regions, subscription terms, channels, seat counts, delivery formats, credentials and warranty terms are attributes; they do not create standard products. Missing optional attributes alone does not prevent a match. Delivery as JSON or account credentials does not by itself change the underlying product.
-If no supplied definition fits, return null with current evidence. Do not explain whether the catalog lacks a definition, suggest a new identity or make an admission decision.
+Distinguish buyer prerequisites from sold products: a buyer supplying a Free account for the seller to activate Plus is buying Plus. A delivered activated subscription is different from an eligibility or checkout link that excludes subscription fees.
+For a matched ID return nullReason:null. For a null ID choose nullReason:candidate_unavailable only when source identifies the sold product but no allowed candidate fits; otherwise use nullReason:insufficient_source when source does not establish the product or plan. This describes the supplied candidate list, not global catalog admission. Preserve legitimate unknowns, do not invent reasoning or infer identities from model confidence. Do not suggest new identities.
 
 # Evidence
 Every result, including null, requires at least one citation to that item's current payload. Use an existing string or number leaf, its exact item-relative path (for example name, spec or sourceData.evidence), and a nonempty contiguous verbatim quote. Preserve case, punctuation and whitespace exactly.
@@ -109,11 +111,11 @@ Input:
 \`\`\`
 Output:
 \`\`\`json
-{"items":[{"id":"101","standardProductId":"91","evidence":[{"path":"name","quote":"ChatGPT Plus"}]},{"id":"102","standardProductId":null,"evidence":[{"path":"name","quote":"未知商品"}]}]}
+{"items":[{"id":"101","standardProductId":"91","nullReason":null,"evidence":[{"path":"name","quote":"ChatGPT Plus"}]},{"id":"102","standardProductId":null,"nullReason":"insufficient_source","evidence":[{"path":"name","quote":"未知商品"}]}]}
 \`\`\`
 
 # Output
-Return only one JSON object with items. Each item has exactly id, standardProductId and evidence; each citation has exactly path and quote. Every input ID must appear exactly once. No missing, extra or duplicate IDs, reasons, diagnostics, actions, corrections, Markdown or commentary.
+Return only one JSON object with items. Each item has exactly id, standardProductId, nullReason and evidence; each citation has exactly path and quote. Every input ID must appear exactly once. No missing, extra or duplicate IDs, free-text reasons, diagnostics, confidence, actions, corrections, Markdown or commentary.
 Output JSON Schema:
 ${JSON.stringify(standardizationProtocolSchema(protocolInputs))}` },
       { role: 'user', content },

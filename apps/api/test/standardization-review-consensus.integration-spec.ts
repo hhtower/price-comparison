@@ -9,6 +9,8 @@ import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.j
 import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
 import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
+import { parseStandardizationReviewResponse } from '../src/ai/standardization-review-request.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import { jsonb, type AiJobStatus, type DatabaseSchema, type JsonValue, type StandardizationMemberStatus } from '../src/database/types.js';
 import { reconcileNameConsensus } from '../src/standardization/name-consensus-repair.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
@@ -51,6 +53,7 @@ async function fixture(assigned: boolean, peers = true) {
     source_data: jsonb({}), normalized_key: randomUUID(), url: '', content_version: 1n,
     source_name: name, content_fingerprint: productContentFingerprint({ name }),
   }))).returning('id').execute();
+  await seedUsableOffers(db, products.map(product => product.id));
   const target = products[0]!;
   if (peers) await db.insertInto('standard_product_members').values(products.slice(1).map(product => ({
     product_id: product.id, standard_product_id: majorityId, assignment_source: 'ai', publication_state: 'published' as const,
@@ -98,14 +101,31 @@ async function work(productId: bigint, options: WorkOptions = {}) {
 
 async function result(productId: bigint, approved: JsonValue | undefined, options: WorkOptions & { resultVersion?: bigint } = {}) {
   const jobId = await work(productId, options);
-  const product = await db.selectFrom('products').select(['content_version', 'content_fingerprint']).where('id', '=', productId).executeTakeFirstOrThrow();
+  const product = await db.selectFrom('products').select(['name', 'content_version', 'content_fingerprint']).where('id', '=', productId).executeTakeFirstOrThrow();
+  let decision: JsonValue = approved === undefined ? {} : { review: { approved } };
+  let reason = 'Fixture decision';
+  if (typeof approved === 'boolean') {
+    const evidence = [{ path: 'name', quote: product.name }];
+    const input = { id: String(productId), candidateStandardProductIds: [String(minorityId)] };
+    const proposal = parseStandardizationProtocolResponse({ items: [{
+      id: input.id, standardProductId: String(minorityId), nullReason: null, evidence,
+    }] }, [input]);
+    const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: [{
+      id: input.id, approved, code: approved ? null : 'identity_mismatch', evidence: approved ? [] : evidence,
+    }] }), proposal, { model: 'mock',
+      candidates: [{ id: String(minorityId), family: 'google', product: 'email', tier: 'standard', aliases: [] }],
+      inputs: [{ productId, payload: { name: product.name }, candidateStandardProductIds: input.candidateStandardProductIds }],
+    });
+    decision = reviewed.items[0]! as unknown as JsonValue;
+    reason = reviewed.items[0]!.reason;
+  }
   await db.insertInto('ai_standardization_results').values({
     job_id: jobId, input_id: productId, product_id: productId,
     content_version: options.resultVersion ?? options.contentVersion ?? product.content_version,
     fingerprint: options.fingerprint ?? product.content_fingerprint, status: approved === true ? 'classified' : 'unclassified',
     standard_product_id: approved === true ? minorityId : null,
     reason_code: approved === true ? null : approved === false ? 'review_rejected' : 'unmatched',
-    reason: 'Fixture decision', decision: jsonb(approved === undefined ? {} : { review: { approved } }),
+    reason, decision: jsonb(decision),
   }).execute();
   return jobId;
 }
@@ -116,7 +136,7 @@ async function failedReview(productId: bigint, errorSource: string, options: Wor
   const product = await db.selectFrom('products').select('name').where('id', '=', productId).executeTakeFirstOrThrow();
   const inputs = [{ id: String(productId), candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } }];
   const document = parseStandardizationProtocolResponse({
-    items: [{ id: String(productId), standardProductId: null, evidence: [{ path: 'name', quote: product.name }] }],
+    items: [{ id: String(productId), standardProductId: null, nullReason: 'insufficient_source', evidence: [{ path: 'name', quote: product.name }] }],
   }, inputs);
   const reference = { strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs, candidates: [] };
   const generation = await db.insertInto('ai_job_batches').values({

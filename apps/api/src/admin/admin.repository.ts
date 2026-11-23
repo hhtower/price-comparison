@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { hasUsableOffer } from '../ai/offer-eligibility.js';
 import { isCanonicalProductTag, PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 import { tagValueKey, type TagValue } from '@price-comparison/catalog/purchase-attributes';
 import { validateProductTags } from '../products/product-tags.js';
@@ -244,6 +245,7 @@ export class AdminRepository {
           select jsonb_build_object(
             'reasonCode', case
               when p.standardization_locked or (d.evidence_known and d.content_version=p.content_version and d.content_fingerprint=p.content_fingerprint) then 'manual_decision_preserved'
+              when not ${hasUsableOffer()} then 'offer_unavailable'
               when r.job_id is null then 'not_processed'
               when r.content_version is distinct from p.content_version or im.content_version is distinct from p.content_version
                 or r.fingerprint is distinct from p.content_fingerprint or im.fingerprint is distinct from p.content_fingerprint

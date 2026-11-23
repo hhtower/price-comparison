@@ -6,7 +6,7 @@ import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
-import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
+import { parseStandardizationProtocolResponse, standardizationProposal, STANDARDIZATION_REVIEW_REASONS } from '../src/ai/ai.schemas.js';
 import { parseStandardizationReviewResponse } from '../src/ai/standardization-review-request.js';
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
@@ -57,7 +57,9 @@ async function approve(f: Awaited<ReturnType<typeof fixture>>) {
   await claimBatch(batch.id);
   await f.repo.reserveBatchRequest(batch.id, claim);
   const request = await f.repo.getBatchRequest(batch.id);
-  const decision = parseStandardizationReviewResponse(JSON.stringify({ items: request.proposals!.items.map(item => ({ id: item.id, approved: true })) }), request.proposals!);
+  const decision = parseStandardizationReviewResponse(JSON.stringify({ items: request.proposals!.items.map(item => ({
+    id: item.id, approved: true, code: null, evidence: [],
+  })) }), request.proposals!, request);
   await f.repo.persistBatchDecision(f.job.id, batch.id, decision, metadata, claim, 'review');
   return batch;
 }
@@ -125,7 +127,7 @@ test('source removal after a complete generation cannot discard another product 
   assert.equal(await f.repo.reserveBatchRequest(review.id, claim), 'reserved');
   const request = await f.repo.getBatchRequest(review.id);
   assert.deepEqual(request.proposals!.items.map(item => item.id), [String(f.products[0]!.id)]);
-  const result = parseStandardizationReviewResponse(`{"items":[{"id":"${f.products[0]!.id}","approved":true}]}`, request.proposals!);
+  const result = parseStandardizationReviewResponse(`{"items":[{"id":"${f.products[0]!.id}","approved":true,"code":null,"evidence":[]}]}`, request.proposals!, request);
   await f.repo.persistBatchDecision(f.job.id, review.id, result, metadata, claim, 'review');
   await claimBatch(review.id);
   await f.repo.publishBatch(review.id, claim);
@@ -176,7 +178,10 @@ test('reviewed publication uses the reviewed identity despite local source heuri
   const review = await reviewBatch(f);
   await claimBatch(review.id);
   await f.repo.reserveBatchRequest(review.id, claim);
-  const approved = { ...f.proposals, items: f.proposals.items.map(item => ({ ...item, review: { approved: true } })) };
+  const request = await f.repo.getBatchRequest(review.id);
+  const approved = parseStandardizationReviewResponse(JSON.stringify({ items: f.proposals.items.map(item => ({
+    id: item.id, approved: true, code: null, evidence: [],
+  })) }), request.proposals!, request);
   await f.repo.persistBatchDecision(f.job.id, review.id, approved, metadata, claim, 'review');
   await claimBatch(review.id);
   await f.repo.publishBatch(review.id, claim);
@@ -187,7 +192,8 @@ test('reviewed publication uses the reviewed identity despite local source heuri
 });
 
 test('mixed binary review persists before publication and rejected proposals preserve old membership', async () => {
-  const f = await fixture();
+  const f = await fixture(['ChatGPT Plus', 'Claude Pro 资格链接,不含订阅']);
+  const feedbackEvidence = [{ path: 'name', quote: '资格链接,不含订阅' }];
   const previous = await db.insertInto('standard_products').values({
     name: 'old', canonical_family: 'generic', canonical_product: 'old', canonical_tier: 'standard', verification_state: 'verified',
   }).returning('id').executeTakeFirstOrThrow();
@@ -205,7 +211,8 @@ test('mixed binary review persists before publication and rejected proposals pre
     const sent = JSON.parse(String(init?.body));
     assert.equal(sent.stream, true);
     const content = JSON.stringify({ items: [
-      { id: String(f.products[1]!.id), approved: false }, { id: String(f.products[0]!.id), approved: true },
+      { id: String(f.products[1]!.id), approved: false, code: 'identity_mismatch', evidence: feedbackEvidence },
+      { id: String(f.products[0]!.id), approved: true, code: null, evidence: [] },
     ] });
     return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: content.slice(0, 25) } }] })}\n\n`
       + `data: ${JSON.stringify({ choices: [{ delta: { content: content.slice(25) }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
@@ -222,7 +229,13 @@ test('mixed binary review persists before publication and rejected proposals pre
   const results = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).orderBy('product_id').execute();
   assert.equal(results[0]?.status, 'classified');
   assert.equal(results[1]?.reason_code, 'review_rejected');
-  assert.deepEqual((results[1]?.decision as any).review, { approved: false });
+  assert.deepEqual((results[1]?.decision as any).review, {
+    approved: false, code: 'identity_mismatch', evidence: feedbackEvidence,
+    proposal: standardizationProposal(f.proposals.items[1]!),
+  });
+  assert.equal(results[1]?.reason, STANDARDIZATION_REVIEW_REASONS.identity_mismatch);
+  assert.deepEqual(results[1]?.evidence, feedbackEvidence);
+  assert.deepEqual((results[1]?.decision as any).evidence, f.raw.items[1]!.evidence);
   assert.equal(results[1]?.current_assignment_preserved, true);
   const membership = await db.selectFrom('standard_product_members').select('standard_product_id')
     .where('product_id', '=', f.products[1]!.id).executeTakeFirstOrThrow();
@@ -237,7 +250,7 @@ test('review checkpoint rolls back confirmation on a changed proposal and reject
   await claimBatch(batch.id);
   await f.repo.reserveBatchRequest(batch.id, claim);
   const request = await f.repo.getBatchRequest(batch.id);
-  const decision = parseStandardizationReviewResponse(`{"items":[{"id":"${f.products[0]!.id}","approved":true}]}`, request.proposals!);
+  const decision = parseStandardizationReviewResponse(`{"items":[{"id":"${f.products[0]!.id}","approved":true,"code":null,"evidence":[]}]}`, request.proposals!, request);
   decision.items[0]!.reason = 'model attempted to repair proposal';
   await assert.rejects(f.repo.persistBatchDecision(f.job.id, batch.id, decision, metadata, claim, 'review'));
   const after = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', batch.id).executeTakeFirstOrThrow();
@@ -245,6 +258,36 @@ test('review checkpoint rolls back confirmation on a changed proposal and reject
   assert.equal(after.validated_decision, null);
   assert.equal(after.step, 'request');
   await assert.rejects(f.repo.persistBatchDecision(f.job.id, batch.id, f.proposals, metadata, claim, 'generate'), /stage/);
+});
+
+test('review checkpoint rejects forged proposal snapshots, altered original evidence and fabricated diagnostics atomically', async () => {
+  const f = await fixture(['ChatGPT Plus 资格链接,不含订阅']);
+  await f.repo.persistBatchDecision(f.job.id, f.batch.id, f.proposals, metadata, claim, 'generate');
+  const batch = await reviewBatch(f);
+  await claimBatch(batch.id);
+  await f.repo.reserveBatchRequest(batch.id, claim);
+  const request = await f.repo.getBatchRequest(batch.id);
+  const decision = parseStandardizationReviewResponse(JSON.stringify({ items: [{
+    id: String(f.products[0]!.id), approved: false, code: 'identity_mismatch',
+    evidence: [{ path: 'name', quote: '资格链接,不含订阅' }],
+  }] }), request.proposals!, request);
+  for (const mutate of [
+    (item: any) => { item.review.proposal.standardProductId = String(f.standards[1]!.id); },
+    (item: any) => { item.evidence = [{ path: 'name', quote: 'ChatGPT Plus' }]; },
+    (item: any) => { item.review.evidence = [{ path: 'name', quote: 'fabricated subscription' }]; },
+    (item: any) => { item.review.approved = true; },
+    (item: any) => { item.review = { approved: false }; },
+  ]) {
+    const forged = structuredClone(decision);
+    mutate(forged.items[0]);
+    await assert.rejects(f.repo.persistBatchDecision(f.job.id, batch.id, forged, metadata, claim, 'review'));
+    const saved = await db.selectFrom('ai_job_batches').select(['confirmed_requests', 'validated_decision', 'step'])
+      .where('id', '=', batch.id).executeTakeFirstOrThrow();
+    assert.deepEqual(saved, { confirmed_requests: 0, validated_decision: null, step: 'request' });
+  }
+  await f.repo.persistBatchDecision(f.job.id, batch.id, decision, metadata, claim, 'review');
+  const saved = await db.selectFrom('ai_job_batches').select('validated_decision').where('id', '=', batch.id).executeTakeFirstOrThrow();
+  assert.deepEqual(saved.validated_decision, decision);
 });
 
 test('review approval preserves source and manual protection and publishes no partial writes', async () => {
@@ -336,10 +379,11 @@ test('an all-missing generation fails without publishing unmatched results', asy
   assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 1);
 });
 
-test('unmatched proposals require review and retain evidence without creating standards', async () => {
-  const f = await fixture(['Unlisted plan']);
+for (const nullReason of ['candidate_unavailable', 'insufficient_source'] as const) test(`${nullReason} proposals require review and retain evidence without creating standards`, async () => {
+  const name = nullReason === 'candidate_unavailable' ? 'Cursor Pro' : 'Unlisted plan';
+  const f = await fixture([name]);
   f.proposals = parseStandardizationProtocolResponse({
-    items: [{ id: String(f.products[0]!.id), standardProductId: null, evidence: [{ path: 'name', quote: 'Unlisted plan' }] }],
+    items: [{ id: String(f.products[0]!.id), standardProductId: null, nullReason, evidence: [{ path: 'name', quote: name }] }],
   }, f.inputs);
   const standardsBefore = await db.selectFrom('standard_products').selectAll().orderBy('id').execute();
   const batch = await approve(f);
@@ -348,10 +392,11 @@ test('unmatched proposals require review and retain evidence without creating st
   await f.repo.publishBatch(batch.id, claim);
   const result = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   assert.equal(result.status, 'unclassified');
-  assert.equal(result.reason_code, 'unmatched');
+  assert.equal(result.reason_code, nullReason);
   assert.equal(result.standard_product_id, null);
-  assert.deepEqual(result.evidence, [{ path: 'name', quote: 'Unlisted plan' }]);
-  assert.deepEqual((result.decision as any).review, { approved: true });
+  assert.deepEqual(result.evidence, [{ path: 'name', quote: name }]);
+  assert.deepEqual((result.decision as any).review, { approved: true, code: null, evidence: [],
+    proposal: { standardProductId: null, nullReason } });
   assert.equal((await db.selectFrom('standard_product_members').select('product_id').where('product_id', '=', f.products[0]!.id).execute()).length, 0);
   assert.deepEqual(await db.selectFrom('standard_products').selectAll().orderBy('id').execute(), standardsBefore);
   assert.deepEqual(await db.selectFrom('ai_batch_identity_mappings').selectAll().where('batch_id', '=', batch.id).execute(), []);
@@ -368,7 +413,7 @@ test('approved unmatched enters pending atomically, retaining quotes, audit, loc
     publication_state: 'published' as const, decision_version: historyJob.id,
   }))).execute();
   await db.insertInto('offers').values(productIds.map(productId => ({
-    product_id: productId, idempotency_key: `unmatched-${productId}`, price: '19.99', currency: 'USD',
+    product_id: productId, idempotency_key: `unmatched-${productId}`, price: '19.99', currency: 'USD', stock_available: true, is_stale: false,
   }))).execute();
   await db.insertInto('ai_job_inputs').values(f.products.map(product => ({
     job_id: historyJob.id, input_id: product.id, content_version: product.content_version,
@@ -380,7 +425,7 @@ test('approved unmatched enters pending atomically, retaining quotes, audit, loc
     reason: 'Historical assignment audit', decision: jsonb({ historical: true }),
   }))).execute();
   f.proposals = parseStandardizationProtocolResponse({
-    items: f.raw.items.map(item => ({ ...item, standardProductId: null })),
+    items: f.raw.items.map(item => ({ ...item, standardProductId: null, nullReason: 'insufficient_source' })),
   }, f.inputs);
   const batch = await approve(f);
   await db.updateTable('products').set({ standardization_locked: true }).where('id', '=', productIds[1]!).execute();
@@ -414,11 +459,11 @@ test('approved unmatched enters pending atomically, retaining quotes, audit, loc
   }
   await f.repo.publishBatch(batch.id, claim);
   const results = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).orderBy('product_id').execute();
-  assert.deepEqual(results.map(result => result.reason_code), ['unmatched', 'manual_decision_preserved', 'manual_decision_preserved']);
+  assert.deepEqual(results.map(result => result.reason_code), ['insufficient_source', 'manual_decision_preserved', 'manual_decision_preserved']);
   assert.deepEqual(results.map(result => result.current_assignment_preserved), [false, true, true]);
   assert.deepEqual(results[0]!.evidence, f.raw.items[0]!.evidence);
   const pending = (await f.repo.listGlobalResults({ limit: 100 })).items.find(item => item.productId === String(productIds[0]));
-  assert.equal(pending?.reasonCode, 'unmatched');
+  assert.equal(pending?.reasonCode, 'insufficient_source');
   assert.deepEqual(pending?.evidence, f.raw.items[0]!.evidence);
   assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', 'in', productIds).orderBy('product_id').execute(), membershipsBefore.slice(1));
   assert.deepEqual(await db.selectFrom('products').selectAll().where('id', 'in', productIds).orderBy('id').execute(), productsBefore);
@@ -431,19 +476,19 @@ test('approved unmatched enters pending atomically, retaining quotes, audit, loc
 });
 
 test('review rejection of unmatched keeps the previous automatic assignment', async () => {
-  const f = await fixture(['Unlisted plan']);
+  const f = await fixture(['ChatGPT Plus']);
   await db.insertInto('standard_product_members').values({
     product_id: f.products[0]!.id, standard_product_id: f.standards[0]!.id, assignment_source: 'ai', publication_state: 'published',
   }).execute();
-  f.proposals = parseStandardizationProtocolResponse({ items: f.raw.items.map(item => ({ ...item, standardProductId: null })) }, f.inputs);
+  f.proposals = parseStandardizationProtocolResponse({ items: f.raw.items.map(item => ({ ...item, standardProductId: null, nullReason: 'insufficient_source' })) }, f.inputs);
   await f.repo.persistBatchDecision(f.job.id, f.batch.id, f.proposals, metadata, claim);
   const batch = await reviewBatch(f);
   await claimBatch(batch.id);
   await f.repo.reserveBatchRequest(batch.id, claim);
   const request = await f.repo.getBatchRequest(batch.id);
   const rejected = parseStandardizationReviewResponse(JSON.stringify({
-    items: [{ id: String(f.products[0]!.id), approved: false }],
-  }), request.proposals!);
+    items: [{ id: String(f.products[0]!.id), approved: false, code: 'supported_candidate', evidence: f.raw.items[0]!.evidence }],
+  }), request.proposals!, request);
   await f.repo.persistBatchDecision(f.job.id, batch.id, rejected, metadata, claim);
   await claimBatch(batch.id);
   await f.repo.publishBatch(batch.id, claim);
@@ -455,11 +500,11 @@ test('review rejection of unmatched keeps the previous automatic assignment', as
 });
 
 for (const matched of [false, true]) for (const protection of ['none', 'locked', 'current evidence'] as const) {
-  test(`${matched ? 'matched' : 'unmatched'} publication handles unverified human membership with ${protection} protection without changing source revision or features`, async () => {
+  test(`${matched ? 'matched' : 'insufficient_source'} publication handles unverified human membership with ${protection} protection without changing source revision or features`, async () => {
     const f = await fixture(['ChatGPT Plus']);
     const product = f.products[0]!;
     if (!matched) f.proposals = parseStandardizationProtocolResponse({
-      items: f.raw.items.map(item => ({ ...item, standardProductId: null })),
+      items: f.raw.items.map(item => ({ ...item, standardProductId: null, nullReason: 'insufficient_source' })),
     }, f.inputs);
     const batch = await approve(f);
     await db.transaction().execute(async tx => {
@@ -494,9 +539,9 @@ for (const matched of [false, true]) for (const protection of ['none', 'locked',
     assert.equal(readCurrentMembershipFeatures(after.membership_features, after)?.decision.kind, 'account');
     assert.deepEqual(await db.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', product.id).execute(), audit);
     const result = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
-    assert.equal(result.reason_code, protection !== 'none' ? 'manual_decision_preserved' : matched ? null : 'unmatched');
+    assert.equal(result.reason_code, protection !== 'none' ? 'manual_decision_preserved' : matched ? null : 'insufficient_source');
     if (!matched && protection === 'none') {
-      assert.equal((await f.repo.listGlobalResults({ limit: 100 })).items.find(item => item.productId === String(product.id))?.reasonCode, 'unmatched');
+      assert.equal((await f.repo.listGlobalResults({ limit: 100 })).items.find(item => item.productId === String(product.id))?.reasonCode, 'insufficient_source');
     }
   });
 }
@@ -522,7 +567,7 @@ test('malformed item aborts the entire generation before review or partial publi
   const f = await fixture();
   for (const invalid of [
     { id: String(f.products[1]!.id), evidence: f.raw.items[1]!.evidence },
-    { id: String(f.products[1]!.id), standardProductId: null },
+    { id: String(f.products[1]!.id), standardProductId: null, nullReason: 'insufficient_source' },
     { ...f.raw.items[1], standardProductId: 91 },
   ]) {
     await assert.rejects(async () => {

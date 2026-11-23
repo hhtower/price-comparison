@@ -6,6 +6,7 @@ import type { CandidateSearchQuery } from '../standardization/candidate-index.js
 import { projectShopText } from '../shops/shop-text-review.js';
 import { visibleEvidenceText } from '../standardization/evidence-text.js';
 import { sanitizeEvidenceText } from '../standardization/service-evidence.js';
+import { projectOriginalText } from './evidence-projection.js';
 
 export interface AiInputSize {
   productId: bigint;
@@ -116,7 +117,11 @@ export function buildExtractionPayload(input: ExtractionInput): ExtractionPayloa
     }
   }
   const shopText = projectShopText(input.sourceData);
-  if (shopText) payload.shopText = shopText;
+  if (shopText) {
+    const originalText = projectOriginalText(payload, shopText);
+    if (Object.keys(originalText).length) payload.originalText = originalText;
+    payload.shopText = shopText;
+  }
   return payload;
 }
 

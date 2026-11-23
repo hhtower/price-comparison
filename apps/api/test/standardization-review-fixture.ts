@@ -11,6 +11,14 @@ import { validateStandardizationEvidence } from '../src/ai/standardization-evide
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 
+export async function seedUsableOffers(db: Kysely<DatabaseSchema>, productIds: readonly bigint[]) {
+  if (!productIds.length) return;
+  await db.insertInto('offers').values(productIds.map(productId => ({
+    product_id: productId, price: '19.99', currency: 'USD', stock_available: true, is_stale: false,
+    captured_at: new Date(), idempotency_key: randomUUID(),
+  }))).execute();
+}
+
 export async function seedMatchOnlyReviewFixture(
   db: Kysely<DatabaseSchema>,
   names = ['ChatGPT Plus', 'Claude Pro'],
@@ -29,6 +37,7 @@ export async function seedMatchOnlyReviewFixture(
     source_data: jsonb({}), normalized_key: `review-${index}`, url: 'https://test.invalid/p',
     content_version: 1n, content_fingerprint: productContentFingerprint({ name, spec: '', sourceCategory: '', sourceData: {} }),
   }))).returningAll().execute();
+  await seedUsableOffers(db, products.map(product => product.id));
   const job = await db.insertInto('ai_jobs').values({
     total: BigInt(products.length), model: 'mock', job_type: 'manual_full', status: 'running',
     prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION,
@@ -63,7 +72,7 @@ export async function seedMatchOnlyReviewFixture(
     reference_snapshot: jsonb({ strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs, candidates }),
   }).returningAll().executeTakeFirstOrThrow();
   const raw = { items: products.map((product, index) => ({
-    id: String(product.id), standardProductId: inputs[index]!.candidateStandardProductIds[0]!,
+    id: String(product.id), standardProductId: inputs[index]!.candidateStandardProductIds[0]!, nullReason: null,
     evidence: [{ path: 'name', quote: product.name }],
   })) };
   const proposals = parseStandardizationProtocolResponse(raw, inputs);
@@ -120,8 +129,12 @@ export async function saveStandardizationThroughReview(
   assert.ok(request.proposals);
   const reviewed = parseStandardizationReviewResponse(JSON.stringify({
     items: request.proposals.items.filter(isReviewableStandardizationDecision)
-      .map(proposal => ({ id: proposal.id, approved: input.approve?.(proposal) ?? true })),
-  }), request.proposals);
+      .map(proposal => {
+        const approved = input.approve?.(proposal) ?? true;
+        return { id: proposal.id, approved, code: approved ? null : 'source_conflict',
+          evidence: approved ? [] : proposal.evidence.slice(0, 5) };
+      }),
+  }), request.proposals, request);
   const bounded = validateStandardizationEvidence(reviewed,
     request.inputs.map(item => ({
       id: String(item.productId), payload: item.payload, candidateStandardProductIds: item.candidateStandardProductIds,

@@ -35,7 +35,7 @@ async function fixtureForFailure(errorSource = 'input_too_large') {
   const fixture = await seedMatchOnlyReviewFixture(db);
   const raw = { items: [
     fixture.raw.items[0]!,
-    { ...fixture.raw.items[1]!, standardProductId: null },
+    { ...fixture.raw.items[1]!, standardProductId: null, nullReason: 'insufficient_source' },
   ] };
   fixture.proposals = parseStandardizationProtocolResponse(raw, fixture.inputs);
   await fixture.repo.persistBatchDecision(fixture.job.id, fixture.batch.id, fixture.proposals, {}, fixture.claim);

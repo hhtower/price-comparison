@@ -18,6 +18,9 @@ import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
 import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
+import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
+import { parseStandardizationReviewResponse } from '../src/ai/standardization-review-request.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
 before(async () => {
@@ -39,12 +42,23 @@ after(async () => {
 });
 
 const evidence = [{ path: 'name', quote: 'Unmatched offer' }];
-async function fixture(existingProduct?: Selectable<DatabaseSchema['products']>) {
+async function fixture(existingProduct?: Selectable<DatabaseSchema['products']>, nullReason: 'candidate_unavailable' | 'insufficient_source' = 'insufficient_source') {
   const shopId = existingProduct?.shop_id ?? (await db.insertInto('shops').values({ platform: 'test', name: 'match state', url: `https://${randomUUID()}.invalid` })
     .returning('id').executeTakeFirstOrThrow()).id;
   const product = existingProduct ?? await db.insertInto('products').values({
-    shop_id: shopId, external_id: randomUUID(), name: 'Unmatched offer', normalized_key: randomUUID(), url: '',
+    shop_id: shopId, external_id: randomUUID(), name: nullReason === 'candidate_unavailable' ? 'Cursor Pro' : 'Unmatched offer', normalized_key: randomUUID(), url: '',
   }).returningAll().executeTakeFirstOrThrow();
+  if (!existingProduct) await seedUsableOffers(db, [product.id]);
+  const evidence = [{ path: 'name', quote: product.name }];
+  const input = { id: String(product.id), candidateStandardProductIds: [] };
+  const proposals = parseStandardizationProtocolResponse({ items: [{
+    id: input.id, standardProductId: null, nullReason, evidence,
+  }] }, [input]);
+  const decision = parseStandardizationReviewResponse(JSON.stringify({ items: [{
+    id: input.id, approved: true, code: null, evidence: [],
+  }] }), proposals, {
+    model: 'mock', candidates: [], inputs: [{ productId: product.id, payload: { name: product.name }, candidateStandardProductIds: [] }],
+  }).items[0]!;
   const job = await db.insertInto('ai_jobs').values({
     model: 'mock', job_type: 'manual_full', status: 'succeeded', phase: 'completed', total: 1n,
     prompt_version: PIPELINE_VERSIONS.prompt, rule_version: STANDARDIZATION_POLICY_VERSION,
@@ -57,16 +71,30 @@ async function fixture(existingProduct?: Selectable<DatabaseSchema['products']>)
   await db.insertInto('ai_job_input_members').values({
     job_id: job.id, input_id: product.id, product_id: product.id, payload: jsonb({ name: product.name }),
     content_version: product.content_version, fingerprint: product.content_fingerprint,
-    standardization_revision: product.standardization_revision, status: 'unclassified', reason_code: 'unmatched',
+    standardization_revision: product.standardization_revision, status: 'unclassified', reason_code: decision.reasonCode,
   }).execute();
   await db.insertInto('ai_standardization_results').values({
     job_id: job.id, input_id: product.id, product_id: product.id, batch_id: null,
     content_version: product.content_version, fingerprint: product.content_fingerprint, status: 'unclassified',
-    standard_product_id: null, tags: jsonb([]), evidence: jsonb(evidence), reason_code: 'unmatched', reason: 'No matching candidate',
-    decision: jsonb({ id: String(product.id), status: 'unclassified', reasonCode: 'unmatched', evidence, ruleIds: [], reason: 'No matching candidate' }),
+    standard_product_id: null, tags: jsonb([]), evidence: jsonb(evidence), reason_code: decision.reasonCode, reason: decision.reason,
+    decision: jsonb(decision as unknown as JsonValue),
     current_assignment_preserved: false,
   }).execute();
   return { product, job };
+}
+
+async function technicalFailure(existingProduct?: Selectable<DatabaseSchema['products']>) {
+  const f = await fixture(existingProduct);
+  await db.deleteFrom('ai_standardization_results').where('job_id', '=', f.job.id).execute();
+  await db.updateTable('ai_jobs').set({ status: 'running', phase: 'standardizing' }).where('id', '=', f.job.id).execute();
+  await db.updateTable('ai_job_inputs').set({ status: 'running', reason_code: null }).where('job_id', '=', f.job.id).execute();
+  await db.updateTable('ai_job_input_members').set({ status: 'processing', reason_code: null }).where('job_id', '=', f.job.id).execute();
+  await db.insertInto('ai_job_batches').values({
+    job_id: f.job.id, batch_index: 0n, product_ids: jsonb([String(f.product.id)]), product_count: 1n,
+    status: 'failed', step: 'request', error_source: 'provider_error', error: 'Fixture provider unavailable',
+  }).execute();
+  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, f.job.id));
+  return f;
 }
 
 const retry = () => readRetryPool(db, { limit: 100 });
@@ -74,15 +102,28 @@ const outcome = (id: bigint) => db.selectFrom('products as p')
   .select([hasManualIsolation().as('isolated'), productStandardizationOutcome().as('outcome')])
   .where('p.id', '=', id).executeTakeFirstOrThrow();
 
-test('unmatched evidence stays visible in the retry pool and has no cannot-process outcome', async () => {
-  const { product } = await fixture();
+test('technical failures stay visible in the retry pool without invented evidence or cannot-process outcome', async () => {
+  const { product } = await technicalFailure();
   assert.deepEqual(await outcome(product.id), { isolated: false, outcome: null });
   const pool = await retry();
   assert.equal(pool.total, 1);
-  assert.equal(pool.items[0]?.reasonCode, 'unmatched');
-  assert.deepEqual(pool.items[0]?.evidence, evidence);
+  assert.equal(pool.items[0]?.reasonCode, 'provider_error');
+  assert.deepEqual(pool.items[0]?.evidence, []);
   const page = await new AdminRepository(db).listProducts({ pending: true, shopId: product.shop_id, limit: 10 });
-  assert.deepEqual(page.items[0]?.processing_summary?.evidence, evidence);
+  assert.equal(page.items[0]?.processing_summary?.processingDisposition, 'retry_available');
+  assert.equal(Object.hasOwn(page.items[0]!.processing_summary!, 'evidence'), false);
+});
+
+for (const nullReason of ['candidate_unavailable', 'insufficient_source'] as const) test(`${nullReason} remains review-required with source evidence and cannot enter the retry pool`, async () => {
+  const { product, job } = await fixture(undefined, nullReason);
+  assert.deepEqual(await outcome(product.id), { isolated: false, outcome: null });
+  assert.equal((await retry()).total, 0);
+  const page = await new AdminRepository(db).listProducts({ pending: true, shopId: product.shop_id, limit: 10 });
+  assert.equal(page.items[0]?.processing_summary?.reasonCode, nullReason);
+  assert.equal(page.items[0]?.processing_summary?.processingDisposition, 'review_required');
+  assert.deepEqual(page.items[0]?.processing_summary?.evidence, [{ path: 'name', quote: product.name }]);
+  await assert.rejects(new AiRepository(db).retryJob(job.id), { code: 'AI_JOB_STATE' });
+  assert.deepEqual(await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', job.id).execute(), []);
 });
 
 test('pending summaries omit citations from stale evidence, stale revisions and missing input members', async () => {
@@ -120,7 +161,7 @@ test('pending summaries omit citations from stale evidence, stale revisions and 
 });
 
 test('unknown or stale manual evidence is not a wildcard; exact evidence and ongoing locks protect', async () => {
-  const { product } = await fixture();
+  const { product } = await technicalFailure();
   const decision = {
     product_id: product.id, action: 'exclude' as const, reason: 'historical review', source: 'direct_sql' as const,
     content_version: product.content_version, content_fingerprint: product.content_fingerprint,
@@ -140,8 +181,8 @@ test('unknown or stale manual evidence is not a wildcard; exact evidence and ong
   assert.equal((await retry()).total, 0);
 });
 
-test('unreviewed historical human membership does not hide unmatched work', async () => {
-  const { product, job } = await fixture();
+test('unreviewed historical human membership does not hide retryable technical work', async () => {
+  const { product, job } = await technicalFailure();
   const standard = await db.insertInto('standard_products').values({ name: 'Historical target', verification_state: 'quarantined' })
     .returning('id').executeTakeFirstOrThrow();
   await db.transaction().execute(async tx => {
@@ -158,7 +199,7 @@ test('unreviewed historical human membership does not hide unmatched work', asyn
 });
 
 test('old active jobs cannot suppress retry, while current active jobs do', async () => {
-  const { product } = await fixture();
+  const { product } = await technicalFailure();
   const { job } = await fixture(product);
   await db.deleteFrom('ai_standardization_results').where('job_id', '=', job.id).execute();
   await db.updateTable('ai_jobs').set({ status: 'queued', pipeline_versions: jsonb({}) }).where('id', '=', job.id).execute();
@@ -177,7 +218,7 @@ test('model refusals cannot create a cannot-process outcome', async () => {
 });
 
 test('old prompt, rule or snapshot results cannot block processing or enter current retry and summaries', async () => {
-  const { product, job } = await fixture();
+  const { product, job } = await technicalFailure();
   const current = () => db.selectFrom('products as p').select(hasCurrentStandardizationResult().as('current'))
     .where('p.id', '=', product.id).executeTakeFirstOrThrow();
   assert.equal((await current()).current, true);
@@ -198,8 +239,8 @@ test('old prompt, rule or snapshot results cannot block processing or enter curr
 });
 
 test('a newer obsolete result cannot hide a current retry or pending item', async () => {
-  const { product, job } = await fixture();
-  const newer = await fixture(product);
+  const { product, job } = await technicalFailure();
+  const newer = await technicalFailure(product);
   await db.updateTable('ai_jobs').set({ pipeline_versions: jsonb({}), status: 'queued' }).where('id', '=', newer.job.id).execute();
   assert.equal((await retry()).items[0]?.sourceJobId, String(job.id));
   await db.updateTable('ai_jobs').set({ status: 'queued' }).where('id', '=', job.id).execute();
@@ -289,12 +330,12 @@ test('pending summaries protect only known current manual evidence or an explici
   const summary = async () => (await adminRepository.listProducts({ pending: true, shopId: product.shop_id, limit: 10 }))
     .items.find(item => item.id === product.id)?.processing_summary;
   await db.insertInto('product_standardization_decisions').values(decision).execute();
-  assert.equal((await summary())?.reasonCode, 'unmatched');
+  assert.equal((await summary())?.reasonCode, 'insufficient_source');
   await db.insertInto('product_standardization_decisions').values({ ...decision, evidence_known: true }).execute();
   assert.equal((await summary())?.reasonCode, 'manual_decision_preserved');
   assert.equal(Object.hasOwn((await summary())!, 'evidence'), false);
   await db.insertInto('product_standardization_decisions').values({ ...decision, evidence_known: true, content_fingerprint: 'stale' }).execute();
-  assert.equal((await summary())?.reasonCode, 'unmatched');
+  assert.equal((await summary())?.reasonCode, 'insufficient_source');
   await db.updateTable('products').set({ standardization_locked: true }).where('id', '=', product.id).execute();
   assert.equal((await summary())?.reasonCode, 'manual_decision_preserved');
   assert.equal(Object.hasOwn((await summary())!, 'evidence'), false);

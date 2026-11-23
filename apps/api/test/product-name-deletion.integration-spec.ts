@@ -1,4 +1,5 @@
 import { tagRows } from './tag-fixtures.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -138,6 +139,7 @@ test('deletion cancels queued and running claims without requeueing unchanged re
 
 test('crawler restoration does not restart an interrupted execution with unchanged evidence', async () => {
   const item = await seed('爬虫恢复未处理商品');
+  await seedUsableOffers(db, [item.id]);
   await db.updateTable('products').set({ content_fingerprint: productContentFingerprint(item) }).where('id', '=', item.id).execute();
   const ai = new AiRepository(db);
   const original = await ai.createJob({ model: 'mock', productIds: [item.id], jobType: 'incremental' });
@@ -154,6 +156,7 @@ test('crawler restoration does not restart an interrupted execution with unchang
 for (const path of ['single', 'batch', 'crawler'] as const) {
   test(`${path} restoration preserves completed identity and tag coverage for unchanged evidence`, async () => {
     const item = await seed(`ChatGPT Plus restore ${path}`, 'monthly');
+    await seedUsableOffers(db, [item.id]);
     const fingerprint = productContentFingerprint(item);
     await db.updateTable('products').set({ content_fingerprint: fingerprint }).where('id', '=', item.id).execute();
     const ai = new AiRepository(db);

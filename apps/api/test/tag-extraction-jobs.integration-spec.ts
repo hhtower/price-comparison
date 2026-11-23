@@ -1,4 +1,5 @@
 import { tagRows } from './tag-fixtures.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
@@ -38,6 +39,7 @@ async function fixture(count = 1) {
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   const products = [];
   for (let offset=0;offset<count;offset+=500) products.push(...await db.insertInto('products').values(Array.from({length:Math.min(500,count-offset)},(_,i)=>({ shop_id: shop.id, external_id: String(offset+i), name: payload.name, spec: payload.spec, source_category: '', source_data: jsonb({}), normalized_key: `tag-${Math.random()}`, url: 'https://test.invalid/p', content_version: 1n, content_fingerprint: fingerprint }))).returningAll().execute());
+  await seedUsableOffers(db, products.map(product => product.id));
   const job = await db.insertInto('ai_jobs').values({ total: BigInt(count), model: 'mock', job_type: 'tag_extraction', status: 'running', phase: 'standardizing', prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) }).returningAll().executeTakeFirstOrThrow();
   const inputId = products[0]!.id;
   await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: inputId, fingerprint, payload: jsonb(payload), content_version: 1n, input_bytes: 100n, estimated_tokens: 100n }).execute();
@@ -438,6 +440,7 @@ test('preview rejects version, protection and shop expansion drift and reports m
 });
 test('automatic parent provenance and exact selected tag retry do not invoke identity work',async()=>{
  const f=await fixture(2);
+ await f.repo.cancelJob(f.job.id);
  const parent=await db.insertInto('ai_jobs').values({model:'mock',total:2n,status:'succeeded',job_type:'manual_full'}).returning('id').executeTakeFirstOrThrow();
  const auto=await db.transaction().execute(tx=>createTagJob(tx,{productIds:f.products.map(p=>p.id),model:'mock',parentIdentityJobId:parent.id}));
  assert.equal(auto.parent_identity_job_id,parent.id);

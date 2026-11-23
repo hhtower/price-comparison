@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseStandardizationProtocolResponse, standardizationProtocolSchema, StandardizationValidationError } from '../src/ai/ai.schemas.js';
 
 const evidence = [{ path: 'name', quote: 'ChatGPT Plus' }];
-const classifiedItem = { id: '101', standardProductId: '42', evidence };
+const classifiedItem = { id: '101', standardProductId: '42', nullReason: null, evidence };
 const input = { id: '101', candidateStandardProductIds: ['42'] };
 
 test('match-only schema requires one cited match or null per input and scopes IDs to each item', () => {
@@ -16,20 +16,20 @@ test('match-only schema requires one cited match or null per input and scopes ID
   assert.equal(matched.properties.id.const, '101');
   assert.deepEqual(matched.properties.standardProductId.enum, ['42', null]);
   assert.deepEqual(unmatched.properties.standardProductId.enum, [null]);
-  assert.deepEqual(matched.required, ['id', 'standardProductId', 'evidence']);
+  assert.deepEqual(matched.required, ['id', 'standardProductId', 'nullReason', 'evidence']);
   assert.equal(matched.additionalProperties, false);
   assert.equal(matched.properties.evidence.minItems, 1);
 });
 
 test('parses matched and unmatched decisions in input order without new identities or omissions', () => {
   const parsed = parseStandardizationProtocolResponse({ items: [
-    { id: '102', standardProductId: null, evidence }, classifiedItem,
+    { id: '102', standardProductId: null, nullReason: 'insufficient_source', evidence }, classifiedItem,
   ] }, [input, { id: '102', candidateStandardProductIds: [] }]);
   assert.deepEqual(Object.keys(parsed).sort(), ['items', 'missingIds']);
   assert.deepEqual(parsed.missingIds, []);
   assert.deepEqual(parsed.items.map(item => [item.id, item.status, item.identity, item.reasonCode]), [
     ['101', 'classified', { kind: 'existing', standardProductId: '42' }, null],
-    ['102', 'unclassified', undefined, 'unmatched'],
+    ['102', 'unclassified', undefined, 'insufficient_source'],
   ]);
   assert.ok(parsed.items.every(item => item.ruleIds.length === 0));
   assert.deepEqual(parsed.items.map(item => item.evidence), [evidence, evidence]);

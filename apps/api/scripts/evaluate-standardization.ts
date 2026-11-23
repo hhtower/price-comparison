@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { buildDeidentifiedReviewIndex, evaluateEvidenceReview } from '../src/standardization/review-evaluation.js';
 import { pipelineVersionSnapshot } from '../src/ai/pipeline-versions.js';
 import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
+import { parseStandardizationProtocolResponse, type ParsedStandardizationResponse } from '../src/ai/ai.schemas.js';
 import { evaluateStandardizationFlow } from '../src/standardization/flow-evaluation.js';
 import { standardizationFlowCatalog, standardizationFlowControls } from '../test/fixtures/standardization-flow-controls-20261008.js';
 
@@ -17,20 +18,27 @@ async function protocolSmoke() {
   const name = 'ChatGPT Plus 1 month';
   const evidence = [{ path: 'name', quote: name }];
   const request = { jobId: 1n, model: 'mock-offline', candidates: [{ id: '1', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [] }],
-    inputs: [{ productId: 1n, fingerprint: 'a'.repeat(64), payload: { id: '1', name }, candidateStandardProductIds: ['1'], previousDecision: { contentVersion: '0', evidence: 'Old plan' } }] };
+    inputs: [{ productId: 1n, fingerprint: 'a'.repeat(64), payload: { id: '1', name,
+      sourceData: { evidence: 'Eligibility link only; subscription not included.' } },
+    candidateStandardProductIds: ['1'], previousDecision: { contentVersion: '0', evidence: 'Old plan' } }] };
   let passed = 0;
-  const matched = { id: '1', standardProductId: '1', evidence };
+  const matched = { id: '1', standardProductId: '1', nullReason: null, evidence };
   const controls = [
-    { response: { items: [matched] }, status: 'classified' },
-    { response: { items: [{ ...matched, standardProductId: null }] }, status: 'unclassified' },
+    { response: { items: [matched] }, status: 'classified', reasonCode: null },
+    ...(['candidate_unavailable', 'insufficient_source'] as const).map(nullReason => ({
+      response: { items: [{ ...matched, standardProductId: null, nullReason }] }, status: 'unclassified', reasonCode: nullReason,
+    })),
+    { response: { items: [{ id: '1', standardProductId: null, evidence }] } },
+    { response: { items: [{ ...matched, standardProductId: null }] } },
+    { response: { items: [{ ...matched, nullReason: 'insufficient_source' }] } },
     { response: { items: [{ ...matched, standardProductId: '2' }] } },
     { response: { items: [{ ...matched, evidence: [{ path: 'historyContext.evidence', quote: 'Old plan' }] }] } },
     { response: { items: [{ ...matched, reason: 'Model explanation is not part of the protocol' }] } },
     { response: { items: [] } },
   ];
-  for (const control of controls) {
-    const body = JSON.stringify(control.response);
-    const call = createOpenAiModelCall({ getBatchRequest: async () => request } as never,
+  const makeCall = (response: unknown, proposals?: ParsedStandardizationResponse) => {
+    const body = JSON.stringify(response);
+    return createOpenAiModelCall({ getBatchRequest: async () => proposals ? { ...request, stage: 'review', proposals } : request } as never,
       { AI_BASE_URL: 'https://offline.invalid/v1', AI_API_KEY: 'mock-only', AI_MODEL: 'mock-offline' }, async (_url, init) => {
         mockRequests++;
         const sent = JSON.parse(String(init?.body));
@@ -41,10 +49,13 @@ async function protocolSmoke() {
           { choices: [{ delta: { content: body.slice(25) }, finish_reason: 'stop' }] },
         ].map(chunk => 'data: ' + JSON.stringify(chunk) + '\n\n').join('') + 'data: [DONE]\n\n');
       });
+  };
+  for (const control of controls) {
+    const call = makeCall(control.response);
     if (control.status) {
       const response = await call({ id: 1n }, new AbortController().signal);
       assert.equal(response.items[0]?.status, control.status);
-      assert.equal(response.items[0]?.reasonCode, control.status === 'classified' ? null : 'unmatched');
+      assert.equal(response.items[0]?.reasonCode, control.reasonCode);
       assert.deepEqual(response.items[0]?.evidence, evidence);
       assert.deepEqual(response.missingIds, []);
       assert.equal(Object.hasOwn(response, 'identities'), false);
@@ -57,7 +68,52 @@ async function protocolSmoke() {
     }
     passed++;
   }
-  return { mode: 'mock-contract-control', cases: controls.length, passed, mockRequests, providerRequests: 0, actualUsage: null, modelSemanticQuality: 'unknown' };
+  const inputs = [{ id: '1', candidateStandardProductIds: ['1'] }];
+  const proposedMatch = parseStandardizationProtocolResponse({ items: [matched] }, inputs);
+  const proposedNull = parseStandardizationProtocolResponse({
+    items: [{ ...matched, standardProductId: null, nullReason: 'candidate_unavailable' }],
+  }, inputs);
+  const approved = { id: '1', approved: true, code: null, evidence: [] };
+  const rejected = { id: '1', approved: false, code: 'identity_mismatch',
+    evidence: [{ path: 'sourceData.evidence', quote: 'subscription not included.' }] };
+  const reviewControls = [
+    { proposals: proposedMatch, item: approved, status: 'classified', reasonCode: null },
+    { proposals: proposedNull, item: approved, status: 'unclassified', reasonCode: 'candidate_unavailable' },
+    { proposals: proposedMatch, item: rejected, status: 'unclassified', reasonCode: 'review_rejected' },
+    { proposals: proposedNull, item: { ...rejected, code: 'supported_candidate', evidence },
+      status: 'unclassified', reasonCode: 'review_rejected' },
+    { proposals: proposedMatch, item: { id: '1', approved: true } },
+    { proposals: proposedMatch, item: { ...rejected, approved: true } },
+    { proposals: proposedMatch, item: { ...rejected, evidence: [] } },
+    { proposals: proposedMatch, item: { ...rejected, evidence: [{ path: 'sourceData.evidence', quote: 'Invented subscription guarantee' }] } },
+    { proposals: proposedMatch, item: { ...rejected, evidence: [{ path: 'historyContext.evidence', quote: 'Old plan' }] } },
+  ];
+  for (const control of reviewControls) {
+    const call = makeCall({ items: [control.item] }, control.proposals);
+    if (control.status) {
+      const response = await call({ id: 1n }, new AbortController().signal);
+      assert.equal(response.standardizationStage, 'review');
+      assert.equal(response.items[0]?.status, control.status);
+      assert.equal(response.items[0]?.reasonCode, control.reasonCode);
+      const original = control.proposals.items[0]!;
+      const { id: _id, ...feedback } = control.item;
+      assert.deepEqual(response.items[0]?.review, { ...feedback,
+        proposal: { standardProductId: original.identity?.standardProductId ?? null,
+          nullReason: original.identity ? null : original.reasonCode } });
+      assert.deepEqual(response.items[0]?.evidence, evidence);
+      assert.deepEqual(response.missingIds, []);
+    } else {
+      await assert.rejects(call({ id: 1n }, new AbortController().signal), (error: any) => {
+        assert.equal(error.retryClass, 'invalid_response');
+        assert.equal(error.requestOutcome, 'confirmed');
+        return true;
+      });
+    }
+    passed++;
+  }
+  return { mode: 'mock-contract-control', cases: controls.length + reviewControls.length,
+    generationCases: controls.length, reviewCases: reviewControls.length,
+    passed, mockRequests, providerRequests: 0, actualUsage: null, modelSemanticQuality: 'unknown' };
 }
 
 async function main() {
@@ -83,7 +139,7 @@ async function main() {
   const baseline = await readJson(path.join(root, 'apps/api/test/fixtures/standardization-quality.json'));
   const recorded = await readJson(path.join(root, 'apps/api/test/fixtures/standardization-recorded-responses.json'));
   const controls = await readJson(path.join(root, 'apps/api/test/fixtures/standardization-evidence-controls-20260927.json'));
-  const version = 'standardization-offline-regression-20260927-v1';
+  const version = 'standardization-offline-regression-20261123-v2';
   const evaluation = evaluateEvidenceReview({ version, samples: [
     ...baseline.samples.map((sample: any) => ({ ...sample, labelState: sample.id === 'missing-evidence' ? 'pending_evidence' : 'decidable' })), ...controls.samples,
   ] }, { ...recorded, version: 'synthetic-and-recorded-controls', fixtureVersion: version, outcomes: [...recorded.outcomes, ...controls.outcomes] });

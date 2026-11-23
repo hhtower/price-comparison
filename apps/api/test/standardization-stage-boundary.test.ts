@@ -10,7 +10,7 @@ const candidate = { id: '91', family: 'openai', product: 'chatgpt', tier: 'plus'
 
 test('match-only decisions and schema contain no identity creation or tag fields', () => {
   for (const standardProductId of ['91', null]) {
-    const parsed = parseStandardizationProtocolResponse({ items: [{ ...common, standardProductId }] }, inputs);
+    const parsed = parseStandardizationProtocolResponse({ items: [{ ...common, standardProductId, nullReason: standardProductId ? null : 'insufficient_source' }] }, inputs);
     assert.equal(parsed.items[0]?.status, standardProductId ? 'classified' : 'unclassified');
     assert.equal('tags' in parsed.items[0]!, false);
   }
@@ -21,7 +21,7 @@ test('match-only decisions and schema contain no identity creation or tag fields
 });
 
 test('first-stage validation returns only identity evidence', () => {
-  const parsed = parseStandardizationProtocolResponse({ items: [{ ...common, standardProductId: '91' }] }, inputs);
+  const parsed = parseStandardizationProtocolResponse({ items: [{ ...common, standardProductId: '91', nullReason: null }] }, inputs);
   const result = validateStandardizationEvidence(parsed, [{ ...inputs[0]!, payload: { name: 'ChatGPT Plus' } }], [candidate]);
   assert.equal(result.items[0]?.status, 'classified');
   assert.equal('tags' in result.items[0]!, false);

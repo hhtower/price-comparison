@@ -138,7 +138,7 @@ test('approved unified and legacy candidates pass citation boundaries without a 
     const inputs = [{ id: '1', payload, candidateStandardProductIds: [candidate.id] }];
     const evidence = [{ path: 'name', quote: name }];
     const parsed = parseStandardizationProtocolResponse({ items: [{
-      id: '1', standardProductId: candidate.id, evidence,
+      id: '1', standardProductId: candidate.id, nullReason: null, evidence,
     }] }, inputs);
     assert.equal(validateStandardizationEvidence(parsed, inputs, [candidate]), parsed, name);
     assert.equal(parsed.items[0]?.status, 'classified', name);

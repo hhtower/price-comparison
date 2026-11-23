@@ -30,6 +30,7 @@ export interface TagExtractionInput {
   description?: string | null;
   details?: unknown;
   warranty?: unknown;
+  originalText?: unknown;
 }
 
 const WARRANTY_TAG_NAMES = new Set(['subscription_warranty', 'usage_warranty', 'warranty_terms']);
@@ -109,7 +110,7 @@ export function projectTagInput(input: TagExtractionInput): TagExtractionInput {
     return value;
   };
   const projected: TagExtractionInput = { id: input.id, name: input.name };
-  for (const key of ['spec', 'category', 'description', 'details', 'warranty', 'evidence', 'sourceData'] as const) {
+  for (const key of ['spec', 'category', 'description', 'details', 'warranty', 'evidence', 'sourceData', 'originalText'] as const) {
     if (input[key] !== undefined && input[key] !== null) Object.assign(projected, { [key]: project(input[key]) });
   }
   return projected;

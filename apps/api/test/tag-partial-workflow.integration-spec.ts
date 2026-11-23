@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
@@ -52,6 +53,7 @@ async function fixture(kind: 'tag_extraction' | 'text_review' = 'tag_extraction'
     source_data: jsonb(evidence.sourceData), content_fingerprint: productContentFingerprint(evidence),
     normalized_key: 'partial', url: 'https://partial.invalid/product',
   }).returningAll().executeTakeFirstOrThrow();
+  await seedUsableOffers(db, [product.id]);
   const standard = await db.insertInto('standard_products').values({
     name: 'Free account', canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'free',
     verification_state: 'verified',

@@ -1,6 +1,7 @@
 import { buildCandidateSearchQuery, buildExtractionPayload, estimateInputSize, planAdaptiveBatches } from '../ai/adaptive-batching.js';
 import { tagValueKey } from '@price-comparison/catalog/purchase-attributes';
-import { parseStandardizationProtocolResponse, type StandardizationTag } from '../ai/ai.schemas.js';
+import { parseStandardizationProtocolResponse, type StandardizationNullReason,
+  type StandardizationReviewFeedback, type StandardizationTag } from '../ai/ai.schemas.js';
 import { validateStandardizationEvidence } from '../ai/standardization-evidence.js';
 import { parseStandardizationReviewResponse } from '../ai/standardization-review-request.js';
 import { validateReviewedTagExtractionDecision } from '../ai/tag-extraction-result.js';
@@ -19,7 +20,8 @@ export interface StandardizationFlowControl {
   readonly expectedTags?: FlowTagValues;
   readonly expectedReasonCode?: string;
   readonly proposalIdentity: Identity | null;
-  readonly mockMatchReview: { readonly approved: boolean };
+  readonly proposalNullReason?: StandardizationNullReason;
+  readonly mockMatchReview: StandardizationReviewFeedback;
   readonly proposalTags?: readonly Pick<StandardizationTag, 'name' | 'value'>[];
   readonly mockTagReview?: { readonly accepted: readonly boolean[]; readonly complete: boolean };
   readonly inputBudgetBytes?: number;
@@ -61,12 +63,14 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
     if (!control.mockMatchReview) throw new Error('Match controls require explicit mock review decisions');
     const input = { id: '1', candidateStandardProductIds: candidates.map(candidate => candidate.id), payload };
     const parsed = parseStandardizationProtocolResponse({ items: [
-      { id: input.id, standardProductId: proposedCandidate?.id ?? null, evidence },
+      { id: input.id, standardProductId: proposedCandidate?.id ?? null,
+        nullReason: proposedCandidate ? null : control.proposalNullReason, evidence },
     ] }, [input]);
     const validated = validateStandardizationEvidence(parsed, [input], candidates);
     const reviewedMatch = parseStandardizationReviewResponse(JSON.stringify({
       items: [{ id: input.id, ...control.mockMatchReview }],
-    }), validated);
+    }), validated, { model: 'mock-offline', candidates,
+      inputs: [{ productId: 1n, payload, candidateStandardProductIds: input.candidateStandardProductIds }] });
     const decision = reviewedMatch.items[0]!;
     const choice = decision.identity;
     const chosen = choice ? candidates.find(candidate => candidate.id === choice.standardProductId) : undefined;
@@ -114,8 +118,8 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
   const released = rows.filter(row => row.finalDisposition === 'release');
   const tagValuesArray = (value: string | readonly string[] | undefined): readonly string[] => value === undefined ? [] : typeof value === 'string' ? [value] : value;
   return {
-    version: 'standardization-flow-controls-20261119-v4', mode: 'synthetic-pure-function-controls',
-    purpose: 'Hand-reviewed candidate matches with synthetic proposals and explicit binary match/tag-review votes; not production or model accuracy.',
+    version: 'standardization-flow-controls-20261123-v5', mode: 'synthetic-pure-function-controls',
+    purpose: 'Hand-reviewed candidate matches with synthetic proposals, explicit null reasons, structured match feedback and tag-review votes; not production or model accuracy.',
     providerRequests: 0, actualUsage: null, metrics: evaluateStandardizationStages(rows),
     metricDefinitions: {
       modelProposalCorrectness: 'Correct observed model dispositions, identities and tags / observed model proposals; no observations means null.',
@@ -136,7 +140,7 @@ export function evaluateStandardizationFlow(controls: readonly StandardizationFl
     },
     limitations: [
       'No real model responses, provider usage, production distribution or production accuracy observed.',
-      'Match and tag semantics are supplied as explicit mock review votes; the program checks objective constraints only.',
+      'Match diagnostics, null reasons and tag semantics are supplied as explicit mock responses; the program checks objective constraints only.',
       'Candidate recall uses a small public-safe control catalog, not the production catalog or request-budget pruning.',
       'Final release means frozen pure-function validation only; no database, atomic publication, manual locks, outbox or retries exercised.',
       'Oversize control verifies full payload and batch-planner rejection under an explicit offline byte budget, not repository review routing.',

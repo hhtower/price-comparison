@@ -1,6 +1,7 @@
 import { buildCanonicalStandardKey } from './canonical-key.js';
 import { compactSearchText, extractCharacterNgrams, extractTokenTerms } from './text-features.js';
 import { catalogIdentityNames, catalogNameMatch } from '@price-comparison/catalog/catalog-search';
+import { candidateQuerySupplement } from './candidate-query-supplement.js';
 
 export interface CandidateDocument {
   readonly id: string;
@@ -28,7 +29,7 @@ export interface CandidateIndexOptions {
   readonly maxIndexBytes?: number;
 }
 
-export type CandidateRoute = 'canonical' | 'alias' | 'token' | 'ngram';
+export type CandidateRoute = 'canonical' | 'alias' | 'token' | 'ngram' | 'supplement';
 
 export interface CandidateMatch extends CandidateDocument {
   readonly score: number;
@@ -118,6 +119,8 @@ export function searchCandidateSource<Key>(
   if (query.canonicalKey) for (const key of source.canonical(query.canonicalKey)) add(key, 'canonical');
   for (const key of source.aliases(compactSearchText(query.text))) add(key, 'alias');
   for (const key of primaryAliases) add(key, 'alias');
+  const supplement = candidateQuerySupplement(query);
+  if (supplement) for (const key of source.canonical(supplement)) add(key, 'supplement');
 
   const visited = { tokens: new Set<string>(), ngrams: new Set<string>() };
   const scan = (index: 'tokens' | 'ngrams', features: Iterable<string>, route: CandidateRoute) => {
@@ -154,11 +157,12 @@ export function searchCandidateSource<Key>(
     const exactName = candidateDocumentNames(indexed.document).some(name => catalogNameMatch(name, primaryText) === 2);
     const exactDeclaredName = catalogNameMatch(indexed.document.displayName ?? '', primaryText) === 2;
     const exactAlias = primaryAliases.has(key) && indexed.aliases.includes(primaryKey);
-    if (!documentRoutes.has('canonical') && !documentRoutes.has('alias') && !exactName && !primaryMatch && !reliableTextMatch(query.text, indexed)) continue;
+    if (!documentRoutes.has('canonical') && !documentRoutes.has('alias') && !documentRoutes.has('supplement')
+      && !exactName && !primaryMatch && !reliableTextMatch(query.text, indexed)) continue;
     // Complete catalog names beat partial aliases; generated names remain search hints.
     priority.set(key, documentRoutes.has('canonical') && query.canonicalKeyConfidence !== 'heuristic' ? 9
       : exactAlias ? 8 : exactDeclaredName ? 7 : primaryAliases.has(key) ? 6 : exactName ? 5
-      : primaryMatch ? 3 : documentRoutes.has('canonical') ? 2 : documentRoutes.has('alias') ? 1 : 0);
+      : documentRoutes.has('supplement') ? 4 : primaryMatch ? 3 : documentRoutes.has('canonical') ? 2 : documentRoutes.has('alias') ? 1 : 0);
     primaryCoverage.set(key, [...primaryTokens.keys()].reduce((sum, term) =>
       sum + (indexed.tokenTerms?.has(term) ? 1 : 0), 0));
     relevant.push(key);
@@ -169,13 +173,23 @@ export function searchCandidateSource<Key>(
   if (relevant.length > limits.maxCompared) truncated = true;
   const heuristic = query.canonicalKeyConfidence === 'heuristic'
     ? relevant.find(key => routes.get(key)!.has('canonical')) : undefined;
-  // Preserve both signals when capacity permits; a heuristic never replaces the best title match.
-  const retainHint = <T>(items: T[], hint: T | undefined, limit: number): T[] => {
+  const hints = [relevant.find(key => routes.get(key)!.has('supplement')), heuristic];
+  // Preserve the strongest match; evidence supplements get spare slots before inferred identities.
+  const retainHints = <T>(items: T[], hints: readonly (T | undefined)[], limit: number): T[] => {
     const selected = items.slice(0, limit);
-    if (hint !== undefined && limit > 1 && !selected.includes(hint)) selected.splice(limit - 1, 1, hint);
+    const retained = new Set(selected.slice(0, 1));
+    for (const hint of hints) {
+      if (hint === undefined) continue;
+      if (!selected.includes(hint)) {
+        let position = selected.length - 1;
+        while (position > 0 && retained.has(selected[position]!)) position--;
+        if (position > 0) selected[position] = hint;
+      }
+      retained.add(hint);
+    }
     return selected;
   };
-  const compared = retainHint(relevant, heuristic, limits.maxCompared);
+  const compared = retainHints(relevant, hints, limits.maxCompared);
   const matches = compared.map(key => {
     const indexed = source.document(key);
     const documentRoutes = routes.get(key)!;
@@ -200,8 +214,8 @@ export function searchCandidateSource<Key>(
   });
   matches.sort((left, right) => right.score - left.score || compareIds(left.id, right.id));
   if (matches.length > limits.topK) truncated = true;
-  const hint = heuristic === undefined ? undefined : matches.find(match => match.id === source.document(heuristic).document.id);
-  return { candidates: retainHint(matches, hint, limits.topK), stats: { scanned, compared: compared.length, truncated,
+  const matchHints = hints.map(key => key === undefined ? undefined : matches.find(match => match.id === source.document(key).document.id));
+  return { candidates: retainHints(matches, matchHints, limits.topK), stats: { scanned, compared: compared.length, truncated,
     indexBytes: source.indexBytes, indexedCanonicalKeys: source.indexedCanonicalKeys, indexedAliases: source.indexedAliases } };
 }
 

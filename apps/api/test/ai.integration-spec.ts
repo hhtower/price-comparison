@@ -21,7 +21,7 @@ import { recordManualDecisions } from '../src/standardization/decision-history.j
 import { StandardizationRepository } from '../src/standardization/standardization.repository.js';
 import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import { validateReviewedTagExtractionDecision } from '../src/ai/tag-extraction-result.js';
-import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
+import { saveStandardizationThroughReview, seedUsableOffers } from './standardization-review-fixture.js';
 import { AdminRepository } from '../src/admin/admin.repository.js';
 
 describe('AI identity standardization publication', () => {
@@ -66,11 +66,13 @@ describe('AI identity standardization publication', () => {
   async function addProduct(shopId: bigint, name: string, spec = 'monthly', sourceData: Record<string, JsonValue> = { title: name, selected: spec }) {
     sequence += 1;
     const fingerprint = productContentFingerprint({ name, spec, sourceCategory: '', sourceData });
-    return database.insertInto('products').values({
+    const product = await database.insertInto('products').values({
       shop_id: shopId, external_id: `p-${sequence}`, name, spec, source_category: '', source_data: jsonb(sourceData),
       normalized_key: `product-${sequence}`, url: `https://product.invalid/${sequence}`, deleted_at: null,
       content_version: 1n, content_fingerprint: fingerprint, standardization_locked: false,
     }).returning(['id', 'content_version', 'content_fingerprint']).executeTakeFirstOrThrow();
+    await seedUsableOffers(database, [product.id]);
+    return product;
   }
 
   async function seedStandard(name: string, family: string, product: string, tier: string, aliases: string[] = []) {
@@ -82,7 +84,7 @@ describe('AI identity standardization publication', () => {
   }
 
   function classified(id: bigint, standardProductId = plusId, quote = 'ChatGPT Plus'): StandardizationDecision {
-    return parseStandardizationProtocolResponse({ items: [{ id: String(id), standardProductId: String(standardProductId),
+    return parseStandardizationProtocolResponse({ items: [{ id: String(id), standardProductId: String(standardProductId), nullReason: null,
       evidence: [{ path: 'name', quote }] }] }, [{ id: String(id), candidateStandardProductIds: [String(standardProductId)] }]).items[0]!;
   }
 
@@ -171,7 +173,7 @@ describe('AI identity standardization publication', () => {
       assert.deepEqual(sent.response_format, { type: 'json_object' });
       const input = JSON.parse(sent.messages[1].content).items[0];
       const content = JSON.stringify({ items: [{
-        id: input.id, standardProductId: String(plusId), evidence,
+        id: input.id, standardProductId: String(plusId), nullReason: null, evidence,
       }] });
       const fragments = [content.slice(0, 4), content.slice(4, -2), content.slice(-2)];
       return new Response(fragments.map((part, index) =>
@@ -217,7 +219,7 @@ describe('AI identity standardization publication', () => {
     const shop = await addShop(); const product = await addProduct(shop.id, 'ChatGPT Plus fenced response');
     const prepared = await createPreparedJob([product.id]);
     const content = '```json\n' + JSON.stringify({ items: [{
-      id: String(product.id), standardProductId: String(plusId), evidence: [{ path: 'name', quote: 'ChatGPT Plus' }],
+      id: String(product.id), standardProductId: String(plusId), nullReason: null, evidence: [{ path: 'name', quote: 'ChatGPT Plus' }],
     }] }) + '\n```';
     const call = createOpenAiModelCall(prepared.repository, {
       AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock',
@@ -480,7 +482,7 @@ describe('AI identity standardization publication', () => {
     const representative = request.inputs[0]!.productId;
     const evidence = [{ path: 'name', quote: 'gro普号(库存)' }];
     const parsed = parseStandardizationProtocolResponse({
-      items: [{ id: representative.toString(), standardProductId: String(standard.id), evidence }],
+      items: [{ id: representative.toString(), standardProductId: String(standard.id), nullReason: null, evidence }],
     }, [{ id: representative.toString(), candidateStandardProductIds: request.inputs[0]!.candidateStandardProductIds }]);
     await saveAndPublish(prepared, parsed);
     const members = await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', 'in', products).execute();
@@ -699,8 +701,8 @@ describe('AI identity standardization publication', () => {
     const first = await addProduct(shop.id, 'ChatGPT Plus audit first'), second = await addProduct(shop.id, 'ChatGPT Plus audit second');
     const prepared = await createPreparedJob([first.id, second.id]);
     const body = JSON.stringify({ items: [
-      { id: String(first.id), standardProductId: String(plusId), evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] },
-      { id: String(second.id), standardProductId: String(plusId), evidence: [] },
+      { id: String(first.id), standardProductId: String(plusId), nullReason: null, evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] },
+      { id: String(second.id), standardProductId: String(plusId), nullReason: null, evidence: [] },
     ] });
     const call = createOpenAiModelCall(prepared.repository, { AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock' },
       async () => new Response('data: ' + JSON.stringify({ choices: [{ delta: { content: body }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n'));
@@ -935,10 +937,13 @@ describe('AI identity standardization publication', () => {
     const first = await addProduct(shop.id, 'Unknown listing first');
     const second = await addProduct(shop.id, 'Unknown listing second');
     const prepared = await createPreparedJob([first.id, second.id]);
-    await saveAndPublish(prepared, {
-      missingIds: [],
-      items: prepared.job.inputs.map(input => ({ id: input.productId.toString(), status: 'unclassified', ruleIds: [], evidence: [{ path: 'name', quote: input.productId === first.id ? 'Unknown listing first' : 'Unknown listing second' }], reasonCode: 'unmatched', reason: '未匹配到已准入标准商品' })),
-    });
+    const request = await prepared.repository.getBatchRequest(prepared.batchId);
+    await saveAndPublish(prepared, parseStandardizationProtocolResponse({
+      items: prepared.job.inputs.map(input => ({
+        id: input.productId.toString(), standardProductId: null, nullReason: 'insufficient_source',
+        evidence: [{ path: 'name', quote: input.productId === first.id ? 'Unknown listing first' : 'Unknown listing second' }],
+      })),
+    }, request.inputs.map(input => ({ id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds }))));
     const page = await prepared.repository.listJobResults({ jobId: prepared.job.id, limit: 1 });
     assert.deepEqual(page.items.map(item => item.productId), [first.id.toString()]);
     assert.equal(page.nextCursor, first.id.toString());
@@ -959,7 +964,7 @@ describe('AI identity standardization publication', () => {
         ?? { id: await seedStandard('ChatGPT ' + tier, 'openai', 'chatgpt', tier) };
       const prepared = await createPreparedJob([source.id], true, [target.id]);
       const evidence = [{ path: 'name', quote: name }];
-      const response = JSON.stringify({ items: [{ id: String(source.id), standardProductId: String(target.id), evidence }] });
+      const response = JSON.stringify({ items: [{ id: String(source.id), standardProductId: String(target.id), nullReason: null, evidence }] });
       const call = createOpenAiModelCall(prepared.repository, { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock-only', AI_MODEL: 'mock' },
         async (_url, init) => {
           assert.equal(JSON.parse(String(init?.body)).stream, true);

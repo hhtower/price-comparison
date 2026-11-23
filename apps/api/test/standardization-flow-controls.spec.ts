@@ -18,8 +18,10 @@ for (const control of standardizationFlowControls) {
   test('current public-safe flow control: ' + control.id, async () => {
     const evaluate = await loadFlow();
     const row = evaluate([control], standardizationFlowCatalog).controls[0];
-    assert.deepEqual(row.mockMatchReview, control.mockMatchReview);
-    assert.equal(row.protocolReasonCode, control.proposalIdentity ? null : 'unmatched');
+    const { proposal, ...feedback } = row.mockMatchReview;
+    assert.deepEqual(feedback, control.mockMatchReview);
+    assert.equal(proposal.nullReason, control.proposalIdentity ? null : control.proposalNullReason);
+    assert.equal(row.protocolReasonCode, control.proposalIdentity ? null : control.proposalNullReason);
     assert.deepEqual(row.finalEvidence, [{ path: 'name', quote: control.name.normalize('NFKC') }], 'review retains literal frozen evidence');
     assert.equal(row.finalDisposition, control.expectedDisposition, 'actual final validator disposition');
     assert.deepEqual(row.finalTags, control.expectedTags ?? {}, 'mock review decisions pass through objective validation');
@@ -83,32 +85,78 @@ test('flow evaluation requires explicit mock votes and does not infer tag semant
   assert.equal(approved.metrics.modelSemanticQuality, 'unknown');
 });
 
-test('flow evaluation requires binary match review and never substitutes local semantic heuristics', async () => {
+test('flow evaluation requires structured match review and never substitutes local semantic heuristics', async () => {
   const evaluate = await loadFlow();
   const control = standardizationFlowControls.find(row => row.id === 'team-tool-not-subscription')!;
   assert.throws(() => evaluate([{ ...control, mockMatchReview: undefined }], standardizationFlowCatalog));
   assert.throws(() => evaluate([{ ...control, mockMatchReview: { approved: 'true' } }], standardizationFlowCatalog));
+  assert.throws(() => evaluate([{ ...control, mockMatchReview: { approved: true } }], standardizationFlowCatalog));
   const rejected = evaluate([control], standardizationFlowCatalog).controls[0];
   assert.equal(rejected.finalDisposition, 'review');
   assert.equal(rejected.finalReasonCode, 'review_rejected');
-  const approved = evaluate([{ ...control, mockMatchReview: { approved: true } }], standardizationFlowCatalog);
+  const approved = evaluate([{ ...control, mockMatchReview: { approved: true, code: null, evidence: [] } }], standardizationFlowCatalog);
   assert.equal(approved.controls[0].finalDisposition, 'release');
   assert.equal(approved.controls[0].matchesExpected, false);
   assert.equal(approved.metrics.finalErroneousRelease.value, 1);
 });
 
-test('flow evaluation keeps unmatched evidence without inventing a candidate or identity', async () => {
+test('flow evaluation keeps insufficient source evidence without inventing a candidate or identity', async () => {
   const evaluate = await loadFlow();
   const control = standardizationFlowControls.find(row => row.id === 'unknown-full-evidence')!;
   const row = evaluate([control], standardizationFlowCatalog).controls[0];
-  assert.equal(row.protocolReasonCode, 'unmatched');
-  assert.equal(row.finalReasonCode, 'unmatched');
+  assert.equal(row.protocolReasonCode, 'insufficient_source');
+  assert.equal(row.finalReasonCode, 'insufficient_source');
   assert.equal(row.finalIdentity, null);
   assert.deepEqual(row.finalEvidence, [{ path: 'name', quote: control.name }]);
 });
 
+test('flow migration preserves both explicit null reasons and the reviewed original proposal', async () => {
+  const evaluate = await loadFlow();
+  for (const proposalNullReason of ['candidate_unavailable', 'insufficient_source']) {
+    const control = {
+      id: 'offline-null', name: 'Unlisted plan', body: 'Only the stated offer is sold.', soldObject: 'Unlisted offer',
+      expectedIdentity: null, expectedDisposition: 'review', expectedReasonCode: proposalNullReason,
+      proposalIdentity: null, proposalNullReason, mockMatchReview: { approved: true, code: null, evidence: [] },
+    };
+    const row = evaluate([control], standardizationFlowCatalog).controls[0];
+    assert.equal(row.protocolReasonCode, proposalNullReason);
+    assert.equal(row.finalReasonCode, proposalNullReason);
+    assert.deepEqual(row.mockMatchReview.proposal, { standardProductId: null, nullReason: proposalNullReason });
+    assert.equal(row.matchesExpected, true);
+    assert.throws(() => evaluate([{ ...control, proposalNullReason: undefined }], standardizationFlowCatalog),
+      'the evaluator must not guess a missing model null reason');
+  }
+});
+
+test('flow migration retains decisive review evidence independently of original proposal evidence', async () => {
+  const evaluate = await loadFlow();
+  const control = {
+    id: 'offline-rejection', name: 'ChatGPT Team tool', body: 'Only a checkout tool; subscription is not included.',
+    soldObject: 'Checkout tool without subscription', expectedIdentity: null, expectedDisposition: 'review',
+    expectedReasonCode: 'review_rejected', proposalIdentity: { family: 'openai', product: 'chatgpt', tier: 'team' },
+    mockMatchReview: { approved: false, code: 'identity_mismatch',
+      evidence: [{ path: 'sourceData.evidence', quote: 'subscription is not included.' }] },
+  };
+  const row = evaluate([control], standardizationFlowCatalog).controls[0];
+  assert.deepEqual(row.mockMatchReview, { ...control.mockMatchReview,
+    proposal: { standardProductId: '90003', nullReason: null } });
+  assert.deepEqual(row.finalEvidence, [{ path: 'name', quote: 'ChatGPT Team tool' }]);
+  assert.equal(row.finalIdentity, null);
+  for (const citation of [
+    { path: 'sourceData.evidence', quote: 'Subscription included.' },
+    { path: 'historyContext.evidence', quote: 'subscription is not included.' },
+    { path: 'sourceData', quote: 'subscription is not included.' },
+  ]) {
+    assert.throws(() => evaluate([{ ...control, mockMatchReview: { ...control.mockMatchReview, evidence: [citation] } }],
+      standardizationFlowCatalog));
+  }
+});
+
 test('offline CLI reports current controls separately from historical mocked accuracy', () => {
-  const result = spawnSync(process.execPath, ['--import', 'tsx', 'apps/api/scripts/evaluate-standardization.ts'], { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, ['--import', 'tsx', 'apps/api/scripts/evaluate-standardization.ts'], {
+    encoding: 'utf8',
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !/DATABASE_URL|^PG|^AI_/u.test(key))),
+  });
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
   assert.ok(report.currentFlowControls, 'CLI must include current pure-function controls');
@@ -120,5 +168,6 @@ test('offline CLI reports current controls separately from historical mocked acc
   assert.match(report.metricRegression.purpose, /not production accuracy/u);
   assert.equal(report.mockProtocol.passed, report.mockProtocol.cases);
   assert.equal(report.mockProtocol.providerRequests, 0);
-  assert.ok(report.mockProtocol.cases >= 6, 'match, unmatched, schema, missing ID, candidate and citation controls');
+  assert.ok(report.mockProtocol.generationCases >= 8, 'match, both null reasons, schema, ID, candidate and citation controls');
+  assert.ok(report.mockProtocol.reviewCases >= 6, 'structured approvals, rejections, invalid feedback and citations');
 });

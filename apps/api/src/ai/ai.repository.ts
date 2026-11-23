@@ -52,6 +52,8 @@ import { readAiConcurrency } from './ai-concurrency.js';
 import { currentManualDecision, readRetryPool, retryPoolQuery } from './ai-retry-pool.js';
 import { hasActiveStandardizationWork, hasCurrentStandardizationResult, hasCurrentRelayExclusion, hasManualIsolation, hasPublishedAssignment, productProcessingDisposition } from './product-standardization-state.js';
 import { readAiTaskQueue, type TaskQueueFilter } from './ai-task-queue.js';
+import { hasUsableOffer } from './offer-eligibility.js';
+import { projectSemanticEvidence } from './evidence-projection.js';
 import type { ResponseDiagnostic } from './response-audit.js';
 export interface CreateJobInput { model: string; batchSize?: number; scopeShopId?: bigint | null; sourceFetchRunId?: bigint | null; productIds?: readonly bigint[]; jobType?: 'incremental' | 'manual_full'; triggerEventId?: bigint | null; sourceEvents?: readonly { productId: bigint; eventId: bigint }[]; priority?: number; }
 export interface CreatedJob extends Selectable<AiJobTable> { inputs: Array<{ productId: bigint; fingerprint: string }>; batches: Array<{ id: bigint; productIds: bigint[] }>; }
@@ -165,6 +167,7 @@ export class AiRepository {
       const rows = await tx.selectFrom('products as p').innerJoin('shops as s', 's.id', 'p.shop_id')
         .select(['p.id', 'p.name', 'p.spec', 'p.source_category', 'p.source_data'])
         .where('p.deleted_at', 'is', null).where('s.deleted_at', 'is', null).where('s.enabled', '=', true)
+        .where(hasUsableOffer())
         .where('p.standardization_locked', '=', false)
         .where(sql<boolean>`not ${currentManualDecision}`)
         .where(sql<boolean>`not ${hasPublishedAssignment()}`)
@@ -192,6 +195,7 @@ export class AiRepository {
         'shops.url as shop_url', 'shops.protocol as shop_protocol', 'shops.platform as shop_platform',
       ]).where('products.deleted_at', 'is', null)
         .where('shops.deleted_at', 'is', null).where('shops.enabled', '=', true)
+        .where(hasUsableOffer('products.id'))
         .$if(input.productIds !== undefined, q => input.productIds!.length ? q.where('products.id', 'in', input.productIds!) : q.where(sql<boolean>`false`))
         .$if(input.scopeShopId != null, (q) => q.where('products.shop_id', '=', input.scopeShopId!)).orderBy('products.id').forKeyShare('products').execute();
       let products = selectedProducts;
@@ -205,6 +209,7 @@ export class AiRepository {
           .select(['e.product_id', 'e.content_version', 'e.fingerprint'])
           .where('e.product_id', 'in', products.map(product => product.id))
           .whereRef('m.standardization_revision', '=', 'p.standardization_revision')
+          .where(sql<boolean>`m.reason_code is distinct from 'offer_unavailable'`)
           .where(sql<boolean>`j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb`)
           .execute();
         const registered = new Set(previous.map(row => `${row.product_id}:${row.content_version}:${row.fingerprint}`));
@@ -245,7 +250,7 @@ export class AiRepository {
       if (unique.length) {
         const sized = unique.map(({ product: p, members, fingerprint }) => {
           const payload = buildExtractionPayload({ id: p.id.toString(), name: p.name, sourceName: p.source_name, description: p.source_description || undefined, spec: p.spec, category: p.source_category, sourceData: p.source_data as JsonValue });
-          const size = estimateInputSize(payload);
+          const size = estimateInputSize(projectSemanticEvidence(payload));
           return { product: p, members, fingerprint, payload, ...size };
         });
         await tx.updateTable('ai_jobs').set({
@@ -296,6 +301,7 @@ export class AiRepository {
             join products current_product on current_product.id = previous_member.product_id
             where previous_job.id = ai_standardization_executions.job_id
               and previous_member.standardization_revision = current_product.standardization_revision
+              and previous_member.reason_code is distinct from 'offer_unavailable'
               and previous_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb)`)).execute();
         }
         for (const chunk of chunks(inputMembers.filter(member => relayIds.has(member.product_id)))) {
@@ -595,6 +601,16 @@ export class AiRepository {
       if (claim?.attempt !== undefined && batch.attempts !== claim.attempt) return 'stale_lease' as const;
       if (claim?.token !== undefined && batch.claim_token !== claim.token) return 'stale_lease' as const;
 
+      // Inventory changes must not erase an uncertain provider call and permit a resend.
+      const unresolved = batch.request_budget_used - batch.confirmed_requests - batch.unknown_requests;
+      if (batch.unknown_requests > 0) return 'request_outcome_unknown' as const;
+      if (unresolved > 0) {
+        await tx.updateTable('ai_job_batches').set({
+          unknown_requests: batch.unknown_requests + unresolved, status: 'failed', error_source: 'request_outcome_unknown',
+          error: 'request_outcome_unknown', claimed_by: null, claim_token: null, lease_until: null, finished_at: sql`now()`,
+        }).where('id', '=', batchId).execute();
+        return 'request_outcome_unknown' as const;
+      }
       const inputIds = (batch.product_ids as unknown as string[]).map(BigInt);
       if (isAttributeJobType(job.job_type) && inputIds.length) {
         const snapshots = await tx.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', located.job_id).where('input_id', 'in', inputIds).where('output', 'is', null).execute();
@@ -633,8 +649,10 @@ export class AiRepository {
         .innerJoin('shops as s', 's.id', 'p.shop_id')
         .select(['m.input_id', 'm.product_id'])
         .where('m.job_id', '=', located.job_id).where('m.input_id', 'in', inputIds)
+        .where(sql<boolean>`m.reason_code is distinct from 'offer_unavailable'`)
         .where(q => isAttributeJobType(job.job_type) ? q('m.output', 'is', null) : q.val(true))
         .where('p.deleted_at', 'is', null).where('s.deleted_at', 'is', null).where('s.enabled', '=', true)
+        .where(hasUsableOffer())
         .execute() : [];
       const activeInputIds = [...new Set(activeMembers.map(member => member.input_id.toString()))].map(BigInt);
       const activeProductCount = activeMembers.length;
@@ -642,39 +660,51 @@ export class AiRepository {
       const referenceInputSet = new Set(currentReference.inputs.map(input => input.id));
       const activeInputSet = new Set(activeInputIds.map(String));
       const referenceNeedsRefresh = activeInputIds.length !== inputIds.length
+        || activeProductCount !== Number(batch.product_count)
         || activeInputIds.some(id => !referenceInputSet.has(id.toString()));
       if (!activeInputIds.length || referenceNeedsRefresh) {
         const inactiveInputIds = inputIds.filter(id => !activeInputSet.has(id.toString()));
-        const inactiveMembers = inactiveInputIds.length ? await tx.selectFrom('ai_job_input_members')
+        const inactiveMembers = inputIds.length ? await tx.selectFrom('ai_job_input_members')
           .select(['input_id', 'product_id', 'content_version', 'fingerprint', 'standardization_revision'])
+          .select(sql<boolean>`not ${hasUsableOffer('ai_job_input_members.product_id')}`.as('offer_unavailable'))
           .where('job_id', '=', located.job_id)
-          .where('input_id', 'in', inactiveInputIds)
+          .where('input_id', 'in', inputIds)
+          .$if(activeMembers.length > 0, query => query.where('product_id', 'not in', activeMembers.map(member => member.product_id)))
           .where('status', 'not in', ['classified', 'unclassified', 'cancelled'])
           .execute() : [];
         if (inactiveMembers.length && isAttributeJobType(job.job_type)) {
-          for (const member of inactiveMembers) await tx.updateTable('ai_job_input_members').set({ status: 'classified', reason_code: 'source_unavailable', output: jsonb({ ...buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, [], { outcome: 'skipped', reasonCode: 'source_unavailable' }), versions: tagExtractionVersions(member, job.pipeline_versions) } as unknown as JsonValue) }).where('job_id', '=', located.job_id).where('product_id', '=', member.product_id).where('output', 'is', null).execute();
-          await tx.updateTable('ai_job_inputs').set({ status: 'succeeded', reason_code: 'source_unavailable' }).where('job_id', '=', located.job_id).where('input_id', 'in', inactiveInputIds).execute();
+          for (const member of inactiveMembers) {
+            const reasonCode = member.offer_unavailable ? 'offer_unavailable' : 'source_unavailable';
+            await tx.updateTable('ai_job_input_members').set({ status: 'classified', reason_code: reasonCode,
+              output: jsonb({ ...buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, [], { outcome: 'skipped', reasonCode }),
+                versions: tagExtractionVersions(member, job.pipeline_versions) } as unknown as JsonValue) })
+              .where('job_id', '=', located.job_id).where('product_id', '=', member.product_id).where('output', 'is', null).execute();
+          }
+          if (inactiveInputIds.length) await tx.updateTable('ai_job_inputs').set({ status: 'succeeded', reason_code: 'source_unavailable' }).where('job_id', '=', located.job_id).where('input_id', 'in', inactiveInputIds).execute();
         }
         if (inactiveMembers.length && !isAttributeJobType(job.job_type)) {
           for (const member of inactiveMembers) {
-            const reason = '商品或所属商铺已删除或停用，跳过模型判断';
+            const reason = member.offer_unavailable
+              ? '最新报价缺货、过期或不可用，等待报价恢复后再处理，未调用模型'
+              : '商品或所属商铺已删除或停用，跳过模型判断';
+            const reasonCode = member.offer_unavailable ? 'offer_unavailable' : 'source_changed';
             await tx.insertInto('ai_standardization_results').values({
               job_id: located.job_id, product_id: member.product_id, batch_id: batchId, input_id: member.input_id,
               content_version: member.content_version, fingerprint: member.fingerprint, status: 'unclassified',
-              standard_product_id: null, tags: jsonb([]), evidence: jsonb([]), reason_code: 'source_changed', reason,
-              decision: jsonb({ id: member.input_id.toString(), status: 'unclassified', ruleIds: [], evidence: [], reasonCode: 'source_changed', reason }),
+              standard_product_id: null, tags: jsonb([]), evidence: jsonb([]), reason_code: reasonCode, reason,
+              decision: jsonb({ id: member.input_id.toString(), status: 'unclassified', ruleIds: [], evidence: [], reasonCode, reason }),
               current_assignment_preserved: true, published_at: sql`now()`,
             }).onConflict(conflict => conflict.columns(['job_id', 'product_id']).doUpdateSet({
               batch_id: batchId, input_id: member.input_id, content_version: member.content_version, fingerprint: member.fingerprint,
-              status: 'unclassified', standard_product_id: null, tags: jsonb([]), evidence: jsonb([]), reason_code: 'source_changed', reason,
+              status: 'unclassified', standard_product_id: null, tags: jsonb([]), evidence: jsonb([]), reason_code: reasonCode, reason,
               current_assignment_preserved: true, published_at: sql`now()`,
             })).execute();
-            await tx.updateTable('ai_job_input_members').set({ status: 'unclassified', reason_code: 'source_changed' })
+            await tx.updateTable('ai_job_input_members').set({ status: 'unclassified', reason_code: reasonCode })
               .where('job_id', '=', located.job_id).where('product_id', '=', member.product_id).execute();
             await tx.updateTable('ai_standardization_executions').set({ status: 'completed', completed_at: sql`now()` })
               .where('job_id', '=', located.job_id).where('product_id', '=', member.product_id).execute();
           }
-          await tx.updateTable('ai_job_inputs').set({ status: 'succeeded', reason_code: 'source_changed' })
+          if (inactiveInputIds.length) await tx.updateTable('ai_job_inputs').set({ status: 'succeeded', reason_code: 'source_changed' })
             .where('job_id', '=', located.job_id).where('input_id', 'in', inactiveInputIds).execute();
         }
         if (!activeInputIds.length) {
@@ -703,15 +733,6 @@ export class AiRepository {
           request_estimate: missingReferenceInput || batch.request_estimate === null ? null : jsonb(batch.request_estimate as JsonValue),
         }).where('id', '=', batchId).execute();
         return 'refresh' as const;
-      }
-      const unresolved = batch.request_budget_used - batch.confirmed_requests - batch.unknown_requests;
-      if (batch.unknown_requests > 0) return 'request_outcome_unknown' as const;
-      if (unresolved > 0) {
-        await tx.updateTable('ai_job_batches').set({
-          unknown_requests: batch.unknown_requests + unresolved, status: 'failed', error_source: 'request_outcome_unknown',
-          error: 'request_outcome_unknown', claimed_by: null, claim_token: null, lease_until: null, finished_at: sql`now()`,
-        }).where('id', '=', batchId).execute();
-        return 'request_outcome_unknown' as const;
       }
       if (batch.request_budget_used >= batch.request_budget_limit) {
         await tx.updateTable('ai_job_batches').set({ status: 'failed', error_source: 'request_budget_exhausted', error: 'request_budget_exhausted', claimed_by: null, claim_token: null, lease_until: null, finished_at: sql`now()` }).where('id', '=', batchId).execute();
@@ -858,6 +879,7 @@ export class AiRepository {
       .select(['m.input_id', 'm.payload'])
       .where('m.job_id', '=', batch.job_id)
       .where('m.input_id', 'in', productIds)
+      .where(sql<boolean>`m.reason_code is distinct from 'offer_unavailable'`)
       .where('p.deleted_at', 'is', null)
       .where('s.deleted_at', 'is', null)
       .where('s.enabled', '=', true)
@@ -927,6 +949,7 @@ export class AiRepository {
       .innerJoin('shops as s', 's.id', 'p.shop_id')
       .select(['i.input_id', 'i.fingerprint', 'm.payload as payload'])
       .where('i.job_id', '=', batch.job_id).where('i.input_id', 'in', ids)
+      .where(sql<boolean>`m.reason_code is distinct from 'offer_unavailable'`)
       .where(eb => includeInactive ? eb.val(true) : eb.and([eb('p.deleted_at', 'is', null), eb('s.deleted_at', 'is', null), eb('s.enabled', '=', true)]))
       .orderBy('i.input_id').orderBy('m.product_id').execute();
     const inputs = [...new Map(inputRows.map(row => [row.input_id.toString(), row])).values()];
@@ -1276,7 +1299,8 @@ export class AiRepository {
       }
       if (stage === 'review') {
         if (!request.proposals || decision.items.some(item => isReviewableStandardizationDecision(item) && typeof item.review?.approved !== 'boolean')) throw new Error('standardization review votes are missing');
-        const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: decision.items.filter(item => item.review !== undefined).map(item => ({ id: item.id, approved: item.review!.approved })) }), request.proposals);
+        const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: decision.items.filter(item => item.review !== undefined)
+          .map(item => ({ id: item.id, approved: item.review!.approved, code: item.review!.code, evidence: item.review!.evidence })) }), request.proposals, request);
         const bounded = validateStandardizationEvidence(reviewed, request.inputs.map(input => ({ id: String(input.productId), payload: input.payload, candidateStandardProductIds: input.candidateStandardProductIds })), request.candidates);
         if (!isDeepStrictEqual({ items: decision.items, missingIds: decision.missingIds }, bounded)) throw new Error('standardization review changed its original proposals');
       }
@@ -1467,23 +1491,25 @@ export class AiRepository {
             assignment_source: 'ai', decision_version: located.job_id }).execute();
           visibleChange = true;
         }
-        const unmatched = status === 'unclassified' && reasonCode === 'unmatched' && decision.review?.approved === true;
+        const unmatched = status === 'unclassified' && (reasonCode === 'candidate_unavailable' || reasonCode === 'insufficient_source')
+          && decision.review?.approved === true;
         if (unmatched) {
           const removed = await tx.deleteFrom('standard_product_members')
             .where('product_id', '=', member.product_id).executeTakeFirst();
           visibleChange ||= removed.numDeletedRows > 0n;
         }
+        const displayEvidence = decision.review?.approved === false ? decision.review.evidence : decision.evidence;
         await tx.insertInto('ai_standardization_results').values({
           job_id: located.job_id, product_id: member.product_id, batch_id: batchId, input_id: member.input_id,
           content_version: member.content_version, fingerprint: member.fingerprint, status,
           standard_product_id: status === 'classified' ? standardProductId : null,
-          tags: jsonb([]), evidence: jsonb(decision.evidence as unknown as JsonValue),
+          tags: jsonb([]), evidence: jsonb(displayEvidence as unknown as JsonValue),
           reason_code: status === 'classified' ? null : reasonCode ?? 'invalid_response', reason,
           decision: jsonb(publishedDecision as unknown as JsonValue), current_assignment_preserved: status === 'unclassified' && !unmatched, published_at: sql`now()`,
         }).onConflict(conflict => conflict.columns(['job_id', 'product_id']).doUpdateSet({
           batch_id: batchId, input_id: member.input_id, content_version: member.content_version, fingerprint: member.fingerprint, status,
           standard_product_id: status === 'classified' ? standardProductId : null,
-          tags: jsonb([]), evidence: jsonb(decision.evidence as unknown as JsonValue),
+          tags: jsonb([]), evidence: jsonb(displayEvidence as unknown as JsonValue),
           reason_code: status === 'classified' ? null : reasonCode ?? 'invalid_response', reason,
           decision: jsonb(publishedDecision as unknown as JsonValue), current_assignment_preserved: status === 'unclassified' && !unmatched, published_at: sql`now()`,
         })).execute();

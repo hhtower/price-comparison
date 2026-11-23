@@ -16,7 +16,7 @@ function fixture(options: { stale?: boolean; missing?: boolean; review?: boolean
     pipeline_versions: options.stale ? {} : versions.PIPELINE_VERSIONS,
   };
   const unmatched = parseStandardizationProtocolResponse({ items: [
-    { id: '11', standardProductId: null, evidence: [{ path: 'name', quote: 'Frozen evidence' }] },
+    { id: '11', standardProductId: null, nullReason: 'insufficient_source', evidence: [{ path: 'name', quote: 'Frozen evidence' }] },
   ] }, [{ id: '11', candidateStandardProductIds: [] }]).items[0]!;
   class Driver extends DummyDriver {
     async acquireConnection(): Promise<any> {

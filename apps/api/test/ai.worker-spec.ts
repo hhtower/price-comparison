@@ -37,7 +37,7 @@ const request = {
 
 const citation = (quote: string) => ({ path: 'name', quote });
 const rawItem = (id: string, standardProductId: string | null) => ({
-  id, standardProductId,
+  id, standardProductId, nullReason: standardProductId ? null : 'insufficient_source',
   evidence: [citation(request.inputs.find(input => String(input.productId) === id)!.payload.name)],
 });
 const validResponse = {
@@ -253,7 +253,7 @@ test('assembles streamed chunks before JSON and business validation', async () =
   assert.equal(Object.hasOwn(result, 'identities'), false);
   assert.deepEqual(result.items[0]?.identity, { kind: 'existing', standardProductId: '91' });
   assert.equal(result.items[1]?.status, 'unclassified');
-  assert.equal(result.items[1]?.reasonCode, 'unmatched');
+  assert.equal(result.items[1]?.reasonCode, 'insufficient_source');
   assert.deepEqual(result.items[1]?.evidence, validResponse.items[1]!.evidence);
 });
 
@@ -623,11 +623,11 @@ test('goods and services without supplied catalog matches remain unmatched with 
     const call = createOpenAiModelCall({ getBatchRequest: async () => frozen } as never, {
       AI_BASE_URL: 'https://model.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock',
     }, async () => new Response('data: ' + JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ items: [
-      { id: '11', standardProductId: null, evidence },
+      { id: '11', standardProductId: null, nullReason: 'insufficient_source', evidence },
     ] }) }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n'));
     const result = await call(claimed(), new AbortController().signal);
     assert.equal(result.items[0]?.status, 'unclassified', name);
-    assert.equal(result.items[0]?.reasonCode, 'unmatched');
+    assert.equal(result.items[0]?.reasonCode, 'insufficient_source');
     assert.equal(result.items[0]?.identity, undefined);
     assert.deepEqual(result.items[0]?.evidence, evidence);
     assert.equal(Object.hasOwn(result, 'identities'), false);

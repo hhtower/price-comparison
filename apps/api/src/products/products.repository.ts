@@ -54,6 +54,7 @@ export interface FetchChangeSet {
   readonly changedProducts: readonly bigint[];
   readonly unchangedProducts: readonly bigint[];
   readonly quoteOnlyProducts: readonly bigint[];
+  readonly restockedProducts: readonly bigint[];
   readonly productIds: ReadonlyMap<string, bigint>;
 }
 
@@ -72,7 +73,7 @@ export class ProductsRepository {
     transaction: Kysely<DatabaseSchema>,
     rows: readonly FetchedProduct[],
   ): Promise<FetchChangeSet> {
-    if (rows.length === 0) return { changedProducts: [], unchangedProducts: [], quoteOnlyProducts: [], productIds: new Map() };
+    if (rows.length === 0) return { changedProducts: [], unchangedProducts: [], quoteOnlyProducts: [], restockedProducts: [], productIds: new Map() };
     const rowsByKey = new Map(rows.map(row => [productMapKey(row.shopId, row.externalId), row]));
     if (rowsByKey.size !== rows.length) throw new Error('duplicate product key in snapshot');
     const priorRows = await transaction.selectFrom('products').select('id')
@@ -94,15 +95,15 @@ export class ProductsRepository {
     const changedProducts: bigint[] = [];
     const unchangedProducts: bigint[] = [];
     const quoteOnlyProducts: bigint[] = [];
+    const restockedProducts: bigint[] = [];
     const invalidated: bigint[] = [];
     const existingIds = [...existing.values()].filter(row => !createdIds.has(row.id)).map(row => row.id);
-    const latestOffers = new Map<bigint, { price: string; stock_available: boolean }>();
+    const latestOffers = new Map<bigint, { price: string; stock_available: boolean; is_stale: boolean }>();
     for (let start = 0; start < existingIds.length; start += 500) {
       const offers = await transaction.selectFrom('offers')
-        .distinctOn('product_id').select(['product_id', 'price', 'stock_available'])
+        .distinctOn('product_id').select(['product_id', 'price', 'stock_available', 'is_stale'])
         .where('product_id', 'in', existingIds.slice(start, start + 500))
-        .where('is_stale', '=', false)
-        .orderBy('product_id').orderBy('captured_at', 'desc').execute();
+        .orderBy('product_id').orderBy('captured_at', 'desc').orderBy('id', 'desc').execute();
       offers.forEach(offer => latestOffers.set(offer.product_id, offer));
     }
     const updates: Array<{
@@ -123,6 +124,11 @@ export class ProductsRepository {
       } else {
         const changed = previous.content_fingerprint !== fingerprint;
         const current = latestOffers.get(id);
+        const wasAvailable = current && current.stock_available && !current.is_stale
+          && Number.isFinite(Number(current.price)) && Number(current.price) >= 0;
+        const nextPrice = row.price ?? current?.price;
+        if (!changed && !wasAvailable && (row.stockAvailable ?? current?.stock_available ?? false)
+          && nextPrice !== undefined && Number.isFinite(Number(nextPrice)) && Number(nextPrice) >= 0) restockedProducts.push(id);
         const quoteChanged = (row.price !== undefined || row.stockAvailable !== undefined)
           && (!current || (row.price !== undefined && String(current.price) !== String(row.price))
             || (row.stockAvailable !== undefined && current.stock_available !== row.stockAvailable));
@@ -162,7 +168,7 @@ export class ProductsRepository {
     await clearStandardizationData(transaction, invalidated);
     await propagateDeletedProductNames(transaction, orderedRows.map(row => row.name));
     await restoreCrawlerProducts(transaction, [...ids.values()]);
-    return { changedProducts, unchangedProducts, quoteOnlyProducts, productIds: ids };
+    return { changedProducts, unchangedProducts, quoteOnlyProducts, restockedProducts, productIds: ids };
   }
 
   async upsertBatch(input: readonly ProductUpsert[]): Promise<ReadonlyMap<string, bigint>> {

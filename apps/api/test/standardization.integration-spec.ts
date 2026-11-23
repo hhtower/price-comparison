@@ -14,18 +14,24 @@ test('match-only generation and review retain the frozen candidate ID and origin
   const candidates = [{ id: '91', displayName: 'ChatGPT Plus', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [],
     definition: 'ChatGPT Plus subscriptions and accounts; excludes other ChatGPT plans.' }];
   const parsed = parseStandardizationProtocolResponse({ items: [
-    { id: '11', standardProductId: '91', evidence: [{ path: 'name', quote: payloads[0]!.payload.name }] },
-    { id: '12', standardProductId: null, evidence: [{ path: 'name', quote: payloads[1]!.payload.name }] },
+    { id: '11', standardProductId: '91', nullReason: null, evidence: [{ path: 'name', quote: payloads[0]!.payload.name }] },
+    { id: '12', standardProductId: null, nullReason: 'insufficient_source', evidence: [{ path: 'name', quote: payloads[1]!.payload.name }] },
   ] }, inputs);
   const bounded = validateStandardizationEvidence(parsed, payloads.map((input, index) => ({
     ...input, candidateStandardProductIds: inputs[index]!.candidateStandardProductIds,
   })), candidates);
-  const reviewed = parseStandardizationReviewResponse('{"items":[{"id":"11","approved":true},{"id":"12","approved":true}]}', bounded);
+  const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: inputs.map(input => ({
+    id: input.id, approved: true, code: null, evidence: [],
+  })) }), bounded, {
+    model: 'mock', candidates, inputs: payloads.map((input, index) => ({
+      productId: BigInt(input.id), payload: input.payload, candidateStandardProductIds: inputs[index]!.candidateStandardProductIds,
+    })),
+  });
   assert.deepEqual(Object.keys(reviewed).sort(), ['items', 'missingIds']);
   assert.deepEqual(reviewed.missingIds, []);
   assert.deepEqual(reviewed.items[0]!.identity, { kind: 'existing', standardProductId: '91' });
   assert.equal(reviewed.items[1]!.identity, undefined);
-  assert.equal(reviewed.items[1]!.reasonCode, 'unmatched');
+  assert.equal(reviewed.items[1]!.reasonCode, 'insufficient_source');
   assert.deepEqual(reviewed.items.map(item => item.evidence), parsed.items.map(item => item.evidence));
   assert.ok(reviewed.items.every(item => item.review?.approved === true));
 });
@@ -35,8 +41,8 @@ test('old actions, unfrozen candidates and missing fields or IDs are technical p
   const evidence = [{ path: 'name', quote: 'ChatGPT Plus' }];
   for (const response of [
     { items: [{ id: '11', action: 'create_identity', identity: { family: 'openai', product: 'chatgpt', tier: 'plus' }, evidence }] },
-    { items: [{ id: '11', standardProductId: '92', evidence }] },
-    { items: [{ id: '11', standardProductId: null }] },
+    { items: [{ id: '11', standardProductId: '92', nullReason: null, evidence }] },
+    { items: [{ id: '11', standardProductId: null, nullReason: 'insufficient_source' }] },
     { items: [{ id: '11', evidence }] },
     { items: [] },
   ]) assert.throws(() => parseStandardizationProtocolResponse(response, inputs), StandardizationValidationError);

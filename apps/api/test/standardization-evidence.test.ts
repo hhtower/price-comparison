@@ -8,7 +8,7 @@ const inputs = [{ id: '1', candidateStandardProductIds: ['91'],
   payload: { name: 'ChatGPT Plus', spec: '期限: 1个月', sourceData: { price: 12, options: ['JSON交付'] } } }];
 const evidence = [{ path: 'name', quote: 'ChatGPT Plus' }];
 const response = (citations = evidence, standardProductId: string | null = '91') =>
-  parseStandardizationProtocolResponse({ items: [{ id: '1', standardProductId, evidence: citations }] }, inputs);
+  parseStandardizationProtocolResponse({ items: [{ id: '1', standardProductId, nullReason: standardProductId ? null : 'insufficient_source', evidence: citations }] }, inputs);
 
 test('boundary validates exact current scalar citations and returns the untouched decision', () => {
   const parsed = response([...evidence, { path: 'sourceData.price', quote: '12' },
@@ -30,7 +30,7 @@ test('missing, fabricated, foreign, normalized-only and non-scalar citations thr
       const parsed = response(evidence, standardProductId);
       parsed.items[0]!.evidence = citations;
       assert.throws(() => validateStandardizationEvidence(parsed, inputs, [candidate]), StandardizationValidationError);
-      assert.equal(parsed.items[0]!.reasonCode, standardProductId ? null : 'unmatched');
+      assert.equal(parsed.items[0]!.reasonCode, standardProductId ? null : 'insufficient_source');
     }
   }
 });
@@ -38,7 +38,7 @@ test('missing, fabricated, foreign, normalized-only and non-scalar citations thr
 test('one invalid sibling fails the whole batch without partial business results', () => {
   const batchInputs = [...inputs, { ...inputs[0]!, id: '2', payload: { ...inputs[0]!.payload, name: 'Claude Pro' } }];
   const parsed = parseStandardizationProtocolResponse({
-    items: ['1', '2'].map(id => ({ id, standardProductId: '91', evidence })),
+    items: ['1', '2'].map(id => ({ id, standardProductId: '91', nullReason: null, evidence })),
   }, batchInputs);
   assert.throws(() => validateStandardizationEvidence(parsed, batchInputs, [candidate]), (error: unknown) => {
     assert.ok(error instanceof StandardizationValidationError);
@@ -68,7 +68,7 @@ test('boundary checks complete frozen IDs, candidate membership and existing ide
 
 test('approved definitions are not reinterpreted by legacy identity policy', () => {
   const source = [{ id: '1', candidateStandardProductIds: ['91'], payload: { name: 'X Twitter 自助充值 30天卡密' } }];
-  const parsed = parseStandardizationProtocolResponse({ items: [{ id: '1', standardProductId: '91',
+  const parsed = parseStandardizationProtocolResponse({ items: [{ id: '1', standardProductId: '91', nullReason: null,
     evidence: [{ path: 'name', quote: source[0]!.payload.name }] }] }, source);
   assert.equal(validateStandardizationEvidence(parsed, source,
     [{ ...candidate, family: 'x', product: 'premium_membership', tier: 'premium_plus' }]), parsed);

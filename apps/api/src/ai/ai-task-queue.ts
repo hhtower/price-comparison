@@ -7,6 +7,7 @@ import { buildCursorPage, normalizePageRequest, type PageRequest } from '../comm
 import type { DatabaseSchema } from '../database/types.js';
 import { currentManualDecision, currentUnclassifiedQuery } from './ai-retry-pool.js';
 import { currentTagMemberSource } from './tag-extraction-jobs.js';
+import { hasUsableOffer } from './offer-eligibility.js';
 
 export interface TaskQueueFilter extends PageRequest { status?: string; jobType?: string; scopeShopId?: bigint; totalOnly?: boolean }
 const unfinished = sql<boolean>`j.status in ('queued', 'running', 'paused', 'ready')`;
@@ -16,6 +17,7 @@ const currentPending = (scopeShopId?: bigint) => sql<bigint>`(select count(disti
     and m.content_version = p.content_version
     and m.standardization_revision = p.standardization_revision and m.status in ('queued', 'processing')
     and p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked
+    and ${hasUsableOffer()}
     and not ${currentManualDecision}
     and not exists (select 1 from standard_product_members assignment
       join standard_products standard on standard.id = assignment.standard_product_id
@@ -75,7 +77,7 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
     input.totalOnly ? undefined : sql<{ count: bigint }>`select count(distinct o.product_id) as count from standardization_outbox o
       join product_change_events e on e.id = o.event_id join products p on p.id = o.product_id join shops s on s.id = p.shop_id
       where ${input.scopeShopId===undefined?sql`true`:sql`p.shop_id=${input.scopeShopId}`} and ${filter==='attention'?sql`false`:sql`true`} and o.status in ('queued', 'running') and e.content_version = p.content_version
-        and p.deleted_at is null and s.deleted_at is null and s.enabled = true`.execute(db),
+        and p.deleted_at is null and s.deleted_at is null and s.enabled = true and ${hasUsableOffer()}`.execute(db),
     input.totalOnly ? [] : currentUnclassifiedQuery(db).where(productScope).innerJoin('ai_jobs as j','j.id','r.job_id').where(typeScope).where(configCurrent).where(statusScope).select([reasonClass.as('reason'), sql<number>`count(*)::int`.as('count')]).groupBy(reasonClass).execute(),
   ]);
   const result = buildCursorPage(rows, page.limit);
@@ -117,7 +119,7 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
  )` : undefined;
  const currentSource=(member:'m'|'newer')=>sql<boolean>`${currentTagMemberSource(member, warrantyEligible)}
    ${input.jobType==='text_review'?sql`and ${sql.ref(`${member}.payload`)}->'shopText'->>'hash'=${capture}->>'hash'`:sql``}`;
- const eligible=sql<boolean>`p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked
+ const eligible=sql<boolean>`p.deleted_at is null and s.deleted_at is null and s.enabled and not p.standardization_locked and ${hasUsableOffer()}
    ${input.scopeShopId===undefined?sql``:sql`and p.shop_id=${input.scopeShopId}`}
    ${input.jobType==='text_review'?sql`and case when jsonb_typeof(${capture})='object' then
      ${capture}-array['unitId','name','description','hash']='{}'::jsonb

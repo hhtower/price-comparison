@@ -10,6 +10,7 @@ import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/type
 import { recordManualDecisions } from '../src/standardization/decision-history.js';
 import { hasActiveStandardizationWork, hasCurrentStandardizationResult, productStandardizationOutcome } from '../src/ai/product-standardization-state.js';
 import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 
 describe('global standard product review', () => {
   let db: Kysely<DatabaseSchema>;
@@ -33,7 +34,9 @@ describe('global standard product review', () => {
   });
   async function product(name: string, enabled = true) {
     const shop = await db.insertInto('shops').values({ name, enabled, platform: 'test', url: `https://${randomUUID()}.invalid` }).returning('id').executeTakeFirstOrThrow();
-    return db.insertInto('products').values({ shop_id: shop.id, external_id: randomUUID(), name, spec: '', source_category: '', source_data: jsonb({}), normalized_key: randomUUID(), url: '', content_version: 1n }).returningAll().executeTakeFirstOrThrow();
+    const row = await db.insertInto('products').values({ shop_id: shop.id, external_id: randomUUID(), name, spec: '', source_category: '', source_data: jsonb({}), normalized_key: randomUUID(), url: '', content_version: 1n }).returningAll().executeTakeFirstOrThrow();
+    await seedUsableOffers(db, [row.id]);
+    return row;
   }
   async function standard(name: string, verified = true) {
     return db.insertInto('standard_products').values({ name, platform: 'test', standard_key: null, verification_state: verified ? 'verified' : 'quarantined' }).returning('id').executeTakeFirstOrThrow();

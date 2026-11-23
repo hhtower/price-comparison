@@ -4,6 +4,7 @@ import { unknownRequestReason } from './request-outcome.js';
 import { hasActiveStandardizationWork, RETRYABLE_RESULT_REASONS } from './product-standardization-state.js';
 import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
 import { API_RELAY_EXCLUSION_CODE } from '../standardization/catalog-exclusion.js';
+import { hasUsableOffer } from './offer-eligibility.js';
 
 export const currentManualDecision = sql<boolean>`exists (
   select 1 from product_standardization_decisions d where d.product_id = p.id
@@ -56,6 +57,7 @@ export function currentUnclassifiedQuery(db: Kysely<DatabaseSchema>) {
 /** Current unmatched results and technical failures share the existing explicit retry controls. */
 export function retryPoolQuery(db: Kysely<DatabaseSchema>) {
   return currentUnclassifiedQuery(db)
+    .where(hasUsableOffer())
     .where('r.reason_code', 'in', RETRYABLE_RESULT_REASONS)
     .where(sql<boolean>`not ${hasActiveStandardizationWork}`);
 }

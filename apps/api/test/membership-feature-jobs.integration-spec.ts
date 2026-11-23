@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import { randomUUID } from 'node:crypto';
 import { after, before, beforeEach, test } from 'node:test';
 import { Kysely, PostgresDialect } from 'kysely';
@@ -55,6 +56,7 @@ async function fixture(count = 1, distinct = false, published = true) {
     ).returningAll().execute());
   }
   const ids = products.map(p => p.id);
+  await seedUsableOffers(db, ids);
   const standardId = published ? await assign(ids) : null;
   return { shop, products, ids, standardId };
 }

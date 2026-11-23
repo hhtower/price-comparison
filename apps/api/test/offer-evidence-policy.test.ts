@@ -15,7 +15,7 @@ test('generation, review and tag repair receive the same title-first evidence po
     { productId: 1n, payload: inputs[0]!, candidateStandardProductIds: [] },
   ] };
   const proposals = parseStandardizationProtocolResponse({ items: [
-    { id: '1', standardProductId: null, evidence: [{ path: 'name', quote: inputs[0]!.name }] },
+    { id: '1', standardProductId: null, nullReason: 'candidate_unavailable', evidence: [{ path: 'name', quote: inputs[0]!.name }] },
   ] }, [{ id: '1', candidateStandardProductIds: [] }]);
   const requests = [
     buildStandardizationRequest(request),

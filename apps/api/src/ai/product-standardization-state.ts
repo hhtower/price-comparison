@@ -8,6 +8,7 @@ export const RETRYABLE_RESULT_REASONS = ['unmatched', 'request_outcome_unknown',
 
 export function productProcessingDisposition(reasonCode: unknown): 'review_required' | 'retry_available' | 'pending' | 'handled' {
   if (reasonCode === API_RELAY_EXCLUSION_CODE) return 'handled';
+  if (reasonCode === 'candidate_unavailable' || reasonCode === 'insufficient_source') return 'review_required';
   if (reasonCode === 'identity_conflict' || reasonCode === 'publication_blocked' || reasonCode === 'review_rejected' || reasonCode === 'manual_decision_preserved' || reasonCode === 'input_too_large') return 'review_required';
   if (RETRYABLE_RESULT_REASONS.some(reason => reason === reasonCode)) return 'retry_available';
   return 'pending';
@@ -30,6 +31,7 @@ export interface ProductProcessingSummary {
 
 export function productProcessingSummary(state: ProductProcessingState): ProductProcessingSummary {
   const reason = state.reasonCode === 'manual_decision_preserved' ? state.manualReason || '保留当前证据版本的人工决定或持续锁定。'
+    : state.reasonCode === 'offer_unavailable' ? '最新报价缺货、过期或不可用，等待报价恢复后再处理。'
     : state.reasonCode === 'not_processed' ? '尚无模型处理结果。'
     : state.reasonCode === 'source_changed' ? '商品资料或人工归类已变化，历史处理结果已过期。'
     : state.reasonCode === 'unassigned' ? '模型已返回结果，但当前没有已发布的有效归属。'
@@ -39,7 +41,7 @@ export function productProcessingSummary(state: ProductProcessingState): Product
     reasonCode: state.reasonCode,
     processingDisposition: productProcessingDisposition(state.reasonCode),
     reason: reason.replace(/\s+/gu, ' ').trim().slice(0, 240),
-    ...(!['manual_decision_preserved', 'source_changed', 'not_processed'].includes(state.reasonCode)
+    ...(!['manual_decision_preserved', 'source_changed', 'not_processed', 'offer_unavailable'].includes(state.reasonCode)
       && Array.isArray(state.evidence) && state.evidence.length > 0 ? { evidence: state.evidence } : {}),
   };
 }
@@ -49,6 +51,7 @@ export function hasCurrentStandardizationResult(product = 'p') {
     join ai_job_input_members m on m.job_id = r.job_id and m.product_id = r.product_id
     join ai_jobs result_job on result_job.id = r.job_id
     where r.product_id = ${sql.ref(product + '.id')}
+      and r.reason_code is distinct from 'offer_unavailable'
       and result_job.prompt_version = ${PIPELINE_VERSIONS.prompt} and result_job.rule_version = ${STANDARDIZATION_POLICY_VERSION}
       and result_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
       and r.content_version = ${sql.ref(product + '.content_version')}

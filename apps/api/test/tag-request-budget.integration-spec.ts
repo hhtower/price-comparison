@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import { after, before, beforeEach, test, type TestContext } from 'node:test';
 import { Kysely, PostgresDialect } from 'kysely';
 import { Pool } from 'pg';
@@ -70,6 +71,7 @@ async function fixture(count = 1, fanout = false, textReview = false) {
       content_version: 1n, content_fingerprint: productContentFingerprint({ ...source, name, sourceData }),
     }).returning('id').executeTakeFirstOrThrow());
   }
+  await seedUsableOffers(db, products.map(product => product.id));
   const standard = await db.insertInto('standard_products').values({
     canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus', name: 'budget', verification_state: 'verified',
   }).returning('id').executeTakeFirstOrThrow();

@@ -11,11 +11,11 @@ import { MEMBERSHIP_POLICY_VERSION } from '@price-comparison/catalog/membership-
 import { MEMBERSHIP_FEATURE_PROMPT_VERSION, MEMBERSHIP_FEATURE_REVIEW_PROMPT_VERSION } from './membership-feature-request.js';
 import { PRODUCT_TEXT_REVIEW_PROMPT_VERSION } from './product-text-review-request.js';
 
-export const EVIDENCE_PROJECTION_VERSION = 'evidence-visible-text-20261007-v3';
-export const CANDIDATE_RETRIEVAL_VERSION = 'approved-definitions-20261121-v2';
+export const EVIDENCE_PROJECTION_VERSION = 'evidence-task-projections-20261123-v4';
+export const CANDIDATE_RETRIEVAL_VERSION = 'evidence-supplement-20261123-v3';
 export const EVIDENCE_VALIDATION_VERSION = 'match-only-boundary-20261119-v1';
 export const TAG_VALIDATION_VERSION = 'tag-explicit-warranty-20261117-v5';
-export const STANDARDIZATION_POLICY_VERSION = 'standardization-match-only-20261121-v3';
+export const STANDARDIZATION_POLICY_VERSION = 'standardization-evidence-review-20261123-v4';
 export const PIPELINE_VERSIONS = Object.freeze({
   contentFingerprint: 'name-description-spec-20261028-v1',
   prompt: STANDARDIZATION_PROMPT_VERSION, schema: STANDARDIZATION_SCHEMA_VERSION,
@@ -31,6 +31,7 @@ export const PIPELINE_VERSIONS = Object.freeze({
   membershipFeaturePrompt: MEMBERSHIP_FEATURE_PROMPT_VERSION,
   membershipFeatureReviewPrompt: MEMBERSHIP_FEATURE_REVIEW_PROMPT_VERSION,
   attributeOrder: 'standardization-first-20261112-v1',
+  offerEligibility: 'latest-available-quote-20261123-v1',
 });
 export function pipelineVersionSnapshot(model: string): JsonValue {
   return { ...PIPELINE_VERSIONS, requestedModel: model, applicationBuild: process.env.APP_BUILD_SHA ?? process.env.GIT_COMMIT ?? null };

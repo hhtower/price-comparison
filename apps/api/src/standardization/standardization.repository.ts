@@ -3,7 +3,9 @@ import { sql, type Kysely, type Selectable } from 'kysely';
 import { DATABASE } from '../database/database.providers.js';
 import type { DatabaseSchema, StandardizationOutboxTable } from '../database/types.js';
 import { AiRepository } from '../ai/ai.repository.js';
-import { recoverAbandonedStandardizationBatches, recoverStandardizationFinalization } from '../ai/standardization-finalizer.js';
+import { recoverAbandonedStandardizationBatches, recoverStandardizationFinalization, scheduleAttributeJobs } from '../ai/standardization-finalizer.js';
+import { hasUsableOffer } from '../ai/offer-eligibility.js';
+import { hasPublishedAssignment } from '../ai/product-standardization-state.js';
 import { cancelDeletedProductOutbox } from '../products/product-name-deletion.js';
 import { reconcileNameConsensus } from './name-consensus-repair.js';
 
@@ -53,6 +55,7 @@ export class StandardizationRepository {
           join products p on p.id = o.product_id
           join product_change_events e on e.id = o.event_id
           where p.deleted_at is null and o.available_at <= now()
+            and ${hasUsableOffer()}
             and (o.status = 'queued' or (o.status = 'running' and (o.lease_until is null or o.lease_until <= now())))
             and ${groupAvailable}
           group by p.shop_id
@@ -66,6 +69,7 @@ export class StandardizationRepository {
         select o.id, e.source_fetch_run_id from standardization_outbox o
         join product_change_events e on e.id = o.event_id join products p on p.id = o.product_id
         where p.shop_id = ${shopId} and p.deleted_at is null and o.available_at <= now()
+          and ${hasUsableOffer()}
           and (o.status = 'queued' or (o.status = 'running' and (o.lease_until is null or o.lease_until <= now())))
           and ${groupAvailable}
         order by o.id limit 1
@@ -79,6 +83,7 @@ export class StandardizationRepository {
           join product_change_events first_event on first_event.id = first_outbox.event_id
           join products p on p.id = o.product_id
           where p.shop_id = ${shopId} and p.deleted_at is null and o.available_at <= now()
+            and ${hasUsableOffer()}
             and (o.status = 'queued' or (o.status = 'running' and (o.lease_until is null or o.lease_until <= now())))
             and (e.source_fetch_run_id = first_event.source_fetch_run_id or (e.source_fetch_run_id is null and first_event.source_fetch_run_id is null and e.created_at = first_event.created_at))
           order by o.id for update of o
@@ -116,7 +121,7 @@ export class StandardizationRepository {
         .where('deleted_at', 'is', null).where('enabled', '=', true).orderBy('id').forShare().execute();
       const eligible = shops.length ? await tx.selectFrom('products').select(['id', 'content_fingerprint'])
         .where('id', 'in', candidates.map(row => row.product_id)).where('shop_id', 'in', shops.map(shop => shop.id))
-        .where('deleted_at', 'is', null).orderBy('id').forShare().execute() : [];
+        .where('deleted_at', 'is', null).where(hasUsableOffer('products.id')).orderBy('id').forShare().execute() : [];
       const rows = await claimQuery.where('id', 'in', candidates.map(row => row.id)).forUpdate().execute();
       input.signal?.throwIfAborted();
       const owned = rows.filter(row => row.attempts === claims.get(row.id)!.attempts && row.claim_token === claims.get(row.id)!.claim_token);
@@ -129,16 +134,21 @@ export class StandardizationRepository {
       }).where('id', 'in', unavailable.map(row => row.id)).execute();
       const active = owned.filter(row => eligibleIds.has(row.product_id));
       if (!active.length) return null;
-      const origins = await tx.selectFrom('product_change_events').select('source_fetch_run_id')
+      const origins = await tx.selectFrom('product_change_events').select(['product_id', 'source_fetch_run_id', 'event_type'])
         .where('id', 'in', active.map(row => row.event_id)).execute();
       const runIds = new Set(origins.map(row => row.source_fetch_run_id));
+      const restoredIds = origins.filter(origin => origin.event_type === 'restored').map(origin => origin.product_id);
+      const published = restoredIds.length ? await tx.selectFrom('products as p').select('p.id')
+        .where('p.id', 'in', restoredIds).where(hasPublishedAssignment()).execute() : [];
+      const publishedIds = new Set(published.map(product => product.id));
       const job = await this.ai.createJob({
-        model: process.env.AI_MODEL?.trim() ?? '', productIds: [...new Set(active.map(row => row.product_id))],
+        model: process.env.AI_MODEL?.trim() ?? '', productIds: [...new Set(active.map(row => row.product_id))].filter(id => !publishedIds.has(id)),
         scopeShopId: shops.length === 1 ? shops[0]!.id : null,
         sourceFetchRunId: origins.length === active.length && runIds.size === 1 ? origins[0]!.source_fetch_run_id : null,
         jobType: 'incremental', priority: input.priority, triggerEventId: active[0]!.event_id,
         sourceEvents: active.map(row => ({ productId: row.product_id, eventId: row.event_id })),
       }, tx);
+      if (restoredIds.length) await scheduleAttributeJobs(tx, job.id, process.env.AI_MODEL?.trim() ?? '', restoredIds);
       input.signal?.throwIfAborted();
       const ids = active.map(row => row.id);
       const acknowledged = await tx.updateTable('standardization_outbox').set({ status: 'succeeded', claimed_by: null, lease_until: null, claim_token: null, last_error: null })

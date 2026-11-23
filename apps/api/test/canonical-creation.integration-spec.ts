@@ -11,7 +11,7 @@ import { saveStandardizationThroughReview, seedMatchOnlyReviewFixture } from './
 import { DomainConflictError } from '../src/common/errors.js';
 import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
 import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
-import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
+import { parseStandardizationProtocolResponse, standardizationProposal } from '../src/ai/ai.schemas.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool;
 const schema = 'canonical_creation_' + randomUUID().replaceAll('-', '');
@@ -152,7 +152,8 @@ test('all-rejected decisions cannot publish from a tampered generation-stage ref
   const document = checkpoint.validated_decision as unknown as ParsedStandardizationResponse;
   assert.equal(document.items.length, 1);
   assert.equal(document.items[0]!.reasonCode, 'review_rejected');
-  assert.deepEqual(document.items[0]!.review, { approved: false });
+  assert.deepEqual(document.items[0]!.review, { approved: false, code: 'source_conflict',
+    evidence: fixture.proposals.items[0]!.evidence, proposal: standardizationProposal(fixture.proposals.items[0]!) });
   const units = await db.selectFrom('ai_publication_units').selectAll().where('batch_id', '=', batchId).execute();
   const memberships = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', fixture.products[0]!.id).execute();
   const before = await catalog();
@@ -267,11 +268,11 @@ test('nonempty admitted catalog allows unmatched when one input retrieves zero c
   assert.deepEqual(request.candidates, []);
   assert.equal(await fixture.repo.reserveBatchRequest(fixture.batch.id, fixture.claim), 'reserved');
   fixture.proposals = parseStandardizationProtocolResponse({
-    items: fixture.raw.items.map(item => ({ ...item, standardProductId: null })),
+    items: fixture.raw.items.map(item => ({ ...item, standardProductId: null, nullReason: 'insufficient_source' })),
   }, [{ id: String(fixture.products[0]!.id), candidateStandardProductIds: [] }]);
   const batchId = await review(fixture);
   await publish(fixture, batchId);
   const result = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', fixture.job.id).executeTakeFirstOrThrow();
-  assert.equal(result.reason_code, 'unmatched');
+  assert.equal(result.reason_code, 'insufficient_source');
   assert.deepEqual(result.evidence, fixture.raw.items[0]!.evidence);
 });

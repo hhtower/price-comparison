@@ -18,7 +18,7 @@ import { recordManualDecisions } from '../src/standardization/decision-history.j
 import { validateStandardizationEvidence } from '../src/ai/standardization-evidence.js';
 import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
 import { CATALOG_ALIAS_VERSION } from '../src/standardization/catalog-aliases.js';
-import { saveStandardizationThroughReview } from './standardization-review-fixture.js';
+import { saveStandardizationThroughReview, seedUsableOffers } from './standardization-review-fixture.js';
 
 let db: Kysely<DatabaseSchema>;
 let admin: Pool;
@@ -54,7 +54,9 @@ async function seedStandard(name: string, family: string, product: string, tier:
 async function product(name: string) {
   const shop = await db.insertInto('shops').values({ name: 'correctness', platform: 'integration', url: `https://shop.invalid/${randomUUID()}`, enabled: true }).returning('id').executeTakeFirstOrThrow();
   const source = { name, spec: 'monthly', source_category: '', source_data: {} };
-  return db.insertInto('products').values({ ...source, source_data: jsonb({}), shop_id: shop.id, external_id: randomUUID(), normalized_key: randomUUID(), url: '', content_version: 1n, content_fingerprint: productContentFingerprint(source) }).returningAll().executeTakeFirstOrThrow();
+  const row = await db.insertInto('products').values({ ...source, source_data: jsonb({}), shop_id: shop.id, external_id: randomUUID(), normalized_key: randomUUID(), url: '', content_version: 1n, content_fingerprint: productContentFingerprint(source) }).returningAll().executeTakeFirstOrThrow();
+  await seedUsableOffers(db, [row.id]);
+  return row;
 }
 async function claim(batch: bigint, step: 'request' | 'publish', attempts: bigint) {
   const token = randomUUID();
@@ -253,7 +255,7 @@ test('review history grouping still reuses identical evidence without any manual
 });
 function decision(products: { id: bigint; name: string }[], standardProductId = plusId): ParsedStandardizationResponse {
   return parseStandardizationProtocolResponse({ items: products.map(product => ({
-    id: String(product.id), standardProductId: String(standardProductId), evidence: [{ path: 'name', quote: product.name }],
+    id: String(product.id), standardProductId: String(standardProductId), nullReason: null, evidence: [{ path: 'name', quote: product.name }],
   })) }, products.map(product => ({ id: String(product.id), candidateStandardProductIds: [String(standardProductId)] })));
 }
 async function save(task: Prepared, response: ParsedStandardizationResponse, approve?: (proposal: ParsedStandardizationResponse['items'][number]) => boolean) {

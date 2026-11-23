@@ -17,6 +17,8 @@ const text = (value: unknown, fieldPath: string, max = 1000, citationWhitespace 
 };
 export const STANDARDIZATION_REASON_CODES = [
   'unmatched',
+  'candidate_unavailable',
+  'insufficient_source',
   'input_too_large',
   'publication_too_large',
   'invalid_response',
@@ -58,6 +60,16 @@ export class StandardizationValidationError extends Error {
 }
 export interface EvidenceCitation { path: string; quote: string }
 export interface StandardizationTag { name: string; value: TagValue; evidence: EvidenceCitation[] }
+export const STANDARDIZATION_NULL_REASONS = ['candidate_unavailable', 'insufficient_source'] as const;
+export type StandardizationNullReason = typeof STANDARDIZATION_NULL_REASONS[number];
+export const STANDARDIZATION_REVIEW_CODES = ['identity_mismatch', 'source_conflict', 'insufficient_source', 'supported_candidate'] as const;
+export type StandardizationReviewCode = typeof STANDARDIZATION_REVIEW_CODES[number];
+export interface StandardizationProposal { standardProductId: string | null; nullReason: StandardizationNullReason | null }
+export interface StandardizationReviewFeedback {
+  approved: boolean;
+  code: StandardizationReviewCode | null;
+  evidence: EvidenceCitation[];
+}
 export type StandardizationIdentityChoice = { kind: 'existing'; standardProductId: string };
 export interface StandardizationDecision {
   id: string;
@@ -68,7 +80,7 @@ export interface StandardizationDecision {
   reasonCode: StandardizationReasonCode | null;
   reason: string;
   diagnostic?: StandardizationDiagnostic;
-  review?: { approved: boolean };
+  review?: StandardizationReviewFeedback & { proposal: StandardizationProposal };
 }
 export interface StandardizationResponseInput {
   readonly id: string;
@@ -79,11 +91,19 @@ export interface ParsedStandardizationResponse {
   missingIds: string[];
 }
 
-export const STANDARDIZATION_SCHEMA_VERSION = 'standardization-match-20261119-v1';
+export const STANDARDIZATION_SCHEMA_VERSION = 'standardization-match-20261123-v2';
 export type StandardizationProtocolInput = StandardizationResponseInput;
 const MATCHED_REASON = '匹配已准入标准商品';
-const UNMATCHED_REASON = '未匹配到已准入标准商品';
-const REVIEW_REJECTED_REASON = 'LLM 对该标准化提议判定为否';
+const NULL_REASONS: Record<StandardizationNullReason, string> = {
+  candidate_unavailable: '当前来源已明确售卖内容，但本项候选中没有适用标准商品；需检查候选覆盖',
+  insufficient_source: '当前来源不足以确定售卖商品或套餐；需补充商品来源信息',
+};
+export const STANDARDIZATION_REVIEW_REASONS: Record<StandardizationReviewCode, string> = {
+  identity_mismatch: '复核发现提议与实际售卖内容不符；请核对交付物、购买前提及候选定义',
+  source_conflict: '复核发现当前来源存在影响身份的冲突；请核对标题、选中规格及限制条件',
+  insufficient_source: '复核发现来源不足以支持该提议；请补充商品或套餐的直接证据',
+  supported_candidate: '复核发现当前来源支持已有候选；请重新执行匹配并核对候选定义',
+};
 
 const exactKeys = (value: Record<string, unknown>, keys: readonly string[], fieldPath = '$'): void => {
   const missing = keys.find(key => !Object.hasOwn(value, key));
@@ -101,16 +121,17 @@ export function standardizationProtocolSchema(inputs: readonly StandardizationPr
     ...(inputs.length ? { items: { anyOf: inputs.map(input => schemaObject({
       id: { const: input.id },
       standardProductId: { type: ['string', 'null'], enum: [...input.candidateStandardProductIds, null] },
+      nullReason: { enum: [null, ...STANDARDIZATION_NULL_REASONS] },
       evidence: { type: 'array', minItems: 1, maxItems: 50, items: { $ref: '#/$defs/citation' } },
     })) } } : {}),
   } }), $defs: { citation: schemaObject({ path: string(250), quote: string(1000) }) } };
 }
 
-function parseEvidence(value: unknown, fieldPath: string): EvidenceCitation[] {
+function parseEvidence(value: unknown, fieldPath: string, max = 50): EvidenceCitation[] {
   if (!Array.isArray(value)) throw schemaError('AI 证据必须为数组', 'invalid_type', fieldPath,
     { expectedType: 'array', actualType: valueType(value) });
-  if (!value.length || value.length > 50) throw schemaError('AI 证据数量必须为 1 至 50', 'evidence_count_invalid', fieldPath,
-    { actualCount: value.length, maxCount: 50 });
+  if (!value.length || value.length > max) throw schemaError(`AI 证据数量必须为 1 至 ${max}`, 'evidence_count_invalid', fieldPath,
+    { actualCount: value.length, maxCount: max });
   return value.map((entry, index) => {
     const entryPath = `${fieldPath}[${index}]`;
     if (!isRecord(entry)) throw schemaError('AI 证据无效', 'invalid_type', entryPath,
@@ -118,6 +139,36 @@ function parseEvidence(value: unknown, fieldPath: string): EvidenceCitation[] {
     exactKeys(entry, ['path', 'quote'], entryPath);
     return { path: text(entry.path, `${entryPath}.path`, 250), quote: text(entry.quote, `${entryPath}.quote`, 1000, true) };
   });
+}
+
+function parseProposal(standardProductId: unknown, nullReason: unknown, fieldPath: string): StandardizationProposal {
+  const id = standardProductId === null ? null : text(standardProductId, `${fieldPath}.standardProductId`, 30);
+  if (id !== null && (id !== id.trim() || nullReason !== null)
+    || id === null && !STANDARDIZATION_NULL_REASONS.includes(nullReason as StandardizationNullReason)) {
+    throw schemaError('标准化身份与空匹配原因矛盾', 'invalid_null_reason', fieldPath);
+  }
+  return { standardProductId: id, nullReason: nullReason as StandardizationNullReason | null };
+}
+
+export function standardizationProposal(item: StandardizationDecision): StandardizationProposal {
+  return parseProposal(item.identity?.standardProductId ?? null, item.identity ? null : item.reasonCode, 'proposal');
+}
+
+export function parseStandardizationReviewFeedback(value: unknown, fieldPath: string): StandardizationReviewFeedback {
+  if (!isRecord(value)) throw schemaError('复核反馈无效', 'invalid_review', fieldPath);
+  exactKeys(value, ['approved', 'code', 'evidence'], fieldPath);
+  if (typeof value.approved !== 'boolean') throw schemaError('复核结论必须为 boolean', 'invalid_review', `${fieldPath}.approved`);
+  if (value.approved) {
+    if (value.code !== null || !Array.isArray(value.evidence) || value.evidence.length) {
+      throw schemaError('通过复核不得带拒绝反馈', 'invalid_review', fieldPath);
+    }
+    return { approved: true, code: null, evidence: [] };
+  }
+  if (!STANDARDIZATION_REVIEW_CODES.includes(value.code as StandardizationReviewCode)) {
+    throw schemaError('拒绝复核必须提供已定义原因', 'invalid_review', `${fieldPath}.code`);
+  }
+  return { approved: false, code: value.code as StandardizationReviewCode,
+    evidence: parseEvidence(value.evidence, `${fieldPath}.evidence`, 5) };
 }
 
 export function parseStandardizationProtocolResponse(value: unknown, inputs: readonly StandardizationProtocolInput[]): ParsedStandardizationResponse {
@@ -138,14 +189,14 @@ export function parseStandardizationProtocolResponse(value: unknown, inputs: rea
     if (!input) throw schemaError('AI 响应包含未知 ID', 'item_id_unknown', `${itemPath}.id`);
     if (decisions.has(id)) throw schemaError('AI 响应包含重复 ID', 'duplicate_item_id', `${itemPath}.id`, { itemId: id });
     try {
-      exactKeys(raw, ['id', 'standardProductId', 'evidence'], itemPath);
-      const standardProductId = raw.standardProductId === null ? null : text(raw.standardProductId, `${itemPath}.standardProductId`, 30);
+      exactKeys(raw, ['id', 'standardProductId', 'nullReason', 'evidence'], itemPath);
+      const { standardProductId, nullReason } = parseProposal(raw.standardProductId, raw.nullReason, itemPath);
       if (standardProductId !== null && !input.candidateStandardProductIds.includes(standardProductId)) {
         throw schemaError('AI item 引用了未提供的本项候选 ID', 'unknown_candidate_id', `${itemPath}.standardProductId`);
       }
       const evidence = parseEvidence(raw.evidence, `${itemPath}.evidence`);
       decisions.set(id, standardProductId === null
-        ? { id, status: 'unclassified', ruleIds: [], evidence, reasonCode: 'unmatched', reason: UNMATCHED_REASON }
+        ? { id, status: 'unclassified', ruleIds: [], evidence, reasonCode: nullReason!, reason: NULL_REASONS[nullReason!] }
         : { id, status: 'classified', identity: { kind: 'existing', standardProductId },
           ruleIds: [], evidence, reasonCode: null, reason: MATCHED_REASON });
     } catch (error) {
@@ -187,13 +238,26 @@ export function assertStandardizationCheckpoint(value: unknown): asserts value i
         throw schemaError('标准化检查点匹配结果无效', 'invalid_decision', fieldPath);
       }
     } else if (item.status !== 'unclassified' || !(
-      item.reasonCode === 'unmatched' && item.reason === UNMATCHED_REASON
-      || item.reasonCode === 'review_rejected' && item.reason === REVIEW_REJECTED_REASON
+      STANDARDIZATION_NULL_REASONS.includes(item.reasonCode as StandardizationNullReason)
+        && item.reason === NULL_REASONS[item.reasonCode as StandardizationNullReason]
+      || item.reasonCode === 'review_rejected'
     )) throw schemaError('标准化检查点未匹配结果无效', 'invalid_decision', fieldPath);
     if (Object.hasOwn(item, 'review')) {
       if (!isRecord(item.review)) throw schemaError('标准化检查点复核无效', 'invalid_review', `${fieldPath}.review`);
-      exactKeys(item.review, ['approved'], `${fieldPath}.review`);
-      if (item.review.approved !== (item.reasonCode !== 'review_rejected')) {
+      const reviewPath = `${fieldPath}.review`;
+      exactKeys(item.review, ['approved', 'code', 'evidence', 'proposal'], reviewPath);
+      const feedback = parseStandardizationReviewFeedback({
+        approved: item.review.approved, code: item.review.code, evidence: item.review.evidence,
+      }, reviewPath);
+      if (!isRecord(item.review.proposal)) throw schemaError('复核缺少原始提议', 'invalid_review', `${reviewPath}.proposal`);
+      exactKeys(item.review.proposal, ['standardProductId', 'nullReason'], `${reviewPath}.proposal`);
+      const proposal = parseProposal(item.review.proposal.standardProductId, item.review.proposal.nullReason, `${reviewPath}.proposal`);
+      if (feedback.approved !== (item.reasonCode !== 'review_rejected')
+        || feedback.approved && (proposal.standardProductId !== (classified ? (item.identity as Record<string, unknown>).standardProductId : null)
+          || proposal.nullReason !== (classified ? null : item.reasonCode))
+        || !feedback.approved && item.reason !== STANDARDIZATION_REVIEW_REASONS[feedback.code!]
+        || feedback.code === 'identity_mismatch' && proposal.standardProductId === null
+        || feedback.code === 'supported_candidate' && proposal.standardProductId !== null) {
         throw schemaError('标准化检查点复核结论矛盾', 'invalid_review', `${fieldPath}.review`);
       }
     } else if (item.reasonCode === 'review_rejected') {

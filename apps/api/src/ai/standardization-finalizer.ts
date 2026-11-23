@@ -10,6 +10,7 @@ import { unknownRequestReason } from './request-outcome.js';
 import { readAiStandardizationFeatures } from './ai-standardization-features.js';
 import { assertCurrentPipeline, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
 import { readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
+import { hasUsableOffer } from './offer-eligibility.js';
 
 function chunks<T>(items: readonly T[], size: number): T[][] {
   const result: T[][] = [];
@@ -241,19 +242,20 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
   }
 }
 
-async function scheduleAttributeJobs(tx: Transaction<DatabaseSchema>, sourceJobId: bigint, model: string): Promise<void> {
-  const classifiedProducts = await tx.selectFrom('ai_standardization_results as r')
-    .innerJoin('products as p', 'p.id', 'r.product_id')
+export async function scheduleAttributeJobs(tx: Transaction<DatabaseSchema>, sourceJobId: bigint, model: string, restoredProductIds?: readonly bigint[]): Promise<void> {
+  const classifiedProducts = await tx.selectFrom('products as p')
     .innerJoin('shops as s', 's.id', 'p.shop_id')
     .select(['p.id', 'p.membership_features', 'p.content_fingerprint', 'p.content_version', 'p.standardization_revision',
       's.url as shop_url', 's.protocol as shop_protocol', 's.platform as shop_platform'])
-    .where('r.job_id', '=', sourceJobId)
-    .where('r.status', '=', 'classified')
-    .whereRef('r.content_version', '=', 'p.content_version')
-    .whereRef('r.fingerprint', '=', 'p.content_fingerprint')
+    .where(restoredProductIds
+      ? sql<boolean>`p.id in (${sql.join(restoredProductIds)})`
+      : sql<boolean>`exists (select 1 from ai_standardization_results r where r.product_id=p.id
+          and r.job_id=${sourceJobId} and r.status='classified'
+          and r.content_version=p.content_version and r.fingerprint=p.content_fingerprint)`)
     .where('p.deleted_at', 'is', null)
     .where('s.deleted_at', 'is', null)
     .where('s.enabled', '=', true)
+    .where(hasUsableOffer())
     .orderBy('p.id')
     .execute();
   if (!classifiedProducts.length) return;

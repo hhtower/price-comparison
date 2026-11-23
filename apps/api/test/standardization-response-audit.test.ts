@@ -11,7 +11,7 @@ const request = { jobId: 3n, model: 'mock', candidates: [
 ], inputs: [
   { productId: 11n, fingerprint: 'f'.repeat(64), payload: { name: 'ChatGPT Plus' }, candidateStandardProductIds: ['91'] },
 ] };
-const item = { id: '11', standardProductId: '91', evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] };
+const item = { id: '11', standardProductId: '91', nullReason: null, evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] };
 
 function setup(content: string, overrides: Record<string, unknown> = {}, finishReason: string | null = 'stop') {
   const outcomes: any[] = [], events: unknown[][] = [];

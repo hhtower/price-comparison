@@ -275,7 +275,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
         const parsed = generation?.parseResponse(response.content);
         phase = 'schema';
         const decisions = stage === 'review'
-          ? parseStandardizationReviewResponse(response.content, request.proposals!)
+          ? parseStandardizationReviewResponse(response.content, request.proposals!, request)
           : parseStandardizationProtocolResponse(parsed, generation!.protocolInputs);
         phase = 'evidence';
         result = stage === 'review' ? decisions : validateStandardizationEvidence(

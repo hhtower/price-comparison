@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import { after, before, describe, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
@@ -25,6 +26,10 @@ describe('standardization omissions and attribute missing-ID retry limits', () =
     const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path="${schema}",public`, max: 12 });
     database = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({ pool }) });
     await migrateToLatest(database);
+    await database.insertInto('standard_products').values({
+      name: 'Fixture subscription', canonical_family: 'fixture', canonical_product: 'subscription', canonical_tier: 'standard',
+      verification_state: 'verified', catalog_definition: 'Only the named fixture subscription; unrelated listings are not matches.',
+    }).execute();
   });
 
   after(async () => {
@@ -50,6 +55,7 @@ describe('standardization omissions and attribute missing-ID retry limits', () =
       }).returning('id').executeTakeFirstOrThrow();
       productIds.push(product.id);
     }
+    await seedUsableOffers(database, productIds);
     const job = await new AiRepository(database).createJob({ model: `missing-${sequence}`, productIds, batchSize });
     assert.equal(job.batches.length, batchSize === 1 ? 2 : 1);
     if (!attribute) return job;
@@ -78,7 +84,7 @@ describe('standardization omissions and attribute missing-ID retry limits', () =
       const first = request.inputs[0]!;
       const name = (first.payload as { name: string }).name;
       const content = JSON.stringify({ items: [{
-        id: String(first.productId), standardProductId: null, evidence: [{ path: 'name', quote: name }],
+        id: String(first.productId), standardProductId: null, nullReason: 'insufficient_source', evidence: [{ path: 'name', quote: name }],
       }] });
       return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
     });
@@ -91,7 +97,8 @@ describe('standardization omissions and attribute missing-ID retry limits', () =
       assert.equal(await worker.runOnce(), 1);
       await settled.promise;
       assert.equal(await worker.runOnce(), 0);
-      assert.equal(calls, 1);
+      assert.equal(calls, 1, JSON.stringify(await database.selectFrom('ai_job_batches').select(['error_source', 'error'])
+        .where('job_id', '=', job.id).execute()));
       const batches = await database.selectFrom('ai_job_batches')
         .select(['status', 'error_source', 'round', 'validated_decision', 'request_budget_used', 'confirmed_requests'])
         .where('job_id', '=', job.id).execute();
