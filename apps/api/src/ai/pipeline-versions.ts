@@ -1,5 +1,5 @@
 import { DomainConflictError } from '../common/errors.js';
-import type { JsonValue } from '../database/types.js';
+import type { AiJobType, JsonValue } from '../database/types.js';
 import { CATALOG_ALIAS_VERSION } from '../standardization/catalog-aliases.js';
 import { STANDARDIZATION_SCHEMA_VERSION } from './ai.schemas.js';
 import { STANDARDIZATION_PROMPT_VERSION } from './standardization-request.js';
@@ -10,6 +10,7 @@ import { STANDARDIZATION_REVIEW_PROMPT_VERSION } from './standardization-review-
 import { MEMBERSHIP_POLICY_VERSION } from '@price-comparison/catalog/membership-policy';
 import { MEMBERSHIP_FEATURE_PROMPT_VERSION, MEMBERSHIP_FEATURE_REVIEW_PROMPT_VERSION } from './membership-feature-request.js';
 import { PRODUCT_TEXT_REVIEW_PROMPT_VERSION } from './product-text-review-request.js';
+import { REVIEW_WORKFLOW_VERSION } from './review-workflow.js';
 
 export const EVIDENCE_PROJECTION_VERSION = 'evidence-task-projections-20261123-v4';
 export const CANDIDATE_RETRIEVAL_VERSION = 'evidence-supplement-20261123-v3';
@@ -33,7 +34,23 @@ export const PIPELINE_VERSIONS = Object.freeze({
   attributeOrder: 'standardization-first-20261112-v1',
   offerEligibility: 'latest-available-quote-20261123-v1',
   standardizationRepair: 'review-feedback-once-20261123-v1',
+  reviewWorkflow: REVIEW_WORKFLOW_VERSION,
 });
+/** Completed outputs depend on their business stage, not scheduling or other stages. */
+export function taskResultVersions(kind: AiJobType | 'standardization'): Record<string, string> {
+  if (kind === 'text_review') return { ...PIPELINE_VERSIONS };
+  const { contentFingerprint, projection, prompt, schema, retrieval, mapping, standardizationPolicy, validation,
+    standardizationReviewPrompt, tagPrompt, tagProtocol, tagReviewPrompt, tagWarrantyPrompt, tagValidation,
+    membershipPolicy, membershipFeaturePrompt, membershipFeatureReviewPrompt } = PIPELINE_VERSIONS;
+  if (kind === 'tag_extraction') return {
+    contentFingerprint, projection, tagPrompt, tagProtocol, tagReviewPrompt, tagWarrantyPrompt, tagValidation,
+  };
+  if (kind === 'membership_features') return {
+    contentFingerprint, projection, membershipPolicy, membershipFeaturePrompt, membershipFeatureReviewPrompt,
+  };
+  return { contentFingerprint, prompt, schema, projection, retrieval, mapping, standardizationPolicy, validation,
+    standardizationReviewPrompt };
+}
 export function pipelineVersionSnapshot(model: string): JsonValue {
   return { ...PIPELINE_VERSIONS, requestedModel: model, applicationBuild: process.env.APP_BUILD_SHA ?? process.env.GIT_COMMIT ?? null };
 }

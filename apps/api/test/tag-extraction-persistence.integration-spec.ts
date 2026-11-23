@@ -1,4 +1,5 @@
 import { tagRows } from './tag-fixtures.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect } from 'kysely';
@@ -30,9 +31,10 @@ async function fixture(count = 1) {
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   const products = [];
   for (let i=0;i<count;i++) products.push(await db.insertInto('products').values({ shop_id: shop.id, external_id: String(i), name: payload.name, spec: payload.spec, source_category: '', source_data: jsonb({}), normalized_key: `tag-${Math.random()}`, url: 'https://test.invalid/p', content_version: 1n, content_fingerprint: fingerprint }).returningAll().executeTakeFirstOrThrow());
+  await seedUsableOffers(db, products.map(product => product.id));
   const job = await db.insertInto('ai_jobs').values({ total: BigInt(count), model: 'mock', job_type: 'tag_extraction', status: 'running', phase: 'standardizing', prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('mock')) }).returningAll().executeTakeFirstOrThrow();
   const inputId = products[0]!.id;
-  await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: inputId, fingerprint, payload: jsonb(payload), content_version: 1n, input_bytes: 100n, estimated_tokens: 100n }).execute();
+  await db.insertInto('ai_job_inputs').values({ job_id: job.id, input_id: inputId, fingerprint, payload: jsonb(payload), status: 'queued', content_version: 1n, input_bytes: 100n, estimated_tokens: 100n }).execute();
   for (const p of products) await db.insertInto('ai_job_input_members').values({ job_id: job.id, input_id: inputId, product_id: p.id, fingerprint, payload: jsonb(payload), content_version: 1n, standardization_revision: p.standardization_revision }).execute();
   const batch = await db.insertInto('ai_job_batches').values({ job_id: job.id, batch_index: 0n, product_ids: jsonb([String(inputId)]), product_count: BigInt(count), status: 'running', claimed_by: 'test', claim_token: 'claim', attempts: 1n, lease_until: new Date(Date.now()+60000), step: 'request', request_budget_limit: 2 }).returningAll().executeTakeFirstOrThrow();
   // Non-membership tags retain their existing partial-update semantics.
@@ -42,6 +44,15 @@ async function fixture(count = 1) {
 }
 const claim = { workerId: 'test', attempt: 1n, token: 'claim' };
 async function outputs(jobId: bigint) { return db.selectFrom('ai_job_input_members').select(['output', 'reason_code']).where('job_id','=',jobId).orderBy('product_id').execute(); }
+
+async function reserveRemainingMember(f: Awaited<ReturnType<typeof fixture>>) {
+  await f.repo.prepareBatch(f.batch.id);
+  assert.equal(await f.repo.reserveBatchRequest(f.batch.id, claim), 'refresh');
+  assert.deepEqual(await db.selectFrom('ai_job_batches').select(['request_budget_used', 'product_count'])
+    .where('id', '=', f.batch.id).executeTakeFirstOrThrow(), { request_budget_used: 0, product_count: 1n });
+  await f.repo.prepareBatch(f.batch.id);
+  assert.equal(await f.repo.reserveBatchRequest(f.batch.id, claim), 'reserved');
+}
 
 for (const invalid of ['unreviewed', 'missing_votes', 'non_boolean_votes', 'missing_complete'] as const) {
   for (const step of ['request', 'publish'] as const) {
@@ -128,8 +139,7 @@ test('cancel records explicit outcome without overwriting committed output',asyn
 test('missing retry preserves committed skipped members of the same input',async()=>{
   const f=await fixture(2);
   await db.updateTable('products').set({standardization_locked:true}).where('id','=',f.products[1]!.id).execute();
-  await f.repo.prepareBatch(f.batch.id);
-  assert.equal(await f.repo.reserveBatchRequest(f.batch.id,claim),'reserved');
+  await reserveRemainingMember(f);
   const skipped=(await outputs(f.job.id))[1]!;
   await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[],{},claim);
   assert.deepEqual((await outputs(f.job.id))[1],skipped);
@@ -140,8 +150,7 @@ test('missing retry preserves committed skipped members of the same input',async
 test('cancel converts provisional missing while another first-round batch runs and retains committed skips',async()=>{
   const f=await fixture(2);
   await db.updateTable('products').set({standardization_locked:true}).where('id','=',f.products[1]!.id).execute();
-  await f.repo.prepareBatch(f.batch.id);
-  await f.repo.reserveBatchRequest(f.batch.id,claim);
+  await reserveRemainingMember(f);
   const skipped=(await outputs(f.job.id))[1]!;
   await db.insertInto('ai_job_batches').values({job_id:f.job.id,batch_index:1n,product_ids:jsonb([]),product_count:0n,status:'running'}).execute();
   await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[],{},claim);
@@ -159,8 +168,7 @@ test('cancel converts provisional missing while another first-round batch runs a
 test('reserve uses member input IDs and skips fully protected batches without spending',async()=>{
   const f=await fixture(2);
   await db.updateTable('products').set({deleted_at:new Date()}).where('id','=',f.inputId).execute();
-  await f.repo.prepareBatch(f.batch.id);
-  assert.equal(await f.repo.reserveBatchRequest(f.batch.id,claim),'reserved');
+  await reserveRemainingMember(f);
   assert.equal((await f.repo.getTagExtractionBatchInputs(f.batch.id)).inputs[0]!.productId,f.inputId);
   const protectedJob=await fixture();
   await db.updateTable('products').set({standardization_locked:true}).where('id','=',protectedJob.inputId).execute();

@@ -10,6 +10,7 @@ import { AiRepository } from '../src/ai/ai.repository.js';
 import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 
 describe('current evidence queue projection', () => {
   let db: Kysely<DatabaseSchema>, admin: Pool, schema: string, shopId: bigint;
@@ -28,6 +29,7 @@ describe('current evidence queue projection', () => {
   async function result(name: string, reason = 'provider_error') {
     const product = await db.insertInto('products').values({ shop_id: shopId, external_id: name, name, source_name: name, normalized_key: name, url: '', content_version: 1n,
       content_fingerprint: productContentFingerprint({ name, spec: '' }) }).returningAll().executeTakeFirstOrThrow();
+    await seedUsableOffers(db, [product.id]);
     const job = await db.insertInto('ai_jobs').values({
       status: 'succeeded', total: 1n, processed: 1n, unclassified: 1n, model: 'mock',
       prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION,

@@ -103,7 +103,8 @@ async function rerunFeatures(productId: bigint) {
 function reviewedFeature(task: Awaited<ReturnType<typeof featureTask>>, kind: MembershipKind,
   tags: TagExtractionDecision['tags'] = []): TagExtractionDecision {
   return { productId: task.input.input_id, tags, rejectedTags: [], reviewed: true,
-    membershipKind: kind, membershipRefs: [0], classificationReviewed: true };
+    membershipKind: kind, membershipRefs: [0], classificationReviewed: true,
+    membershipReview: { classificationDecision: true, code: null, refs: [] } };
 }
 
 async function saveFeature(task: Awaited<ReturnType<typeof featureTask>>, kind: MembershipKind, classificationReviewed = true,
@@ -111,7 +112,10 @@ async function saveFeature(task: Awaited<ReturnType<typeof featureTask>>, kind: 
   const reviewed = reviewedFeature(task, kind, tags);
   await db.updateTable('ai_job_batches').set({ step: 'publish' }).where('id', '=', task.batch.id).execute();
   await task.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id,
-    [{ ...reviewed, membershipKind: kind, classificationReviewed }], {}, task.claim, 'publish');
+    [{ ...reviewed, membershipKind: kind, classificationReviewed, membershipReview: {
+      classificationDecision: classificationReviewed, code: classificationReviewed ? null : 'source_conflict',
+      refs: classificationReviewed ? [] : [0],
+    } }], {}, task.claim, 'publish');
 }
 
 async function publishIdentity(f: Awaited<ReturnType<typeof fixture>>, existingJob?: Awaited<ReturnType<AiRepository['createJob']>>,
@@ -183,8 +187,8 @@ test('compact feature batch streams extraction and mixed review through real che
     { id: '1', refs: [0], membershipKind: 'account' },
   ] };
   const review = { items: [
-    { id: '1', classificationDecision: true },
-    { id: '2', classificationDecision: false },
+    { id: '1', classificationDecision: true, code: null, refs: [] },
+    { id: '2', classificationDecision: false, code: 'source_conflict', refs: [0] },
   ] };
   async function claimBatch(batchId: bigint): Promise<ClaimedJob> {
     const batch = await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'feature-stream-test',
@@ -270,7 +274,7 @@ test('compact feature batch streams extraction and mixed review through real che
   ]);
   for (const [productId, kind, decision] of [[accepted.product.id, 'account', true], [rejected.product.id, 'rental', false]] as const) {
     const audit = await repo.tagProductAudit(job.id, productId);
-    assert.deepEqual(audit.member.output.review, { mode: 'membership_binary', decision });
+    assert.deepEqual(audit.member.output.review, { mode: 'membership_binary', decision, code: decision ? null : 'source_conflict', refs: decision ? [] : [0] });
     assert.equal(audit.member.output.classificationReviewed, decision);
     assert.equal(audit.batches[0].proposed_membership_kind, kind);
     assert.equal(audit.batches[1].classification_decision, decision);
@@ -410,7 +414,7 @@ test('rejected feature review never saves features or changes publication state'
   assert.equal(member.publication_state, 'published');
   const output = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
   assert.equal((output.output as Record<string, unknown>).classificationReviewed, false);
-  assert.deepEqual((output.output as Record<string, unknown>).review, { mode: 'membership_binary', decision: false });
+  assert.deepEqual((output.output as Record<string, unknown>).review, { mode: 'membership_binary', decision: false, code: 'source_conflict', refs: [0] });
 });
 
 test('first empty-fact short-term classification is updated, repeated kind unchanged, and rejection retains the snapshot', async () => {
@@ -426,7 +430,7 @@ test('first empty-fact short-term classification is updated, repeated kind uncha
     assert.deepEqual(snapshot?.tags, []);
     const result = await task.repo.tagProductAudit(task.job.id, f.product.id);
     assert.equal(result.member.output.outcome, outcome);
-    assert.deepEqual(result.member.output.review, { mode: 'membership_binary', decision: approved });
+    assert.deepEqual(result.member.output.review, { mode: 'membership_binary', decision: approved, code: approved ? null : 'source_conflict', refs: approved ? [] : [0] });
     assert.equal(result.member.output.textReview, undefined);
     const listed = await task.repo.listTagJobResults({ jobId: task.job.id, limit: 10 });
     assert.equal(listed.items[0]?.acceptedCount, Number(approved));
@@ -457,7 +461,8 @@ for (const invalid of ['tags', 'rejectedTags', 'invalid_kind', 'missing_refs', '
 }
 
 for (const step of ['request', 'publish'] as const) {
-  for (const rejected of ['unreviewed', 'classification_unreviewed', 'missing_kind', 'invalid_kind'] as const) {
+  for (const rejected of ['unreviewed', 'classification_unreviewed', 'missing_kind', 'invalid_kind',
+    'legacy_without_feedback', 'verdict_mismatch', 'invalid_feedback_refs'] as const) {
     test(`${step}: ${rejected} feature decision never saves a snapshot`, async () => {
       const f = await fixture();
       const task = await featureTask(f.product.id);
@@ -465,18 +470,25 @@ for (const step of ['request', 'publish'] as const) {
       if (rejected === 'unreviewed') { delete decision.reviewed; delete decision.textReview; }
       else if (rejected === 'classification_unreviewed') delete decision.classificationReviewed;
       else if (rejected === 'missing_kind') delete decision.membershipKind;
-      else decision.membershipKind = 'unknown' as MembershipKind;
+      else if (rejected === 'invalid_kind') decision.membershipKind = 'unknown' as MembershipKind;
+      else if (rejected === 'legacy_without_feedback') delete decision.membershipReview;
+      else if (rejected === 'verdict_mismatch') decision.classificationReviewed = false;
+      else decision.membershipReview = { classificationDecision: false, code: 'source_conflict', refs: [999] };
       await db.updateTable('ai_job_batches').set({ step }).where('id', '=', task.batch.id).execute();
-      if (rejected === 'invalid_kind') {
+      const atomicRejection = !['unreviewed', 'missing_kind'].includes(rejected);
+      const before = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', task.batch.id).executeTakeFirstOrThrow();
+      if (atomicRejection) {
         await assert.rejects(f.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id, [decision], {}, task.claim, step),
-          { message: 'Reviewed membership kind is required' });
+          rejected === 'invalid_kind' ? { message: 'Reviewed membership kind is required' } : /Membership/i);
+        assert.deepEqual(await db.selectFrom('ai_job_batches').selectAll().where('id', '=', task.batch.id).executeTakeFirstOrThrow(), before);
       } else await f.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id, [decision], {}, task.claim, step);
       assert.equal((await db.selectFrom('products').select('membership_features')
         .where('id', '=', f.product.id).executeTakeFirstOrThrow()).membership_features, null);
-      const result = await db.selectFrom('ai_job_input_members').select(['status', 'reason_code'])
+      const result = await db.selectFrom('ai_job_input_members').select(['status', 'reason_code', 'output'])
         .where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
-      assert.equal(result.status, rejected === 'invalid_kind' ? 'queued' : 'failed');
-      assert.equal(result.reason_code, rejected === 'invalid_kind' ? null : 'classification_review_rejected');
+      assert.equal(result.status, atomicRejection ? 'queued' : 'failed');
+      assert.equal(result.reason_code, atomicRejection ? null : 'classification_review_rejected');
+      if (atomicRejection) assert.equal(result.output, null);
       const member = await db.selectFrom('standard_product_members').select(['standard_product_id', 'publication_state'])
         .where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
       assert.deepEqual(member, { standard_product_id: f.baseId, publication_state: 'published' });

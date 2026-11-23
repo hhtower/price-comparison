@@ -161,6 +161,13 @@ function BatchAudit({ batch, data, outputSource, noun }) {
     {text ? null : feature ? <>
       <p>提议分类：{membershipKindLabel(batch.proposed_membership_kind ?? source?.proposed_membership_kind) || '未记录'}</p>
       {review ? <p>分类复核：{classificationVerdict(batch.classification_decision)}</p> : null}
+      {review && batch.classification_feedback?.code ? <>
+        <p>复核原因：{({
+          protection_mismatch: '保障期限或范围判断错误', delivery_mismatch: '账号归属或交付方式判断错误',
+          evidence_mismatch: '引用依据不足以支持分类', insufficient_source: '原文证据不足', source_conflict: '原文存在未解决的冲突',
+        })[batch.classification_feedback.code] || batch.classification_feedback.code}</p>
+        <p>原文行号：{batch.classification_feedback.refs?.join('、') || '未记录'}</p>
+      </> : null}
       {source?.proposals?.length ? <details><summary>历史分类依据</summary>
         <CandidateTable proposals={source.proposals} decisions={review ? batch.review_decisions ?? (linkedOutput?.review?.decisions) : undefined} output={linkedOutput} publicationRecorded={Boolean(output)} label={`批次 #${batch.id ?? '未记录'} 历史分类依据`} noun={noun} />
       </details> : null}
@@ -614,7 +621,7 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
       {dialog.allPending || preview ? <>
         <p className="ai-field-help">模型调用可能消耗额度或产生费用。</p>
         <details><summary>调用与重试说明</summary>
-        <p>{text ? '每批文案通常调用模型 1 次。' : feature ? '识别分类 → 复核，每批通常调用模型 2 次。' : '普通标签提取 → 复核，每批通常调用模型 2 次。AI 会员另按每件商品单独调用质保判定；非 AI 会员不发起质保请求。'}拆批及重试可能增加调用次数。</p>
+        <p>{text ? '每批文案通常调用模型 1 次。' : feature ? '每件商品只提出一个分类。识别分类 → 复核，每批通常调用模型 2 次；明确错误最多追加一轮纠正和复核，证据不足时停止。' : '普通标签提取 → 复核，每批通常调用模型 2 次，最多追加一轮纠正和复核。AI 会员另按每件商品单独调用质保判定；非 AI 会员不发起质保请求。'}拆批及重试可能增加调用次数。</p>
         {!text && !feature ? <p>未通过或有遗漏时最多修正一轮并再次复核，可能增加 2 次调用。实际写入以商品结果为准。</p> : null}
         {dialog.allPending ? <p>资料和流水线版本未变化时，已完成的{text ? '文案审查' : feature ? '分类' : '部分采纳及待复核'}结果不会自动重新入队。</p> : null}
         </details>

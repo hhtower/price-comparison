@@ -2,9 +2,10 @@ import { sql, type Kysely } from 'kysely';
 import type { DatabaseSchema } from '../database/types.js';
 import { unknownRequestReason } from './request-outcome.js';
 import { hasActiveStandardizationWork, RETRYABLE_RESULT_REASONS } from './product-standardization-state.js';
-import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION, taskResultVersions } from './pipeline-versions.js';
 import { API_RELAY_EXCLUSION_CODE } from '../standardization/catalog-exclusion.js';
 import { hasUsableOffer } from './offer-eligibility.js';
+import { standardizationResultSource } from './standardization-result-source.js';
 
 export const currentManualDecision = sql<boolean>`exists (
   select 1 from product_standardization_decisions d where d.product_id = p.id
@@ -15,17 +16,17 @@ export const currentManualDecision = sql<boolean>`exists (
 
 /** The latest result for current product evidence and revision, with no current assignment. */
 export function currentUnclassifiedQuery(db: Kysely<DatabaseSchema>) {
-  return db.selectFrom('ai_standardization_results as r')
-    .innerJoin('products as p', 'p.id', 'r.product_id')
+  return db.selectFrom('products as p')
+    .innerJoinLateral(standardizationResultSource(sql.ref('p.id')).as('r'), join => join.onTrue())
     .innerJoin('shops as s', 's.id', 'p.shop_id')
     .innerJoin('ai_jobs as result_job', 'result_job.id', 'r.job_id')
     .innerJoin('ai_job_input_members as m', join => join.onRef('m.job_id', '=', 'r.job_id').onRef('m.product_id', '=', 'r.product_id'))
     .leftJoin('ai_job_batches as b', 'b.id', 'r.batch_id')
     .where('r.status', '=', 'unclassified')
     .where(eb => eb.or([eb('r.reason_code', 'is', null), eb('r.reason_code', '!=', API_RELAY_EXCLUSION_CODE)]))
-    .where('result_job.prompt_version', '=', PIPELINE_VERSIONS.prompt)
-    .where('result_job.rule_version', '=', STANDARDIZATION_POLICY_VERSION)
-    .where(sql<boolean>`result_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb`)
+    .where(sql<boolean>`(r.reason_code='request_outcome_unknown' or (
+      result_job.prompt_version=${PIPELINE_VERSIONS.prompt} and result_job.rule_version=${STANDARDIZATION_POLICY_VERSION}
+      and result_job.pipeline_versions @> ${JSON.stringify(taskResultVersions('standardization'))}::jsonb))`)
     .where('p.deleted_at', 'is', null).where('s.deleted_at', 'is', null).where('s.enabled', '=', true)
     .where('p.standardization_locked', '=', false)
     .where(sql<boolean>`not ${currentManualDecision}`)
@@ -42,12 +43,13 @@ export function currentUnclassifiedQuery(db: Kysely<DatabaseSchema>) {
     )`)
     // Task order wins over completion order: a late old result cannot resurrect an error.
     .where(sql<boolean>`not exists (
-      select 1 from ai_standardization_results newer
+      select 1 from ${standardizationResultSource(sql.ref('p.id'))} newer
       join ai_job_input_members newer_member on newer_member.job_id = newer.job_id and newer_member.product_id = newer.product_id
       join ai_jobs newer_result_job on newer_result_job.id = newer.job_id
       where newer.product_id = r.product_id and newer.job_id > r.job_id
-        and newer_result_job.prompt_version = ${PIPELINE_VERSIONS.prompt} and newer_result_job.rule_version = ${STANDARDIZATION_POLICY_VERSION}
-        and newer_result_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+        and (newer.reason_code='request_outcome_unknown' or (
+          newer_result_job.prompt_version = ${PIPELINE_VERSIONS.prompt} and newer_result_job.rule_version = ${STANDARDIZATION_POLICY_VERSION}
+          and newer_result_job.pipeline_versions @> ${JSON.stringify(taskResultVersions('standardization'))}::jsonb))
         and newer.content_version = p.content_version and newer_member.content_version = p.content_version
         and newer.fingerprint = p.content_fingerprint and newer_member.fingerprint = p.content_fingerprint
         and newer_member.standardization_revision = p.standardization_revision

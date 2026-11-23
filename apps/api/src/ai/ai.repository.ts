@@ -28,11 +28,14 @@ import { loadCatalogAliases } from '../standardization/catalog-aliases.js';
 import { canonicalizeMatchText } from '../standardization/canonical-key.js';
 import { IDENTITY_POLICY_VERSION } from '../standardization/identity-policy.js';
 import { API_RELAY_EXCLUSION_CODE, API_RELAY_EXCLUSION_REASON, isExcludedApiRelay } from '../standardization/catalog-exclusion.js';
-import { assertCurrentPipeline, isCurrentPipeline, pipelineVersionSnapshot, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
+import { assertCurrentPipeline, isCurrentPipeline, pipelineVersionSnapshot, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION, taskResultVersions } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION, readStandardizationRequestLimits, assertStandardizationRequestFits, type StandardizationRequest } from './standardization-request.js';
 import { needsStandardizationRepair, planStandardizationRepairs } from './standardization-repair.js';
 import { buildTagExtractionRequest, type TagExtractionInput, type TagExtractionResponse } from './tag-extraction-request.js';
-import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest, assertMembershipFeatureRefs } from './membership-feature-request.js';
+import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest, assertMembershipFeatureRefs,
+  assertMembershipFeatureReviewFeedback, needsMembershipFeatureRepair } from './membership-feature-request.js';
+import { planReviewWorkflow, reviewRequestBudget } from './review-workflow.js';
+import { standardizationResultSource } from './standardization-result-source.js';
 import { buildTagReviewRequest } from './tag-review-request.js';
 import { buildTagWarrantyRequest, parseWarrantyResponse, type WarrantyLabels } from './tag-warranty-request.js';
 import { buildProductTextReviewRequest } from './product-text-review-request.js';
@@ -48,7 +51,7 @@ import {
 import { planPublicationUnits, type PublicationMember } from './publication-planner.js';
 import { finalizeOrScheduleMissing } from './standardization-finalizer.js';
 import { readAiStandardizationRuntimeStatus } from './ai-standardization-features.js';
-import { unknownRequestReason } from './request-outcome.js';
+import { hasUncertainMemberRequest, unknownRequestReason } from './request-outcome.js';
 import { readAiConcurrency } from './ai-concurrency.js';
 import { currentManualDecision, readRetryPool, retryPoolQuery } from './ai-retry-pool.js';
 import { hasActiveStandardizationWork, hasCurrentStandardizationResult, hasCurrentRelayExclusion, hasManualIsolation, hasPublishedAssignment, productProcessingDisposition } from './product-standardization-state.js';
@@ -69,6 +72,7 @@ export interface FrozenBatchReference {
   readonly standardizationStage?: 'review';
   readonly generationBatchId?: string;
   readonly repairReviewBatchId?: string;
+  readonly reviewRepairRound?: number;
   readonly strategyVersion: 'approved-candidate-20261119-v1';
   readonly catalogVersion: string;
   readonly inputs: ReadonlyArray<{
@@ -216,7 +220,9 @@ export class AiRepository {
           .where('e.product_id', 'in', products.map(product => product.id))
           .whereRef('m.standardization_revision', '=', 'p.standardization_revision')
           .where(sql<boolean>`m.reason_code is distinct from 'offer_unavailable'`)
-          .where(sql<boolean>`j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb`)
+          .where(sql<boolean>`(m.reason_code = 'request_outcome_unknown' or ${hasUncertainMemberRequest()}
+            or (e.status = 'completed' and j.pipeline_versions @> ${jsonb(taskResultVersions('standardization'))})
+            or j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)})`)
           .execute();
         const registered = new Set(previous.map(row => `${row.product_id}:${row.content_version}:${row.fingerprint}`));
         products = products.filter(product => !registered.has(`${product.id}:${product.content_version}:${productFingerprint(product)}`));
@@ -308,7 +314,10 @@ export class AiRepository {
             where previous_job.id = ai_standardization_executions.job_id
               and previous_member.standardization_revision = current_product.standardization_revision
               and previous_member.reason_code is distinct from 'offer_unavailable'
-              and previous_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb)`)).execute();
+              and (previous_member.reason_code = 'request_outcome_unknown' or ${hasUncertainMemberRequest('previous_member')}
+                or (ai_standardization_executions.status = 'completed'
+                  and previous_job.pipeline_versions @> ${jsonb(taskResultVersions('standardization'))})
+                or previous_job.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}))`)).execute();
         }
         for (const chunk of chunks(inputMembers.filter(member => relayIds.has(member.product_id)))) {
           await tx.insertInto('ai_standardization_results').values(chunk.map(member => ({
@@ -408,7 +417,7 @@ export class AiRepository {
       const request = batch.job_type === 'text_review' ? buildProductTextReviewRequest(payloads, model)
         : stage === 'warranty' ? buildTagWarrantyRequest(payloads, model)
         : stage === 'review' ? buildReview(payloads, proposals!, model)
-          : membershipFeatures ? buildMembershipFeatureRequest(payloads, model)
+          : membershipFeatures ? buildMembershipFeatureRequest(payloads, model, previousDecisions)
             : buildTagExtractionRequest(payloads, model, previousDecisions);
       if (stage === 'review' || textReview) {
         const groups = planTagReviewRequests({ model, inputs: payloads, proposals: proposals ?? { items: [] }, membershipFeatures, textReview }, limits);
@@ -660,7 +669,7 @@ export class AiRepository {
         .where(q => isAttributeJobType(job.job_type) ? q('m.output', 'is', null) : q.val(true))
         .where('p.deleted_at', 'is', null).where('s.deleted_at', 'is', null).where('s.enabled', '=', true)
         .where(hasUsableOffer())
-        .$if(!!currentReference.repairReviewBatchId, query => query
+        .$if(!isAttributeJobType(job.job_type) && !!currentReference.repairReviewBatchId, query => query
           .whereRef('p.content_version', '=', 'm.content_version')
           .whereRef('p.content_fingerprint', '=', 'm.fingerprint')
           .whereRef('p.standardization_revision', '=', 'm.standardization_revision')
@@ -931,14 +940,19 @@ export class AiRepository {
     let previousDecisions: TagExtractionDecision[] | undefined;
     if (reference?.repairReviewBatchId) {
       if (!/^[1-9]\d*$/u.test(reference.repairReviewBatchId)) throw new Error('tag repair source is invalid');
-      const previous = await this.database.selectFrom('ai_job_batches').select(['validated_decision', 'step', 'status'])
+      const previous = await this.database.selectFrom('ai_job_batches').select(['validated_decision', 'step', 'status', 'reference_snapshot'])
         .where('id', '=', BigInt(reference.repairReviewBatchId)).where('job_id', '=', batch.job_id).executeTakeFirstOrThrow();
       const document = previous.validated_decision as unknown as { items?: Array<Omit<TagExtractionDecision, 'productId'> & { productId: string }> } | null;
-      if (previous.step !== 'done' || previous.status !== 'succeeded' || !Array.isArray(document?.items)) {
+      const priorReference = previous.reference_snapshot as Record<string, JsonValue> | null;
+      if (previous.step !== 'done' || previous.status !== 'succeeded' || !Array.isArray(document?.items)
+        || priorReference?.tagStage !== 'review' || priorReference.repairReviewBatchId !== undefined) {
         throw new Error('tag repair review checkpoint is unavailable');
       }
       previousDecisions = document.items.filter(item => activeInputs.has(item.productId))
         .map(item => ({ ...item, productId: BigInt(item.productId) }));
+      if (previousDecisions.length !== activeInputs.size || new Set(previousDecisions.map(item => String(item.productId))).size !== activeInputs.size) {
+        throw new Error('repair feedback does not match active inputs');
+      }
     }
     return { jobId: batch.job_id, model: batch.model, stage, ...(proposals ? { proposals } : {}),
       ...(warrantyLabels ? { warrantyLabels } : {}),
@@ -950,7 +964,7 @@ export class AiRepository {
   }
 
   async getBatchRequest(batchId: bigint, includeInactive = false): Promise<StandardizationRequest & {
-    jobId: bigint; stage: 'generate' | 'review'; proposals?: ParsedStandardizationResponse; repairReviewBatchId?: string;
+    jobId: bigint; stage: 'generate' | 'review'; proposals?: ParsedStandardizationResponse; repairReviewBatchId?: string; reviewRepairRound?: number;
     inputs: Array<StandardizationRequest['inputs'][number] & { fingerprint: string }>;
   }> {
     const batch = await this.database.selectFrom('ai_job_batches as b').innerJoin('ai_jobs as j', 'j.id', 'b.job_id').select(['b.job_id', 'b.product_ids', 'b.reference_snapshot', 'j.model', 'j.prompt_version', 'j.rule_version', 'j.pipeline_versions']).where('b.id', '=', batchId).executeTakeFirstOrThrow();
@@ -999,6 +1013,7 @@ export class AiRepository {
     }
     return { jobId: batch.job_id, model: batch.model, stage: proposals ? 'review' : 'generate', ...(proposals ? { proposals } : {}),
       ...(reference.repairReviewBatchId ? { repairReviewBatchId: reference.repairReviewBatchId } : {}),
+      ...(reference.reviewRepairRound !== undefined ? { reviewRepairRound: reference.reviewRepairRound } : {}),
       ...(repairFeedback ? { repairFeedback } : {}),
       candidates: reference.candidates, inputs: inputs.map((row) => ({ productId: row.input_id, fingerprint: row.fingerprint, payload: row.payload, candidateStandardProductIds: references.get(row.input_id.toString()) ?? [] })) };
   }
@@ -1039,6 +1054,15 @@ export class AiRepository {
       if (job.job_type === 'membership_features') {
         const members = await tx.selectFrom('ai_job_input_members').select(['input_id', 'payload'])
           .where('job_id', '=', jobId).where('input_id', 'in', items.map(item => item.productId)).execute();
+        let original: Map<string, TagExtractionDecision> | undefined;
+        if (stage === 'review') {
+          if (typeof reference?.extractionBatchId !== 'string' || !/^[1-9]\d*$/u.test(reference.extractionBatchId)) throw new Error('Membership review source is invalid');
+          const extraction = await tx.selectFrom('ai_job_batches').select(['validated_decision', 'status', 'step'])
+            .where('id', '=', BigInt(reference.extractionBatchId)).where('job_id', '=', jobId).executeTakeFirstOrThrow();
+          const source = extraction.validated_decision as unknown as { items?: Array<Omit<TagExtractionDecision, 'productId'> & { productId: string }> } | null;
+          if (extraction.status !== 'succeeded' || extraction.step !== 'done' || !Array.isArray(source?.items)) throw new Error('Membership proposal checkpoint is unavailable');
+          original = new Map(source.items.map(item => [item.productId, { ...item, productId: BigInt(item.productId) }]));
+        }
         for (const item of items) {
           if (!Array.isArray(item.tags) || item.tags.length || !Array.isArray(item.rejectedTags) || item.rejectedTags.length) {
             throw new Error('Membership feature result must not contain tags');
@@ -1047,8 +1071,15 @@ export class AiRepository {
           const member = members.find(member => member.input_id === item.productId);
           if (!member) throw new Error('Membership feature input is missing');
           assertMembershipFeatureRefs(item.membershipRefs, member.payload as unknown as TagExtractionInput);
-          if (stage !== 'extract' && (item.reviewed !== true || typeof item.classificationReviewed !== 'boolean')) {
-            throw new Error('Membership feature review requires one boolean classification decision');
+          if (stage === 'review') {
+            assertMembershipFeatureReviewFeedback(item.membershipReview, member.payload as unknown as TagExtractionInput);
+            const proposal = original!.get(String(item.productId));
+            if (item.reviewed !== true || item.classificationReviewed !== item.membershipReview.classificationDecision
+              || !proposal || proposal.membershipKind !== item.membershipKind || !isDeepStrictEqual(proposal.membershipRefs, item.membershipRefs)) {
+              throw new Error('Membership feature review changed its proposal or verdict');
+            }
+          } else if (item.reviewed !== undefined || item.classificationReviewed !== undefined || item.membershipReview !== undefined) {
+            throw new Error('Membership generation cannot supply review decisions');
           }
         }
       }
@@ -1056,10 +1087,11 @@ export class AiRepository {
         && items.some(item => item.reviewed !== true || typeof item.complete !== 'boolean' || !Array.isArray(item.reviewDecisions))) {
         throw new Error('Tag review requires boolean completeness and reviewed candidates');
       }
-      const needsRepair = job.job_type === 'tag_extraction' && stage === 'review'
-        && reference?.tagRepairRound !== 1
-        ? items.filter(needsTagRepair) : [];
-      const generatesReview = job.job_type !== 'text_review' && (stage === 'extract' || stage === 'repair');
+      const workflow = stage === 'warranty' || job.job_type === 'text_review' ? null
+        : planReviewWorkflow(stage === 'extract' ? 'generate' : stage!, items, reference ?? {},
+          job.job_type === 'membership_features' ? needsMembershipFeatureRepair : needsTagRepair);
+      const needsRepair = workflow?.repair ?? [];
+      const generatesReview = !!workflow?.review.length;
       const checkpointOnly = stage === 'warranty' || generatesReview || needsRepair.length > 0;
       const document = { items: items.map(item => ({ ...item, productId: String(item.productId) })) };
       const completedAt = Date.now();
@@ -1095,7 +1127,7 @@ export class AiRepository {
           await tx.insertInto('ai_job_batches').values({
             job_id: jobId, batch_index: ++nextIndex, product_ids: jsonb(ids.map(String)), product_count: BigInt(members.count),
             input_bytes: BigInt(sizes.bytes), estimated_tokens: BigInt(sizes.tokens), round: 1,
-            status: 'queued', step: publish ? 'publish' : 'request', request_budget_limit: 2,
+            status: 'queued', step: publish ? 'publish' : 'request', request_budget_limit: reviewRequestBudget({ ...reference, ...nextReference }),
             reference_snapshot: jsonb({ ...reference, ...nextReference }),
             ...(nextDocument ? {
               validated_decision: jsonb(nextDocument as unknown as JsonValue),
@@ -1109,9 +1141,8 @@ export class AiRepository {
         } else if (generatesReview) {
           await enqueue(items, { tagStage: 'review', extractionBatchId: String(batchId) });
         } else {
-          const repairIds = new Set(needsRepair.map(item => item.productId));
-          await enqueue(items.filter(item => !repairIds.has(item.productId)), { tagStage: 'review', tagPublishOnly: true }, true);
-          await enqueue(needsRepair, { tagStage: 'repair', tagRepairRound: 1, repairReviewBatchId: String(batchId) });
+          await enqueue(workflow!.publish, { tagStage: 'review', tagPublishOnly: true }, true);
+          await enqueue(needsRepair, { tagStage: 'repair', reviewRepairRound: 1, repairReviewBatchId: String(batchId) });
         }
       }
     });
@@ -1176,8 +1207,11 @@ export class AiRepository {
         if (!item) return [];
         if (featureTask) {
           assertMembershipFeatureRefs(item.membershipRefs, member.payload as unknown as TagExtractionInput);
+          assertMembershipFeatureReviewFeedback(item.membershipReview, member.payload as unknown as TagExtractionInput);
+          if (item.classificationReviewed !== item.membershipReview.classificationDecision) throw new Error('Membership review verdict differs from feedback');
           const decision: TagExtractionDecision = { productId: item.productId, tags: [], rejectedTags: [],
-            membershipKind: item.membershipKind, reviewed: item.reviewed, classificationReviewed: item.classificationReviewed };
+            membershipKind: item.membershipKind, reviewed: item.reviewed, classificationReviewed: item.classificationReviewed,
+            membershipReview: item.membershipReview };
           return [[member.product_id, decision] as const];
         }
         if (textTask) {
@@ -1305,8 +1339,9 @@ export class AiRepository {
     validateStandardizationEvidence({ items: decision.items, missingIds: decision.missingIds },
       request.inputs.map(input => ({ id: String(input.productId), payload: input.payload, candidateStandardProductIds: input.candidateStandardProductIds })), request.candidates);
     const needsReview = decision.items.some(isReviewableStandardizationDecision);
-    const reviewPlan = stage === 'generate' && needsReview ? planStandardizationReviewRequests(request, decision, readStandardizationRequestLimits()) : undefined;
-    const repairCatalog = stage === 'review' && !request.repairReviewBatchId && decision.items.some(needsStandardizationRepair)
+    const workflow = planReviewWorkflow(stage, decision.items, request, needsStandardizationRepair);
+    const reviewPlan = workflow.review.length && needsReview ? planStandardizationReviewRequests(request, decision, readStandardizationRequestLimits()) : undefined;
+    const repairCatalog = workflow.repair.length
       ? await this.loadCandidateCatalog() : undefined;
     const repairPlan = repairCatalog
       ? planStandardizationRepairs(request, decision.items, repairCatalog.index, readStandardizationRequestLimits()) : [];
@@ -1371,7 +1406,7 @@ export class AiRepository {
             job_id: jobId, batch_index: ++nextIndex, product_ids: jsonb([...ids]), product_count: BigInt(groupMembers.length),
             input_bytes: BigInt(group.request.inputs.reduce((sum, input) => sum + estimateInputSize(input.payload).inputBytes, 0)),
             estimated_tokens: BigInt(group.request.inputs.reduce((sum, input) => sum + estimateInputSize(input.payload).estimatedTokens, 0)),
-            round: 1, status: 'queued', step: 'request', request_budget_limit: reference.repairReviewBatchId ? 1 : 2,
+            round: 1, status: 'queued', step: 'request', request_budget_limit: reviewRequestBudget(reference),
             reference_snapshot: jsonb({ ...reference, standardizationStage: 'review', generationBatchId: String(batchId),
               inputs: reference.inputs.filter(input => ids.has(input.id)), candidates: group.request.candidates } as unknown as JsonValue),
             reference_version: batch.reference_version, planned_at: sql`now()`, request_estimate: jsonb({ ...group.estimate, oversized: group.oversized }),
@@ -1393,7 +1428,7 @@ export class AiRepository {
             .where('job_id', '=', jobId).where('input_id', 'in', ids).execute();
           const repairReference: FrozenBatchReference = {
             strategyVersion: reference.strategyVersion, catalogVersion: String(repairCatalog!.version),
-            repairReviewBatchId: String(batchId), candidates: group.request.candidates,
+            repairReviewBatchId: String(batchId), reviewRepairRound: 1, candidates: group.request.candidates,
             inputs: group.request.inputs.map(input => ({
               id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds, stats: group.stats,
             })),
@@ -1402,7 +1437,7 @@ export class AiRepository {
             job_id: jobId, batch_index: ++nextIndex, product_ids: jsonb(ids.map(String)), product_count: BigInt(members.length),
             input_bytes: BigInt(group.request.inputs.reduce((sum, input) => sum + estimateInputSize(input.payload).inputBytes, 0)),
             estimated_tokens: BigInt(group.request.inputs.reduce((sum, input) => sum + estimateInputSize(input.payload).estimatedTokens, 0)),
-            round: 1, status: 'queued', step: 'request', request_budget_limit: 1,
+            round: 1, status: 'queued', step: 'request', request_budget_limit: reviewRequestBudget(repairReference),
             reference_snapshot: jsonb(repairReference as unknown as JsonValue), reference_version: repairCatalog!.version,
             planned_at: sql`now()`, request_estimate: jsonb(group.estimate),
           }).execute();
@@ -1877,20 +1912,21 @@ export class AiRepository {
       'response_diagnostic', 'decision_hash', 'error_source', 'retry_class', 'error', 'reference_snapshot', 'validated_decision',
     ]).where('job_id', '=', jobId).where(sql<boolean>`product_ids @> ${jsonb([String(member.input_id)])}`).orderBy('batch_index').execute();
     const batches = rows.map(({ reference_snapshot, validated_decision, ...batch }) => {
-      const reference = reference_snapshot as { tagStage?: string; extractionBatchId?: string; tagRepairRound?: number } | null;
+      const reference = reference_snapshot as { tagStage?: string; extractionBatchId?: string; reviewRepairRound?: number; tagRepairRound?: number } | null;
       const stage = reference?.tagStage === 'warranty' ? 'warranty' : reference?.tagStage === 'review' ? 'review' : reference?.tagStage === 'repair' ? 'repair' : 'extract';
       const document = validated_decision as unknown as {
-        items?: Array<{ productId: string; tags?: StandardizationTag[]; rejectedTags?: StandardizationTag[]; reviewDecisions?: unknown; reviewFeedback?: string; attempts?: Array<{ reviewDecisions?: unknown }>; membershipKind?: JsonValue; classificationReviewed?: unknown }>;
+        items?: Array<{ productId: string; tags?: StandardizationTag[]; rejectedTags?: StandardizationTag[]; reviewDecisions?: unknown; reviewFeedback?: string; attempts?: Array<{ reviewDecisions?: unknown }>; membershipKind?: JsonValue; membershipReview?: JsonValue; classificationReviewed?: unknown }>;
       } | null;
       const item = Array.isArray(document?.items) ? document.items.find(item => item?.productId === String(member.input_id)) : undefined;
       const votes = item?.attempts?.at(-1)?.reviewDecisions ?? item?.reviewDecisions;
       return { ...batch, error: batch.error ? sanitizeTagAuditText(batch.error) : null,
         request_estimate: redact(batch.request_estimate), response_diagnostic: redact(batch.response_diagnostic),
-        stage, tagRepairRound: reference?.tagRepairRound ?? 0,
+        stage, tagRepairRound: reference?.reviewRepairRound ?? reference?.tagRepairRound ?? 0,
         extraction_batch_id: reference?.extractionBatchId ?? null,
         ...(job.job_type === 'membership_features' ? {
           proposed_membership_kind: item?.membershipKind === undefined ? null : redact(item.membershipKind),
           classification_decision: stage === 'review' && typeof item?.classificationReviewed === 'boolean' ? item.classificationReviewed : null,
+          classification_feedback: stage === 'review' && item?.membershipReview ? redact(item.membershipReview) : null,
         } : {}),
         proposals: stage !== 'review' && Array.isArray(item?.tags) ? [...item.tags, ...(Array.isArray(item.rejectedTags) ? item.rejectedTags : [])].map((tag, proposalIndex) => redact({
           proposalIndex, name: sanitizeTagAuditText(tag.name, 100), value: typeof tag.value === 'string' ? sanitizeTagAuditText(tag.value, 500) : tag.value,
@@ -2079,10 +2115,11 @@ export class AiRepository {
         select d.* from product_standardization_decisions d where d.product_id = p.id order by d.id desc limit 1
       ) d on true
       left join lateral (
-        select r.* from ai_standardization_results r join ai_jobs result_job on result_job.id=r.job_id
-        where r.product_id=p.id and result_job.prompt_version=${STANDARDIZATION_PROMPT_VERSION}
-          and result_job.rule_version=${STANDARDIZATION_POLICY_VERSION}
-          and result_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+        select r.* from ${standardizationResultSource(sql.ref('p.id'))} r join ai_jobs result_job on result_job.id=r.job_id
+        where r.product_id=p.id and (r.reason_code='request_outcome_unknown'
+          or (result_job.prompt_version=${STANDARDIZATION_PROMPT_VERSION}
+            and result_job.rule_version=${STANDARDIZATION_POLICY_VERSION}
+            and result_job.pipeline_versions @> ${jsonb(taskResultVersions('standardization'))}))
         order by r.job_id desc limit 1
       ) r on true
       left join ai_job_input_members im on im.job_id=r.job_id and im.product_id=p.id

@@ -13,6 +13,7 @@ import { AiAdminController } from '../src/ai/ai-admin.controller.js';
 import { getJobProgress } from '../src/ai/ai-progress.repository.js';
 import { AdminController } from '../src/admin/admin.controller.js';
 import { AdminRepository } from '../src/admin/admin.repository.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, repository: AiRepository, controller: AiController;
 const schema = `membership_feature_admin_${randomUUID().replaceAll('-', '')}`;
@@ -44,6 +45,7 @@ async function product() {
     shop_id: shop.id, external_id: '1', name: 'ChatGPT Plus 账号 保订阅', spec: '',
     normalized_key: randomUUID(), content_fingerprint: randomUUID(), url: '',
   }).returning('id').executeTakeFirstOrThrow();
+  await seedUsableOffers(db, [item.id]);
   const standard = await db.insertInto('standard_products').values({ name: 'ChatGPT Plus',
     canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus', verification_state: 'verified' })
     .returning('id').executeTakeFirstOrThrow();
@@ -85,13 +87,14 @@ test('feature admin previews published AI products, creates a separate job and e
   assert.deepEqual((await getJobProgress(db, jobId))?.featureAcceptance, { acceptedProducts: 1, rejectedProducts: 0 });
   const member = await db.selectFrom('ai_job_input_members').select('input_id').where('job_id', '=', jobId).executeTakeFirstOrThrow();
   await db.updateTable('ai_job_batches').set({ validated_decision: jsonb({ items: [{
-    productId: String(member.input_id), tags: [], rejectedTags: [], membershipKind: 'account',
+    productId: String(member.input_id), tags: [], rejectedTags: [], membershipKind: 'account', membershipRefs: [0],
   }] }) }).where('job_id', '=', jobId).execute();
   await db.insertInto('ai_job_batches').values({
-    job_id: jobId, batch_index: 1, product_ids: jsonb([String(member.input_id)]), product_count: 1,
+    job_id: jobId, batch_index: 1n, product_ids: jsonb([String(member.input_id)]), product_count: 1n, status: 'queued',
     reference_snapshot: jsonb({ tagStage: 'review' }),
     validated_decision: jsonb({ items: [{
-      productId: String(member.input_id), tags: [], rejectedTags: [], membershipKind: 'account', reviewed: true, classificationReviewed: true,
+      productId: String(member.input_id), tags: [], rejectedTags: [], membershipKind: 'account', membershipRefs: [0], reviewed: true, classificationReviewed: true,
+      membershipReview: { classificationDecision: true, code: null, refs: [] },
     }] }),
   }).execute();
   const audit = await adminController.featureAudit(String(jobId), String(item.id));
@@ -99,8 +102,10 @@ test('feature admin previews published AI products, creates a separate job and e
   assert.equal(audit.member.output.acceptedTags[0].evidence[0].quote, '保订阅');
   assert.equal(audit.batches[0].proposed_membership_kind, 'account');
   assert.equal(audit.batches[0].classification_decision, null);
+  assert.equal(audit.batches[0].classification_feedback, null);
   assert.equal(audit.batches[1].proposed_membership_kind, 'account');
   assert.equal(audit.batches[1].classification_decision, true);
+  assert.deepEqual(audit.batches[1].classification_feedback, { classificationDecision: true, code: null, refs: [] });
   for (const [output, accepted, rejected] of [
     [{ ...historicalOutput, classification: null }, 0, 0],
     [{ ...historicalOutput, outcome: 'skipped' }, 0, 0],

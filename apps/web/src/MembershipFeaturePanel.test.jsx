@@ -315,6 +315,20 @@ test('分类批次展示各自提议与布尔判定，不从最终结果反推�
   }
 });
 
+test('特性纠错审计显示审核原因和原文行号', async () => {
+  installClassificationApi({ batches: [{
+    id: '5', stage: 'review', proposed_membership_kind: 'account', classification_decision: false,
+    classification_feedback: { classificationDecision: false, code: 'protection_mismatch', refs: [0, 2] },
+  }] });
+  const user = userEvent.setup();
+  render(<TagExtractionPanel taskKind="membership_features" shops={shops} view="history" />);
+  await user.click(await screen.findByRole('button', { name: '查看特性任务 #8' }));
+  await user.click(await screen.findByRole('button', { name: '查看商品 #3 依据' }));
+  await user.click(await screen.findByText('复核批次 #5 详情'));
+  expect(screen.getByText('复核原因：保障期限或范围判断错误')).toBeInTheDocument();
+  expect(screen.getByText('原文行号：0、2')).toBeInTheDocument();
+});
+
 test('尚未保存分类时仍能审计批次判定，不宣称商品已写入', async () => {
   installApi({ state: 'running', handle: call => call.path.endsWith('/feature-results/3') ? Response.json({
     member: { status: 'processing' },

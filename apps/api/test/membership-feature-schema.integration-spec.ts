@@ -19,7 +19,8 @@ test('membership features belong to merchant products, without changing standard
     const migrator = new Migrator({ db: database, provider: migrationProvider, migrationTableSchema: schema });
     assert.ifError((await migrator.migrateTo('035_attribute_jobs_after_standardization_20261112')).error);
     const columns = await pool.query(`select table_name, column_name from information_schema.columns
-      where table_schema=$1 and column_name like 'membership_%' order by table_name,column_name`, [schema]);
+      where table_schema=$1 and table_name in ('products', 'standard_products')
+        and column_name like 'membership_%' order by table_name,column_name`, [schema]);
     assert.deepEqual(columns.rows, [{ table_name: 'products', column_name: 'membership_features' }]);
     const parentIndex = await pool.query(`select indisunique from pg_index where indexrelid='ai_membership_feature_parent'::regclass`);
     assert.equal(parentIndex.rows[0].indisunique, false, 'post-publication retries may schedule disjoint feature batches for the same parent');
@@ -28,7 +29,8 @@ test('membership features belong to merchant products, without changing standard
       where table_schema=$1 and table_name='products' and column_name='membership_features'`, [schema])).rows, []);
     assert.ifError((await migrator.migrateToLatest()).error);
     assert.deepEqual((await pool.query(`select table_name, column_name from information_schema.columns
-      where table_schema=$1 and column_name like 'membership_%' order by table_name,column_name`, [schema])).rows, columns.rows);
+      where table_schema=$1 and table_name in ('products', 'standard_products')
+        and column_name like 'membership_%' order by table_name,column_name`, [schema])).rows, columns.rows);
   } finally {
     await database?.destroy();
     await admin.query(`drop schema if exists "${schema}" cascade`);

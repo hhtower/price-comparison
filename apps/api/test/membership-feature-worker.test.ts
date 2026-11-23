@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAiWorker, createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import type { ClaimedJob } from '../src/jobs/jobs.repository.js';
+import type { TagExtractionDecision } from '../src/ai/tag-extraction-result.js';
 import { WorkerRuntime } from '../src/workers/worker-runtime.js';
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest } from '../src/ai/membership-feature-request.js';
 
@@ -25,10 +26,10 @@ const extraction = { items: [
 const proposals = { items: extraction.items.map((item, i) => ({ ...item, id: payloads[i]!.id, tags: [] })) };
 // Review order deliberately differs from the inputs and checkpoint proposals.
 const review = { items: [
-  { id: '4', classificationDecision: true },
-  { id: '2', classificationDecision: false },
-  { id: '1', classificationDecision: true },
-  { id: '3', classificationDecision: true },
+  { id: '4', classificationDecision: true, code: null, refs: [] },
+  { id: '2', classificationDecision: false, code: 'source_conflict', refs: [1] },
+  { id: '1', classificationDecision: true, code: null, refs: [] },
+  { id: '3', classificationDecision: true, code: null, refs: [] },
 ] };
 const extracted = [
   { productId: 11n, tags: [], rejectedTags: [], membershipKind: 'account', membershipRefs: [0, 1] },
@@ -36,7 +37,13 @@ const extracted = [
   { productId: 13n, tags: [], rejectedTags: [], membershipKind: 'rental', membershipRefs: [0, 1] },
   { productId: 14n, tags: [], rejectedTags: [], membershipKind: 'short_term', membershipRefs: [0, 1] },
 ];
-const reviewed = extracted.map(item => ({ ...item, reviewed: true, classificationReviewed: item.productId !== 12n }));
+const reviewed = extracted.map(item => ({ ...item, reviewed: true, classificationReviewed: item.productId !== 12n,
+  membershipReview: item.productId === 12n
+    ? { classificationDecision: false, code: 'source_conflict', refs: [1] }
+    : { classificationDecision: true, code: null, refs: [] } }));
+const previousDecisions: TagExtractionDecision[] = extracted.map(item => ({ ...item, membershipKind: 'short_term',
+  reviewed: true, classificationReviewed: false,
+  membershipReview: { classificationDecision: false, code: 'protection_mismatch', refs: [1] } }));
 const environment = { AI_BASE_URL: 'http://model.invalid/v1', AI_API_KEY: 'local-mock', AI_MODEL: 'configured', AI_TIMEOUT_MS: '1000' };
 const claimed = (step = 'request'): ClaimedJob => ({
   kind: 'ai_batch', id: 7n, attempts: 1n, claimed_by: 'worker',
@@ -54,11 +61,11 @@ function response(output: unknown, finishReason = 'stop') {
     { headers: { 'content-type': 'text/event-stream' } });
 }
 
-function repository(stage: 'extract' | 'review' = 'extract', proposed = proposals) {
+function repository(stage: 'extract' | 'review' | 'repair' = 'extract', proposed = proposals) {
   return {
     getBatchRequest: async () => assert.fail('membership classification must not query identity candidates'),
     getTagExtractionBatchInputs: async () => ({
-      jobId: 3n, model: 'frozen-model', stage, ...(stage === 'review' ? { proposals: proposed } : {}),
+      jobId: 3n, model: 'frozen-model', stage, ...(stage === 'repair' ? { previousDecisions } : {}), ...(stage === 'review' ? { proposals: proposed } : {}),
       inputs: payloads.map(payload => ({
         productId: BigInt(payload.id), name: payload.name, spec: payload.spec, sourceData: payload.sourceData, payload,
       })),
@@ -70,7 +77,7 @@ function byProductId<T extends { productId: bigint }>(items: T[]) {
   return [...items].sort((a, b) => Number(a.productId - b.productId));
 }
 
-for (const stage of ['extract', 'review'] as const) {
+for (const stage of ['extract', 'review', 'repair'] as const) {
   test(`membership ${stage} aggregates a mixed streamed batch into classification-only checkpoints`, async () => {
     let sends = 0;
     const call = createOpenAiModelCall(repository(stage) as never, environment, async (_url, init) => {
@@ -83,9 +90,9 @@ for (const stage of ['extract', 'review'] as const) {
       assert.equal(sent.messages.length, 2);
       const input = JSON.parse(sent.messages[1].content);
       const expected = stage === 'review' ? buildMembershipFeatureReviewRequest(payloads, proposals, 'frozen-model')
-        : buildMembershipFeatureRequest(payloads, 'frozen-model');
+        : buildMembershipFeatureRequest(payloads, 'frozen-model', stage === 'repair' ? previousDecisions : undefined);
       assert.deepEqual(input, JSON.parse(expected.messages[1]!.content));
-      return response(stage === 'extract' ? { items: [...extraction.items].reverse() } : review);
+      return response(stage !== 'review' ? { items: [...extraction.items].reverse() } : review);
     });
     const result = await call(claimed(), new AbortController().signal);
     assert.equal(sends, 1);
@@ -93,7 +100,7 @@ for (const stage of ['extract', 'review'] as const) {
     assert.deepEqual(result.items, []);
     assert.equal(Object.hasOwn(result, 'identities'), false);
     assert.deepEqual(result.missingIds, []);
-    assert.deepEqual(byProductId(result.tagExtractionItems!), stage === 'extract' ? extracted : reviewed);
+    assert.deepEqual(byProductId(result.tagExtractionItems!), stage !== 'review' ? extracted : reviewed);
     assert.equal(result.metadata?.responseDiagnostic?.code, stage === 'review' ? 'items_rejected' : 'accepted');
     assert.equal(result.metadata?.responseDiagnostic?.returnedItemCount, 4);
     assert.equal(result.metadata?.responseDiagnostic?.missingItemCount, 0);
@@ -102,7 +109,7 @@ for (const stage of ['extract', 'review'] as const) {
   });
 
   test(`membership ${stage} rejects malformed or incomplete batch protocols`, async t => {
-    const valid = stage === 'extract' ? extraction : review;
+    const valid = stage !== 'review' ? extraction : review;
     const first = valid.items[0]!;
     const invalid: Array<[string, unknown, string?]> = [
       ['malformed JSON', '{'],
@@ -123,7 +130,7 @@ for (const stage of ['extract', 'review'] as const) {
       ['valid JSON with truncated finish reason', valid, 'length'],
       ['partial JSON with truncated finish reason', JSON.stringify(valid).slice(0, -3), 'length'],
     ];
-    if (stage === 'extract') {
+    if (stage !== 'review') {
       invalid.push(['legacy extraction with tags on every item', proposals]);
       for (const membershipKind of ['invalid', '', null, ['account']]) {
         invalid.push([`invalid category ${JSON.stringify(membershipKind)}`,
@@ -142,6 +149,17 @@ for (const stage of ['extract', 'review'] as const) {
         invalid.push([`nonboolean verdict ${JSON.stringify(classificationDecision)}`,
           { items: [{ id: '4', classificationDecision }, ...review.items.slice(1)] }]);
       }
+      invalid.push(['legacy boolean-only verdict', { items: review.items.map(({ id, classificationDecision }) => ({ id, classificationDecision })) }]);
+      for (const feedback of [
+        { classificationDecision: true, code: 'delivery_mismatch', refs: [] },
+        { classificationDecision: true, code: null, refs: [1] },
+        { classificationDecision: false, code: null, refs: [1] },
+        { classificationDecision: false, code: 'other', refs: [1] },
+        { classificationDecision: false, code: 'evidence_mismatch', refs: [] },
+        { classificationDecision: false, code: 'delivery_mismatch', refs: [999] },
+        { classificationDecision: false, code: 'delivery_mismatch', refs: [1, 1] },
+        { classificationDecision: false, code: 'delivery_mismatch', refs: [1], membershipKind: 'rental' },
+      ]) invalid.push(['invalid feedback ' + JSON.stringify(feedback), { items: [{ id: '4', ...feedback }, ...review.items.slice(1)] }]);
       invalid.push(['missing verdict', { items: [{ id: '4' }, ...review.items.slice(1)] }]);
     }
     for (const [name, output, finish] of invalid) {
@@ -161,7 +179,7 @@ for (const stage of ['extract', 'review'] as const) {
     ]) {
       let sends = 0;
       const call = createOpenAiModelCall(repository(stage) as never, { ...environment, ...limits },
-        async () => { sends++; return response(stage === 'extract' ? extraction : review); });
+        async () => { sends++; return response(stage !== 'review' ? extraction : review); });
       await assert.rejects(call.prepare!(claimed(), new AbortController().signal), {
         retryClass: 'input_too_large', retryable: false, requestOutcome: 'local_failure',
       });
@@ -201,7 +219,7 @@ for (const stage of ['extract', 'review'] as const) {
     const controller = new AbortController();
     controller.abort(new Error('cancelled'));
     const call = createOpenAiModelCall(repository(stage) as never, environment,
-      async () => { sends++; return response(stage === 'extract' ? extraction : review); });
+      async () => { sends++; return response(stage !== 'review' ? extraction : review); });
     await assert.rejects(call(claimed(), controller.signal), /cancelled/u);
     assert.equal(sends, 0);
   });
@@ -232,7 +250,7 @@ for (const stage of ['extract', 'review'] as const) {
         let release!: () => void;
         let sent!: () => void;
         const started = new Promise<void>(resolve => { sent = resolve; });
-        const output = stage === 'extract' ? extraction : review;
+        const output = stage !== 'review' ? extraction : review;
         const finalItems = outcome === 'invalid'
           ? [...output.items.slice(0, -1), { ...output.items.at(-1), id: '99' }] : output.items;
         const content = JSON.stringify({ items: finalItems });
@@ -271,7 +289,7 @@ for (const stage of ['extract', 'review'] as const) {
             const [jobId, batchId, items, metadata, claim, checkpointStage] = checkpoints[0] as any[];
             assert.equal(jobId, 3n);
             assert.equal(batchId, 7n);
-            assert.deepEqual(byProductId(items), stage === 'extract' ? extracted : reviewed);
+            assert.deepEqual(byProductId(items), stage !== 'review' ? extracted : reviewed);
             assert.equal(metadata.responseDiagnostic.code, stage === 'review' ? 'items_rejected' : 'accepted');
             assert.deepEqual(claim, { workerId: 'worker', attempt: 1n, token: 'claim' });
             assert.equal(checkpointStage, stage);
@@ -286,7 +304,7 @@ for (const stage of ['extract', 'review'] as const) {
 
 test('membership review refuses invalid proposal categories before sending a provider request', async () => {
   let sends = 0;
-  const proposed = { items: [{ id: '11', membershipKind: 'invalid', tags: [] }, ...proposals.items.slice(1)] };
+  const proposed = { items: [{ id: '11', membershipKind: 'invalid', refs: [0], tags: [] }, ...proposals.items.slice(1)] };
   const call = createOpenAiModelCall(repository('review', proposed) as never, environment,
     async () => { sends++; return response(review); });
   await assert.rejects(call.prepare!(claimed(), new AbortController().signal), /scope|membership|classification|category/i);

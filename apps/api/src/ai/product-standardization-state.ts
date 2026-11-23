@@ -1,6 +1,6 @@
 import { sql } from 'kysely';
-import { unknownRequestReason } from './request-outcome.js';
-import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
+import { hasUncertainMemberRequest, unknownRequestReason } from './request-outcome.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION, taskResultVersions } from './pipeline-versions.js';
 import type { EvidenceCitation } from './ai.schemas.js';
 import { API_RELAY_EXCLUSION_CODE } from '../standardization/catalog-exclusion.js';
 
@@ -46,19 +46,30 @@ export function productProcessingSummary(state: ProductProcessingState): Product
   };
 }
 
+/** Unknown requests also block automatic backfill; a version bump is not retry authorization. */
 export function hasCurrentStandardizationResult(product = 'p') {
-  return sql<boolean>`exists (select 1 from ai_standardization_results r
+  return sql<boolean>`(exists (select 1 from ai_standardization_results r
     join ai_job_input_members m on m.job_id = r.job_id and m.product_id = r.product_id
     join ai_jobs result_job on result_job.id = r.job_id
     where r.product_id = ${sql.ref(product + '.id')}
       and r.reason_code is distinct from 'offer_unavailable'
-      and result_job.prompt_version = ${PIPELINE_VERSIONS.prompt} and result_job.rule_version = ${STANDARDIZATION_POLICY_VERSION}
-      and result_job.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+      and (r.reason_code = 'request_outcome_unknown' or (
+        result_job.prompt_version = ${PIPELINE_VERSIONS.prompt} and result_job.rule_version = ${STANDARDIZATION_POLICY_VERSION}
+        and result_job.pipeline_versions @> ${JSON.stringify(taskResultVersions('standardization'))}::jsonb))
       and r.content_version = ${sql.ref(product + '.content_version')}
       and m.content_version = ${sql.ref(product + '.content_version')}
       and r.fingerprint = ${sql.ref(product + '.content_fingerprint')}
       and m.fingerprint = ${sql.ref(product + '.content_fingerprint')}
-      and m.standardization_revision = ${sql.ref(product + '.standardization_revision')})`;
+      and m.standardization_revision = ${sql.ref(product + '.standardization_revision')})
+    or exists (select 1 from ai_job_input_members m join ai_jobs j on j.id=m.job_id
+      where m.product_id=${sql.ref(product + '.id')}
+        and j.job_type not in ('tag_extraction','membership_features','text_review')
+        and m.content_version=${sql.ref(product + '.content_version')}
+        and m.fingerprint=${sql.ref(product + '.content_fingerprint')}
+        and m.standardization_revision=${sql.ref(product + '.standardization_revision')}
+        and ${hasUncertainMemberRequest()}
+        and not exists(select 1 from ai_standardization_results saved
+          where saved.job_id=m.job_id and saved.product_id=m.product_id)))`;
 }
 
 export function hasPublishedAssignment(product = 'p') {
@@ -91,7 +102,7 @@ export function hasCurrentRelayExclusion(product = 'p') {
     join ai_jobs j on j.id = r.job_id
     where r.product_id = ${sql.ref(product + '.id')}
       and j.prompt_version = ${PIPELINE_VERSIONS.prompt} and j.rule_version = ${STANDARDIZATION_POLICY_VERSION}
-      and j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+      and j.pipeline_versions @> ${JSON.stringify(taskResultVersions('standardization'))}::jsonb
       and r.content_version = ${sql.ref(product + '.content_version')} and m.content_version = r.content_version
       and r.fingerprint = ${sql.ref(product + '.content_fingerprint')} and m.fingerprint = r.fingerprint
       and m.standardization_revision = ${sql.ref(product + '.standardization_revision')}

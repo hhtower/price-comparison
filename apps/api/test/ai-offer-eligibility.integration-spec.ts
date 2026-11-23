@@ -14,6 +14,7 @@ import { ProductsRepository } from '../src/products/products.repository.js';
 import { StandardizationRepository } from '../src/standardization/standardization.repository.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
+import { readRetryPool } from '../src/ai/ai-retry-pool.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string, repository: AiRepository;
 before(async () => {
@@ -83,6 +84,78 @@ test('latest offer wins even when captured_at ties', async () => {
   const job = await repository.createJob({ model: 'mock', productIds: [product.id] });
   assert.equal(Number(job.total), 0);
   assert.equal(job.batches.length, 0);
+});
+
+for (const state of ['completed', 'active', 'unknown'] as const) {
+  test(`incremental registration handles ${state} identity work after an unrelated tag version changes`, async () => {
+    const product = await seed();
+    await quote(product.id, true);
+    const old = await repository.createJob({ model: 'mock', productIds: [product.id], jobType: 'incremental' });
+    await db.updateTable('ai_jobs').set({
+      pipeline_versions: jsonb({ ...(old.pipeline_versions as Record<string, string>), tagPrompt: 'old-tags' }),
+      ...(state === 'active' ? {} : { status: 'succeeded' as const }),
+    }).where('id', '=', old.id).execute();
+    if (state !== 'active') {
+      await db.updateTable('ai_standardization_executions').set({ status: 'completed' }).where('job_id', '=', old.id).execute();
+      await db.updateTable('ai_job_input_members').set({ status: 'unclassified',
+        reason_code: state === 'unknown' ? 'request_outcome_unknown' : 'insufficient_source',
+      }).where('job_id', '=', old.id).execute();
+    }
+    const next = await repository.createJob({ model: 'mock', productIds: [product.id], jobType: 'incremental' });
+    assert.equal(Number(next.total), state === 'active' ? 1 : 0);
+    const execution = await db.selectFrom('ai_standardization_executions').select('job_id')
+      .where('product_id', '=', product.id).executeTakeFirstOrThrow();
+    assert.equal(execution.job_id, state === 'active' ? next.id : old.id);
+  });
+}
+
+for (const unknown of [false, true]) test(`unmaterialized ${unknown ? 'unknown' : 'unresolved'} identity requests survive protocol upgrades and cancellation`, async () => {
+  const product = await seed();
+  await quote(product.id, true);
+  const old = await repository.createJob({ model: 'mock', productIds: [product.id], jobType: 'incremental' });
+  await db.updateTable('ai_job_batches').set({ request_budget_used: 1, unknown_requests: unknown ? 1 : 0 })
+    .where('id', '=', old.batches[0]!.id).execute();
+  await db.updateTable('ai_job_input_members').set({ status: 'processing' }).where('job_id', '=', old.id).execute();
+  await db.updateTable('ai_jobs').set({
+    pipeline_versions: jsonb({ ...(old.pipeline_versions as Record<string, string>), reviewWorkflow: 'old-workflow' }),
+  }).where('id', '=', old.id).execute();
+  for (const cancel of [false, true]) {
+    if (cancel) await repository.cancelJob(old.id);
+    const next = await repository.createJob({ model: 'mock', productIds: [product.id], jobType: 'incremental' });
+    assert.equal(Number(next.total), 0, 'an unmaterialized charge cannot authorize a new automatic request');
+    assert.equal((await repository.backfillMissingResults({ model: 'mock' })).productIds.includes(String(product.id)), false);
+    const visible = (await repository.listGlobalResults({ limit: 100 })).items.find(item => item.productId === String(product.id));
+    assert.equal(visible?.reasonCode, 'request_outcome_unknown');
+    assert.equal(visible?.sourceJobId, String(old.id));
+    assert.equal((await readRetryPool(db, { limit: 100 })).items.find(item => item.productId === String(product.id))?.sourceJobId, String(old.id));
+  }
+  const explicit = await repository.retryPool({ model: 'mock', requestId: randomUUID(), productIds: [product.id] });
+  const member = await db.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', explicit.id).executeTakeFirstOrThrow();
+  await db.insertInto('ai_standardization_results').values({
+    job_id: explicit.id, product_id: product.id, input_id: member.input_id, content_version: member.content_version,
+    fingerprint: member.fingerprint, status: 'unclassified', reason_code: 'insufficient_source', reason: 'Reviewed unknown product',
+    tags: jsonb([]), evidence: jsonb([]), decision: jsonb({}),
+  }).execute();
+  await db.updateTable('ai_jobs').set({ status: 'succeeded' }).where('id', '=', explicit.id).execute();
+  assert.equal((await repository.listGlobalResults({ limit: 100 })).items.find(item => item.productId === String(product.id))?.sourceJobId, String(explicit.id));
+  assert.equal((await readRetryPool(db, { limit: 100 })).items.some(item => item.productId === String(product.id)), false);
+});
+
+test('a current identity stream with a live lease is not presented as a lost request', async () => {
+  const product = await seed();
+  await quote(product.id, true);
+  const job = await repository.createJob({ model: 'mock', productIds: [product.id] });
+  await db.updateTable('ai_jobs').set({ status: 'running' }).where('id', '=', job.id).execute();
+  await db.updateTable('ai_job_input_members').set({ status: 'processing' }).where('job_id', '=', job.id).execute();
+  await db.updateTable('ai_job_batches').set({
+    status: 'running', lease_until: new Date(Date.now() + 60_000), request_budget_used: 1,
+  }).where('id', '=', job.batches[0]!.id).execute();
+  const current = () => repository.listGlobalResults({ limit: 100 });
+  assert.notEqual((await current()).items.find(item => item.productId === String(product.id))?.reasonCode, 'request_outcome_unknown');
+  await db.updateTable('ai_job_batches').set({ lease_until: new Date(0) }).where('id', '=', job.batches[0]!.id).execute();
+  assert.equal((await current()).items.find(item => item.productId === String(product.id))?.reasonCode, 'request_outcome_unknown');
+  await db.updateTable('products').set({ content_version: 2n }).where('id', '=', product.id).execute();
+  assert.equal((await current()).items.find(item => item.productId === String(product.id))?.reasonCode, 'source_changed');
 });
 
 test('pending product summary distinguishes waiting for stock from missing model results', async () => {

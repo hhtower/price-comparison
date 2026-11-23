@@ -33,7 +33,8 @@ for (const status of ['all', 'unfinished', 'attention']) {
       assert.equal(result.summary.pendingEvents, 1);
       assert.match(queries[0]!.sql, /product_standardization_decisions/u);
       assert.match(queries[0]!.sql, /content_fingerprint/u);
-      assert.match(queries[0]!.sql, /assignment_source = 'human'/u);
+      assert.match(queries[0]!.sql, /assignment\.publication_state = 'published'/u);
+      assert.match(queries[0]!.sql, /standard\.verification_state = 'verified' and standard\.merged_into_id is null/u);
       assert.ok(queries.every(query => !query.sql.includes("d.action in ('quarantine','exclude','unbind')")));
     } finally { await database.destroy(); }
   });

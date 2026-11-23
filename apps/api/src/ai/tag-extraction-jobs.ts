@@ -8,7 +8,7 @@ import { projectTagInput } from './tag-extraction-request.js';
 import { buildExtractionPayload, estimateInputSize, extractionContextKey } from './adaptive-batching.js';
 import { planBulkStandardizationBatches, planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { currentManualDecision } from './ai-retry-pool.js';
-import { PIPELINE_VERSIONS, pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
+import { PIPELINE_VERSIONS, pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION, taskResultVersions } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from './standardization-request.js';
 import { readAiConcurrency } from './ai-concurrency.js';
 import { incrementJobProgress } from './ai-progress.repository.js';
@@ -16,6 +16,7 @@ import { buildTagExtractionOutcome, tagExtractionVersions } from './tag-extracti
 import { prepareTextReview, readTextEvidence } from '../shops/shop-text-review.js';
 import { readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
 import { hasUsableOffer } from './offer-eligibility.js';
+import { hasUncertainMemberRequest } from './request-outcome.js';
 
 type Db = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 export interface TagJobScope { allPending?: boolean; productIds?: readonly bigint[]; scopeShopId?: bigint; retryOfJobId?: bigint }
@@ -25,6 +26,27 @@ export function currentTagMemberSource(member: 'm' | 'newer', warrantyEligible?:
   const payload = sql.ref(`${member}.payload`);
   return sql<boolean>`${payload}->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)
     ${warrantyEligible ? sql`and ${payload}->'warrantyEligible'=to_jsonb(coalesce(${warrantyEligible},false))` : sql``}`;
+}
+/** Share history eligibility with queue counts; unfinished work still needs the full protocol. */
+export function currentAttributeMemberHistory(kind: AttributeJobKind, member: 'm' | 'newer' = 'm', job: 'j' | 'nj' = 'j', storedResultCurrent: RawBuilder<boolean> = sql<boolean>`false`) {
+  const execution = sql<boolean>`${sql.ref(`${job}.prompt_version`)}=${STANDARDIZATION_PROMPT_VERSION}
+    and ${sql.ref(`${job}.rule_version`)}=${STANDARDIZATION_POLICY_VERSION}
+    and ${sql.ref(`${job}.pipeline_versions`)} @> ${jsonb(PIPELINE_VERSIONS)}`;
+  if (kind === 'text_review') return execution;
+  // Cancelling an unsent retry provides no new evidence about an older request.
+  const cancelledBeforeRequest = sql<boolean>`(
+    ${sql.ref(`${member}.status`)}='cancelled'
+    or coalesce(${sql.ref(`${member}.output`)}->>'outcome','')='cancelled'
+    or coalesce(${sql.ref(`${member}.reason_code`)},'')='job_cancelled')
+    and not exists(select 1 from ai_job_batches history_batch
+      where history_batch.job_id=${sql.ref(`${member}.job_id`)}
+        and history_batch.product_ids @> jsonb_build_array(${sql.ref(`${member}.input_id`)}::text)
+        and (history_batch.request_budget_used>0 or history_batch.confirmed_requests>0 or history_batch.unknown_requests>0))`;
+  return sql<boolean>`(not (${cancelledBeforeRequest}) and ((${execution}) or (
+    ${sql.ref(`${member}.status`)} not in ('queued','processing')
+    and (${sql.ref(`${job}.pipeline_versions`)} @> ${jsonb(taskResultVersions(kind))} or ${storedResultCurrent}))))
+    or coalesce(${sql.ref(`${member}.output`)}->>'reasonCode',${sql.ref(`${member}.reason_code`)})='request_outcome_unknown'
+    or ${hasUncertainMemberRequest(member)}`;
 }
 function canonicalScope(input: TagJobScope) {
   if ((input.allPending !== undefined && input.allPending !== true) || Number(input.productIds !== undefined) + Number(input.scopeShopId !== undefined) + Number(input.allPending === true) !== 1 || (input.allPending && input.retryOfJobId !== undefined)) throw new DomainValidationError('AI_TAG_SCOPE_REQUIRED', '请选择全部未完成、商品或店铺范围');
@@ -60,18 +82,24 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
       .where('assignment.publication_state','=','published')
       .where('standard.verification_state','=','verified').where('standard.merged_into_id','is',null);
     if (kind === 'membership_features') query = query.where(aiMembership);
+    const currentExecution = sql<boolean>`j.prompt_version=${STANDARDIZATION_PROMPT_VERSION}
+      and j.rule_version=${STANDARDIZATION_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`;
+    // Unknown outcomes need an explicit retry even when the request protocol has changed.
+    const unknownOutcome = sql<boolean>`${kind !== 'text_review' || unfinishedOnly}
+      and (coalesce(m.output->>'reasonCode',m.reason_code)='request_outcome_unknown'
+        ${kind === 'text_review' ? sql`` : sql`or ${hasUncertainMemberRequest()}`})`;
     query = query
       .where(sql<boolean>`not coalesce((
         select (${kind === 'tag_extraction'} and m.output->>'outcome' in ('updated','unchanged','empty','review'))
-          or (j.status in ('queued','running','paused','ready') and m.status in ('queued','processing'))
-          or (${unfinishedOnly} and coalesce(m.output->>'reasonCode',m.reason_code)='request_outcome_unknown')
+          or (j.status in ('queued','running','paused','ready') and m.status in ('queued','processing') and ${currentExecution})
+          or (${unknownOutcome})
         from ai_job_input_members m join ai_jobs j on j.id=m.job_id
         where m.product_id=p.id and j.job_type=${kind}
           and m.content_version=p.content_version and m.standardization_revision=p.standardization_revision and m.fingerprint=p.content_fingerprint
           and ${kind === 'tag_extraction' ? currentTagMemberSource('m', aiMembership)
             : sql<boolean>`m.payload->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)`}
           ${kind === 'text_review' ? sql`and m.payload->'shopText'->>'hash'=p.source_data->'ratingText'->>'hash'` : sql``}
-          and j.prompt_version=${STANDARDIZATION_PROMPT_VERSION} and j.rule_version=${STANDARDIZATION_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}
+          and (${currentAttributeMemberHistory(kind)})
         order by j.id desc limit 1
       ),false)`);
   } else query = query.limit(MAX_SCOPE + 1);

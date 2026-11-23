@@ -28,8 +28,9 @@ test('feature evidence removes category metadata, preserves complete original li
   assert.deepEqual(review.proposals.items.map((item: { id: string }) => item.id), ['1', '2']);
   const output = { items: [{ id: '2', refs: [1], membershipKind: 'rental' }, { id: '1', refs: [3], membershipKind: 'account' }] };
   assert.deepEqual(parseMembershipFeatureResponse(JSON.stringify(output), inputs).items.map(item => item.id), ['8', inputs[0]!.id]);
-  assert.deepEqual(parseMembershipFeatureReviewResponse('{"items":[{"id":"2","classificationDecision":false},{"id":"1","classificationDecision":true}]}', inputs).items,
-    [{ id: '8', classificationDecision: false }, { id: inputs[0]!.id, classificationDecision: true }]);
+  assert.deepEqual(parseMembershipFeatureReviewResponse('{"items":[{"id":"2","classificationDecision":false,"code":"source_conflict","refs":[1]},{"id":"1","classificationDecision":true,"code":null,"refs":[]}]}', inputs).items,
+    [{ id: '8', classificationDecision: false, code: 'source_conflict', refs: [1] },
+      { id: inputs[0]!.id, classificationDecision: true, code: null, refs: [] }]);
   assert.deepEqual({ inputs, proposals }, before);
 });
 
@@ -40,6 +41,9 @@ test('invalid, blank, duplicate or missing references cannot enter either stage'
     assert.throws(() => buildMembershipFeatureReviewRequest(source, {
       items: [{ id: '7', refs, membershipKind: 'account', tags: [] }],
     }, 'mock'));
+    assert.throws(() => parseMembershipFeatureReviewResponse(JSON.stringify({
+      items: [{ id: '1', classificationDecision: false, code: 'evidence_mismatch', refs }],
+    }), source));
   }
   assert.throws(() => parseMembershipFeatureResponse('{"items":[{"id":"9","refs":[0],"membershipKind":"account"}]}', source));
   assert.throws(() => parseMembershipFeatureResponse('{"items":[]}', source));

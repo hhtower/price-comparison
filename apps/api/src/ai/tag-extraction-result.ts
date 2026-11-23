@@ -6,13 +6,14 @@ import { sanitizeEvidenceText } from '../standardization/service-evidence.js';
 import { PRODUCT_TAG_RULES, isCanonicalProductTag } from '@price-comparison/catalog/product-tag-policy';
 import type { MembershipClassification, MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { warrantyTags, WARRANTY_TAG_NAMES, type WarrantyLabels } from './tag-warranty-request.js';
+import type { MembershipFeatureReviewFeedback } from './membership-feature-request.js';
 
 export type TagExtractionOutcome = 'updated' | 'unchanged' | 'empty' | 'partial_success' | 'review' | 'skipped' | 'failed' | 'cancelled';
 export interface TagFact { name: string; value: TagValue }
 export interface TagExtractionTag extends StandardizationTag { proposalIndex?: number }
 export interface RejectedTag extends TagExtractionTag { reasonCode: string; reason: string }
 export interface TagExtractionAttempt { round: number; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; complete: boolean; reviewDecisions?: boolean[]; reviewFeedback?: string }
-export interface TagExtractionDecision { productId: bigint; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; warrantyLabels?: WarrantyLabels; membershipKind?: MembershipKind; membershipRefs?: number[]; classificationReviewed?: boolean; reviewed?: boolean; reviewDecisions?: boolean[]; reviewFeedback?: string; complete?: boolean; attempts?: TagExtractionAttempt[]; textReview?: TextReview }
+export interface TagExtractionDecision { productId: bigint; tags: TagExtractionTag[]; rejectedTags: RejectedTag[]; warrantyLabels?: WarrantyLabels; membershipKind?: MembershipKind; membershipRefs?: number[]; membershipReview?: MembershipFeatureReviewFeedback; classificationReviewed?: boolean; reviewed?: boolean; reviewDecisions?: boolean[]; reviewFeedback?: string; complete?: boolean; attempts?: TagExtractionAttempt[]; textReview?: TextReview }
 export interface TagExtractionResult {
   warrantyLabels?: WarrantyLabels;
   classification?: MembershipClassification;
@@ -24,7 +25,7 @@ export interface TagExtractionResult {
   acceptedTags: TagExtractionTag[]; rejectedTags: RejectedTag[];
   before: TagFact[]; after: TagFact[];
   diff: Array<{ name: string; before: TagValue[]; after: TagValue[] }>;
-  review?: { mode: 'per_tag_binary'; decisions?: boolean[]; feedback?: string } | { mode: 'membership_binary'; decision: boolean };
+  review?: { mode: 'per_tag_binary'; decisions?: boolean[]; feedback?: string } | { mode: 'membership_binary'; decision: boolean; code?: MembershipFeatureReviewFeedback['code']; refs?: number[] };
   textReview?: TextReview;
   versions?: { contentVersion: string; fingerprint: string; revision: string; pipeline: JsonValue };
 }
@@ -136,7 +137,8 @@ export function buildTagExtractionOutcome(decision: TagExtractionDecision, befor
       ...(attempt.reviewFeedback !== undefined ? { reviewFeedback: sanitizeTagAuditText(attempt.reviewFeedback) } : {}),
     })) } : {}),
     ...(decision.reviewed && decision.membershipKind && typeof decision.classificationReviewed === 'boolean'
-      ? { review: { mode: 'membership_binary' as const, decision: decision.classificationReviewed } }
+      ? { review: { mode: 'membership_binary' as const, decision: decision.classificationReviewed,
+        ...(decision.membershipReview ? { code: decision.membershipReview.code, refs: [...decision.membershipReview.refs] } : {}) } }
       : decision.reviewed ? { review: { mode: 'per_tag_binary' as const,
       ...(decision.reviewFeedback !== undefined ? { feedback: sanitizeTagAuditText(decision.reviewFeedback) } : {}),
       ...(decision.reviewDecisions !== undefined ? { decisions: [...decision.reviewDecisions] } : {}) } } : {}) };

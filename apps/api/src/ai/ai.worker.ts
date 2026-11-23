@@ -157,7 +157,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
         : stage === 'warranty' ? buildTagWarrantyRequest(payloads, model)
         : stage === 'review' ? membershipFeatures ? buildMembershipFeatureReviewRequest(payloads, proposals!, model)
           : buildTagReviewRequest(payloads, proposals!, model)
-        : membershipFeatures ? buildMembershipFeatureRequest(payloads, model) : buildTagExtractionRequest(payloads, model, previousDecisions);
+        : membershipFeatures ? buildMembershipFeatureRequest(payloads, model, previousDecisions) : buildTagExtractionRequest(payloads, model, previousDecisions);
       assertStandardizationRequestFits(built, limits);
       signal.throwIfAborted();
       const context = { parentJobId: String(jobId), batchId: String(claimed.id), jobType: claimed.row.job_type,
@@ -207,10 +207,11 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
             if (membershipFeatures) {
               if (stage === 'review') {
                 const proposed = proposals!.items.find(candidate => candidate.id === item.id)!;
+                const { id: _id, ...membershipReview } = item as MembershipFeatureReviewResponse['items'][number];
                 return { productId: input!.productId, tags: [], rejectedTags: [], reviewed: true,
                   membershipKind: (proposed as typeof proposed & MembershipFeatureResponse['items'][number]).membershipKind,
                   membershipRefs: (proposed as typeof proposed & MembershipFeatureResponse['items'][number]).refs,
-                  classificationReviewed: (item as MembershipFeatureReviewResponse['items'][number]).classificationDecision };
+                  classificationReviewed: membershipReview.classificationDecision, membershipReview };
               }
               return { productId: input!.productId, tags: [], rejectedTags: [],
                 membershipKind: (item as MembershipFeatureResponse['items'][number]).membershipKind,

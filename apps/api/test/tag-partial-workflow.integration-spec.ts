@@ -258,7 +258,7 @@ test('partial publication writes the current accepted set without merging a larg
   const newClients = Array.from({ length: 100 }, (_, index) => candidate('supported_client', `new-client-${index}`, index));
   const batch = await f.next();
   await db.updateTable('ai_job_batches').set({
-    reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1 }),
+    reference_snapshot: jsonb({ tagStage: 'review', reviewRepairRound: 1 }),
   }).where('id', '=', batch.id).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, batch.id,
     [{ productId: f.product.id, tags: newClients, rejectedTags: [], reviewed: true, complete: false,

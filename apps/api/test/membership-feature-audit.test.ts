@@ -69,9 +69,42 @@ test('feature batch audits expose the proposed kind and false classification ver
   const audit = await f.repo.tagProductAudit(1n, 2n);
   assert.equal(audit.batches[0].proposed_membership_kind, 'rental');
   assert.equal(audit.batches[0].classification_decision, null);
+  assert.equal(audit.batches[0].classification_feedback, null);
   assert.equal(audit.batches[0].proposals.length, 7);
   assert.equal(audit.batches[1].proposed_membership_kind, 'rental');
   assert.equal(audit.batches[1].classification_decision, false);
+  assert.equal(audit.batches[1].classification_feedback, null);
   assert.deepEqual(audit.batches[1].review_decisions, [true, false]);
   assert.deepEqual(audit.member.output, legacy);
+});
+
+test('feature audits expose durable diagnostic refs and the shared repair round without changing the proposal', async t => {
+  const feedback = { classificationDecision: false, code: 'delivery_mismatch', refs: [0, 2] };
+  const f = fixture('membership_features', { ...legacy, review: {
+    mode: 'membership_binary', decision: false, code: 'delivery_mismatch', refs: [0, 2],
+  } }, 'failed', [
+    { id: 10n, reference_snapshot: { tagStage: 'review', extractionBatchId: '9' }, request_estimate: null, response_diagnostic: null,
+      validated_decision: { items: [{ productId: '2', membershipKind: 'rental', membershipRefs: [0],
+        reviewed: true, classificationReviewed: false, membershipReview: feedback, tags: [], rejectedTags: [] }] } },
+    { id: 11n, reference_snapshot: { tagStage: 'repair', repairReviewBatchId: '10', reviewRepairRound: 1 },
+      request_estimate: null, response_diagnostic: null, validated_decision: { items: [{
+        productId: '2', membershipKind: 'account', membershipRefs: [2], tags: [], rejectedTags: [],
+      }] } },
+    { id: 12n, reference_snapshot: { tagStage: 'review', extractionBatchId: '11', repairReviewBatchId: '10', reviewRepairRound: 1 },
+      request_estimate: null, response_diagnostic: null, validated_decision: { items: [{
+        productId: '2', membershipKind: 'account', membershipRefs: [2], reviewed: true, classificationReviewed: true,
+        membershipReview: { classificationDecision: true, code: null, refs: [] }, tags: [], rejectedTags: [],
+      }] } },
+    { id: 13n, reference_snapshot: { tagStage: 'repair', tagRepairRound: 1 },
+      request_estimate: null, response_diagnostic: null, validated_decision: null },
+  ]);
+  t.after(() => f.db.destroy());
+  const audit = await f.repo.tagProductAudit(1n, 2n);
+  assert.equal(audit.batches[0].proposed_membership_kind, 'rental');
+  assert.deepEqual(audit.batches[0].classification_feedback, feedback);
+  assert.equal(audit.batches[1].proposed_membership_kind, 'account');
+  assert.equal(audit.batches[1].classification_feedback, null);
+  assert.deepEqual(audit.batches[2].classification_feedback, { classificationDecision: true, code: null, refs: [] });
+  assert.deepEqual(audit.batches.map((batch: { tagRepairRound: number }) => batch.tagRepairRound), [0, 1, 1, 1]);
+  assert.deepEqual(audit.member.output.review, { mode: 'membership_binary', decision: false, code: 'delivery_mismatch', refs: [0, 2] });
 });

@@ -316,7 +316,7 @@ test('all-pending and historical tag queue coverage use the latest current audit
  await db.insertInto('product_tags').values(tagRows({ product_id: ids[21]!, name: 'warranty_terms', value: 'covered' })).execute();
  for (const status of ['unfinished', 'attention', 'all']) {
    const queue = await readAiTaskQueue(db, { jobType: 'tag_extraction', scopeShopId: f.products[0]!.shop_id, status, limit: 1 });
-   assert.equal(queue.summary.pendingProducts, status === 'unfinished' ? 2 : 14, status);
+   assert.equal(queue.summary.pendingProducts, status === 'unfinished' ? 2 : 13, status);
    if (queue.nextCursor) {
      const next = await readAiTaskQueue(db, { jobType: 'tag_extraction', scopeShopId: f.products[0]!.shop_id, status, limit: 1, cursor: queue.nextCursor });
      assert.deepEqual(next.summary, queue.summary);
@@ -329,7 +329,7 @@ test('all-pending and historical tag queue coverage use the latest current audit
  const pending=await createManualTagJob(db,{allPending:true,model:'mock',requestId:randomUUID()});
  await preparePending(pending.id);
  const members=await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',pending.id).orderBy('product_id').execute();
- assert.deepEqual(members.map(member=>String(member.product_id)),[3,4,6,7,10,11,14,15,17,18,19,21,22,24].map(i=>String(ids[i])));
+ assert.deepEqual(members.map(member=>String(member.product_id)),[3,4,6,7,10,11,14,15,19,20,21,22,24].map(i=>String(ids[i])));
  await f.repo.cancelJob(pending.id);
 });
 

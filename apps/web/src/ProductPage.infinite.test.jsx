@@ -115,7 +115,7 @@ test('detail Enter searches immediately once and keeps applied price filters whe
   const calls = mockApi(); render(<App />);
   await screen.findByText('报价0');
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
-  fireEvent.change(screen.getByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
+  fireEvent.change(await screen.findByRole('spinbutton', { name: '最低价格' }), { target: { value: '10' } });
   fireEvent.change(screen.getByRole('spinbutton', { name: '最高价格' }), { target: { value: '20' } });
   expect(calls.filter(({ url }) => url.searchParams.has('priceMin'))).toHaveLength(0);
   fireEvent.click(screen.getByRole('button', { name: '应用筛选（1）' }));

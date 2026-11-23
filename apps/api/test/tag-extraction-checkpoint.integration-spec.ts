@@ -16,6 +16,7 @@ import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-reques
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
 before(async () => {
@@ -62,6 +63,7 @@ async function fixture(count = 1, evidence?: string, stage: 'warranty' | 'extrac
     source_data: jsonb(payload.sourceData), normalized_key: `checkpoint-${index}`, url: 'https://test.invalid/p',
     content_version: 1n, content_fingerprint: fingerprint,
   }))).returningAll().execute();
+  await seedUsableOffers(db, products.map(product => product.id));
   const job = await db.insertInto('ai_jobs').values({
     total: BigInt(count), model: 'mock', job_type: 'tag_extraction', status: 'running',
     prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: STANDARDIZATION_POLICY_VERSION,
@@ -85,7 +87,7 @@ async function fixture(count = 1, evidence?: string, stage: 'warranty' | 'extrac
     job_id: job.id, batch_index: 0n, product_ids: jsonb([String(inputId)]), product_count: BigInt(count),
     step: 'request', status: 'running', claimed_by: claim.workerId, attempts: claim.attempt,
     claim_token: claim.token, lease_until: new Date(Date.now() + 60000), request_budget_used: 1, request_budget_limit: 2,
-    ...(stage === 'review' ? { reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1 }) } : {}),
+    ...(stage === 'review' ? { reference_snapshot: jsonb({ tagStage: 'review', reviewRepairRound: 1 }) } : {}),
     ...(stage === 'warranty' ? { reference_snapshot: jsonb({
       tagStage: 'warranty', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', candidates: [],
       inputs: [{ id: String(inputId), candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } }],
@@ -121,7 +123,7 @@ async function warrantyReviewFixture(count = 1, labels = warrantyLabels) {
   const review = await next();
   await claimPublish(review.id, claim.token);
   await db.updateTable('ai_job_batches').set({ request_budget_used: 1,
-    reference_snapshot: jsonb({ ...(review.reference_snapshot as Record<string, JsonValue>), tagRepairRound: 1 }),
+    reference_snapshot: jsonb({ ...(review.reference_snapshot as Record<string, JsonValue>), reviewRepairRound: 1 }),
   }).where('id', '=', review.id).execute();
   return { ...f, batch: review };
 }
@@ -429,7 +431,7 @@ test('queued warranty skips its free alias before reservation while its paid ded
     }
     assert.equal(await worker.runOnce(), 0);
   } finally { await worker.stop(); }
-  assert.deepEqual(reservations, ['reserved', 'reserved', 'reserved']);
+  assert.deepEqual(reservations, ['refresh', 'reserved', 'refresh', 'reserved', 'refresh', 'reserved']);
   const batches = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id).execute();
   assert.equal(batches.length, 3);
   for (const batch of batches) {
@@ -1199,7 +1201,7 @@ test('streamed full repair replaces mistakenly approved channels and regions and
     const review = batches[1]!, repairBatch = batches[2]!, finalReview = batches[3]!;
     assert.equal((repairBatch.reference_snapshot as any).tagStage, 'repair');
     assert.equal((repairBatch.reference_snapshot as any).repairReviewBatchId, String(review.id));
-    assert.equal((finalReview.reference_snapshot as any).tagRepairRound, 1);
+    assert.equal((finalReview.reference_snapshot as any).reviewRepairRound, 1);
     assert.equal((finalReview.reference_snapshot as any).extractionBatchId, String(repairBatch.id));
     for (const batch of batches) {
       assert.equal(batch.request_budget_used, 1);
@@ -1309,7 +1311,7 @@ test('mixed initial review publishes resolved inputs immediately and isolates th
   assert.equal(repair!.step, 'request');
   assert.equal(repair!.validated_decision, null);
   assert.equal((repair!.reference_snapshot as any).tagStage, 'repair');
-  assert.equal((repair!.reference_snapshot as any).tagRepairRound, 1);
+  assert.equal((repair!.reference_snapshot as any).reviewRepairRound, 1);
   assert.equal((repair!.reference_snapshot as any).repairReviewBatchId, String(review.id));
   assert.equal((repair!.reference_snapshot as any).tagPublishOnly, undefined);
 
@@ -1476,7 +1478,7 @@ test('audit exposes only its own ordered proposals, raw votes and exact lineage 
   const reviewClaim = await claimPublish(review.id, 'review-audit-claim');
   await db.updateTable('ai_job_batches').set({ request_budget_used: 1, started_at: new Date('2026-10-25T02:00:00Z'),
     request_estimate: jsonb({ totalTokens: 654 }),
-    reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1, extractionBatchId: String(f.batch.id) }) }).where('id', '=', review.id).execute();
+    reference_snapshot: jsonb({ tagStage: 'review', reviewRepairRound: 1, extractionBatchId: String(f.batch.id) }) }).where('id', '=', review.id).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id,
     [reviewed, { ...other, tags: [], rejectedTags: [{ ...other.tags[0]!, proposalIndex: 0,
       reasonCode: 'review_rejected', reason: 'LLM 对该标签判定为否' }], reviewed: true, complete: true, reviewDecisions: [false] }], metadata, reviewClaim, 'review');
@@ -1544,7 +1546,7 @@ test('audit preserves indexed candidates in the review loader order', async () =
 test('audit exposes saved votes and never reconstructs corrupted vectors from tag outcomes', async () => {
   const f = await fixture();
   const reviewed = { ...f.decision, reviewed: true, complete: true };
-  await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({ tagStage: 'review', tagRepairRound: 1 }) }).where('id', '=', f.batch.id).execute();
+  await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({ tagStage: 'review', reviewRepairRound: 1 }) }).where('id', '=', f.batch.id).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [reviewed], metadata, claim, 'review');
   await f.repo.publishTagExtractionBatch(f.batch.id, await claimPublish(f.batch.id));
   const saved = await f.repo.tagProductAudit(f.job.id, f.inputId);

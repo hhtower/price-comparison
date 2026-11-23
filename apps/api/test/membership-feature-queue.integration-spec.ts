@@ -12,6 +12,7 @@ import { jsonb, type AiJobType, type DatabaseSchema, type JsonValue } from '../s
 import { recordManualDecisions } from '../src/standardization/decision-history.js';
 import { captureRatingText } from '../src/platforms/source-evidence.js';
 import { projectShopText } from '../src/shops/shop-text-review.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool;
 const schema = `feature_queue_${randomUUID().replaceAll('-', '')}`;
@@ -39,6 +40,7 @@ async function fixture(count = 1) {
     shop_id: shop.id, external_id: String(i), name: 'ChatGPT Plus', spec: '', normalized_key: randomUUID(),
     url: `${shop.url}/${i}`, content_version: 1n, content_fingerprint: `source-${i}`,
   }))).returningAll().execute();
+  await seedUsableOffers(db, products.map(product => product.id));
   return { shop, products };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;

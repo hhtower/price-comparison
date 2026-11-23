@@ -10,6 +10,7 @@ import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-reques
 import { AiAdminController } from '../src/ai/ai-admin.controller.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
+import { seedUsableOffers } from './standardization-review-fixture.js';
 
 describe('normalization task queue over PostgreSQL', () => {
   let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
@@ -42,6 +43,7 @@ describe('normalization task queue over PostgreSQL', () => {
     // Live publications are visible before the finalizer updates ai_jobs.processed.
     const product = await db.insertInto('products').values({ shop_id: shop.id, external_id: 'queue', name: 'Product', source_name: 'Product', spec: '', normalized_key: 'product', url: 'https://example.test/product', content_version: 1n,
       content_fingerprint: productContentFingerprint({ name: 'Product', spec: '' }) }).returningAll().executeTakeFirstOrThrow();
+    await seedUsableOffers(db, [product.id]);
     await db.insertInto('ai_job_inputs').values({ job_id: runningId, input_id: product.id, fingerprint: product.content_fingerprint, payload: jsonb({}), status: 'succeeded', input_bytes: 1n, estimated_tokens: 1n, content_version: 1n }).execute();
     await db.insertInto('ai_job_input_members').values({ job_id: runningId, input_id: product.id, product_id: product.id, content_version: 1n, standardization_revision: product.standardization_revision, fingerprint: product.content_fingerprint, status: 'unclassified' }).execute();
     await db.insertInto('ai_standardization_results').values({ job_id: runningId, product_id: product.id, input_id: product.id, content_version: 1n, fingerprint: product.content_fingerprint, status: 'unclassified', reason_code: 'unmatched', reason: 'mock', decision: jsonb({}) }).execute();
@@ -110,6 +112,7 @@ describe('normalization task queue over PostgreSQL', () => {
     const job = await db.insertInto('ai_jobs').values({ status:'running',total:3n,model:'mock',job_type:'manual_full',prompt_version:STANDARDIZATION_PROMPT_VERSION,rule_version:STANDARDIZATION_POLICY_VERSION,pipeline_versions:jsonb(pipelineVersionSnapshot('mock')) }).returning('id').executeTakeFirstOrThrow();
     for (const [index, shop] of [shops[0]!,shops[1]!,shops[1]!].entries()) {
       const p = await db.insertInto('products').values({shop_id:shop.id,external_id:`mixed${index}`,name:'mixed',source_name:'mixed',spec:'',normalized_key:`mixed${index}`,url:'https://mixed.test/p',content_version:1n,content_fingerprint:productContentFingerprint({name:'mixed',spec:''})}).returningAll().executeTakeFirstOrThrow();
+      await seedUsableOffers(db, [p.id]);
       await db.insertInto('ai_job_inputs').values({job_id:job.id,input_id:p.id,fingerprint:p.content_fingerprint,payload:jsonb({}),input_bytes:1n,estimated_tokens:1n,content_version:1n}).execute();
       await db.insertInto('ai_job_input_members').values({job_id:job.id,input_id:p.id,product_id:p.id,content_version:1n,standardization_revision:p.standardization_revision,fingerprint:p.content_fingerprint,status:index===2?'queued':index===1?'unclassified':'classified'}).execute();
       if(index===1) await db.insertInto('ai_standardization_results').values({job_id:job.id,product_id:p.id,input_id:p.id,content_version:1n,fingerprint:p.content_fingerprint,status:'unclassified',reason_code:'unmatched',reason:'mock',decision:jsonb({})}).execute();

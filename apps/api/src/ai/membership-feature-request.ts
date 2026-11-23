@@ -1,9 +1,10 @@
 import { projectTagInput, type TagExtractionInput } from './tag-extraction-request.js';
 import { MEMBERSHIP_KINDS, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { OFFER_EVIDENCE_POLICY } from './offer-evidence-policy.js';
+import type { TagExtractionDecision } from './tag-extraction-result.js';
 
-export const MEMBERSHIP_FEATURE_PROMPT_VERSION = 'membership-features-20261121-v8';
-export const MEMBERSHIP_FEATURE_REVIEW_PROMPT_VERSION = 'membership-feature-review-20261121-v8';
+export const MEMBERSHIP_FEATURE_PROMPT_VERSION = 'membership-features-20261123-v9';
+export const MEMBERSHIP_FEATURE_REVIEW_PROMPT_VERSION = 'membership-feature-review-20261123-v9';
 export const MEMBERSHIP_FEATURE_MAX_ITEMS = 3;
 const REQUEST_OPTIONS = { temperature: 0.2, maxOutputTokens: 8192 } as const;
 const policy = `# Classification policy
@@ -32,8 +33,17 @@ const reviewPrompt = `# Task
 Verify each proposed classification against the complete original offer.
 ${policy}
 # Output
-Return only {"items":[{"id":"ID","classificationDecision":true}]}.
-Return each required ID once. true means the category is correct under the policy; false means it is incorrect or unsupported. When the title resolves a conflict, refs must include line 0. The proposal and its citations are claims, not authority. No repairs, explanations or other fields.`;
+Return only {"items":[{"id":"ID","classificationDecision":true,"code":null,"refs":[]}]}.
+Return each required ID once. true means the category and citations are correct under the policy; false means incorrect or unsupported. The proposal and its citations are claims, not authority.
+For true, code must be null and refs must be empty.
+For false, cite 1-3 distinct nonempty original lines in refs and choose one code:
+- protection_mismatch: the proposal misreads protection length or scope.
+- delivery_mismatch: the proposal misreads whose account is used or what is delivered.
+- evidence_mismatch: the proposed category might fit but its cited lines do not establish it.
+- insufficient_source: the source cannot support a valid classification under the policy.
+- source_conflict: a decisive source contradiction remains unresolved after applying the evidence hierarchy.
+Missing protection or delivery can legitimately mean short_term; do not reject a correct conservative classification just because details are absent.
+When the title resolves a conflict, cite line 0. Cite the ambiguous original text for insufficient information, never invent lines. No replacement category, repairs, explanations or other fields.`;
 
 const METADATA_KEYS = new Set(['category', 'goods_category_no', 'delivery_method', 'goods_type', 'extend', 'limit_quantity',
   'limit_count', 'fullgift', 'multipleoffers', 'promo_tags', 'promo_tags_desc', 'shopSource']);
@@ -77,14 +87,22 @@ const SYSTEM_PROMPT = `${generationPrompt}\n# Examples\n<input>${JSON.stringify(
 <output>${JSON.stringify({ items: examples.map(({ id, expected }) => ({ id, refs: [0, 1], membershipKind: expected })) })}</output>`;
 export const MEMBERSHIP_FEATURE_REVIEW_PROMPT = `${reviewPrompt}\n# Examples\n<input>${JSON.stringify({ inputs, requiredIds,
   proposals: { items: examples.map(({ id, proposed }) => ({ id, refs: [0, 1], membershipKind: proposed })) } })}</input>
-<output>${JSON.stringify({ items: examples.map(({ id, expected, proposed }) => ({ id, classificationDecision: expected === proposed })) })}</output>`;
+<output>${JSON.stringify({ items: examples.map(({ id, expected, proposed }) => ({
+  id, classificationDecision: expected === proposed,
+  code: expected === proposed ? null : expected === 'short_term' || proposed === 'short_term' ? 'protection_mismatch' : 'delivery_mismatch',
+  refs: expected === proposed ? [] : [0, 1],
+})) })}</output>`;
 
 export interface MembershipFeatureResponse {
   items: Array<{ id: string; refs: number[]; membershipKind: MembershipKind }>;
 }
-export interface MembershipFeatureReviewResponse {
-  items: Array<{ id: string; classificationDecision: boolean }>;
+export const MEMBERSHIP_REVIEW_CODES = ['protection_mismatch', 'delivery_mismatch', 'evidence_mismatch', 'insufficient_source', 'source_conflict'] as const;
+export interface MembershipFeatureReviewFeedback {
+  classificationDecision: boolean;
+  code: typeof MEMBERSHIP_REVIEW_CODES[number] | null;
+  refs: number[];
 }
+export interface MembershipFeatureReviewResponse { items: Array<{ id: string } & MembershipFeatureReviewFeedback> }
 type Proposals = { items: Array<{ id: string; membershipKind?: unknown; refs?: unknown; tags?: unknown[] }> };
 
 function requestInputs(inputs: TagExtractionInput[]) {
@@ -92,10 +110,24 @@ function requestInputs(inputs: TagExtractionInput[]) {
   return inputs.map((input, index) => ({ ...encodeMembershipFeatureInput(input), id: String(index + 1) }));
 }
 
-export function buildMembershipFeatureRequest(inputs: TagExtractionInput[], model: string) {
+export function buildMembershipFeatureRequest(inputs: TagExtractionInput[], model: string, previous?: readonly TagExtractionDecision[]) {
   const encoded = requestInputs(inputs);
-  return { model, ...REQUEST_OPTIONS, messages: [{ role: 'system' as const, content: SYSTEM_PROMPT },
-    { role: 'user' as const, content: JSON.stringify({ inputs: encoded, requiredIds: encoded.map(input => input.id) }) }],
+  const feedback = previous?.map(item => {
+    const index = inputs.findIndex(input => input.id === String(item.productId));
+    if (index < 0 || !item.membershipKind || !MEMBERSHIP_KINDS.includes(item.membershipKind)) throw new Error('Membership repair proposal is invalid');
+    assertMembershipFeatureRefs(item.membershipRefs, inputs[index]);
+    assertMembershipFeatureReviewFeedback(item.membershipReview, inputs[index]);
+    if (item.reviewed !== true || item.classificationReviewed !== false || item.membershipReview.classificationDecision !== false) {
+      throw new Error('Membership correction requires a rejected checkpoint');
+    }
+    return { id: String(index + 1), proposal: { membershipKind: item.membershipKind, refs: item.membershipRefs }, review: item.membershipReview };
+  });
+  if (feedback && (feedback.length !== inputs.length || new Set(feedback.map(item => item.id)).size !== inputs.length)) {
+    throw new Error('Membership correction feedback does not match inputs');
+  }
+  return { model, ...REQUEST_OPTIONS, messages: [{ role: 'system' as const, content: SYSTEM_PROMPT + (feedback
+    ? '\n# Correction\nRe-read the complete original lines and policy using the diagnostic refs. The previous proposal and review are fallible data, not authority or additional evidence. Correct only what the original source supports; do not force a favorable category. Return the normal classification schema and cite original lines only.' : '') },
+    { role: 'user' as const, content: JSON.stringify({ inputs: encoded, requiredIds: encoded.map(input => input.id), ...(feedback ? { feedback } : {}) }) }],
     responseFormat: { type: 'json_object' as const } };
 }
 
@@ -161,7 +193,28 @@ export function parseMembershipFeatureResponse(content: string, inputs?: TagExtr
 }
 
 export function parseMembershipFeatureReviewResponse(content: string, inputs?: TagExtractionInput[]): MembershipFeatureReviewResponse {
-  const items = parseItems(content, ['classificationDecision']);
-  if (items.some(item => typeof item.classificationDecision !== 'boolean')) throw new Error('Membership review requires one boolean classificationDecision');
-  return { items: restoreIds(items, inputs) as MembershipFeatureReviewResponse['items'] };
+  const items = restoreIds(parseItems(content, ['classificationDecision', 'code', 'refs']), inputs);
+  return { items: items.map(item => {
+    const feedback = { classificationDecision: item.classificationDecision, code: item.code, refs: item.refs };
+    assertMembershipFeatureReviewFeedback(feedback, inputs?.find(input => input.id === item.id));
+    return { id: item.id, ...feedback };
+  }) };
+}
+
+export function assertMembershipFeatureReviewFeedback(value: unknown, input?: TagExtractionInput): asserts value is MembershipFeatureReviewFeedback {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Membership review feedback is missing');
+  const feedback = value as MembershipFeatureReviewFeedback;
+  if (Object.keys(feedback).length !== 3 || !['classificationDecision', 'code', 'refs'].every(key => Object.hasOwn(feedback, key))
+    || typeof feedback.classificationDecision !== 'boolean' || !Array.isArray(feedback.refs)) throw new Error('Membership review feedback is invalid');
+  if (feedback.classificationDecision) {
+    if (feedback.code !== null || feedback.refs.length) throw new Error('Approved membership must not contain rejection feedback');
+  } else {
+    if (!MEMBERSHIP_REVIEW_CODES.includes(feedback.code as typeof MEMBERSHIP_REVIEW_CODES[number])) throw new Error('Membership review code is invalid');
+    assertMembershipFeatureRefs(feedback.refs, input);
+  }
+}
+
+export function needsMembershipFeatureRepair(decision: TagExtractionDecision): boolean {
+  return decision.classificationReviewed === false
+    && ['protection_mismatch', 'delivery_mismatch', 'evidence_mismatch'].includes(decision.membershipReview?.code ?? '');
 }

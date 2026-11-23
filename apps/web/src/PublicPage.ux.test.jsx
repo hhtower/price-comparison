@@ -142,7 +142,7 @@ test('modal reset clears applied filters, invalid drafts, pagination and a pendi
   fireEvent.change(dialog.getByRole('textbox', { name: '搜索商铺或报价' }), { target: { value: '不存在' } });
   fireEvent.click(dialog.getByRole('button', { name: '筛选（2）' }));
   fireEvent.change(await dialog.findByRole('spinbutton', { name: '最低价格' }), { target: { value: '1.111' } });
-  fireEvent.click(dialog.getByRole('button', { name: /应用筛选/ }));
+  fireEvent.click(await dialog.findByRole('button', { name: /应用筛选/ }));
   expect(dialog.getByRole('alert')).toBeInTheDocument();
   await act(async () => fireEvent.click(dialog.getByRole('button', { name: '重置', exact: true })));
   expect(dialog.getByRole('textbox', { name: '搜索商铺或报价' })).toHaveValue('');
