@@ -94,7 +94,7 @@ async function runStage(repo: AiRepository, id: bigint, output: unknown) {
   });
   const result = await call(claimed, new AbortController().signal);
   await repo.checkpointTagExtractionBatchDecision(BigInt(claimed.row.job_id as string), id,
-    result.tagExtractionItems!, result.metadata, claim, result.tagExtractionStage);
+    result.tagExtractionItems!, result.metadata, claim, result.reviewStage);
   return result;
 }
 
@@ -109,7 +109,7 @@ async function beginReview(count = 1) {
   await runStage(f.repo, f.batch.id, { items: f.products.map((_p, i) => ({
     id: String(i + 1), membershipKind: 'short_term', refs: [0, 1],
   })) });
-  const review = (await f.batches()).find(batch => reference(batch).tagStage === 'review')!;
+  const review = (await f.batches()).find(batch => reference(batch).reviewStage === 'review')!;
   assert.ok(review);
   return { ...f, review };
 }
@@ -117,7 +117,7 @@ async function beginReview(count = 1) {
 async function beginRepair(code: MembershipFeatureReviewFeedback['code'] = 'protection_mismatch') {
   const f = await beginReview();
   await runStage(f.repo, f.review.id, { items: [rejected(code)] });
-  return { ...f, repair: (await f.batches()).find(batch => reference(batch).tagStage === 'repair') };
+  return { ...f, repair: (await f.batches()).find(batch => reference(batch).reviewStage === 'repair') };
 }
 
 async function publish(repo: AiRepository, id: bigint) {
@@ -149,7 +149,7 @@ for (const code of ['protection_mismatch', 'delivery_mismatch', 'evidence_mismat
     await runStage(restarted, f.repair.id, { items: [{ id: '1', membershipKind: 'account', refs: [1] }] });
     const repaired = (await f.batches()).find(batch => batch.id === f.repair!.id)!;
     assert.deepEqual(repaired.request_estimate, estimateStandardizationRequest(built));
-    const review = (await f.batches()).find(batch => reference(batch).extractionBatchId === String(f.repair!.id))!;
+    const review = (await f.batches()).find(batch => reference(batch).proposalBatchId === String(f.repair!.id))!;
     assert.equal(review.request_budget_limit, 1);
     assert.equal(reference(review).repairReviewBatchId, String(f.review.id));
     const recheck = await restarted.getTagExtractionBatchInputs(review.id);
@@ -182,14 +182,14 @@ test('a second repairable rejection stops using the shared reference even withou
   const f = await beginRepair();
   assert.ok(f.repair);
   await runStage(f.repo, f.repair.id, { items: [{ id: '1', membershipKind: 'account', refs: [1] }] });
-  const review = (await f.batches()).find(batch => reference(batch).extractionBatchId === String(f.repair!.id))!;
+  const review = (await f.batches()).find(batch => reference(batch).proposalBatchId === String(f.repair!.id))!;
   const saved = { ...reference(review) };
   delete saved.reviewRepairRound;
   await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb(saved) }).where('id', '=', review.id).execute();
   await runStage(f.repo, review.id, { items: [rejected('delivery_mismatch')] });
   await publish(f.repo, review.id);
   assert.equal((await f.batches()).length, 4);
-  assert.equal((await f.batches()).filter(batch => reference(batch).tagStage === 'repair').length, 1);
+  assert.equal((await f.batches()).filter(batch => reference(batch).reviewStage === 'repair').length, 1);
   const audit = await f.repo.tagProductAudit(f.job.id, f.products[0]!.id);
   assert.equal(audit.member.output.outcome, 'failed');
   assert.equal(audit.member.reason_code, 'classification_review_rejected');
@@ -254,7 +254,7 @@ test('correction requires a complete first review checkpoint and rejects nested 
   for (const changed of [
     { status: 'queued' as const },
     { step: 'request' as const },
-    { reference_snapshot: jsonb({ ...reference(parent), tagStage: 'extract' }) },
+    { reference_snapshot: jsonb({ ...reference(parent), reviewStage: 'generate' }) },
     { reference_snapshot: jsonb({ ...reference(parent), repairReviewBatchId: String(f.batch.id) }) },
     { validated_decision: jsonb({ items: [] }) },
     { validated_decision: jsonb({ items: [document.items[0]!, document.items[0]!] }) },
@@ -273,7 +273,7 @@ test('mixed review publishes unaffected inputs while only rejected inputs enter 
   const f = await beginReview(2);
   await runStage(f.repo, f.review.id, { items: [{ ...approved, id: '2' }, rejected('protection_mismatch')] });
   const batches = await f.batches();
-  const repair = batches.find(batch => reference(batch).tagStage === 'repair')!;
+  const repair = batches.find(batch => reference(batch).reviewStage === 'repair')!;
   const ready = batches.find(batch => batch.step === 'publish')!;
   assert.ok(repair);
   assert.ok(ready);
@@ -287,7 +287,7 @@ test('mixed review publishes unaffected inputs while only rejected inputs enter 
   assert.equal(results[0]!.output, null);
   assert.equal(results[1]!.status, 'classified');
   await runStage(f.repo, repair.id, { items: [{ id: '1', membershipKind: 'account', refs: [1] }] });
-  const recheck = (await f.batches()).find(batch => reference(batch).extractionBatchId === String(repair.id))!;
+  const recheck = (await f.batches()).find(batch => reference(batch).proposalBatchId === String(repair.id))!;
   await runStage(f.repo, recheck.id, { items: [approved] });
   await publish(f.repo, recheck.id);
   assert.equal((await f.batches()).length, 5);

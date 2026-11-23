@@ -6,7 +6,7 @@ import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
-import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../src/ai/standardization-finalizer.js';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { seedMatchOnlyReviewFixture } from './standardization-review-fixture.js';
 
@@ -29,7 +29,7 @@ after(async () => {
   await admin?.end();
 });
 
-const finalize = (jobId: bigint) => db.transaction().execute(tx => finalizeOrScheduleMissing(tx, jobId));
+const finalize = (jobId: bigint) => db.transaction().execute(tx => finalizeAiJob(tx, jobId));
 
 async function fixtureForFailure(errorSource = 'input_too_large') {
   const fixture = await seedMatchOnlyReviewFixture(db);

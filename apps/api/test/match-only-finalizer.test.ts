@@ -4,7 +4,7 @@ import { DummyDriver, Kysely, PostgresAdapter, PostgresIntrospector, PostgresQue
 import type { DatabaseSchema } from '../src/database/types.js';
 import * as versions from '../src/ai/pipeline-versions.js';
 import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
-import { finalizeOrScheduleMissing, recoverAbandonedStandardizationBatches, recoverStandardizationFinalization } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob, recoverAbandonedStandardizationBatches, recoverStandardizationFinalization } from '../src/ai/standardization-finalizer.js';
 
 function fixture(options: { stale?: boolean; missing?: boolean; review?: boolean; legacyCheckpoint?: boolean; duplicateCheckpoint?: boolean } = {}) {
   const queries: CompiledQuery[] = [];
@@ -29,7 +29,7 @@ function fixture(options: { stale?: boolean; missing?: boolean; review?: boolean
         }] };
         if (query.sql.includes('from "ai_job_batches"') && query.parameters.includes('failed')) return { rows: options.review ? [{
           id: 8n, product_ids: ['11'], error_source: 'provider_unknown', error: 'timeout',
-          reference_snapshot: { standardizationStage: 'review', generationBatchId: '7' },
+          reference_snapshot: { reviewStage: 'review', proposalBatchId: '7' },
         }] : [] };
         if (query.sql.includes('from "ai_job_input_members"') && !query.sql.startsWith('update')) return { rows: options.review || options.missing ? [{
           input_id: 11n, product_id: 101n, content_version: 1n, fingerprint: 'current', standardization_revision: 0n,
@@ -52,7 +52,7 @@ function fixture(options: { stale?: boolean; missing?: boolean; review?: boolean
 test('stale jobs cannot finalize, materialize checkpoints or create retry rounds', async () => {
   const f = fixture({ stale: true, missing: true });
   try {
-    await assert.rejects(f.db.transaction().execute(tx => finalizeOrScheduleMissing(tx, 3n)), { code: 'AI_POLICY_STALE' });
+    await assert.rejects(f.db.transaction().execute(tx => finalizeAiJob(tx, 3n)), { code: 'AI_POLICY_STALE' });
     assert.equal(f.queries.some(query => /^(insert|update)/.test(query.sql)), false);
   } finally { await f.db.destroy(); }
 });
@@ -60,7 +60,7 @@ test('stale jobs cannot finalize, materialize checkpoints or create retry rounds
 test('match-only finalization does not resubmit missing model outputs', async () => {
   const f = fixture({ missing: true });
   try {
-    await f.db.transaction().execute(tx => finalizeOrScheduleMissing(tx, 3n));
+    await f.db.transaction().execute(tx => finalizeAiJob(tx, 3n));
     assert.equal(f.queries.some(query => query.sql.startsWith('insert into "ai_job_batches"')), false);
     assert.equal(f.queries.some(query => query.sql.includes('"missing_reprocess_count"')), false);
     assert.ok(f.queries.some(query => query.sql.startsWith('update "ai_jobs"')));
@@ -70,7 +70,7 @@ test('match-only finalization does not resubmit missing model outputs', async ()
 test('failed review stays a technical failure and cannot accept an unreviewed unmatched proposal', async () => {
   const f = fixture({ review: true });
   try {
-    await f.db.transaction().execute(tx => finalizeOrScheduleMissing(tx, 3n));
+    await f.db.transaction().execute(tx => finalizeAiJob(tx, 3n));
     const result = f.queries.find(query => query.sql.startsWith('insert into "ai_standardization_results"'));
     assert.ok(result);
     assert.ok(result.parameters.includes('request_outcome_unknown'));
@@ -84,7 +84,7 @@ test('failed review stays a technical failure and cannot accept an unreviewed un
 test('legacy generation checkpoints are never resumed during failure materialization', async () => {
   const f = fixture({ review: true, legacyCheckpoint: true });
   try {
-    await f.db.transaction().execute(tx => finalizeOrScheduleMissing(tx, 3n));
+    await f.db.transaction().execute(tx => finalizeAiJob(tx, 3n));
     assert.equal(f.queries.some(query => query.sql.includes('"validated_decision"')), false);
     const result = f.queries.find(query => query.sql.startsWith('insert into "ai_standardization_results"'));
     assert.ok(result?.parameters.includes('request_outcome_unknown'));
@@ -94,7 +94,7 @@ test('legacy generation checkpoints are never resumed during failure materializa
 test('corrupt checkpoint items cannot bypass review failure handling', async () => {
   const f = fixture({ review: true, duplicateCheckpoint: true });
   try {
-    await f.db.transaction().execute(tx => finalizeOrScheduleMissing(tx, 3n));
+    await f.db.transaction().execute(tx => finalizeAiJob(tx, 3n));
     assert.equal(f.queries.some(query => query.sql.includes('"validated_decision"')), false);
     const result = f.queries.find(query => query.sql.startsWith('insert into "ai_standardization_results"'));
     assert.ok(result?.parameters.includes('request_outcome_unknown'));

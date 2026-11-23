@@ -1,6 +1,6 @@
 import { sql } from 'kysely';
 import { hasUncertainMemberRequest, unknownRequestReason } from './request-outcome.js';
-import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION, taskResultVersions } from './pipeline-versions.js';
+import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION, taskResultVersions, currentExecutionPipeline } from './pipeline-versions.js';
 import type { EvidenceCitation } from './ai.schemas.js';
 import { API_RELAY_EXCLUSION_CODE } from '../standardization/catalog-exclusion.js';
 
@@ -114,8 +114,7 @@ export const hasActiveStandardizationWork = sql<boolean>`exists (select 1 from a
   where active.product_id = p.id and active.content_version = p.content_version
     and active.fingerprint = p.content_fingerprint
     and active.standardization_revision = p.standardization_revision
-    and j.prompt_version = ${PIPELINE_VERSIONS.prompt} and j.rule_version = ${STANDARDIZATION_POLICY_VERSION}
-    and j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+    and ${currentExecutionPipeline()}
     and j.status in ('queued', 'running', 'paused', 'ready') and not j.cancel_requested
     and (active.status in ('queued', 'processing') or exists (
       select 1 from ai_job_batches pending where pending.job_id = active.job_id

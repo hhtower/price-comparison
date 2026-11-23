@@ -9,11 +9,11 @@ import { EVIDENCE_VALIDATION_VERSION, PIPELINE_VERSIONS, pipelineVersionSnapshot
 test('current validation accepts new tasks and expires previous validation snapshots', () => {
   assert.equal(EVIDENCE_VALIDATION_VERSION, 'match-only-boundary-20261119-v1');
   const current = pipelineVersionSnapshot('mock');
-  assert.equal(isCurrentPipeline(current), true);
-  const job = { prompt_version: PIPELINE_VERSIONS.prompt, rule_version: PIPELINE_VERSIONS.standardizationPolicy, pipeline_versions: current };
+  assert.equal(isCurrentPipeline(current, 'manual_full'), true);
+  const job = { job_type: 'manual_full' as const, prompt_version: PIPELINE_VERSIONS.prompt, rule_version: PIPELINE_VERSIONS.standardizationPolicy, pipeline_versions: current };
   assert.doesNotThrow(() => assertCurrentPipeline(job));
   const previous = { ...PIPELINE_VERSIONS, validation: 'evidence-identity-publication-20261024-v9' };
-  assert.equal(isCurrentPipeline(previous), false);
+  assert.equal(isCurrentPipeline(previous, 'manual_full'), false);
   assert.throws(() => assertCurrentPipeline({ ...job, pipeline_versions: previous }), { code: 'AI_POLICY_STALE' });
 });
 
@@ -66,14 +66,14 @@ test('general prompt and protocol expire snapshots that included warranty extrac
   assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261121-v18');
   assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261121-v14');
   assert.equal(TAG_EXTRACTION_PROTOCOL_VERSION, 'tag-json-typed-values-20261117-v7');
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261015-v5' }), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261025-v7' }), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-object-closed-v1' }), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261114-v10' }), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagReviewPrompt: 'tag-review-20261114-v6' }), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261115-v16' }), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagReviewPrompt: 'tag-review-20261115-v12' }), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-typed-values-20261115-v6' }), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261015-v5' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261025-v7' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-object-closed-v1' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261114-v10' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagReviewPrompt: 'tag-review-20261114-v6' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261115-v16' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagReviewPrompt: 'tag-review-20261115-v12' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-typed-values-20261115-v6' }, 'tag_extraction'), false);
 });
 
 

@@ -9,7 +9,8 @@ import { migrateToLatest } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import { getJobProgress } from '../src/ai/ai-progress.repository.js';
-import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../src/ai/standardization-finalizer.js';
+import { seedAttributePublication } from './attribute-publication-fixture.js';
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest } from '../src/ai/membership-feature-request.js';
 import { estimateStandardizationRequest } from '../src/ai/standardization-request.js';
 import { createMembershipFeatureJob, createManualMembershipFeatureJob, createTagJob, previewMembershipFeatureJob } from '../src/ai/tag-extraction-jobs.js';
@@ -110,12 +111,12 @@ function reviewedFeature(task: Awaited<ReturnType<typeof featureTask>>, kind: Me
 async function saveFeature(task: Awaited<ReturnType<typeof featureTask>>, kind: MembershipKind, classificationReviewed = true,
   tags?: TagExtractionDecision['tags']) {
   const reviewed = reviewedFeature(task, kind, tags);
-  await db.updateTable('ai_job_batches').set({ step: 'publish' }).where('id', '=', task.batch.id).execute();
-  await task.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id,
+  await seedAttributePublication(db, task.batch.id,
     [{ ...reviewed, membershipKind: kind, classificationReviewed, membershipReview: {
       classificationDecision: classificationReviewed, code: classificationReviewed ? null : 'source_conflict',
       refs: classificationReviewed ? [] : [0],
-    } }], {}, task.claim, 'publish');
+    } }]);
+  await task.repo.publishTagExtractionBatch(task.batch.id, task.claim);
 }
 
 async function publishIdentity(f: Awaited<ReturnType<typeof fixture>>, existingJob?: Awaited<ReturnType<AiRepository['createJob']>>,
@@ -202,14 +203,14 @@ test('compact feature batch streams extraction and mixed review through real che
   });
   let sends = 0;
   let batchId = initial[0]!.id;
-  for (const stage of ['extract', 'review'] as const) {
+  for (const stage of ['generate', 'review'] as const) {
     const claimed = await claimBatch(batchId);
     const frozen = await repo.getTagExtractionBatchInputs(batchId);
     assert.equal(frozen.stage, stage);
     assert.equal(frozen.inputs.length, 2);
     const payloads = frozen.inputs.map(input => ({ ...(input.payload as Record<string, JsonValue>),
       id: String(input.productId), name: input.name, spec: input.spec, sourceData: input.sourceData }));
-    const built = stage === 'extract' ? buildMembershipFeatureRequest(payloads, 'mock')
+    const built = stage === 'generate' ? buildMembershipFeatureRequest(payloads, 'mock')
       : buildMembershipFeatureReviewRequest(payloads, frozen.proposals!, 'mock');
     const estimate = estimateStandardizationRequest(built);
     if (stage === 'review') {
@@ -219,7 +220,7 @@ test('compact feature batch streams extraction and mixed review through real che
     }
     await repo.prepareBatch(batchId);
     const planned = await batches();
-    assert.equal(planned.length, stage === 'extract' ? 1 : 2, 'review must not split a fitting two-product batch');
+    assert.equal(planned.length, stage === 'generate' ? 1 : 2, 'review must not split a fitting two-product batch');
     const batch = planned.find(row => row.id === batchId)!;
     assert.deepEqual([...(batch.product_ids as string[])].sort(), ids.map(String).sort(),
       'each stage must retain both inputs regardless of model response order');
@@ -232,7 +233,7 @@ test('compact feature batch streams extraction and mixed review through real che
       assert.equal(request.stream, true);
       assert.deepEqual(request.messages, built.messages);
       assert.equal(Buffer.byteLength(String(init?.body)), estimate.requestBytes);
-      const content = JSON.stringify(stage === 'extract' ? extraction : review);
+      const content = JSON.stringify(stage === 'generate' ? extraction : review);
       return new Response([
         { choices: [{ delta: { content: content.slice(0, 25) } }] },
         { choices: [{ delta: { content: content.slice(25) }, finish_reason: 'stop' }] },
@@ -240,7 +241,7 @@ test('compact feature batch streams extraction and mixed review through real che
       { headers: { 'content-type': 'text/event-stream' } });
     });
     const result = await call(claimed, new AbortController().signal);
-    assert.equal(result.tagExtractionStage, stage);
+    assert.equal(result.reviewStage, stage);
     assert.deepEqual(result.tagExtractionItems?.map(item => ({
       id: String(item.productId), kind: item.membershipKind, tags: item.tags, rejectedTags: item.rejectedTags,
       refs: item.membershipRefs,
@@ -252,7 +253,7 @@ test('compact feature batch streams extraction and mixed review through real che
         ...(stage === 'review' ? { reviewed: true, approved: false } : {}) },
     ].sort((a, b) => a.id.localeCompare(b.id)));
     await repo.checkpointTagExtractionBatchDecision(job.id, batchId, result.tagExtractionItems!,
-      result.metadata, claimToken(claimed), result.tagExtractionStage);
+      result.metadata, claimToken(claimed), result.reviewStage);
     assert.deepEqual(await snapshots(), [{ membership_features: null }, { membership_features: null }]);
     assert.ok((await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', job.id).execute())
       .every(member => member.output === null));
@@ -332,7 +333,7 @@ test('tags disabled still schedules features after publication and repeated fina
   const once = await children();
   assert.equal(once.length, 1);
   assert.equal(once[0]!.job_type, 'membership_features');
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, parent.id));
+  await db.transaction().execute(tx => finalizeAiJob(tx, parent.id));
   assert.deepEqual(await children(), once);
   assert.equal((await db.selectFrom('ai_jobs').select('status').where('id', '=', parent.id).executeTakeFirstOrThrow()).status, 'succeeded');
 });
@@ -397,7 +398,8 @@ test('post-publication tags cannot overwrite the approved membership snapshot or
   if ((task.input.payload as { warrantyEligible?: boolean }).warrantyEligible) reviewed.warrantyLabels = {
     subscription_warranty: null, subscription_warranty_t: null, usage_warranty: 28, usage_warranty_t: 'day',
   };
-  await f.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id, [reviewed], {}, task.claim);
+  await seedAttributePublication(db, task.batch.id, [reviewed]);
+  await f.repo.publishTagExtractionBatch(task.batch.id, task.claim);
   assert.deepEqual((await db.selectFrom('products').select('membership_features')
     .where('id', '=', product.id).executeTakeFirstOrThrow()).membership_features, product.membership_features);
   assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', product.id).executeTakeFirstOrThrow(), member);
@@ -451,11 +453,14 @@ for (const invalid of ['tags', 'rejectedTags', 'invalid_kind', 'missing_refs', '
       if (invalid === 'tags') decision.tags = [tag];
       else decision.rejectedTags = [{ ...tag, reasonCode: 'review_rejected', reason: 'rejected' }];
     }
-    await assert.rejects(task.repo.checkpointTagExtractionBatchDecision(task.job.id, task.batch.id, [decision], {}, task.claim, 'extract'));
-    await assert.rejects(task.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id, [decision], {}, task.claim));
+    await assert.rejects(task.repo.checkpointTagExtractionBatchDecision(task.job.id, task.batch.id, [decision], {}, task.claim, 'generate'));
     const batch = await db.selectFrom('ai_job_batches').select(['validated_decision', 'confirmed_requests', 'step'])
       .where('id', '=', task.batch.id).executeTakeFirstOrThrow();
     assert.deepEqual(batch, { validated_decision: null, confirmed_requests: 0, step: 'request' });
+    await seedAttributePublication(db, task.batch.id, [decision]);
+    const saved = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', task.batch.id).executeTakeFirstOrThrow();
+    await assert.rejects(task.repo.publishTagExtractionBatch(task.batch.id, task.claim));
+    assert.deepEqual(await db.selectFrom('ai_job_batches').selectAll().where('id', '=', task.batch.id).executeTakeFirstOrThrow(), saved);
     assert.equal((await db.selectFrom('products').select('membership_features').where('id', '=', f.product.id).executeTakeFirstOrThrow()).membership_features, null);
   });
 }
@@ -474,14 +479,15 @@ for (const step of ['request', 'publish'] as const) {
       else if (rejected === 'legacy_without_feedback') delete decision.membershipReview;
       else if (rejected === 'verdict_mismatch') decision.classificationReviewed = false;
       else decision.membershipReview = { classificationDecision: false, code: 'source_conflict', refs: [999] };
+      await seedAttributePublication(db, task.batch.id, [decision]);
       await db.updateTable('ai_job_batches').set({ step }).where('id', '=', task.batch.id).execute();
-      const atomicRejection = !['unreviewed', 'missing_kind'].includes(rejected);
+      const atomicRejection = step === 'request' || !['unreviewed', 'missing_kind'].includes(rejected);
       const before = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', task.batch.id).executeTakeFirstOrThrow();
       if (atomicRejection) {
-        await assert.rejects(f.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id, [decision], {}, task.claim, step),
-          rejected === 'invalid_kind' ? { message: 'Reviewed membership kind is required' } : /Membership/i);
+        await assert.rejects(f.repo.publishTagExtractionBatch(task.batch.id, task.claim),
+          step === 'request' ? /step/ : rejected === 'invalid_kind' ? { message: 'Reviewed membership kind is required' } : /Membership/i);
         assert.deepEqual(await db.selectFrom('ai_job_batches').selectAll().where('id', '=', task.batch.id).executeTakeFirstOrThrow(), before);
-      } else await f.repo.persistTagExtractionBatchDecision(task.job.id, task.batch.id, [decision], {}, task.claim, step);
+      } else await f.repo.publishTagExtractionBatch(task.batch.id, task.claim);
       assert.equal((await db.selectFrom('products').select('membership_features')
         .where('id', '=', f.product.id).executeTakeFirstOrThrow()).membership_features, null);
       const result = await db.selectFrom('ai_job_input_members').select(['status', 'reason_code', 'output'])
@@ -532,8 +538,8 @@ test('cancelled and stale feature tasks never become implicit short-term classif
   const stale = await featureTask(f.product.id);
   await db.updateTable('products').set({ name: 'ChatGPT Plus 代充 质保30天', content_version: f.product.content_version + 1n,
     content_fingerprint: productContentFingerprint({ name: 'ChatGPT Plus 代充 质保30天', spec: '' }) }).where('id', '=', f.product.id).execute();
-  await f.repo.persistTagExtractionBatchDecision(stale.job.id, stale.batch.id,
-    [reviewedFeature(stale, 'account', [])], {}, stale.claim);
+  await seedAttributePublication(db, stale.batch.id, [reviewedFeature(stale, 'account', [])]);
+  await f.repo.publishTagExtractionBatch(stale.batch.id, stale.claim);
   const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
   assert.equal(product.membership_features, null);
   assert.equal((await db.selectFrom('standard_product_members').select('publication_state').where('product_id', '=', product.id).executeTakeFirstOrThrow()).publication_state, 'published');

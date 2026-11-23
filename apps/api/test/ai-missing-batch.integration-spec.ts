@@ -1,17 +1,19 @@
 import assert from 'node:assert/strict';
 import { seedUsableOffers } from './standardization-review-fixture.js';
 import { after, before, describe, test } from 'node:test';
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import { Kysely, PostgresDialect } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
-import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../src/ai/standardization-finalizer.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { createAiWorker, createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
+import { createTagJob } from '../src/ai/tag-extraction-jobs.js';
+import { seedAttributePublication } from './attribute-publication-fixture.js';
 
-describe('standardization omissions and attribute missing-ID retry limits', () => {
+describe('standardization and attribute response completeness', () => {
   let database: Kysely<DatabaseSchema>;
   let admin: Pool;
   let schema = '';
@@ -56,17 +58,15 @@ describe('standardization omissions and attribute missing-ID retry limits', () =
       productIds.push(product.id);
     }
     await seedUsableOffers(database, productIds);
-    const job = await new AiRepository(database).createJob({ model: `missing-${sequence}`, productIds, batchSize });
-    assert.equal(job.batches.length, batchSize === 1 ? 2 : 1);
-    if (!attribute) return job;
-    await database.updateTable('ai_jobs').set({ job_type: 'tag_extraction' }).where('id', '=', job.id).execute();
-    await database.updateTable('ai_job_input_members').set({ status: 'unclassified', reason_code: 'missing_id' })
-      .where('job_id', '=', job.id).execute();
-    await database.updateTable('ai_job_inputs').set({ status: 'succeeded', reason_code: 'missing_id' })
-      .where('job_id', '=', job.id).execute();
-    await database.updateTable('ai_job_batches').set({ status: 'succeeded', step: 'done', finished_at: sql`now()` })
-      .where('job_id', '=', job.id).execute();
-    return job;
+    if (!attribute) return new AiRepository(database).createJob({ model: `missing-${sequence}`, productIds, batchSize });
+    const standard = await database.selectFrom('standard_products').select('id').executeTakeFirstOrThrow();
+    await database.insertInto('standard_product_members').values(productIds.map(productId => ({
+      product_id: productId, standard_product_id: standard.id, assignment_source: 'ai' as const, publication_state: 'published' as const,
+    }))).execute();
+    const job = await database.transaction().execute(tx => createTagJob(tx, { model: `missing-${sequence}`, productIds }));
+    const batches = await database.selectFrom('ai_job_batches').selectAll().where('job_id', '=', job.id).orderBy('id').execute();
+    assert.equal(batches.length, 1);
+    return { ...job, batches };
   }
 
   test('incomplete standardization output fails the entire streamed request without checkpointing or automatic retry', async () => {
@@ -118,125 +118,42 @@ describe('standardization omissions and attribute missing-ID retry limits', () =
     } finally { await worker.stop(); }
   });
 
-  async function withLimits(limits: { items: number; bytes: number; tokens: number }, action: () => Promise<void>) {
-    const keys = ['AI_BATCH_MAX_ITEMS', 'AI_BATCH_MAX_INPUT_BYTES', 'AI_BATCH_MAX_INPUT_TOKENS'] as const;
-    const previous = keys.map(key => process.env[key]);
-    [process.env.AI_BATCH_MAX_ITEMS, process.env.AI_BATCH_MAX_INPUT_BYTES, process.env.AI_BATCH_MAX_INPUT_TOKENS] =
-      [String(limits.items), String(limits.bytes), String(limits.tokens)];
-    try { await action(); } finally {
-      keys.forEach((key, index) => {
-        if (previous[index] === undefined) delete process.env[key];
-        else process.env[key] = previous[index];
-      });
-    }
+  for (const invalid of ['empty', 'missing', 'duplicate', 'unknown'] as const) {
+    test(`attribute ${invalid} IDs reject the whole checkpoint and saved publication without partial writes`, async () => {
+      const job = await missingJob();
+      const batch = job.batches[0]!;
+      const repository = new AiRepository(database);
+      const claim = { workerId: 'attribute-completeness', attempt: 1n, token: 'complete-claim' };
+      await database.updateTable('ai_job_batches').set({
+        status: 'running', claimed_by: claim.workerId, attempts: claim.attempt, claim_token: claim.token,
+        lease_until: new Date(Date.now() + 60_000),
+      }).where('id', '=', batch.id).execute();
+      await repository.prepareBatch(batch.id);
+      assert.equal(await repository.reserveBatchRequest(batch.id, claim), 'reserved');
+      const request = await repository.getTagExtractionBatchInputs(batch.id);
+      assert.equal(request.inputs.length, 2);
+      const decisions = request.inputs.map(input => ({ productId: input.productId, tags: [], rejectedTags: [],
+        reviewed: true, complete: true, reviewDecisions: [] }));
+      const items = invalid === 'empty' ? [] : invalid === 'missing' ? decisions.slice(0, 1)
+        : invalid === 'duplicate' ? [decisions[0]!, decisions[0]!]
+        : [decisions[0]!, { ...decisions[1]!, productId: 999999999n }];
+      const batchBefore = await database.selectFrom('ai_job_batches').selectAll().where('id', '=', batch.id).executeTakeFirstOrThrow();
+      const membersBefore = await database.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', job.id).orderBy('product_id').execute();
+      const productsBefore = await database.selectFrom('products').selectAll().where('id', 'in', membersBefore.map(member => member.product_id)).orderBy('id').execute();
+      const cacheBefore = await database.selectFrom('catalog_cache_versions').selectAll().execute();
+      await assert.rejects(repository.checkpointTagExtractionBatchDecision(job.id, batch.id, items, {}, claim, 'generate'), /does not match/);
+      assert.deepEqual(await database.selectFrom('ai_job_batches').selectAll().where('id', '=', batch.id).executeTakeFirstOrThrow(), batchBefore);
+      assert.equal(batchBefore.confirmed_requests, 0);
+      await seedAttributePublication(database, batch.id, items);
+      const saved = await database.selectFrom('ai_job_batches').selectAll().where('id', '=', batch.id).executeTakeFirstOrThrow();
+      await assert.rejects(repository.publishTagExtractionBatch(batch.id, claim), /does not match/);
+      await database.transaction().execute(tx => finalizeAiJob(tx, job.id));
+      assert.deepEqual(await database.selectFrom('ai_job_batches').selectAll().where('job_id', '=', job.id).execute(), [saved]);
+      assert.deepEqual(await database.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', job.id).orderBy('product_id').execute(), membersBefore);
+      assert.deepEqual(await database.selectFrom('products').selectAll().where('id', 'in', membersBefore.map(member => member.product_id)).orderBy('id').execute(), productsBefore);
+      assert.deepEqual(await database.selectFrom('catalog_cache_versions').selectAll().execute(), cacheBefore);
+      assert.equal((await database.selectFrom('ai_jobs').select('status').where('id', '=', job.id).executeTakeFirstOrThrow()).status, 'queued');
+      await repository.cancelJob(job.id);
+    });
   }
-
-  test('missing retry obeys the current maximum item count', async () => {
-    const job = await missingJob();
-    await withLimits({ items: 1, bytes: 24_576, tokens: 6_000 }, async () => {
-      await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
-    });
-    const batches = await database.selectFrom('ai_job_batches').select(['product_ids', 'request_budget_limit'])
-      .where('job_id', '=', job.id).where('round', '=', 1).orderBy('batch_index').execute();
-    assert.equal(batches.length, 2);
-    assert.deepEqual(batches.map(batch => (batch.product_ids as string[]).length), [1, 1]);
-    assert.deepEqual(batches.map(batch => batch.request_budget_limit), [1, 1]);
-  });
-
-  test('missing retry respects the original job item cap', async () => {
-    const job = await missingJob(1);
-    await withLimits({ items: 32, bytes: 24_576, tokens: 6_000 }, async () => {
-      await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
-    });
-    const batches = await database.selectFrom('ai_job_batches').select('product_ids')
-      .where('job_id', '=', job.id).where('round', '=', 1).orderBy('batch_index').execute();
-    assert.equal(batches.length, 2);
-    assert.deepEqual(batches.map(batch => (batch.product_ids as string[]).length), [1, 1]);
-  });
-
-  test('missing retry obeys the current byte budget', async () => {
-    const job = await missingJob();
-    const sizes = await database.selectFrom('ai_job_inputs').select(['input_bytes', 'estimated_tokens'])
-      .where('job_id', '=', job.id).orderBy('input_id').execute();
-    const maxBytes = Number(sizes.reduce((max, row) => row.input_bytes > max ? row.input_bytes : max, 0n));
-    assert.ok(Number(sizes[0]!.input_bytes + sizes[1]!.input_bytes) > maxBytes);
-    await withLimits({ items: 2, bytes: maxBytes, tokens: 6_000 }, async () => {
-      await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
-    });
-    const batches = await database.selectFrom('ai_job_batches').select(['product_ids', 'input_bytes', 'estimated_tokens'])
-      .where('job_id', '=', job.id).where('round', '=', 1).orderBy('batch_index').execute();
-    assert.equal(batches.length, 2);
-    assert.deepEqual(batches.map(batch => (batch.product_ids as string[]).length), [1, 1]);
-    assert.ok(batches.every(batch => Number(batch.input_bytes) <= maxBytes));
-  });
-
-  test('missing retry obeys the current token budget', async () => {
-    const job = await missingJob();
-    const sizes = await database.selectFrom('ai_job_inputs').select('estimated_tokens')
-      .where('job_id', '=', job.id).orderBy('input_id').execute();
-    const maxTokens = Number(sizes.reduce((max, row) => row.estimated_tokens > max ? row.estimated_tokens : max, 0n));
-    assert.ok(Number(sizes[0]!.estimated_tokens + sizes[1]!.estimated_tokens) > maxTokens);
-    await withLimits({ items: 2, bytes: 24_576, tokens: maxTokens }, async () => {
-      await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
-    });
-    const batches = await database.selectFrom('ai_job_batches').select(['product_ids', 'estimated_tokens'])
-      .where('job_id', '=', job.id).where('round', '=', 1).orderBy('batch_index').execute();
-    assert.equal(batches.length, 2);
-    assert.deepEqual(batches.map(batch => (batch.product_ids as string[]).length), [1, 1]);
-    assert.ok(batches.every(batch => Number(batch.estimated_tokens) <= maxTokens));
-  });
-
-  test('an input oversized after configuration shrink becomes terminal unclassified', async () => {
-    const job = await missingJob();
-    const inputs = await database.selectFrom('ai_job_inputs').select(['input_id', 'input_bytes']).where('job_id', '=', job.id).orderBy('input_id').execute();
-    const smaller = Number(inputs[0]!.input_bytes < inputs[1]!.input_bytes ? inputs[0]!.input_bytes : inputs[1]!.input_bytes);
-    await withLimits({ items: 2, bytes: smaller, tokens: 6_000 }, async () => {
-      await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
-    });
-    const oversized = inputs.filter(input => Number(input.input_bytes) > smaller).map(input => input.input_id.toString());
-    assert.ok(oversized.length > 0);
-    const batches = await database.selectFrom('ai_job_batches').select(['product_ids', 'status']).where('job_id', '=', job.id).where('round', '=', 1).execute();
-    assert.deepEqual(batches.flatMap(batch => batch.product_ids as string[]), inputs.filter(input => Number(input.input_bytes) <= smaller).map(input => input.input_id.toString()));
-    const results = await database.selectFrom('ai_job_input_members').select(['input_id', 'status', 'reason_code', 'output'])
-      .where('job_id', '=', job.id).orderBy('input_id').execute();
-    assert.deepEqual(results.filter(row => oversized.includes(row.input_id.toString()))
-      .map(row => [row.status, row.reason_code, (row.output as { reasonCode: string }).reasonCode]),
-      oversized.map(() => ['unclassified', 'input_too_large', 'input_too_large']));
-    const stranded = await database.selectFrom('ai_job_input_members').select('product_id').where('job_id', '=', job.id)
-      .where('status', '=', 'queued').where('input_id', 'in', oversized.map(BigInt)).execute();
-    assert.equal(stranded.length, 0);
-    await database.updateTable('ai_job_batches').set({ status: 'succeeded', step: 'done' })
-      .where('job_id', '=', job.id).where('round', '=', 1).execute();
-    await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
-    const finished = await database.selectFrom('ai_jobs').select('status').where('id', '=', job.id).executeTakeFirstOrThrow();
-    assert.equal(finished.status, 'ready_with_errors');
-  });
-
-  test('all oversized missing inputs finish without queued or unreported products', async () => {
-    const job = await missingJob();
-    await withLimits({ items: 2, bytes: 1, tokens: 6_000 }, async () => {
-      await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
-    });
-    const batches = await database.selectFrom('ai_job_batches').select('id')
-      .where('job_id', '=', job.id).where('round', '=', 1).execute();
-    assert.equal(batches.length, 0);
-    const inputs = await database.selectFrom('ai_job_inputs').select(['status', 'reason_code', 'missing_reprocess_count'])
-      .where('job_id', '=', job.id).execute();
-    assert.deepEqual(inputs.map(row => [row.status, row.reason_code, row.missing_reprocess_count]),
-      [['failed', 'input_too_large', 1], ['failed', 'input_too_large', 1]]);
-    const members = await database.selectFrom('ai_job_input_members').select(['status', 'reason_code'])
-      .where('job_id', '=', job.id).execute();
-    assert.deepEqual(members.map(row => [row.status, row.reason_code]),
-      [['unclassified', 'input_too_large'], ['unclassified', 'input_too_large']]);
-    const results = await database.selectFrom('ai_job_input_members').select('output')
-      .where('job_id', '=', job.id).execute();
-    assert.deepEqual(results.map(row => (row.output as { reasonCode: string }).reasonCode), ['input_too_large', 'input_too_large']);
-    assert.deepEqual(await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', job.id).execute(), []);
-    const finished = await database.selectFrom('ai_jobs').select(['status', 'processed', 'unclassified'])
-      .where('id', '=', job.id).executeTakeFirstOrThrow();
-    assert.deepEqual(finished, { status: 'ready_with_errors', processed: 2n, unclassified: 2n });
-    await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
-    assert.equal((await database.selectFrom('ai_job_batches').select('id')
-      .where('job_id', '=', job.id).where('round', '=', 1).execute()).length, 0);
-  });
 });

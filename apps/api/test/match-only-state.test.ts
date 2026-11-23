@@ -9,27 +9,27 @@ test('match-only task policy rejects the former identity rule and snapshots with
   const policy = versions.STANDARDIZATION_POLICY_VERSION;
   assert.notEqual(policy, IDENTITY_POLICY_VERSION);
   const snapshot = versions.pipelineVersionSnapshot('mock') as Record<string, string>;
-  const job = { prompt_version: versions.PIPELINE_VERSIONS.prompt, rule_version: policy, pipeline_versions: snapshot };
+  const job = { job_type: 'manual_full' as const, prompt_version: versions.PIPELINE_VERSIONS.prompt, rule_version: policy, pipeline_versions: snapshot };
   assert.doesNotThrow(() => versions.assertCurrentPipeline(job));
   assert.throws(() => versions.assertCurrentPipeline({ ...job, rule_version: IDENTITY_POLICY_VERSION }), { code: 'AI_POLICY_STALE' });
   const previous = { ...snapshot };
   delete previous.standardizationPolicy;
-  assert.equal(versions.isCurrentPipeline(previous), false);
+  assert.equal(versions.isCurrentPipeline(previous, 'manual_full'), false);
   assert.throws(() => versions.assertCurrentPipeline({ ...job, pipeline_versions: previous }), { code: 'AI_POLICY_STALE' });
-  assert.equal(versions.isCurrentPipeline({ ...snapshot, standardizationPolicy: 'old' }), false);
+  assert.equal(versions.isCurrentPipeline({ ...snapshot, standardizationPolicy: 'old' }, 'manual_full'), false);
 });
 
 test('canonical resolution and admission policy no longer determine task validity', () => {
   const snapshot = versions.pipelineVersionSnapshot('mock') as Record<string, string>;
   delete snapshot.resolution;
   delete snapshot.identityPolicy;
-  assert.equal(versions.isCurrentPipeline(snapshot), true);
+  assert.equal(versions.isCurrentPipeline(snapshot, 'manual_full'), true);
 });
 
 test('historical membership retrieval and identity publication validation snapshots are stale', () => {
   const snapshot = versions.pipelineVersionSnapshot('mock') as Record<string, string>;
-  assert.equal(versions.isCurrentPipeline({ ...snapshot, retrieval: 'weighted-member-name-display-20261007-v2' }), false);
-  assert.equal(versions.isCurrentPipeline({ ...snapshot, validation: 'evidence-identity-publication-20261025-v11' }), false);
+  assert.equal(versions.isCurrentPipeline({ ...snapshot, retrieval: 'weighted-member-name-display-20261007-v2' }, 'manual_full'), false);
+  assert.equal(versions.isCurrentPipeline({ ...snapshot, validation: 'evidence-identity-publication-20261025-v11' }, 'manual_full'), false);
 });
 
 test('manual decisions require known matching version and fingerprint', () => {
@@ -62,5 +62,5 @@ test('old model refusal reasons are never handled outcomes', () => {
 test('only the local relay exclusion is a handled result', () => {
   assert.equal(productProcessingSummary({ reasonCode: 'api_relay_excluded' }).processingDisposition, 'handled');
   const snapshot = versions.pipelineVersionSnapshot('mock') as Record<string, string>;
-  assert.equal(versions.isCurrentPipeline({ ...snapshot, standardizationPolicy: 'standardization-match-only-20261119-v2' }), false);
+  assert.equal(versions.isCurrentPipeline({ ...snapshot, standardizationPolicy: 'standardization-match-only-20261119-v2' }, 'manual_full'), false);
 });

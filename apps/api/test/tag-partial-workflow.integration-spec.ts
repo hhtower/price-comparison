@@ -8,7 +8,7 @@ import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { createTagJob, createProductTextReviewJob } from '../src/ai/tag-extraction-jobs.js';
-import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../src/ai/standardization-finalizer.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { recordTagRepairAttempt, type TagExtractionDecision } from '../src/ai/tag-extraction-result.js';
@@ -90,7 +90,7 @@ async function fixture(kind: 'tag_extraction' | 'text_review' = 'tag_extraction'
     const batch = await next();
     const lease = await claim(batch.id);
     await repo.prepareBatch(batch.id);
-    await repo.checkpointTagExtractionBatchDecision(job.id, batch.id, [extraction], {}, lease, 'extract');
+    await repo.checkpointTagExtractionBatchDecision(job.id, batch.id, [extraction], {}, lease, 'generate');
     const reviewing = await next();
     await repo.checkpointTagExtractionBatchDecision(job.id, reviewing.id, [review], {}, await claim(reviewing.id), 'review');
     return reviewing.id;
@@ -104,7 +104,7 @@ test('a failed candidate schedules one repair and retains successful decisions i
   const f = await fixture();
   await f.firstReview();
   const repair = await f.next();
-  assert.equal((repair.reference_snapshot as any).tagStage, 'repair');
+  assert.equal((repair.reference_snapshot as any).reviewStage, 'repair');
   const input = await f.repo.getTagExtractionBatchInputs(repair.id);
   assert.equal(input.stage, 'repair');
   assert.deepEqual(input.previousDecisions?.[0]?.tags.map(tag => [tag.name, tag.value]), [['duration', 30]]);
@@ -155,7 +155,7 @@ test('a terminal repair error never publishes accepted draft candidates with a r
     candidate('access_channel', 'api', 2)];
   const batch = await f.next();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, batch.id,
-    [{ productId: f.product.id, tags: proposals, rejectedTags: [] }], {}, await f.claim(batch.id), 'extract');
+    [{ productId: f.product.id, tags: proposals, rejectedTags: [] }], {}, await f.claim(batch.id), 'generate');
   const review = await f.next();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id, [{
     productId: f.product.id, tags: proposals.slice(0, 2),
@@ -165,7 +165,7 @@ test('a terminal repair error never publishes accepted draft candidates with a r
   const repair = await f.next();
   await db.updateTable('ai_job_batches').set({ status: 'failed', error_source: 'provider_terminal', error: 'mock terminal failure' })
     .where('id', '=', repair.id).execute();
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, f.job.id));
+  await db.transaction().execute(tx => finalizeAiJob(tx, f.job.id));
   assert.deepEqual(await f.stored(), before);
   assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).where('step', '=', 'publish').execute()).length, 0);
   const { output } = await db.selectFrom('ai_job_input_members').select('output')
@@ -181,7 +181,7 @@ for (const failedStage of ['repair', 'review'] as const) test(`failed full ${fai
     candidate('duration', 30, 2), candidate('region', 'us', 3)];
   const extraction = await f.next();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, extraction.id,
-    [{ productId: f.product.id, tags, rejectedTags: [] }], {}, await f.claim(extraction.id), 'extract');
+    [{ productId: f.product.id, tags, rejectedTags: [] }], {}, await f.claim(extraction.id), 'generate');
   const review = await f.next();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id, [{
     productId: f.product.id, tags: tags.slice(0, 3),
@@ -200,7 +200,7 @@ for (const failedStage of ['repair', 'review'] as const) test(`failed full ${fai
   await db.updateTable('ai_job_batches').set({
     status: 'failed', error_source: 'provider_terminal', error: 'mock terminal failure',
   }).where('id', '=', failed.id).execute();
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, f.job.id));
+  await db.transaction().execute(tx => finalizeAiJob(tx, f.job.id));
   assert.deepEqual(await f.stored(), before);
   const batches = await db.selectFrom('ai_job_batches').select(['id', 'step', 'status']).where('job_id', '=', f.job.id).execute();
   assert.equal(batches.length, batchCount);
@@ -215,7 +215,7 @@ test('a verified complete empty result clears old tags without a repair', async 
   const f = await fixture();
   const extraction = await f.next();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, extraction.id,
-    [{ productId: f.product.id, tags: [], rejectedTags: [] }], {}, await f.claim(extraction.id), 'extract');
+    [{ productId: f.product.id, tags: [], rejectedTags: [] }], {}, await f.claim(extraction.id), 'generate');
   const review = await f.next();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id,
     [{ productId: f.product.id, tags: [], rejectedTags: [], reviewed: true, reviewDecisions: [], complete: true }],
@@ -231,7 +231,7 @@ test('reviewed tags without the frozen shop source cannot be published', async (
   const extraction = await f.next();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, extraction.id,
     [{ productId: f.product.id, tags: [candidate('duration', 30, 0)], rejectedTags: [] }],
-    {}, await f.claim(extraction.id), 'extract');
+    {}, await f.claim(extraction.id), 'generate');
   const review = await f.next();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, review.id,
     [{ productId: f.product.id, tags: [candidate('duration', 30, 0)], rejectedTags: [],
@@ -258,7 +258,7 @@ test('partial publication writes the current accepted set without merging a larg
   const newClients = Array.from({ length: 100 }, (_, index) => candidate('supported_client', `new-client-${index}`, index));
   const batch = await f.next();
   await db.updateTable('ai_job_batches').set({
-    reference_snapshot: jsonb({ tagStage: 'review', reviewRepairRound: 1 }),
+    reference_snapshot: jsonb({ reviewStage: 'review', reviewRepairRound: 1 }),
   }).where('id', '=', batch.id).execute();
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, batch.id,
     [{ productId: f.product.id, tags: newClients, rejectedTags: [], reviewed: true, complete: false,
@@ -283,7 +283,7 @@ test('text review publishes independently in one request and leaves product labe
     consistency: Object.fromEntries(CONSISTENCY_KEYS.map(key => [key, false])),
   } as TextReview;
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, batch.id,
-    [{ productId: f.product.id, tags: [], rejectedTags: [], textReview }], {}, lease, 'extract');
+    [{ productId: f.product.id, tags: [], rejectedTags: [], textReview }], {}, lease, 'generate');
   const publication = await f.next();
   assert.equal(publication.id, batch.id);
   assert.equal(publication.step, 'publish');

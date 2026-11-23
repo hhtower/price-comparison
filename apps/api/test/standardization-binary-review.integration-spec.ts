@@ -79,7 +79,7 @@ async function rejectCorrection(f: Awaited<ReturnType<typeof fixture>>, reviewId
   })) }, request.inputs.map(input => ({ id: String(input.productId), candidateStandardProductIds: input.candidateStandardProductIds })));
   await f.repo.persistBatchDecision(f.job.id, repair.id, proposed, metadata, claim);
   const second = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id)
-    .where(sql<string>`reference_snapshot->>'generationBatchId'`, '=', String(repair.id)).executeTakeFirstOrThrow();
+    .where(sql<string>`reference_snapshot->>'proposalBatchId'`, '=', String(repair.id)).executeTakeFirstOrThrow();
   await claimBatch(second.id);
   await f.repo.reserveBatchRequest(second.id, claim);
   const recheck = await f.repo.getBatchRequest(second.id);
@@ -121,8 +121,8 @@ test('generation checkpoints proposals and queues a separate review without crea
   const review = await reviewBatch(f);
   assert.equal(review.step, 'request');
   assert.equal(review.request_budget_used, 0);
-  assert.equal((review.reference_snapshot as any).standardizationStage, 'review');
-  assert.equal((review.reference_snapshot as any).generationBatchId, String(f.batch.id));
+  assert.equal((review.reference_snapshot as any).reviewStage, 'review');
+  assert.equal((review.reference_snapshot as any).proposalBatchId, String(f.batch.id));
   const restored = await new AiRepository(db).getBatchRequest(review.id);
   assert.equal(restored.stage, 'review');
   assert.deepEqual(restored.proposals, f.proposals);
@@ -246,8 +246,8 @@ test('mixed binary review persists before publication and rejected proposals pre
   });
   const claimed = { id: review.id, row: { ...review, job_type: 'manual_full' }, attempts: 1n, claimed_by: claim.workerId };
   const result = await call(claimed, new AbortController().signal);
-  assert.equal(result.standardizationStage, 'review');
-  await f.repo.persistBatchDecision(f.job.id, review.id, result, result.metadata, claim, result.standardizationStage);
+  assert.equal(result.reviewStage, 'review');
+  await f.repo.persistBatchDecision(f.job.id, review.id, result, result.metadata, claim, result.reviewStage);
   const checkpoint = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', review.id).executeTakeFirstOrThrow();
   assert.equal(checkpoint.step, 'publish');
   assert.equal(checkpoint.confirmed_requests, 1);
@@ -373,7 +373,7 @@ test('review is claimable in its own window while generation remains active', as
     const jobs = new JobsRepository(db);
     const claimed = await jobs.claimAvailable('ai_standardization', 'review-priority', 1);
     assert.equal(claimed[0]?.id, queued.id);
-    assert.equal((claimed[0]?.row.reference_snapshot as any).standardizationStage, 'review');
+    assert.equal((claimed[0]?.row.reference_snapshot as any).reviewStage, 'review');
     await f.repo.prepareBatch(queued.id);
     assert.equal(await f.repo.reserveBatchRequest(queued.id, {
       workerId: claimed[0]!.claimed_by, attempt: claimed[0]!.attempts, token: String(claimed[0]!.row.claim_token),

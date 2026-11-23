@@ -150,7 +150,7 @@ test('default AI transport uses the installed Undici for proxied streams, metada
   assert.deepEqual(await createModelListCall(environment)(signal), ['target-model']);
   const call = createOpenAiModelCall({
     getTagExtractionBatchInputs: async () => ({
-      jobId: 3n, model: 'target-model',
+      jobId: 3n, model: 'target-model', stage: 'generate',
       inputs: [{ productId: 11n, name: 'account', spec: null, sourceData: {} }],
     }),
   } as never, environment);

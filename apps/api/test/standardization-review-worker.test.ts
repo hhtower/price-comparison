@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createAiWorker, createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import { parseStandardizationProtocolResponse, standardizationProposal } from '../src/ai/ai.schemas.js';
 import type { ParsedStandardizationResponse } from '../src/ai/ai.schemas.js';
-import type { StandardizationRequest } from '../src/ai/standardization-request.js';
+import { buildStandardizationRequest, type StandardizationRequest } from '../src/ai/standardization-request.js';
 import type { ClaimedJob } from '../src/jobs/jobs.repository.js';
 
 const proposals = parseStandardizationProtocolResponse({
@@ -25,7 +25,7 @@ const review = (approved: boolean, source = proposals) => {
 };
 const claimed: ClaimedJob = {
   id: 7n, kind: 'ai_batch', attempts: 1n, claimed_by: 'worker', lease_until: new Date(Date.now() + 60000),
-  row: { job_id: 3n, step: 'request', claim_token: 'claim' },
+  row: { job_id: 3n, job_type: 'manual_full', step: 'request', claim_token: 'claim' },
 };
 function streamed(content: string, finish: string | null = 'stop', done = true) {
   return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: content.slice(0, 15) } }] })}\n\n`
@@ -33,7 +33,7 @@ function streamed(content: string, finish: string | null = 'stop', done = true) 
     + (done ? 'data: [DONE]\n\n' : ''));
 }
 function model(fetchImpl: typeof fetch, frozen: StandardizationRequest & {
-  jobId: bigint; stage: 'generate' | 'review'; proposals?: ParsedStandardizationResponse;
+  jobId: bigint; stage: 'generate' | 'review' | 'repair'; proposals?: ParsedStandardizationResponse;
 } = request) {
   return createOpenAiModelCall({ getBatchRequest: async () => frozen } as never, environment, fetchImpl);
 }
@@ -50,7 +50,7 @@ test('review streaming returns an exact original identity or a fixed rejection w
       return streamed(JSON.stringify({ items: [vote(approved)] }));
     });
     const result = await call(claimed, new AbortController().signal);
-    assert.equal(result.standardizationStage, 'review');
+    assert.equal(result.reviewStage, 'review');
     assert.deepEqual(result.items[0]?.review, review(approved));
     assert.deepEqual(result.items[0]?.identity, approved ? proposals.items[0]!.identity : undefined);
     assert.equal(result.items[0]?.reasonCode, approved ? null : 'review_rejected');
@@ -149,16 +149,17 @@ test('successful review checkpoints its vote and request outcome together withou
   assert.deepEqual(events, ['reserve', 'checkpoint', 'complete']);
 });
 
-test('generation failures reject the whole batch without checkpoints, publication or missing-item retries', async () => {
+for (const stage of ['generate', 'repair'] as const) {
+test(`${stage} failures reject the whole batch without checkpoints, publication or missing-item retries`, async () => {
   const frozen = {
-    ...request, stage: 'generate' as const,
+    ...request, stage,
     inputs: [11n, 12n].map(productId => ({
       productId, payload: { name: 'ChatGPT Plus' }, candidateStandardProductIds: ['91'],
       previousDecision: { reason: 'private old history' },
     })),
   };
   const item = (id: string) => ({ id, standardProductId: '91', nullReason: null, evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] });
-  for (const scenario of ['schema', 'evidence', 'missing-id', 'candidate', 'history', 'timeout', 'cancel'] as const) {
+  for (const scenario of ['schema', 'evidence', 'missing-id', 'candidate', 'history', 'truncated', 'no-finish', 'timeout', 'cancel'] as const) {
     const events: string[] = [];
     let signal: AbortSignal | undefined;
     const repository = {
@@ -183,7 +184,9 @@ test('generation failures reject the whole batch without checkpoints, publicatio
         : scenario === 'candidate' ? { ...item('12'), standardProductId: '999' }
         : scenario === 'history' ? { ...item('12'), evidence: [{ path: 'historyContext.reason', quote: 'private old history' }] }
         : { ...item('12'), evidence: [{ path: 'name', quote: 'invented evidence' }] };
-      return streamed(JSON.stringify({ items: scenario === 'missing-id' ? [item('11')] : [item('11'), invalid] }));
+      return streamed(JSON.stringify({ items: scenario === 'missing-id' ? [item('11')]
+        : scenario === 'truncated' || scenario === 'no-finish' ? [item('11'), item('12')] : [item('11'), invalid] }),
+      scenario === 'truncated' ? 'length' : scenario === 'no-finish' ? null : 'stop', scenario !== 'no-finish');
     });
     let next: ClaimedJob | null = claimed;
     let settle!: () => void;
@@ -203,10 +206,47 @@ test('generation failures reject the whole batch without checkpoints, publicatio
         worker.cancel(claimed.id);
       }
       await settled;
-      assert.deepEqual(events, ['reserve', 'send', scenario === 'timeout' || scenario === 'cancel' ? 'unknown' : 'confirmed',
+      assert.deepEqual(events, ['reserve', 'send', scenario === 'timeout' || scenario === 'cancel' || scenario === 'no-finish' ? 'unknown' : 'confirmed',
         scenario === 'cancel' ? 'requeue' : 'fail'], scenario);
     } finally { await worker.stop(); }
   }
+});
+}
+
+test('standardization correction uses the generation prompt and preserves repair through the worker checkpoint', async () => {
+  const events: string[] = [];
+  const frozen = { ...request, stage: 'repair' as const };
+  const repository = {
+    prepareBatch: async () => {}, getBatchRequest: async () => frozen,
+    reserveBatchRequest: async () => { events.push('reserve'); return 'reserved'; },
+    recordBatchRequestOutcome: async () => assert.fail('successful correction confirms atomically'),
+    persistBatchDecision: async (_job: bigint, _batch: bigint, result: any, _metadata: any, claim: unknown, stage: string) => {
+      assert.equal(stage, 'repair');
+      assert.equal(result.reviewStage, 'repair');
+      assert.deepEqual(claim, { workerId: 'worker', attempt: 1n, token: 'claim' });
+      assert.deepEqual(result.items, proposals.items);
+      events.push('checkpoint');
+    },
+  };
+  const call = createOpenAiModelCall(repository as never, environment, async (_url, init) => {
+    const sent = JSON.parse(String(init?.body));
+    assert.equal(sent.stream, true);
+    assert.deepEqual(sent.messages, buildStandardizationRequest(frozen).messages);
+    events.push('send');
+    return streamed(JSON.stringify({ items: [
+      { id: '11', standardProductId: '91', nullReason: null, evidence: [{ path: 'name', quote: 'ChatGPT Plus' }] },
+    ] }));
+  });
+  let next: ClaimedJob | null = claimed;
+  const settled = Promise.withResolvers<void>();
+  const worker = createAiWorker({
+    claimNext: async () => { const item = next; next = null; return item; },
+    heartbeat: async () => {}, requeue: async () => assert.fail('correction must not requeue'),
+    complete: async () => { events.push('complete'); }, fail: async () => { events.push('fail'); },
+    onSettled: () => settled.resolve(),
+  } as never, { repository: repository as never, modelCall: call });
+  try { await worker.runOnce(); await settled.promise; } finally { await worker.stop(); }
+  assert.deepEqual(events, ['reserve', 'send', 'checkpoint', 'complete']);
 });
 
 test('review judges unmatched proposals without creating identities and retains their evidence', async () => {

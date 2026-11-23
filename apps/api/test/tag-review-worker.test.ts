@@ -61,7 +61,7 @@ test('one review request judges several products and labels, preserving true can
   const state = setup();
   const result = await state.call(job, new AbortController().signal);
   assert.equal(state.sends(), 1);
-  assert.equal(result.tagExtractionStage, 'review');
+  assert.equal(result.reviewStage, 'review');
   const byId = new Map(result.tagExtractionItems!.map(item => [item.productId, item]));
   assert.deepEqual(byId.get(11n)!.tags, [{ proposalIndex: 0, name: bill.name, value: bill.value, evidence: [] }]);
   assert.deepEqual(byId.get(11n)!.rejectedTags.map(tag => [tag.name, tag.reasonCode]), [['region', 'review_rejected']]);
@@ -125,21 +125,21 @@ test('tag review ignores captured shop text and succeeds without requesting four
 
 test('independent full title/body review survives fragmented SSE without generating tag decisions', async () => {
   const output = { items: [{ id: '12', textReview }, { id: '11', textReview: fullReview }] };
-  const state = setup(JSON.stringify(output), 'stop', 1000, false, text, proposals, 'text_review', 'extract');
+  const state = setup(JSON.stringify(output), 'stop', 1000, false, text, proposals, 'text_review', 'generate');
   const result = await state.call(job, new AbortController().signal);
   const item = result.tagExtractionItems!.find(item => item.productId === 11n)!;
   assert.deepEqual(item.textReview, fullReview);
   assert.equal(item.reviewDecisions, undefined);
   assert.deepEqual(item.tags, []);
   assert.deepEqual(item.rejectedTags, []);
-  assert.equal(result.tagExtractionStage, 'extract');
+  assert.equal(result.reviewStage, 'generate');
   assert.equal(state.sends(), 1);
 });
 
 test('text review runs even when both products have zero proposed tags', async () => {
   const candidates = { items: proposals.items.map(item => ({ ...item, tags: [] })) };
   const output = { items: [{ id: '11', textReview: fullReview }, { id: '12', textReview }] };
-  const state = setup(JSON.stringify(output), 'stop', 1000, false, text, candidates, 'text_review', 'extract');
+  const state = setup(JSON.stringify(output), 'stop', 1000, false, text, candidates, 'text_review', 'generate');
   const result = await state.call(job, new AbortController().signal);
   assert.deepEqual(result.tagExtractionItems![0]!.textReview, fullReview);
   assert.deepEqual(result.tagExtractionItems!.map(item => item.tags), [[], []]);
@@ -151,7 +151,7 @@ test('text review rejects missing, foreign and duplicate product IDs before retu
     [{ id: '11', textReview: fullReview }, { id: '99', textReview }],
     [{ id: '11', textReview: fullReview }, { id: '11', textReview: fullReview }],
   ]) {
-    const state = setup(JSON.stringify({ items }), 'stop', 1000, false, text, proposals, 'text_review', 'extract');
+    const state = setup(JSON.stringify({ items }), 'stop', 1000, false, text, proposals, 'text_review', 'generate');
     await assert.rejects(state.call(job, new AbortController().signal), error =>
       Reflect.get(error as object, 'retryClass') === 'invalid_response');
     assert.equal(state.sends(), 1);
@@ -167,12 +167,12 @@ test('missing, nullable, nonboolean and verbose text reviews reject the entire c
   ];
   for (const invalid of badReviews) {
     const output = { items: [{ id: '12', textReview }, { id: '11', textReview: invalid }] };
-    const state = setup(JSON.stringify(output), 'stop', 1000, false, text, proposals, 'text_review', 'extract');
+    const state = setup(JSON.stringify(output), 'stop', 1000, false, text, proposals, 'text_review', 'generate');
     await assert.rejects(state.call(job, new AbortController().signal), error => Reflect.get(error as object, 'retryClass') === 'invalid_response'
       && Reflect.get(error as object, 'responseMetadata').responseDiagnostic.code === 'text_review_invalid');
     assert.equal(state.sends(), 1);
   }
-  const absentSource = setup(JSON.stringify({ items: [{ id: '12', textReview }, { id: '11', textReview }] }), 'stop', 1000, false, undefined, proposals, 'text_review', 'extract');
+  const absentSource = setup(JSON.stringify({ items: [{ id: '12', textReview }, { id: '11', textReview }] }), 'stop', 1000, false, undefined, proposals, 'text_review', 'generate');
   await assert.rejects(absentSource.call(job, new AbortController().signal));
   assert.equal(absentSource.sends(), 0);
 });
@@ -195,14 +195,14 @@ for (const jobType of ['tag_extraction', 'text_review']) test(jobType + ' extrac
   const valid = jobType === 'text_review' ? { items: [{ id: '11', textReview }, { id: '12', textReview }] }
     : { items: [{ id: '11', tags: [] }, { id: '12', tags: [] }] };
   for (const [content, finish] of [[JSON.stringify(valid), 'length'], [JSON.stringify(valid), null], ['{', 'stop']] as const) {
-    const state = setup(content, finish, 1000, false, text, proposals, jobType, 'extract');
+    const state = setup(content, finish, 1000, false, text, proposals, jobType, 'generate');
     await assert.rejects(state.call(job, new AbortController().signal), error => finish === null ? /missing finish reason/u.test(String(error)) : Reflect.get(error as object, 'retryClass') === 'invalid_response');
     assert.equal(state.sends(), 1);
   }
-  const timeout = setup('', 'stop', 20, true, text, proposals, jobType, 'extract');
+  const timeout = setup('', 'stop', 20, true, text, proposals, jobType, 'generate');
   await assert.rejects(timeout.call(job, new AbortController().signal), /timed out/u);
   assert.equal(timeout.sends(), 1);
-  const cancelled = setup('', 'stop', 1000, true, text, proposals, jobType, 'extract');
+  const cancelled = setup('', 'stop', 1000, true, text, proposals, jobType, 'generate');
   const controller = new AbortController();
   const pending = cancelled.call(job, controller.signal);
   const timer = setTimeout(() => controller.abort(new Error('cancel extraction')), 20);
@@ -217,7 +217,7 @@ test('repair replaces the full decision and keeps previous feedback only as draf
   const candidates = { items: [{ id: '11', tags: [{ name: 'duration', value: 30 }] }, { id: '12', tags: [] }] };
   const extracted = await setup(JSON.stringify(candidates), 'stop', 1000, false, undefined, candidates, 'tag_extraction', 'repair', previous)
     .call(job, new AbortController().signal);
-  assert.equal(extracted.tagExtractionStage, 'repair');
+  assert.equal(extracted.reviewStage, 'repair');
   assert.deepEqual(extracted.tagExtractionItems![0]!.tags.map(tag => tag.name), ['duration']);
   const result = await setup(JSON.stringify({ items: [{ id: '11', feedback: '本轮仅期限有依据。', accepted: [true], complete: true }, { id: '12', feedback: '', accepted: [], complete: true }] }),
     'stop', 1000, false, undefined, candidates, 'tag_extraction', 'review', previous).call(job, new AbortController().signal);
@@ -238,7 +238,7 @@ test('streamed generation and all-true review preserve a valid sibling when a ca
     [{ name: 'duration', value: { kind: 'range', min: 90, max: 30 } }, 'tag_value_invalid'],
   ] as const) {
     const response = { items: [{ id: '11', tags: [bill, invalid] }, { id: '12', tags: [] }] };
-    const generation = setup(JSON.stringify(response), 'stop', 1000, false, undefined, proposals, 'tag_extraction', 'extract');
+    const generation = setup(JSON.stringify(response), 'stop', 1000, false, undefined, proposals, 'tag_extraction', 'generate');
     const extracted = await generation.call(job, new AbortController().signal);
     assert.equal(generation.sends(), 1);
     assert.deepEqual(extracted.tagExtractionItems![0]!.tags.map(({ name, value }) => ({ name, value })), [bill, invalid]);

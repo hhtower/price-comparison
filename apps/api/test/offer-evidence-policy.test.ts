@@ -43,14 +43,16 @@ test('generation, review and tag repair receive the same title-first evidence po
 
 test('pre-title-priority prompt snapshots are stale for each changed stage', () => {
   const current = pipelineVersionSnapshot('mock');
-  assert.equal(isCurrentPipeline(current), true);
-  for (const [key, value] of Object.entries({
-    prompt: 'standardization-match-prompt-20261119-v1',
-    standardizationReviewPrompt: 'standardization-match-review-20261119-v1',
-    membershipFeaturePrompt: 'membership-features-20261114-v7',
-    membershipFeatureReviewPrompt: 'membership-feature-review-20261114-v7',
-    tagPrompt: 'tag-20261117-v17',
-    tagReviewPrompt: 'tag-review-20261117-v13',
-    tagWarrantyPrompt: 'tag-warranty-20261117-v1',
-  })) assert.equal(isCurrentPipeline({ ...current, [key]: value }), false, key);
+  for (const [kind, key, value] of [
+    ['manual_full', 'prompt', 'standardization-match-prompt-20261119-v1'],
+    ['manual_full', 'standardizationReviewPrompt', 'standardization-match-review-20261119-v1'],
+    ['membership_features', 'membershipFeaturePrompt', 'membership-features-20261114-v7'],
+    ['membership_features', 'membershipFeatureReviewPrompt', 'membership-feature-review-20261114-v7'],
+    ['tag_extraction', 'tagPrompt', 'tag-20261117-v17'],
+    ['tag_extraction', 'tagReviewPrompt', 'tag-review-20261117-v13'],
+    ['tag_extraction', 'tagWarrantyPrompt', 'tag-warranty-20261117-v1'],
+  ] as const) {
+    assert.equal(isCurrentPipeline(current, kind), true);
+    assert.equal(isCurrentPipeline({ ...current, [key]: value }, kind), false, key);
+  }
 });

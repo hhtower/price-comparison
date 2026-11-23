@@ -1,13 +1,12 @@
 import { sql, type RawBuilder, type Selectable } from 'kysely';
-import { jsonb, type AiStandardizationResultTable } from '../database/types.js';
-import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
+import type { AiStandardizationResultTable } from '../database/types.js';
+import { currentExecutionPipeline } from './pipeline-versions.js';
 import { lostBatchRequest } from './request-outcome.js';
 
 /** Read-only fallback keeps lost requests visible before finalization can save member outcomes. */
 export function standardizationResultSource(productId: RawBuilder<unknown>) {
   const executing = sql<boolean>`j.status in ('queued','running') and not j.pause_requested and not j.cancel_requested
-    and j.prompt_version=${PIPELINE_VERSIONS.prompt} and j.rule_version=${STANDARDIZATION_POLICY_VERSION}
-    and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`;
+    and ${currentExecutionPipeline()}`;
   return sql<Selectable<AiStandardizationResultTable>>`(
     select job_id,product_id,batch_id,input_id,content_version,fingerprint,status,standard_product_id,
       tags,evidence,reason_code,reason,decision,current_assignment_preserved,published_at,created_at

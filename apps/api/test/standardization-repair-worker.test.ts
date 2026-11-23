@@ -16,7 +16,7 @@ const proposal = parseStandardizationProtocolResponse({ items: [{
 const reviewed = parseStandardizationReviewResponse(JSON.stringify({ items: [{
   id: '11', approved: false, code: 'supported_candidate', evidence: [{ path: 'name', quote: 'ChatGPT Plus' }],
 }] }), proposal, request);
-const correctionRequest = { ...request, repairFeedback: reviewed.items };
+const correctionRequest = { ...request, stage: 'repair' as const, repairFeedback: reviewed.items };
 const environment = { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock', AI_TIMEOUT_MS: '50' };
 const claimed: ClaimedJob = {
   id: 7n, kind: 'ai_batch', attempts: 1n, claimed_by: 'worker', lease_until: new Date(Date.now() + 60000),
@@ -33,7 +33,7 @@ for (const scenario of ['success', 'invalid-json', 'missing-id', 'invented-citat
       reserveBatchRequest: async () => { events.push('reserve'); return 'reserved'; },
       recordBatchRequestOutcome: async (_id: bigint, outcome: string) => { events.push(outcome); },
       persistBatchDecision: async (_job: bigint, _batch: bigint, decision: any, _metadata: any, _claim: any, stage: string) => {
-        assert.equal(stage, 'generate');
+        assert.equal(stage, 'repair');
         assert.equal(decision.items[0].identity.standardProductId, '91');
         assert.equal(decision.items[0].review, undefined, 'correction must still receive its own review');
         events.push('checkpoint');

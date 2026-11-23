@@ -17,7 +17,7 @@ import { readAiTaskQueue } from '../src/ai/ai-task-queue.js';
 import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
-import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../src/ai/standardization-finalizer.js';
 import { seedUsableOffers } from './standardization-review-fixture.js';
 import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
 import { parseStandardizationReviewResponse } from '../src/ai/standardization-review-request.js';
@@ -93,7 +93,7 @@ async function technicalFailure(existingProduct?: Selectable<DatabaseSchema['pro
     job_id: f.job.id, batch_index: 0n, product_ids: jsonb([String(f.product.id)]), product_count: 1n,
     status: 'failed', step: 'request', error_source: 'provider_error', error: 'Fixture provider unavailable',
   }).execute();
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, f.job.id));
+  await db.transaction().execute(tx => finalizeAiJob(tx, f.job.id));
   return f;
 }
 
@@ -301,7 +301,7 @@ test('automatic children skip current membership features but retain missing/sta
       await db.updateTable('ai_standardization_results').set({ status: 'classified', standard_product_id: standard.id, reason_code: null })
         .where('job_id', '=', job.id).execute();
       await db.updateTable('ai_job_input_members').set({ status: 'classified' }).where('job_id', '=', job.id).execute();
-      await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
+      await db.transaction().execute(tx => finalizeAiJob(tx, job.id));
       const children = await db.selectFrom('ai_jobs').select('job_type').where('parent_identity_job_id', '=', job.id).orderBy('job_type').execute();
       assert.deepEqual(children.map(child => child.job_type),
         state === 'current' ? ['tag_extraction'] : ['membership_features', 'tag_extraction']);

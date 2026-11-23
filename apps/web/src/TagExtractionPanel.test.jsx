@@ -475,7 +475,7 @@ test('标签抽取看板只汇总当前执行任务，不显示历史覆盖统�
       rawProductCount: 2, processed: 2, requests: { failedBatches: 0 },
       tagResults: { updated: 1, unchanged: 1, review: 0, failed: 0, unrecorded: 0 },
       tagAcceptance: { acceptedTags: 3, rejectedTags: 0, partialProducts: 0 },
-      tagStages: { extractionCompleted: 1, reviewCompleted: 1, publicationQueued: 0 },
+      reviewStages: { generationCompleted: 1, reviewCompleted: 1, publicationQueued: 0 },
     } });
   } });
   render(<TagExtractionPanel shops={shops} />);
@@ -602,7 +602,7 @@ test('部分完成的标签任务不标成全流程成功，拒绝标签与失�
     if (call.path.endsWith('/jobs/8')) return Response.json({ job, progress: {
       rawProductCount: 2, processed: 2, requests: { failedBatches: 1 },
       tagResults: { updated: 1, review: 1, failed: 0 }, tagAcceptance: { acceptedTags: 2, rejectedTags: 1 },
-      tagStages: { extractionCompleted: 1, reviewCompleted: 0 },
+      reviewStages: { generationCompleted: 1, reviewCompleted: 0 },
     } });
   } });
   render(<TagExtractionPanel shops={shops} />);
@@ -736,7 +736,7 @@ test('部分成功显示标签计数、顶层完整性和实际写入，空证�
     acceptedTags: [accepted], rejectedTags: [rejected],
     diff: [{ name: 'duration', before: [], after: [30] }],
     retainedUnconfirmed: [{ name: 'region', value: 'US' }],
-  } }, batches: [{ id: '21', stage: 'extract', proposals: [accepted, rejected] }] });
+  } }, batches: [{ id: '21', stage: 'generate', proposals: [accepted, rejected] }] });
   expect(audit).toHaveTextContent('结果：部分成功 · 成功 1 条标签 · 失败 1 条标签');
   expect(audit).toHaveTextContent('完整性：不完整');
   expect(audit).not.toHaveTextContent('完整性：完整');
@@ -815,10 +815,10 @@ test('两轮修正历史保留各轮候选、布尔票和完整性，不按最�
       { round: 2, tags: [], rejectedTags: [{ ...repaired, reasonCode: 'review_rejected' }], complete: false, reviewDecisions: [false] },
     ],
   } }, batches: [
-    { id: '21', stage: 'extract', reviewRepairRound: 0, proposals: [initial] },
-    { id: '31', stage: 'review', reviewRepairRound: 0, extraction_batch_id: '21', review_decisions: [true] },
+    { id: '21', stage: 'generate', reviewRepairRound: 0, proposals: [initial] },
+    { id: '31', stage: 'review', reviewRepairRound: 0, proposal_batch_id: '21', review_decisions: [true] },
     { id: '22', stage: 'repair', reviewRepairRound: 1, proposals: [repaired] },
-    { id: '32', stage: 'review', reviewRepairRound: 1, extraction_batch_id: '22', review_decisions: [false] },
+    { id: '32', stage: 'review', reviewRepairRound: 1, proposal_batch_id: '22', review_decisions: [false] },
   ] });
   await userEvent.setup().click(within(audit).getByText('提取与修正历史'));
   const history = within(audit).getByText('提取与修正历史').closest('details');
@@ -851,10 +851,10 @@ test.each([true, false])('批次保留首轮投票，修正结果不继承首轮
       { round: 2, tags: [], rejectedTags: [{ ...repaired, reasonCode: 'review_rejected' }], complete: false, reviewDecisions: [false] },
     ],
   } }, batches: [
-    { id: '21', stage: 'extract', reviewRepairRound: 0, proposals: [duration, warranty] },
-    { id: '31', stage: 'review', reviewRepairRound: 0, extraction_batch_id: '21', review_decisions: recorded ? [true, false] : null },
+    { id: '21', stage: 'generate', reviewRepairRound: 0, proposals: [duration, warranty] },
+    { id: '31', stage: 'review', reviewRepairRound: 0, proposal_batch_id: '21', review_decisions: recorded ? [true, false] : null },
     { id: '22', stage: 'repair', reviewRepairRound: 1, proposals: [repaired] },
-    { id: '32', stage: 'review', reviewRepairRound: 1, extraction_batch_id: '22', review_decisions: recorded ? [false] : null },
+    { id: '32', stage: 'review', reviewRepairRound: 1, proposal_batch_id: '22', review_decisions: recorded ? [false] : null },
   ] });
   const user = userEvent.setup();
   await user.click(within(audit).getByText('复核批次 #31 详情'));
@@ -892,7 +892,7 @@ test.each(['missing-round', 'duplicate-attempt', 'missing-attempt'])('修正轮�
     ...(scenario === 'missing-attempt' ? {} : { attempts: scenario === 'duplicate-attempt' ? [attempt, attempt] : [attempt] }),
   } }, batches: [
     { id: '22', stage: 'repair', ...(scenario === 'missing-round' ? {} : { reviewRepairRound: 1 }), proposals: [repaired] },
-    { id: '32', stage: 'review', reviewRepairRound: 1, extraction_batch_id: '22', review_decisions: null },
+    { id: '32', stage: 'review', reviewRepairRound: 1, proposal_batch_id: '22', review_decisions: null },
   ] });
   await userEvent.setup().click(within(audit).getByText('修正复核批次 #32 详情'));
   const table = within(audit).getByRole('table', { name: '修正复核批次 #32 候选判定' });
@@ -937,7 +937,7 @@ test('不完整但未拒绝候选仍显示部分成功和零失败数，并展�
 });
 
 test.each([
-  ['extract', '提取', 0], ['review', '复核', 0],
+  ['generate', '提取', 0], ['review', '复核', 0],
   ['warranty', '质保判定', 0], ['repair', '修正提取', 1], ['review', '修正复核', 1],
   [null, '阶段未记录', null],
 ])('在途批次读取当前阶段和修正轮次（%s / %s）', async (stage, title, reviewRepairRound) => {
@@ -986,7 +986,7 @@ test.each([
     if (call.path.endsWith('/text-review-results')) return Response.json({ items: [{ id: '3', name: '文案商品', outcome: 'updated' }] });
     if (call.path.endsWith('/text-review-results/3')) return Response.json({ member: {
       output: { outcome: 'updated', textReview: review },
-    }, batches: [{ id: '21', stage: 'extract', status: 'succeeded', response_ms: 100 }] });
+    }, batches: [{ id: '21', stage: 'generate', status: 'succeeded', response_ms: 100 }] });
   } });
   const user = userEvent.setup();
   render(<TagExtractionPanel shops={shops} taskKind="text_review" view="history" />);
@@ -1079,9 +1079,9 @@ test('候选按实际提取来源和索引对应重复标签、原始布尔票�
       { proposalIndex: 2, name: 'unknown_field', value: 'x', reasonCode: 'tag_name_unknown', evidence: [] },
     ],
   } }, batches: [
-    { id: '21', stage: 'extract', proposals },
-    { id: '99', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [{ path: 'name', quote: '较新但无关的提取' }] }] },
-    { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: [false, true, true, true], step: 'done', status: 'succeeded' },
+    { id: '21', stage: 'generate', proposals },
+    { id: '99', stage: 'generate', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [{ path: 'name', quote: '较新但无关的提取' }] }] },
+    { id: '31', stage: 'review', proposal_batch_id: '21', review_decisions: [false, true, true, true], step: 'done', status: 'succeeded' },
   ] });
   await userEvent.setup().click(within(audit).getByText('复核批次 #31 详情'));
   const table = within(audit).getByRole('table', { name: '复核批次 #31 候选判定' });
@@ -1104,10 +1104,10 @@ test('候选按实际提取来源和索引对应重复标签、原始布尔票�
 
 test('无发布结果时仍展示持久化复核票，拆分复核各自关联提取批次', async () => {
   const audit = await openAudit({ member: { status: 'processing', output: null }, batches: [
-    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '来源甲' }] }] },
-    { id: '22', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [{ path: 'name', quote: '来源乙' }] }] },
-    { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: [true], step: 'publish', status: 'queued' },
-    { id: '32', stage: 'review', extraction_batch_id: '22', review_decisions: [false], step: 'publish', status: 'queued' },
+    { id: '21', stage: 'generate', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '来源甲' }] }] },
+    { id: '22', stage: 'generate', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [{ path: 'name', quote: '来源乙' }] }] },
+    { id: '31', stage: 'review', proposal_batch_id: '21', review_decisions: [true], step: 'publish', status: 'queued' },
+    { id: '32', stage: 'review', proposal_batch_id: '22', review_decisions: [false], step: 'publish', status: 'queued' },
   ] });
   const user = userEvent.setup();
   await user.click(within(audit).getByText('复核批次 #31 详情'));
@@ -1127,8 +1127,8 @@ test('无发布结果时仍展示持久化复核票，拆分复核各自关联�
 
 test('来源批次未记录时保留原始票但不拿最新提取冒充来源', async () => {
   const audit = await openAudit({ member: { output: null }, batches: [
-    { id: '22', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [{ path: 'name', quote: '不能挪用的候选' }] }] },
-    { id: '31', stage: 'review', extraction_batch_id: 'missing', review_decisions: [true, false] },
+    { id: '22', stage: 'generate', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [{ path: 'name', quote: '不能挪用的候选' }] }] },
+    { id: '31', stage: 'review', proposal_batch_id: 'missing', review_decisions: [true, false] },
   ] });
   const review = within(audit).getByText('复核批次 #31 详情').closest('details');
   expect(review).toHaveTextContent('来源提取批次：#missing');
@@ -1142,8 +1142,8 @@ test('商品已保存的原始票可用于关联来源，缺失批次票不等�
     outcome: 'updated', review: { mode: 'per_tag_binary', decisions: [true] },
     acceptedTags: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }], rejectedTags: [],
   } }, batches: [
-    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '原始引用' }] }] },
-    { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: null },
+    { id: '21', stage: 'generate', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '原始引用' }] }] },
+    { id: '31', stage: 'review', proposal_batch_id: '21', review_decisions: null },
   ] });
   await userEvent.setup().click(within(audit).getByText('复核批次 #31 详情'));
   const table = within(audit).getByRole('table', { name: '复核批次 #31 候选判定' });
@@ -1157,10 +1157,10 @@ test('多个提取来源时最终处置不凭相同索引归给某个复核批�
     outcome: 'updated', review: { mode: 'per_tag_binary', decisions: [true] },
     acceptedTags: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }], rejectedTags: [],
   } }, batches: [
-    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }] },
-    { id: '22', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [] }] },
-    { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: [true] },
-    { id: '32', stage: 'review', extraction_batch_id: '22', review_decisions: [true] },
+    { id: '21', stage: 'generate', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [] }] },
+    { id: '22', stage: 'generate', proposals: [{ proposalIndex: 0, name: 'region', value: 'US', evidence: [] }] },
+    { id: '31', stage: 'review', proposal_batch_id: '21', review_decisions: [true] },
+    { id: '32', stage: 'review', proposal_batch_id: '22', review_decisions: [true] },
   ] });
   await userEvent.setup().click(within(audit).getByText('复核批次 #32 详情'));
   const table = within(audit).getByRole('table', { name: '复核批次 #32 候选判定' });
@@ -1174,8 +1174,8 @@ test('历史缺少输入、索引和原始投票时明确未记录，不按最�
     outcome: 'review', review: { mode: 'per_tag_binary' }, acceptedTags: [],
     rejectedTags: [{ name: 'duration', value: 30, reasonCode: 'review_rejected', evidence: [] }],
   } }, batches: [
-    { id: '21', stage: 'extract', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '历史原文' }] }] },
-    { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: null },
+    { id: '21', stage: 'generate', proposals: [{ proposalIndex: 0, name: 'duration', value: 30, evidence: [{ path: 'spec', quote: '历史原文' }] }] },
+    { id: '31', stage: 'review', proposal_batch_id: '21', review_decisions: null },
   ] });
   await userEvent.setup().click(within(audit).getByText('复核批次 #31 详情'));
   expect(within(audit).getByText('冻结输入未记录，不能用实时商品资料还原。')).toBeInTheDocument();
@@ -1199,7 +1199,7 @@ test.each(['skipped', 'failed', 'cancelled'])('发布 %s 即便存在采纳候�
 test('请求详情展示模型、预算、时间和白名单诊断，不展示同批其他商品或响应正文', async () => {
   const audit = await openAudit({
     job: { model: 'requested-audit-model' }, member: { output: null }, batches: [{
-      id: '31', stage: 'review', extraction_batch_id: '21', batch_index: 1, round: 1,
+      id: '31', stage: 'review', proposal_batch_id: '21', batch_index: 1, round: 1,
       step: 'request', status: 'failed', attempts: 2, request_budget_used: 2, request_budget_limit: 2,
       confirmed_requests: 1, unknown_requests: 1, product_count: 8, input_bytes: 99, estimated_tokens: 33,
       queued_at: '2026-10-25T01:00:00Z', started_at: '2026-10-25T01:00:01Z',
@@ -1294,10 +1294,10 @@ test('提取和复核请求分别展示用量，阶段进度按批次计数', as
   installApi({ handle(call) {
     if (call.path.endsWith('/jobs/8')) return Response.json({ job: { id: '8', status: 'succeeded' }, progress: {
       rawProductCount: 1, processed: '1',
-      tagStages: { extractionCompleted: 3, reviewQueued: 2, reviewRunning: 1, reviewCompleted: 4, publicationQueued: 5 },
+      reviewStages: { generationCompleted: 3, reviewQueued: 2, reviewRunning: 1, reviewCompleted: 4, publicationQueued: 5 },
     } });
     if (call.path.endsWith('/tag-results/3')) return Response.json({ member: { output: { outcome: 'updated', review: { mode: 'per_tag_binary', decisions: [] } } }, batches: [
-      { stage: 'extract', batch_index: 0, round: 0, status: 'succeeded', response_ms: 120, response_usage: { total_tokens: 42 } },
+      { stage: 'generate', batch_index: 0, round: 0, status: 'succeeded', response_ms: 120, response_usage: { total_tokens: 42 } },
       { stage: 'review', batch_index: 1, round: 0, status: 'succeeded', response_ms: 230, response_usage: { total_tokens: 84 } },
       { batch_index: 2, round: 0, status: 'succeeded', response_ms: null, response_usage: null },
     ] });
@@ -1651,8 +1651,8 @@ test.each([
     outcome: 'updated', review: { status: 'approved' },
     acceptedTags: [{ tagId: '3:0', name: 'duration', value: 30 }], rejectedTags: [],
   } }, batches: [
-    { id: '91', stage: 'extract', proposals: [{ ...identity, name: 'duration', value: 30, evidence: [] }] },
-    { id: '92', stage: 'review', extraction_batch_id: '91', review_decisions: decisions },
+    { id: '91', stage: 'generate', proposals: [{ ...identity, name: 'duration', value: 30, evidence: [] }] },
+    { id: '92', stage: 'review', proposal_batch_id: '91', review_decisions: decisions },
   ] });
   await userEvent.setup().click(within(audit).getByText('复核批次 #92 详情'));
   const table = within(audit).getByRole('table', { name: '复核批次 #92 候选判定' });
@@ -1671,8 +1671,8 @@ test('索引候选按布尔向量展示结构化值，忽略冲突的旧tagId', 
     outcome: 'partial_success', complete: true, review: { mode: 'per_tag_binary', decisions: [true, false] },
     acceptedTags: [{ ...duration, tagId: 'ignored:0' }], rejectedTags: [{ ...bulk, tagId: 'ignored:1', reasonCode: 'review_rejected' }],
   } }, batches: [
-    { id: '91', stage: 'extract', proposals: [bulk, duration] },
-    { id: '92', stage: 'review', extraction_batch_id: '91', review_decisions: [true, false] },
+    { id: '91', stage: 'generate', proposals: [bulk, duration] },
+    { id: '92', stage: 'review', proposal_batch_id: '91', review_decisions: [true, false] },
   ] });
   await userEvent.setup().click(within(audit).getByText('复核批次 #92 详情'));
   const table = within(audit).getByRole('table', { name: '复核批次 #92 候选判定' });

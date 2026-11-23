@@ -35,6 +35,7 @@ test('text review uses member progress without inventing tag or identity stages'
   assert.equal(snapshot.textReviewResults?.updated, 1);
   assert.equal(snapshot.textReviewResults?.failed, 1);
   assert.equal(snapshot.tagAcceptance, undefined);
+  assert.equal(snapshot.reviewStages, undefined);
   assert.equal(snapshot.tagStages, undefined);
   assert.equal(snapshot.standardizationStages, undefined);
 });
@@ -60,10 +61,11 @@ for (const jobType of ['tag_extraction', 'membership_features']) {
     assert.deepEqual(snapshot.tagAcceptance, { acceptedTags: 2, rejectedTags: 1, partialProducts: 1 });
     assert.deepEqual(snapshot.featureAcceptance, jobType === 'membership_features'
       ? { acceptedProducts: 1, rejectedProducts: 1 } : undefined);
-    assert.deepEqual(snapshot.tagStages, {
-      extractionCompleted: 2, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
+    assert.deepEqual(snapshot.reviewStages, {
+      generationCompleted: 2, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
     });
     assert.equal(snapshot.standardizationStages, undefined);
+    assert.equal(snapshot.tagStages, undefined);
   });
 }
 
@@ -178,15 +180,15 @@ test('progress snapshot reports request, publication and terminal result dimensi
     batch_total: 3, batch_queued: 1, batch_running: 1, batch_succeeded: 1,
     confirmed_requests: 2, unknown_requests: 1, request_budget_used: 3, request_budget_limit: 5,
     unit_total: 4, unit_queued: 1, unit_running: 1, unit_succeeded: 2, published_members: 6, pending_members: 4,
-    classified: 6, unclassified: 2, standard_products: 3, reason_counts: { missing_id: 1, input_too_large: 1 },
-    scheduled_missing: 1, reprocessed_missing: 1, updated_at: new Date('2026-09-20T00:00:00.000Z'),
+    classified: 6, unclassified: 2, standard_products: 3, reason_counts: { invalid_response: 1, input_too_large: 1 },
+    updated_at: new Date('2026-09-20T00:00:00.000Z'),
   });
   assert.equal(snapshot.rawProductCount, 12);
   assert.equal(snapshot.uniqueInputCount, 8);
   assert.deepEqual(snapshot.requests, { totalBatches: 3, queuedBatches: 1, runningBatches: 1, succeededBatches: 1, failedBatches: 0, cancelledBatches: 0, confirmed: 2, unknown: 1, budgetUsed: 3, budgetLimit: 5 });
   assert.equal(snapshot.publication.publishedMembers, 6);
-  assert.deepEqual(snapshot.results.unclassifiedReasons, { missing_id: 1, input_too_large: 1 });
-  assert.deepEqual(snapshot.missing, { scheduledInputs: 1, reprocessedInputs: 1 });
+  assert.deepEqual(snapshot.results.unclassifiedReasons, { invalid_response: 1, input_too_large: 1 });
+  assert.equal(Object.hasOwn(snapshot, 'missing'), false);
 });
 
 test('progress snapshot does not count failed inputs as failed request batches', () => {
@@ -204,12 +206,15 @@ test('standardization stages report batch work without inventing published produ
     review_running: 1, review_completed: 4, publication_queued: 5,
     batch_succeeded: 7, total: 20n,
   });
-  assert.deepEqual(snapshot.standardizationStages, {
+  assert.deepEqual(snapshot.reviewStages, {
     generationCompleted: 3, reviewQueued: 2, reviewRunning: 1, reviewCompleted: 4, publicationQueued: 5,
   });
   assert.equal(snapshot.tagStages, undefined);
+  assert.equal(snapshot.standardizationStages, undefined);
   assert.equal(snapshot.results.classified, 0);
   assert.equal(snapshot.publication.publishedMembers, 0);
   assert.equal(snapshot.processed, '0');
-  assert.equal(progressSnapshotFromRow({ job_type: 'tag_extraction' }).standardizationStages, undefined);
+  assert.deepEqual(progressSnapshotFromRow({ job_type: 'tag_extraction' }).reviewStages, {
+    generationCompleted: 0, reviewQueued: 0, reviewRunning: 0, reviewCompleted: 0, publicationQueued: 0,
+  });
 });

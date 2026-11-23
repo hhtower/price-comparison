@@ -221,8 +221,9 @@ describe('global AI retry pool', () => {
         items: [{ id: String(id), status: 'classified', identity: { kind: 'existing', standardProductId }, ruleIds: [], evidence, reasonCode: null, reason: '匹配已准入标准商品' }], missingIds: [],
       },
     });
-    await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'test', lease_until: new Date(Date.now() + 60000) }).where('id', '=', batch.id).execute();
-    await repository.publishBatch(batch.id);
+    await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: claim.workerId, attempts: claim.attempt,
+      claim_token: claim.token, lease_until: new Date(Date.now() + 60000) }).where('id', '=', batch.id).execute();
+    await repository.publishBatch(batch.id, claim);
     assert.equal((await list()).total, 0);
     assert.equal((await db.selectFrom('ai_standardization_results').select('status').where('job_id', '=', retry.id).executeTakeFirstOrThrow()).status, 'classified');
     assert.equal((await db.selectFrom('ai_job_input_members').select('retry_source_job_id').where('job_id', '=', retry.id).executeTakeFirstOrThrow()).retry_source_job_id, source.id);

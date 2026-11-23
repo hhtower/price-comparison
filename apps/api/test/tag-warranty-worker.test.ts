@@ -42,7 +42,7 @@ test('warranty stage returns the complete four-field object through shared strea
   const state = fixture();
   const result = await state.run();
   assert.equal(state.sends(), 1);
-  assert.equal(result.tagExtractionStage, 'warranty');
+  assert.equal(result.reviewStage, 'warranty');
   assert.deepEqual(result.tagExtractionItems, [{ productId: 11n, tags: [], rejectedTags: [], warrantyLabels: labels }]);
 });
 

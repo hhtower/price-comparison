@@ -1,4 +1,5 @@
 import { DomainConflictError } from '../common/errors.js';
+import { sql } from 'kysely';
 import type { AiJobType, JsonValue } from '../database/types.js';
 import { CATALOG_ALIAS_VERSION } from '../standardization/catalog-aliases.js';
 import { STANDARDIZATION_SCHEMA_VERSION } from './ai.schemas.js';
@@ -53,12 +54,41 @@ export function taskResultVersions(kind: AiJobType | 'standardization'): Record<
 export function pipelineVersionSnapshot(model: string): JsonValue {
   return { ...PIPELINE_VERSIONS, requestedModel: model, applicationBuild: process.env.APP_BUILD_SHA ?? process.env.GIT_COMMIT ?? null };
 }
-export function isCurrentPipeline(snapshot: JsonValue | null): boolean {
-  return !!snapshot && !Array.isArray(snapshot) && typeof snapshot === 'object'
-    && Object.entries(PIPELINE_VERSIONS).every(([key, value]) => snapshot[key] === value);
+export function taskExecutionVersions(kind: AiJobType): Record<string, string> {
+  const { reviewWorkflow, offerEligibility, attributeOrder } = PIPELINE_VERSIONS;
+  switch (kind) {
+    case 'text_review': return { ...PIPELINE_VERSIONS };
+    case 'incremental':
+    case 'manual_full':
+    case 'calibration':
+    case 'tag_extraction':
+    case 'membership_features':
+      return { ...taskResultVersions(kind), reviewWorkflow, offerEligibility, attributeOrder };
+    default: throw new Error('AI job type is required');
+  }
 }
-export function assertCurrentPipeline(job: { prompt_version: string; rule_version: string; pipeline_versions: JsonValue | null }): void {
-  if (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== STANDARDIZATION_POLICY_VERSION || !isCurrentPipeline(job.pipeline_versions)) {
+export function isCurrentPipeline(snapshot: JsonValue | null, kind: AiJobType): boolean {
+  return !!snapshot && !Array.isArray(snapshot) && typeof snapshot === 'object'
+    && Object.entries(taskExecutionVersions(kind)).every(([key, value]) => snapshot[key] === value);
+}
+export function assertCurrentPipeline(job: { job_type: AiJobType; prompt_version: string; rule_version: string; pipeline_versions: JsonValue | null }): void {
+  const checksHeaders = job.job_type !== 'tag_extraction' && job.job_type !== 'membership_features';
+  if ((checksHeaders && (job.prompt_version !== STANDARDIZATION_PROMPT_VERSION || job.rule_version !== STANDARDIZATION_POLICY_VERSION))
+    || !isCurrentPipeline(job.pipeline_versions, job.job_type)) {
     throw new DomainConflictError('AI_POLICY_STALE', '该任务使用了过期的识别流程，请创建新任务重新处理');
   }
+}
+
+/** Keep SQL admission and recovery aligned with the in-memory execution guard. */
+export function currentExecutionPipeline(jobAlias = 'j') {
+  const field = (name: string) => sql.ref(`${jobAlias}.${name}`);
+  const snapshot = (kind: AiJobType) => sql<boolean>`${field('pipeline_versions')} @> ${JSON.stringify(taskExecutionVersions(kind))}::jsonb`;
+  const headers = sql<boolean>`${field('prompt_version')} = ${STANDARDIZATION_PROMPT_VERSION}
+    and ${field('rule_version')} = ${STANDARDIZATION_POLICY_VERSION}`;
+  return sql<boolean>`coalesce(case
+    when ${field('job_type')} = 'tag_extraction' then ${snapshot('tag_extraction')}
+    when ${field('job_type')} = 'membership_features' then ${snapshot('membership_features')}
+    when ${field('job_type')} = 'text_review' then (${headers} and ${snapshot('text_review')})
+    when ${field('job_type')} in ('incremental', 'manual_full', 'calibration') then (${headers} and ${snapshot('manual_full')})
+    else false end, false)`;
 }

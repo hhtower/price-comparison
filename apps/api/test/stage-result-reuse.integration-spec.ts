@@ -282,12 +282,12 @@ for (const kind of ['tag_extraction', 'membership_features'] as const) {
         status: state === 'batchStopped' ? 'cancelled' : 'running',
         lease_until: state === 'noLease' ? null : new Date(Date.now() + (state === 'expired' ? -60_000 : 60_000)),
       }).where('job_id', '=', f.job.id).execute();
-      const lost = !['running', 'queued'].includes(state);
+      const lost = !['running', 'queued', 'oldHeader'].includes(state);
       const queue = await history(f);
       assert.equal(queue.items[0]?.unclassified, lost ? 1 : 0);
       assert.equal(queue.items[0]?.remaining, lost ? 0 : 1);
       assert.equal(queue.summary.currentReasons.request_outcome_unknown, lost ? 1 : undefined);
-      if (state === 'running' || state === 'queued') {
+      if (!lost) {
         const scope = { jobType: kind, scopeShopId: f.shop.id };
         const active = await readAiTaskQueue(db, scope);
         assert.equal(active.summary.pendingProducts, 1);
@@ -361,7 +361,7 @@ test('a materialized unknown result with old headers supersedes older current re
 
 test('stale active standardization work is not made executable or reused as current work', async () => {
   const f = await fixture();
-  await changeVersions(f, { tagPrompt: 'older' });
+  await changeVersions(f, { prompt: 'older' });
   await db.updateTable('ai_jobs').set({ status: 'running' }).where('id', '=', f.job.id).execute();
   await db.updateTable('ai_job_input_members').set({ status: 'processing' }).where('job_id', '=', f.job.id).execute();
   const active = await db.selectFrom('products as p').select(hasActiveStandardizationWork.as('active'))
@@ -388,7 +388,7 @@ test('completed tags ignore standardization, feature and workflow versions and l
 test('a newer incompatible unfinished tag job does not hide a reusable completed result', async () => {
   const f = await fixture('tag_extraction');
   const newer = await db.transaction().execute(tx => createTagJob(tx, { model: 'mock', productIds: [f.product.id] }));
-  await db.updateTable('ai_jobs').set({ pipeline_versions: jsonb({ ...PIPELINE_VERSIONS, prompt: 'older' }) })
+  await db.updateTable('ai_jobs').set({ pipeline_versions: jsonb({ ...PIPELINE_VERSIONS, tagPrompt: 'older' }) })
     .where('id', '=', newer.id).execute();
   await assert.rejects(autoAttribute(f, 'tag_extraction'), emptyScope);
   const queue = await history(f);

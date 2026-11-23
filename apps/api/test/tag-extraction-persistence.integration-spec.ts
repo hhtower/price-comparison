@@ -1,5 +1,6 @@
 import { tagRows } from './tag-fixtures.js';
 import { seedUsableOffers } from './standardization-review-fixture.js';
+import { seedAttributePublication } from './attribute-publication-fixture.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect } from 'kysely';
@@ -56,7 +57,7 @@ async function reserveRemainingMember(f: Awaited<ReturnType<typeof fixture>>) {
 
 for (const invalid of ['unreviewed', 'missing_votes', 'non_boolean_votes', 'missing_complete'] as const) {
   for (const step of ['request', 'publish'] as const) {
-    test(`${step}: ${invalid} tag result cannot publish even without a frozen reference`, async () => {
+    test(`${step}: ${invalid} saved tag result cannot publish`, async () => {
       const f = await fixture();
       const before = [{ name: 'duration', value: 90 }];
       await db.insertInto('product_tags').values(tagRows(before.map(tag => ({ product_id: f.inputId, ...tag })))).execute();
@@ -68,10 +69,11 @@ for (const invalid of ['unreviewed', 'missing_votes', 'non_boolean_votes', 'miss
       if (invalid === 'missing_votes') delete decision.reviewDecisions;
       if (invalid === 'non_boolean_votes') decision.reviewDecisions = ['true'] as unknown as boolean[];
       if (invalid === 'missing_complete') delete decision.complete;
-      await db.updateTable('ai_job_batches').set({ step, reference_snapshot: null }).where('id', '=', f.batch.id).execute();
+      await seedAttributePublication(db, f.batch.id, [decision]);
+      await db.updateTable('ai_job_batches').set({ step }).where('id', '=', f.batch.id).execute();
       const batchBefore = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', f.batch.id).executeTakeFirstOrThrow();
       const cacheBefore = await db.selectFrom('catalog_cache_versions').selectAll().execute();
-      await assert.rejects(f.repo.persistTagExtractionBatchDecision(f.job.id, f.batch.id, [decision], {}, claim, step));
+      await assert.rejects(f.repo.publishTagExtractionBatch(f.batch.id, claim));
       assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).execute(), before);
       assert.equal((await outputs(f.job.id))[0]!.output, null);
       assert.deepEqual(await db.selectFrom('ai_job_batches').selectAll().where('id', '=', f.batch.id).executeTakeFirstOrThrow(), batchBefore);
@@ -80,12 +82,30 @@ for (const invalid of ['unreviewed', 'missing_votes', 'non_boolean_votes', 'miss
   }
 }
 
+test('publication requires a review snapshot even when the saved decisions are complete', async () => {
+  const f = await fixture();
+  const decision = validateReviewedTagExtractionDecision(f.inputId, [], [], f.payload, [], true);
+  await seedAttributePublication(db, f.batch.id, [decision]);
+  const stored = await db.insertInto('product_tags').values(tagRows({ product_id: f.inputId, name: 'duration', value: 90 }))
+    .returningAll().execute();
+  for (const reference of [null, {}, { tagStage: 'review' }, { reviewStage: 'generate' }, { reviewStage: 'repair' }, { reviewStage: 'warranty' }]) {
+    await db.updateTable('ai_job_batches').set({ reference_snapshot: reference === null ? null : jsonb(reference) })
+      .where('id', '=', f.batch.id).execute();
+    const before = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', f.batch.id).executeTakeFirstOrThrow();
+    await assert.rejects(f.repo.publishTagExtractionBatch(f.batch.id, claim), /stage|reviewed/i);
+    assert.deepEqual(await db.selectFrom('ai_job_batches').selectAll().where('id', '=', f.batch.id).executeTakeFirstOrThrow(), before);
+    assert.deepEqual(await db.selectFrom('product_tags').selectAll().where('product_id', '=', f.inputId).execute(), stored);
+    assert.deepEqual(await outputs(f.job.id), [{ output: null, reason_code: null }]);
+  }
+});
+
 test('LLM-approved supported client publishes without a second semantic inference', async () => {
   const f = await fixture();
   const value = 'codex';
   const decision = validateReviewedTagExtractionDecision(f.inputId,
     [{ name: 'supported_client', value, evidence: [], proposalIndex: 0 }], [], f.payload, [true], true);
-  await f.repo.persistTagExtractionBatchDecision(f.job.id, f.batch.id, [decision], {}, claim);
+  await seedAttributePublication(db, f.batch.id, [decision]);
+  await f.repo.publishTagExtractionBatch(f.batch.id, claim);
   assert.deepEqual(await db.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', f.inputId).execute(),
     [{ name: 'supported_client', value }]);
   const output = (await outputs(f.job.id))[0]!.output as any;
@@ -99,36 +119,40 @@ test('atomic audited full replacement, independent locked guard and done idempot
   await db.insertInto('product_tags').values(tagRows({ product_id: f.inputId, name: 'region', value: 'us' })).execute();
   await db.updateTable('products').set({ standardization_locked: true }).where('id','=',f.products[1]!.id).execute();
   const decision=validateReviewedTagExtractionDecision(f.inputId,[{ name:'duration', value:30, evidence:[], proposalIndex:0 }],[],f.payload,[true],true);
-  await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[decision],{},claim);
+  await seedAttributePublication(db, f.batch.id, [decision]);
+  await f.repo.publishTagExtractionBatch(f.batch.id, claim);
   const result=await outputs(f.job.id);
   assert.equal((result[0]!.output as any).outcome,'updated');
   assert.equal((result[0]!.output as any).retainedUnconfirmed, undefined);
   assert.deepEqual(await db.selectFrom('product_tags').select(['name','value']).where('product_id','=',f.inputId).execute(), [{name:'duration',value:30}]);
   assert.equal((result[1]!.output as any).outcome,'skipped');
   assert.equal(result[1]!.reason_code,'product_locked');
-  await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[decision],{},claim);
+  await f.repo.publishTagExtractionBatch(f.batch.id, claim);
   assert.deepEqual(await outputs(f.job.id),result);
   assert.equal((await db.selectFrom('ai_standardization_results').selectAll().where('job_id','=',f.job.id).execute()).length,0);
 });
 
 test('duplicate and unknown IDs roll back; stale claims cannot write',async()=>{
   const f=await fixture(); const d=validateReviewedTagExtractionDecision(f.inputId,[],[],f.payload,[],true);
-  await assert.rejects(f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[d,d],{},claim),/does not match/);
-  await assert.rejects(f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[{...d,productId:999999999n}],{},claim),/does not match/);
-  await assert.rejects(f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[d],{},{...claim,token:'stale'}),/claim token/);
+  for (const items of [[d, d], [{ ...d, productId: 999999999n }]]) {
+    await seedAttributePublication(db, f.batch.id, items);
+    await assert.rejects(f.repo.publishTagExtractionBatch(f.batch.id, claim), /does not match/);
+  }
+  await seedAttributePublication(db, f.batch.id, [d]);
+  await assert.rejects(f.repo.publishTagExtractionBatch(f.batch.id, { ...claim, token: 'stale' }), /claim/);
   assert.equal((await outputs(f.job.id))[0]!.output,null);
 });
 
-test('missing response schedules only one bounded round and persists terminal missing audit',async()=>{
+test('an incomplete saved response is rejected without confirmation, product changes or retry batches',async()=>{
   const f=await fixture();
-  await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[],{},claim);
-  const retry=await db.selectFrom('ai_job_batches').selectAll().where('job_id','=',f.job.id).where('round','=',1).executeTakeFirstOrThrow();
-  assert.equal(retry.request_budget_limit,1);
-  await db.updateTable('ai_job_batches').set({status:'running',claimed_by:'test',claim_token:'claim',attempts:1n,lease_until:new Date(Date.now()+60000)}).where('id','=',retry.id).execute();
-  await f.repo.persistTagExtractionBatchDecision(f.job.id,retry.id,[],{},claim);
-  assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id','=',f.job.id).execute()).length,2);
-  assert.equal((await outputs(f.job.id))[0]!.reason_code,'missing_id');
-  assert.equal((await outputs(f.job.id))[0]!.output && ((await outputs(f.job.id))[0]!.output as any).outcome,'failed');
+  const stored = await db.insertInto('product_tags').values(tagRows({ product_id: f.inputId, name: 'duration', value: 90 }))
+    .returningAll().execute();
+  await seedAttributePublication(db, f.batch.id, []);
+  const before = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', f.batch.id).executeTakeFirstOrThrow();
+  await assert.rejects(f.repo.publishTagExtractionBatch(f.batch.id, claim), /does not match/);
+  assert.deepEqual(await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id).execute(), [before]);
+  assert.deepEqual(await outputs(f.job.id), [{ output: null, reason_code: null }]);
+  assert.deepEqual(await db.selectFrom('product_tags').selectAll().where('product_id', '=', f.inputId).execute(), stored);
 });
 
 test('cancel records explicit outcome without overwriting committed output',async()=>{
@@ -136,27 +160,29 @@ test('cancel records explicit outcome without overwriting committed output',asyn
   assert.equal(((await outputs(f.job.id))[0]!.output as any).outcome,'cancelled');
 });
 
-test('missing retry preserves committed skipped members of the same input',async()=>{
+test('an omitted input is rejected without altering committed skipped members',async()=>{
   const f=await fixture(2);
   await db.updateTable('products').set({standardization_locked:true}).where('id','=',f.products[1]!.id).execute();
   await reserveRemainingMember(f);
   const skipped=(await outputs(f.job.id))[1]!;
-  await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[],{},claim);
+  await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [], {}, claim, 'generate'), /does not match/);
   assert.deepEqual((await outputs(f.job.id))[1],skipped);
   const members=await db.selectFrom('ai_job_input_members').select(['status','missing_reprocess_count']).where('job_id','=',f.job.id).orderBy('product_id').execute();
-  assert.deepEqual(members.map(m=>[m.status,m.missing_reprocess_count]),[['queued',1],['classified',0]]);
+  assert.deepEqual(members.map(m=>[m.status,m.missing_reprocess_count]),[['queued',0],['classified',0]]);
+  assert.equal((await db.selectFrom('ai_job_batches').select('confirmed_requests').where('id', '=', f.batch.id).executeTakeFirstOrThrow()).confirmed_requests, 0);
+  assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 1);
 });
 
-test('cancel converts provisional missing while another first-round batch runs and retains committed skips',async()=>{
+test('cancel after an incomplete response retains committed skips without recording missing results',async()=>{
   const f=await fixture(2);
   await db.updateTable('products').set({standardization_locked:true}).where('id','=',f.products[1]!.id).execute();
   await reserveRemainingMember(f);
   const skipped=(await outputs(f.job.id))[1]!;
   await db.insertInto('ai_job_batches').values({job_id:f.job.id,batch_index:1n,product_ids:jsonb([]),product_count:0n,status:'running'}).execute();
-  await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[],{},claim);
-  assert.equal(((await outputs(f.job.id))[0]!.output as any).reasonCode,'missing_id');
+  await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [], {}, claim, 'generate'), /does not match/);
+  assert.equal((await outputs(f.job.id))[0]!.output, null);
   const provisional=await db.selectFrom('ai_job_input_members').select(['status','missing_reprocess_count']).where('job_id','=',f.job.id).where('product_id','=',f.inputId).executeTakeFirstOrThrow();
-  assert.deepEqual(provisional,{status:'unclassified',missing_reprocess_count:0});
+  assert.deepEqual(provisional,{status:'queued',missing_reprocess_count:0});
   await f.repo.cancelJob(f.job.id);
   const result=await outputs(f.job.id);
   assert.equal((result[0]!.output as any).outcome,'cancelled');
@@ -183,13 +209,16 @@ test('unchanged partial results preserve tags and catalog version; complete empt
   const stored=await db.insertInto('product_tags').values(tagRows({product_id:f.inputId,name:'duration',value:30})).returningAll().executeTakeFirstOrThrow();
   const decision=validateReviewedTagExtractionDecision(f.inputId,[{name:'duration',value:30,evidence:[],proposalIndex:0},{name:'unknown',value:'invalid',evidence:[],proposalIndex:1}],[],f.payload,[true,true],true);
   const versionBefore=await db.selectFrom('catalog_cache_versions').selectAll().execute();
-  await f.repo.persistTagExtractionBatchDecision(f.job.id,f.batch.id,[decision],{},claim);
+  await seedAttributePublication(db, f.batch.id, [decision]);
+  await f.repo.publishTagExtractionBatch(f.batch.id, claim);
   const output=(await outputs(f.job.id))[0]!.output as any;
   assert.equal(output.outcome,'partial_success'); assert.equal(output.rejectedTags.length,1); assert.equal(output.diff.length,0);
   assert.equal(output.successfulCount,1); assert.equal(output.failedCount,1); assert.equal(output.complete,true);
   assert.deepEqual(await db.selectFrom('product_tags').selectAll().where('product_id','=',f.inputId).execute(),[stored]);
   assert.deepEqual(await db.selectFrom('catalog_cache_versions').selectAll().execute(),versionBefore);
-  const empty=await fixture(); await db.insertInto('product_tags').values(tagRows({product_id:empty.inputId,name:'duration',value:90})).execute(); await empty.repo.persistTagExtractionBatchDecision(empty.job.id,empty.batch.id,[validateReviewedTagExtractionDecision(empty.inputId,[],[],empty.payload,[],true)],{},claim);
+  const empty=await fixture(); await db.insertInto('product_tags').values(tagRows({product_id:empty.inputId,name:'duration',value:90})).execute();
+  await seedAttributePublication(db, empty.batch.id, [validateReviewedTagExtractionDecision(empty.inputId, [], [], empty.payload, [], true)]);
+  await empty.repo.publishTagExtractionBatch(empty.batch.id, claim);
   const cleared=(await outputs(empty.job.id))[0]!.output as any;
   assert.equal(cleared.outcome,'empty'); assert.equal(cleared.complete,true);
   assert.deepEqual(cleared.diff,[{name:'duration',before:[90],after:[]}]);
@@ -204,7 +233,8 @@ test('persistence revalidation keeps vocabulary rejections and duplicates out of
     { name: 'invented', value: 'password=hidden' },
     { name: 'subscription_override', value: 'yes' },
   ].map((tag, proposalIndex) => ({ ...tag, evidence: [], proposalIndex })), [], f.payload, [true, true, true, true], true);
-  await f.repo.persistTagExtractionBatchDecision(f.job.id, f.batch.id, [decision], {}, claim);
+  await seedAttributePublication(db, f.batch.id, [decision]);
+  await f.repo.publishTagExtractionBatch(f.batch.id, claim);
   for (const row of await outputs(f.job.id)) {
     const output = row.output as any;
     assert.equal(output.outcome, 'partial_success');

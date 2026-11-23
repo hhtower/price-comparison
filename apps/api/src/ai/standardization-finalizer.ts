@@ -4,11 +4,9 @@ import { createTagJob, createMembershipFeatureJob, createProductTextReviewJob } 
 import { buildTagExtractionOutcome, tagExtractionVersions } from './tag-extraction-result.js';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../database/types.js';
-import { readAiBatchLimits } from '../config/env.js';
-import { planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { unknownRequestReason } from './request-outcome.js';
 import { readAiStandardizationFeatures } from './ai-standardization-features.js';
-import { assertCurrentPipeline, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from './pipeline-versions.js';
+import { assertCurrentPipeline, currentExecutionPipeline } from './pipeline-versions.js';
 import { readCurrentMembershipFeatures } from '../standardization/membership-classification.js';
 import { hasUsableOffer } from './offer-eligibility.js';
 
@@ -44,8 +42,8 @@ async function materializeFailedBatch(
   const inputIds = (batch.product_ids as string[]).map(BigInt);
   if (!inputIds.length) return;
   const job = await tx.selectFrom('ai_jobs').select(['job_type', 'pipeline_versions']).where('id', '=', jobId).executeTakeFirstOrThrow();
-  const reference = batch.reference_snapshot as { standardizationStage?: string } | null | undefined;
-  const review = !isAttributeJobType(job.job_type) && reference?.standardizationStage === 'review';
+  const reference = batch.reference_snapshot as { reviewStage?: string } | null | undefined;
+  const review = !isAttributeJobType(job.job_type) && reference?.reviewStage === 'review';
   const members = await tx.selectFrom('ai_job_input_members')
     .select(['input_id', 'product_id', 'content_version', 'fingerprint', 'standardization_revision'])
     .where('job_id', '=', jobId)
@@ -119,8 +117,8 @@ async function materializeFailedBatch(
   }
 }
 
-/** Finish inactive jobs; only attribute jobs retain their missing-ID retry round. */
-export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>, jobId: bigint): Promise<void> {
+/** Finish inactive jobs after every validated stage reaches a terminal state. */
+export async function finalizeAiJob(tx: Transaction<DatabaseSchema>, jobId: bigint): Promise<void> {
   const job = await tx.selectFrom('ai_jobs')
     .select(['id', 'status', 'pause_requested', 'cancel_requested', 'configuration_blocked', 'job_type', 'pipeline_versions', 'prompt_version', 'rule_version'])
     .where('id', '=', jobId).forUpdate().executeTakeFirstOrThrow();
@@ -136,79 +134,6 @@ export async function finalizeOrScheduleMissing(tx: Transaction<DatabaseSchema>,
   const active = await tx.selectFrom('ai_job_batches').select('id')
     .where('job_id', '=', jobId).where('status', 'in', ['queued', 'running']).executeTakeFirst();
   if (active) return;
-
-  const existingRoundOne = !isAttributeJobType(job.job_type) || await tx.selectFrom('ai_job_batches').select('id')
-    .where('job_id', '=', jobId).where('round', '=', 1)
-    .where(sql<boolean>`reference_snapshot->>'standardizationStage' is distinct from 'review'`).executeTakeFirst();
-  const missingRows = existingRoundOne ? [] : await tx.selectFrom('ai_job_input_members as m')
-    .innerJoin('ai_job_inputs as i', join => join.onRef('i.job_id', '=', 'm.job_id').onRef('i.input_id', '=', 'm.input_id'))
-    .select(['m.input_id', 'm.product_id', 'm.content_version', 'm.fingerprint', 'm.standardization_revision', 'i.payload', 'i.input_bytes', 'i.estimated_tokens'])
-    .where('m.job_id', '=', jobId).where('m.reason_code', '=', 'missing_id')
-    .where('m.missing_reprocess_count', '=', 0).where('i.round', '=', 0)
-    .orderBy('m.input_id').orderBy('m.product_id').execute();
-  if (missingRows.length) {
-    const inputIds = [...new Set(missingRows.map(row => row.input_id.toString()))].map(BigInt);
-    const byInput = new Map<string, { members: number; payload: JsonValue; inputBytes: bigint; estimatedTokens: bigint }>();
-    for (const row of missingRows) byInput.set(row.input_id.toString(), {
-      members: (byInput.get(row.input_id.toString())?.members ?? 0) + 1,
-      payload: row.payload, inputBytes: row.input_bytes,
-      estimatedTokens: row.estimated_tokens,
-    });
-    const original = await tx.selectFrom('ai_job_batches')
-      .select(sql<number>`max(jsonb_array_length(product_ids))::int`.as('max_items'))
-      .where('job_id', '=', jobId).where('round', '=', 0).executeTakeFirstOrThrow();
-    const limits = readAiBatchLimits();
-    // The caller's batchSize is not stored; original batches give a safe upper bound.
-    const maxItems = Math.min(limits.maxItems, original.max_items);
-    const planned = planIndependentStandardizationBatches(inputIds.map(id => ({
-      productId: id, payload: byInput.get(id.toString())!.payload,
-      inputBytes: Number(byInput.get(id.toString())!.inputBytes),
-      estimatedTokens: Number(byInput.get(id.toString())!.estimatedTokens),
-    })), { ...limits, maxItems });
-    const plannedIds = new Set(planned.flatMap(batch => batch.productIds.map(String)));
-    const oversizedIds = inputIds.filter(id => !plannedIds.has(id.toString()));
-    if (oversizedIds.length) {
-      const oversizedSet = new Set(oversizedIds.map(String));
-      for (const ids of chunks(oversizedIds, 500)) {
-        await tx.updateTable('ai_job_inputs').set({
-          round: 1, status: 'failed', missing_reprocess_count: 1, reason_code: 'input_too_large', error: 'input_too_large',
-        }).where('job_id', '=', jobId).where('input_id', 'in', ids).execute();
-        await tx.updateTable('ai_job_input_members').set({
-          status: 'unclassified', missing_reprocess_count: 1, reason_code: 'input_too_large',
-        }).where('job_id', '=', jobId).where('input_id', 'in', ids).where('reason_code', '=', 'missing_id').where('missing_reprocess_count', '=', 0).execute();
-      }
-      const oversizedMembers = missingRows.filter(row => oversizedSet.has(row.input_id.toString()));
-      for (const members of chunks(oversizedMembers, 500)) {
-        for (const member of members) await tx.updateTable('ai_job_input_members').set({ output: jsonb({ ...buildTagExtractionOutcome({ productId: member.input_id, tags: [], rejectedTags: [] }, [], { outcome: 'failed', reasonCode: 'input_too_large' }), versions: tagExtractionVersions(member, job.pipeline_versions) } as unknown as JsonValue) }).where('job_id', '=', jobId).where('product_id', '=', member.product_id).execute();
-      }
-    }
-    if (planned.length) {
-      const retryIds = planned.flatMap(batch => batch.productIds);
-      for (const ids of chunks(retryIds, 500)) {
-        await tx.updateTable('ai_job_inputs').set({
-          round: 1, status: 'queued', missing_reprocess_count: 1, reason_code: null, error: null,
-        }).where('job_id', '=', jobId).where('input_id', 'in', ids)
-          .where('round', '=', 0).where('missing_reprocess_count', '=', 0).execute();
-        await tx.updateTable('ai_job_input_members').set({
-          status: 'queued', missing_reprocess_count: 1, reason_code: null, ...(isAttributeJobType(job.job_type) ? { output: null } : {}),
-        }).where('job_id', '=', jobId).where('input_id', 'in', ids)
-          .where('missing_reprocess_count', '=', 0).where('reason_code', '=', 'missing_id').execute();
-      }
-      const start = await tx.selectFrom('ai_job_batches')
-        .select(sql<bigint>`coalesce(max(batch_index), -1) + 1`.as('next'))
-        .where('job_id', '=', jobId).executeTakeFirstOrThrow();
-      for (const [offset, batch] of planned.entries()) {
-        await tx.insertInto('ai_job_batches').values({
-          job_id: jobId, batch_index: start.next + BigInt(offset),
-          product_ids: jsonb(batch.productIds.map(String)),
-          product_count: BigInt(batch.productIds.reduce((sum, id) => sum + byInput.get(id.toString())!.members, 0)),
-          input_bytes: BigInt(batch.inputBytes), estimated_tokens: BigInt(batch.estimatedTokens),
-          status: 'queued', round: 1, step: 'request', request_budget_limit: 1,
-        }).execute();
-      }
-      return;
-    }
-  }
 
   const counts = await tx.selectFrom('ai_standardization_results')
     .select(['status', sql<number>`count(*)::int`.as('count')])
@@ -304,8 +229,7 @@ export async function recoverAbandonedStandardizationBatches(database: Kysely<Da
         and not (q.request_budget_used < q.request_budget_limit and q.unknown_requests = 0)
         and j.status not in ('paused', 'cancelled', 'failed', 'succeeded')
         and not j.pause_requested and not j.cancel_requested
-        and j.prompt_version = ${PIPELINE_VERSIONS.prompt} and j.rule_version = ${STANDARDIZATION_POLICY_VERSION}
-        and j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+        and ${currentExecutionPipeline()}
       order by q.id
       limit ${limit}
     )
@@ -337,15 +261,13 @@ export async function recoverStandardizationFinalization(database: Kysely<Databa
     .where('j.pause_requested', '=', false)
     .where('j.cancel_requested', '=', false)
     .where('j.configuration_blocked', '=', false)
-    .where('j.prompt_version', '=', PIPELINE_VERSIONS.prompt)
-    .where('j.rule_version', '=', STANDARDIZATION_POLICY_VERSION)
-    .where(sql<boolean>`j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb`)
+    .where(currentExecutionPipeline())
     .where(sql<boolean>`not exists (
       select 1 from ai_job_batches b where b.job_id = j.id and b.status in ('queued', 'running')
     )`)
     .orderBy('j.id').limit(limit).execute();
   for (const job of jobs) {
-    await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, job.id));
+    await database.transaction().execute(tx => finalizeAiJob(tx, job.id));
   }
   return jobs.length;
 }

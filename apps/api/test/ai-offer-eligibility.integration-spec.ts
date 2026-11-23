@@ -102,10 +102,10 @@ for (const state of ['completed', 'active', 'unknown'] as const) {
       }).where('job_id', '=', old.id).execute();
     }
     const next = await repository.createJob({ model: 'mock', productIds: [product.id], jobType: 'incremental' });
-    assert.equal(Number(next.total), state === 'active' ? 1 : 0);
+    assert.equal(Number(next.total), 0);
     const execution = await db.selectFrom('ai_standardization_executions').select('job_id')
       .where('product_id', '=', product.id).executeTakeFirstOrThrow();
-    assert.equal(execution.job_id, state === 'active' ? next.id : old.id);
+    assert.equal(execution.job_id, old.id);
   });
 }
 

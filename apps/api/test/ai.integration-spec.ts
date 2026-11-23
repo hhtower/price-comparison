@@ -12,7 +12,8 @@ import type { DatabaseSchema, JsonValue } from '../src/database/types.js';
 import { jsonb } from '../src/database/types.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
-import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../src/ai/standardization-finalizer.js';
+import { seedAttributePublication } from './attribute-publication-fixture.js';
 import { DomainConflictError } from '../src/common/errors.js';
 import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
 import { STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
@@ -104,10 +105,11 @@ describe('AI identity standardization publication', () => {
           await repository.prepareBatch(batch.id);
           await repository.reserveBatchRequest(batch.id);
           const input = await repository.getTagExtractionBatchInputs(batch.id);
-          await repository.persistTagExtractionBatchDecision(feature.id, batch.id,
+          await seedAttributePublication(database, batch.id,
             input.inputs.map(row => ({ productId: row.productId, tags: [], rejectedTags: [], reviewed: true,
-              membershipKind: 'account' as const, classificationReviewed: true })), {},
-            { workerId: 'integration', attempt: 1n, token: 'feature-claim' });
+              membershipKind: 'account' as const, membershipRefs: [0], classificationReviewed: true,
+              membershipReview: { classificationDecision: true, code: null, refs: [] } })));
+          await repository.publishTagExtractionBatch(batch.id, { workerId: 'integration', attempt: 1n, token: 'feature-claim' });
         }
       }
     }
@@ -180,8 +182,8 @@ describe('AI identity standardization publication', () => {
         `data: ${JSON.stringify({ choices: [{ delta: { content: part }, ...(index === fragments.length - 1 ? { finish_reason: 'stop' } : {}) }] })}\n\n`,
       ).join('') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
     });
-    const { metadata, standardizationStage, items, missingIds } = await call({ id: prepared.batchId }, new AbortController().signal);
-    assert.equal(standardizationStage, 'generate');
+    const { metadata, reviewStage, items, missingIds } = await call({ id: prepared.batchId }, new AbortController().signal);
+    assert.equal(reviewStage, 'generate');
     await saveAndPublish(prepared, { items, missingIds }, undefined, metadata);
     const result = await database.selectFrom('ai_standardization_results').select(['status', 'reason_code', 'standard_product_id'])
       .where('job_id', '=', prepared.job.id).where('product_id', '=', product.id).executeTakeFirstOrThrow();
@@ -903,8 +905,8 @@ describe('AI identity standardization publication', () => {
       assert.deepEqual(await members(child.id), [{ product_id: second.id }], 'the new child must not rerun A');
     }
     await Promise.all([
-      database.transaction().execute(tx => finalizeOrScheduleMissing(tx, prepared.job.id)),
-      database.transaction().execute(tx => finalizeOrScheduleMissing(tx, prepared.job.id)),
+      database.transaction().execute(tx => finalizeAiJob(tx, prepared.job.id)),
+      database.transaction().execute(tx => finalizeAiJob(tx, prepared.job.id)),
     ]);
     await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 3n, token: 'partial-recovery' });
     await assert.rejects(prepared.repository.reapplySavedResults(prepared.job.id),
@@ -925,8 +927,8 @@ describe('AI identity standardization publication', () => {
     assert.equal((await database.selectFrom('ai_job_batches').select('validated_decision')
       .where('id', '=', prepared.batchId).executeTakeFirstOrThrow()).validated_decision, null);
     await new JobsRepository(database).fail('ai_batch', prepared.batchId, 'integration', 'missing input item', { retry: false, retryClass: 'invalid_response' });
-    await Promise.all([database.transaction().execute(tx => finalizeOrScheduleMissing(tx, prepared.job.id)),
-      database.transaction().execute(tx => finalizeOrScheduleMissing(tx, prepared.job.id))]);
+    await Promise.all([database.transaction().execute(tx => finalizeAiJob(tx, prepared.job.id)),
+      database.transaction().execute(tx => finalizeAiJob(tx, prepared.job.id))]);
     assert.deepEqual(await database.selectFrom('ai_job_batches').select('round').where('job_id', '=', prepared.job.id).execute(), [{ round: 0 }]);
     assert.deepEqual(await database.selectFrom('ai_job_input_members').select(['missing_reprocess_count', 'reason_code']).where('job_id', '=', prepared.job.id).execute(),
       [{ missing_reprocess_count: 0, reason_code: 'invalid_response' }]);
@@ -972,8 +974,8 @@ describe('AI identity standardization publication', () => {
             { choices: [{ delta: { content: response.slice(31) }, finish_reason: 'stop' }] }]
             .map(chunk => 'data: ' + JSON.stringify(chunk) + '\n\n').join('') + 'data: [DONE]\n\n');
         });
-      const { metadata, standardizationStage, items, missingIds } = await call({ id: prepared.batchId } as never, new AbortController().signal);
-      assert.equal(standardizationStage, 'generate');
+      const { metadata, reviewStage, items, missingIds } = await call({ id: prepared.batchId } as never, new AbortController().signal);
+      assert.equal(reviewStage, 'generate');
       assert.equal(items[0]?.status, 'classified');
       await saveAndPublish(prepared, { items, missingIds }, undefined, metadata);
       const member = await database.selectFrom('standard_product_members').selectAll().where('product_id', '=', source.id).executeTakeFirstOrThrow();
@@ -991,8 +993,8 @@ describe('AI identity standardization publication', () => {
       if ((tagInput.payload as { warrantyEligible?: boolean }).warrantyEligible) reviewedTags.warrantyLabels = {
         subscription_warranty: null, subscription_warranty_t: null, usage_warranty: null, usage_warranty_t: null,
       };
-      await prepared.repository.persistTagExtractionBatchDecision(tagJob.id, tagBatch.id,
-        [reviewedTags], {},
+      await seedAttributePublication(database, tagBatch.id, [reviewedTags]);
+      await prepared.repository.publishTagExtractionBatch(tagBatch.id,
         { workerId: 'integration', attempt: 1n, token: 'membership-tags' });
       const published = await database.selectFrom('standard_product_members as m').innerJoin('standard_products as s', 's.id', 'm.standard_product_id')
         .select(['m.publication_state', 's.id']).where('m.product_id', '=', source.id).executeTakeFirstOrThrow();
@@ -1034,20 +1036,23 @@ describe('AI identity standardization publication', () => {
       }
       if (drift === 'failed') {
         await database.updateTable('ai_job_batches').set({ status: 'failed', error_source: 'invalid_response', error: 'bad tag response' }).where('id', '=', batch.id).execute();
-        await database.transaction().execute(tx => finalizeOrScheduleMissing(tx, tagJob.id));
+        await database.transaction().execute(tx => finalizeAiJob(tx, tagJob.id));
         assert.equal((await database.selectFrom('ai_jobs').select('status').where('id', '=', tagJob.id).executeTakeFirstOrThrow()).status, 'ready_with_errors');
         assert.equal((await database.selectFrom('ai_standardization_results').select('product_id').where('job_id', '=', tagJob.id).execute()).length, 0, 'tag failures do not overwrite identity results');
       } else {
+        await seedAttributePublication(database, batch.id, [reviewedTags]);
         if (drift === 'unchanged') {
           await database.updateTable('ai_jobs').set({ pipeline_versions: jsonb({ ...(tagJob.pipeline_versions as Record<string, string>), tagPrompt: 'stale-tag-prompt' }) }).where('id', '=', tagJob.id).execute();
           await assert.rejects(prepared.repository.getTagExtractionBatchInputs(batch.id), error => error instanceof DomainConflictError && error.code === 'AI_POLICY_STALE');
-          await assert.rejects(prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id,
-            [{ productId: source.id, tags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: 'monthly' }] }], rejectedTags: [] }]), error => error instanceof DomainConflictError && error.code === 'AI_POLICY_STALE');
+          await assert.rejects(prepared.repository.publishTagExtractionBatch(batch.id,
+            { workerId: 'integration', attempt: 1n, token: 'tag-claim' }), error => error instanceof DomainConflictError && error.code === 'AI_POLICY_STALE');
           await database.updateTable('ai_jobs').set({ pipeline_versions: jsonb(tagJob.pipeline_versions!) }).where('id', '=', tagJob.id).execute();
-          await assert.rejects(prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id,
-            [{ productId: source.id + 1000000n, tags: [{ name: 'duration', value: 30, evidence: [{ path: 'spec', quote: 'monthly' }] }], rejectedTags: [] }], {}, { workerId: 'integration', attempt: 1n, token: 'tag-claim' }), /does not match/);
+          await seedAttributePublication(database, batch.id, [{ ...reviewedTags, productId: source.id + 1000000n }]);
+          await assert.rejects(prepared.repository.publishTagExtractionBatch(batch.id,
+            { workerId: 'integration', attempt: 1n, token: 'tag-claim' }), /does not match/);
+          await seedAttributePublication(database, batch.id, [reviewedTags]);
         }
-        await prepared.repository.persistTagExtractionBatchDecision(tagJob.id, batch.id, [reviewedTags], {}, { workerId: 'integration', attempt: 1n, token: 'tag-claim' });
+        await prepared.repository.publishTagExtractionBatch(batch.id, { workerId: 'integration', attempt: 1n, token: 'tag-claim' });
       }
       assert.deepEqual((await database.selectFrom('product_tags').select(['name', 'value']).where('product_id', '=', source.id).orderBy('name').execute()),
         drift === 'unchanged' ? [{ name: 'duration', value: 30 }] : [{ name: 'usage_restriction', value: '人工保留限制' }]);

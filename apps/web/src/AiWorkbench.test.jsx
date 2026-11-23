@@ -14,7 +14,6 @@ const progress = {
   requests: { totalBatches: 3, queuedBatches: 0, runningBatches: 0, succeededBatches: 2, failedBatches: 1, cancelledBatches: 0, confirmed: 2, unknown: 1, budgetUsed: 3, budgetLimit: 4 },
   publication: { totalUnits: 4, queuedUnits: 0, runningUnits: 0, succeededUnits: 3, blockedUnits: 1, failedUnits: 0, cancelledUnits: 0, publishedMembers: 8, pendingMembers: 1 },
   results: { classified: 8, unclassified: 4, unclassifiedReasons: { unmatched: 3, publication_blocked: 1 }, standardProducts: 2 },
-  missing: { scheduledInputs: 3, reprocessedInputs: 3 },
 };
 const job = { id: '8', status: 'succeeded', model: 'test-model', scopeShopId: '1', promptVersion: 'identity-v1', createdAt: '2026-09-20T08:00:00Z', finishedAt: '2026-09-20T08:01:00Z' };
 const status = { configured: true, configError: '', model: 'test-model', job, progress, currentBatches: [], errors: [] };
@@ -736,7 +735,7 @@ describe('AiWorkbench', () => {
     installFetch(url => {
       if (url.pathname === '/api/admin/ai/status') return response({
         ...status, job: { ...job, status: 'running', ...jobState },
-        progress: { ...progress, processed: 12, standardizationStages: stages,
+        progress: { ...progress, processed: 12, reviewStages: stages,
           publication: {}, results: { classified: 0, unclassified: 0 } },
       });
       if (url.pathname === '/api/admin/ai/task-queue') return response({ items: [] });

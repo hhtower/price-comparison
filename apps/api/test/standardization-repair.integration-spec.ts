@@ -10,7 +10,7 @@ import { parseStandardizationReviewResponse } from '../src/ai/standardization-re
 import { buildStandardizationRequest } from '../src/ai/standardization-request.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { seedMatchOnlyReviewFixture } from './standardization-review-fixture.js';
-import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../src/ai/standardization-finalizer.js';
 
 let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
 before(async () => {
@@ -48,12 +48,12 @@ async function requestBatch(repo: AiRepository, id: bigint) {
 }
 async function reviewChild(jobId: bigint, generationId: bigint) {
   return db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', jobId)
-    .where(sql<string>`reference_snapshot->>'generationBatchId'`, '=', String(generationId)).executeTakeFirstOrThrow();
+    .where(sql<string>`reference_snapshot->>'proposalBatchId'`, '=', String(generationId)).executeTakeFirstOrThrow();
 }
 async function repairs(jobId: bigint) {
   return db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', jobId)
     .where(sql<boolean>`reference_snapshot->>'repairReviewBatchId' is not null`)
-    .where(sql<boolean>`reference_snapshot->>'standardizationStage' is distinct from 'review'`).orderBy('id').execute();
+    .where(sql<boolean>`reference_snapshot->>'reviewStage' is distinct from 'review'`).orderBy('id').execute();
 }
 
 test('a rejected identity supplements candidates, corrects once and publishes only after independent review', async () => {
@@ -87,7 +87,9 @@ test('a rejected identity supplements candidates, corrects once and publishes on
 
   const restarted = new AiRepository(db);
   const correctionRequest = await requestBatch(restarted, repair.id);
-  assert.equal(correctionRequest.stage, 'generate');
+  assert.equal(correctionRequest.stage, 'repair');
+  assert.equal((repair.reference_snapshot as any).reviewStage, 'repair');
+  assert.equal((repair.reference_snapshot as any).repairReviewBatchId, String(firstReview.id));
   assert.ok(correctionRequest.inputs[0]!.candidateStandardProductIds.includes(String(f.standards[1]!.id)));
   const body = JSON.parse(buildStandardizationRequest(correctionRequest).messages[1]!.content);
   assert.equal(body.feedback[0].review.code, 'identity_mismatch');
@@ -99,6 +101,8 @@ test('a rejected identity supplements candidates, corrects once and publishes on
   await restarted.persistBatchDecision(f.job.id, repair.id, corrected, {}, claim);
   const secondReview = await reviewChild(f.job.id, repair.id);
   assert.equal(secondReview.request_budget_limit, 1);
+  assert.equal((secondReview.reference_snapshot as any).reviewStage, 'review');
+  assert.equal((secondReview.reference_snapshot as any).proposalBatchId, String(repair.id));
   const recheck = await requestBatch(restarted, secondReview.id);
   const accepted = parseStandardizationReviewResponse(JSON.stringify({ items: [{
     id: corrected.items[0]!.id, approved: true, code: null, evidence: [],
@@ -191,8 +195,8 @@ test('an uncertain correction request is terminal, retains its audit and never q
   await f.repo.recordBatchRequestOutcome(f.repair.id, 'unknown', undefined, claim);
   await db.updateTable('ai_job_batches').set({ status: 'failed', error_source: 'request_outcome_unknown' })
     .where('id', '=', f.repair.id).execute();
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, f.job.id));
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, f.job.id));
+  await db.transaction().execute(tx => finalizeAiJob(tx, f.job.id));
+  await db.transaction().execute(tx => finalizeAiJob(tx, f.job.id));
   assert.equal((await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', f.job.id).execute()).length, 3);
   const result = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   assert.equal(result.reason_code, 'request_outcome_unknown');
@@ -205,7 +209,7 @@ test('a failed first-review publication cannot terminate inputs delegated to its
   assert.ok(f.repair);
   await db.updateTable('ai_job_batches').set({ status: 'failed', error_source: 'local' })
     .where('id', '=', f.review.id).execute();
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, f.job.id));
+  await db.transaction().execute(tx => finalizeAiJob(tx, f.job.id));
   assert.deepEqual(await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).execute(), []);
   assert.equal((await db.selectFrom('ai_job_input_members').select('status').where('job_id', '=', f.job.id).executeTakeFirstOrThrow()).status, 'queued');
   await requestBatch(f.repo, f.repair.id);

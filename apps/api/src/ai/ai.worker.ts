@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { WorkerRuntime, type WorkerRuntimeOptions, type WorkerRuntimeService, type WorkerLogger } from '../workers/worker-runtime.js';
-import type { AiRepository, AiBatchResultMetadata } from './ai.repository.js';
+import type { AiRepository } from './ai.repository.js';
 import { parseStandardizationProtocolResponse, StandardizationValidationError, type ParsedStandardizationResponse } from './ai.schemas.js';
 import { createStreamingCall, type StreamingUsage } from './llm-runtime.js';
 import { classifyRetryClass } from '../jobs/jobs.repository.js';
@@ -19,11 +19,12 @@ import { buildProductTextReviewRequest, parseProductTextReviewResponse, type Pro
 import { readTextEvidence, validateTextReview } from '../shops/shop-text-review.js';
 import { buildExtractionPayload } from './adaptive-batching.js';
 import { isAttributeJobType, type JsonValue } from '../database/types.js';
-import { buildResponseAudit } from './response-audit.js';
+import { buildResponseAudit, type AiBatchResultMetadata } from './response-audit.js';
 import { buildStandardizationReviewRequest, parseStandardizationReviewResponse } from './standardization-review-request.js';
+import type { ReviewStage } from './review-workflow.js';
 export { buildStandardizationRequest, estimateStandardizationRequest, assertStandardizationRequestFits, readStandardizationRequestLimits } from './standardization-request.js';
 
-export type StandardizationModelResult = ParsedStandardizationResponse & { standardizationStage?: 'generate' | 'review'; tagExtractionItems?: TagExtractionDecision[]; tagExtractionStage?: 'warranty' | 'extract' | 'review' | 'repair'; metadata?: AiBatchResultMetadata & {
+export type StandardizationModelResult = ParsedStandardizationResponse & { reviewStage?: ReviewStage; tagExtractionItems?: TagExtractionDecision[]; metadata?: AiBatchResultMetadata & {
   usage?: StreamingUsage | null; responseModel?: string | null; responseId?: string | null;
 } };
 export type StandardizationModelCall = ((job: any, signal: AbortSignal) => Promise<StandardizationModelResult>) & {
@@ -98,11 +99,11 @@ export function createAiWorker(service: WorkerRuntimeService, options: FactoryOp
       if (tagItems) {
         await options.repository!.checkpointTagExtractionBatchDecision(BigInt(job.row.job_id), BigInt(job.id), tagItems, metadata, {
           workerId: job.claimed_by, attempt: job.attempts, token: typeof job.row.claim_token === 'string' ? job.row.claim_token : undefined,
-        }, result.tagExtractionStage);
+        }, result.reviewStage);
       } else {
         await options.repository!.persistBatchDecision(BigInt(job.row.job_id), BigInt(job.id), result, metadata, {
           workerId: job.claimed_by, attempt: job.attempts, token: typeof job.row.claim_token === 'string' ? job.row.claim_token : undefined,
-        }, result.standardizationStage);
+        }, result.reviewStage);
       }
       await recordAiTimingSafely(options.aiMetrics, timing(null), options.logger);
     } catch (error) {
@@ -143,7 +144,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
     if (isAttributeJobType(claimed.row?.job_type)) {
       const membershipFeatures = claimed.row.job_type === 'membership_features';
       const textReview = claimed.row.job_type === 'text_review';
-      const { jobId, model, inputs, stage = 'extract', proposals, previousDecisions, warrantyLabels } = await repository.getTagExtractionBatchInputs(BigInt(claimed.id));
+      const { jobId, model, inputs, stage, proposals, previousDecisions, warrantyLabels } = await repository.getTagExtractionBatchInputs(BigInt(claimed.id));
       const payloads = inputs.map(i => ({ ...(i.payload && typeof i.payload === 'object' && !Array.isArray(i.payload) ? i.payload : {}),
         id: i.productId.toString(), name: i.name, spec: i.spec as string | null, sourceData: i.sourceData }));
       if (stage === 'review' && !proposals) throw new Error('tag review proposals are missing');
@@ -161,7 +162,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
       assertStandardizationRequestFits(built, limits);
       signal.throwIfAborted();
       const context = { parentJobId: String(jobId), batchId: String(claimed.id), jobType: claimed.row.job_type,
-        model, inputCount: inputs.length, tagStage: stage };
+        model, inputCount: inputs.length, reviewStage: stage };
       return async () => {
         const response = await streamCall({
           model: built.model, messages: built.messages, responseFormat: built.responseFormat,
@@ -242,7 +243,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
             ? item.classificationReviewed === false : item.rejectedTags.length > 0).length;
           metadata.responseDiagnostic.code = metadata.responseDiagnostic.rejectedItemCount ? 'items_rejected'
             : items.length < inputs.length ? 'items_missing' : 'accepted';
-          return { items: [], missingIds: [], metadata, tagExtractionItems: items, tagExtractionStage: stage };
+          return { items: [], missingIds: [], metadata, tagExtractionItems: items, reviewStage: stage };
         } catch (error) {
           // The tag parser uses generic errors; classify JSON only on failure to avoid parsing successes twice.
           if (phase === 'schema') {
@@ -257,13 +258,13 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
       };
     }
     const request = structuredClone(await repository.getBatchRequest(BigInt(claimed.id)));
-    const stage = request.stage ?? 'generate';
+    const stage = request.stage;
     if (stage === 'review' && !request.proposals) throw new Error('standardization review proposals are missing');
-    const generation = stage === 'generate' ? buildStandardizationRequest(request) : undefined;
+    const generation = stage !== 'review' ? buildStandardizationRequest(request) : undefined;
     const built = generation ?? buildStandardizationReviewRequest(request, request.proposals!);
     assertStandardizationRequestFits(built, limits);
     signal.throwIfAborted();
-    const context = { parentJobId: String(request.jobId), batchId: String(claimed.id), model: request.model, inputCount: request.inputs.length, standardizationStage: stage };
+    const context = { parentJobId: String(request.jobId), batchId: String(claimed.id), model: request.model, inputCount: request.inputs.length, reviewStage: stage };
     return async () => {
       const response = await streamCall({
         model: built.model, messages: built.messages, responseFormat: built.responseFormat,
@@ -294,7 +295,7 @@ export function createOpenAiModelCall(repository: AiRepository, environment: Nod
         throw failure;
       }
       result.metadata = { ...buildResponseAudit(response, request.inputs.length, 'evidence', result), retryClass: null };
-      result.standardizationStage = stage;
+      result.reviewStage = stage;
       return result;
     };
   };

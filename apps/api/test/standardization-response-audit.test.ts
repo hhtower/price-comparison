@@ -6,7 +6,7 @@ import { buildResponseAudit } from '../src/ai/response-audit.js';
 
 const job = { id: 7n, attempts: 1n, claimed_by: 'audit-worker', lease_until: new Date(Date.now() + 60000),
   row: { job_id: 3n, step: 'request', claim_token: 'audit-claim' } };
-const request = { jobId: 3n, model: 'mock', candidates: [
+const request = { jobId: 3n, model: 'mock', stage: 'generate' as const, candidates: [
   { id: '91', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [] },
 ], inputs: [
   { productId: 11n, fingerprint: 'f'.repeat(64), payload: { name: 'ChatGPT Plus' }, candidateStandardProductIds: ['91'] },

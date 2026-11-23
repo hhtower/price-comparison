@@ -7,7 +7,7 @@ import type { ClaimedJob } from '../src/jobs/jobs.repository.js';
 const claimed = (step: 'request' | 'publish' = 'request'): ClaimedJob => ({
   kind: 'ai_batch', id: 7n, attempts: 1n, claimed_by: 'worker',
   lease_until: new Date(Date.now() + 60_000),
-  row: { job_id: 3n, step, claim_token: 'claim', input_bytes: 123n },
+  row: { job_id: 3n, job_type: 'manual_full', step, claim_token: 'claim', input_bytes: 123n },
 });
 
 function service(item: ClaimedJob | null = claimed()) {
@@ -26,6 +26,7 @@ function service(item: ClaimedJob | null = claimed()) {
 
 const request = {
   jobId: 3n,
+  stage: 'generate' as const,
   model: 'configured',
   candidates: [{ id: '91', family: 'openai', product: 'chatgpt', tier: 'plus', aliases: [] }],
   inputs: [
@@ -73,7 +74,7 @@ test('the extraction stage preserves every schema-valid candidate for independen
     { name: 'access_channel', value: 'reverse_proxy' },
     { name: 'access_channel', value: 'web' },
   ];
-  const call = (items: unknown) => createOpenAiModelCall({ getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', inputs: [payload] }) } as never,
+  const call = (items: unknown) => createOpenAiModelCall({ getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', stage: 'generate', inputs: [payload] }) } as never,
     { AI_BASE_URL: 'https://mock.invalid/v1', AI_API_KEY: 'mock', AI_MODEL: 'mock' }, async (_url, init) => {
       const sent = JSON.parse(String(init?.body)); assert.equal(sent.stream, true);
       assert.match(sent.messages[0].content, /supported_client/);
@@ -83,7 +84,7 @@ test('the extraction stage preserves every schema-valid candidate for independen
   const job = { ...claimed(), row: { ...claimed().row, job_type: 'tag_extraction' } };
   const result = await call([{ id: '11', tags }])(job, new AbortController().signal) as any;
   assert.deepEqual(result.tagExtractionItems[0].tags, tags.map((tag, proposalIndex) => ({ ...tag, evidence: [], proposalIndex })));
-  assert.equal(result.tagExtractionStage, 'extract');
+  assert.equal(result.reviewStage, 'generate');
   assert.deepEqual(result.tagExtractionItems[0].rejectedTags, []);
   await assert.rejects(call([{ id: '99', tags }])(job, new AbortController().signal));
   await assert.rejects(call([{ id: '11', tags }, { id: '11', tags }])(job, new AbortController().signal));
@@ -99,7 +100,7 @@ test('tag worker checkpoints complete candidates before semantic review or produ
     prepareBatch: async () => undefined,
     reserveBatchRequest: async () => { events.push('reserve'); return 'reserved'; },
     recordBatchRequestOutcome: async (_id: bigint, outcome: string) => { events.push(outcome); },
-    getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', inputs: [
+    getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', stage: 'generate', inputs: [
       { productId: 11n, name: '账号', spec: '1个月', sourceData: {} },
       { productId: 12n, name: '账号', spec: '不可覆盖订阅', sourceData: {} },
     ] }),
@@ -147,14 +148,14 @@ for (const invalid of [false, true]) test(`text review ${invalid ? 'rejects inva
     prepareBatch: async () => undefined,
     reserveBatchRequest: async () => 'reserved',
     recordBatchRequestOutcome: async () => undefined,
-    getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', stage: 'extract', inputs: [
+    getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', stage: 'generate', inputs: [
       { productId: 11n, name: 'Account', spec: '', sourceData: {}, payload: {
         shopText: { unitId: '11', name: 'Account', description: '', hash: 'a'.repeat(64) },
       } },
     ] }),
     checkpointTagExtractionBatchDecision: async (_job: bigint, _batch: bigint, items: unknown, _metadata: unknown, _claim: unknown, stage: string) => {
       checkpoints++;
-      assert.equal(stage, 'extract');
+      assert.equal(stage, 'generate');
       assert.deepEqual(items, [{ productId: 11n, tags: [], rejectedTags: [], textReview }]);
     },
     publishTagExtractionBatch: async () => { publications++; },
@@ -330,7 +331,7 @@ test('generation leaves the semantics of a cited candidate match to independent 
   }, async () => new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(validResponse) }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`));
   const result = await call(claimed(), new AbortController().signal);
   assert.equal(result.items[0]?.status, 'classified');
-  assert.equal(result.standardizationStage, 'generate');
+  assert.equal(result.reviewStage, 'generate');
   assert.deepEqual(result.items[0]?.identity, { kind: 'existing', standardProductId: '91' });
 });
 
@@ -408,7 +409,7 @@ test('invalid frozen GLM tag options fail before reserving or recording any prov
     const repository = {
       prepareBatch: async () => {},
       getTagExtractionBatchInputs: async () => ({
-        jobId: 3n, model: 'glm-5.3-flash', inputs: [{ productId: 11n, name: 'ChatGPT Plus', spec: '', sourceData: {} }],
+        jobId: 3n, model: 'glm-5.3-flash', stage: 'generate', inputs: [{ productId: 11n, name: 'ChatGPT Plus', spec: '', sourceData: {} }],
       }),
       reserveBatchRequest: async () => { calls.push('reserve'); return 'reserved' as const; },
       recordBatchRequestOutcome: async () => { calls.push('outcome'); },
@@ -443,7 +444,7 @@ test('request step prepares, reserves and atomically checkpoints its confirmed r
       persistBatchDecision: async () => { calls.push('persist'); },
       publishBatch: async () => { calls.push('publish'); },
     } as never,
-    modelCall: async () => Object.assign(parsedResponse(), { metadata: { responseMs: 2, outputBytes: 10 } }),
+    modelCall: async () => Object.assign(parsedResponse(), { reviewStage: 'generate' as const, metadata: { responseMs: 2, outputBytes: 10 } }),
   });
   await worker.runOnce();
   await new Promise(resolve => setImmediate(resolve));
@@ -608,7 +609,7 @@ test('preflight reuses the exact frozen request once and preserves provider usag
   await runtime.stop();
   assert.equal(state.completed, 1); assert.equal(reads, 1); assert.equal(sends, 1);
   assert.deepEqual(events, ['read', 'reserve']);
-  assert.equal(saved.decision.standardizationStage, 'generate');
+  assert.equal(saved.decision.reviewStage, 'generate');
   assert.equal(saved.decision.items[0].status, 'classified');
   assert.deepEqual(saved.metadata.usage, { promptTokens: 100, completionTokens: 50, totalTokens: 150 });
   assert.equal(saved.metadata.responseModel, 'actual-model'); assert.equal(saved.metadata.responseId, 'response-1');
@@ -617,7 +618,7 @@ test('preflight reuses the exact frozen request once and preserves provider usag
 test('goods and services without supplied catalog matches remain unmatched with evidence', async () => {
   for (const name of ['lined notebook', 'Google email', 'mathematics course', 'human consultation']) {
     const evidence = [citation(name)];
-    const frozen = { jobId: 3n, model: 'mock', candidates: [], inputs: [
+    const frozen = { jobId: 3n, model: 'mock', stage: 'generate' as const, candidates: [], inputs: [
       { productId: 11n, payload: { id: '11', name }, candidateStandardProductIds: [] },
     ] };
     const call = createOpenAiModelCall({ getBatchRequest: async () => frozen } as never, {

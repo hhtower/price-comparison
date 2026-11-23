@@ -12,7 +12,7 @@ import { AiRepository } from '../src/ai/ai.repository.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
 import type { DatabaseSchema } from '../src/database/types.js';
 import { IDENTITY_POLICY_VERSION } from '../src/standardization/identity-policy.js';
-import { finalizeOrScheduleMissing, recoverAbandonedStandardizationBatches, recoverStandardizationFinalization } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob, recoverAbandonedStandardizationBatches, recoverStandardizationFinalization } from '../src/ai/standardization-finalizer.js';
 import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
 import { readAiConcurrency } from '../src/ai/ai-concurrency.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
@@ -52,7 +52,8 @@ function fixture(execute: (query: CompiledQuery) => QueryResult | Promise<QueryR
 const activeJob = {
   id: 3n,
   status: 'queued',
-  prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock',
+  job_type: 'manual_full', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock',
+  pipeline_current: true,
   rule_version: STANDARDIZATION_POLICY_VERSION,
   pause_requested: false,
   cancel_requested: false,
@@ -72,7 +73,7 @@ function runningBatch(overrides: Record<string, unknown> = {}) {
     claim_token: 'claim-1',
     lease_until: new Date(Date.now() + 60_000),
     step: 'request',
-    reference_snapshot: { strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [], candidates: [] },
+    reference_snapshot: { reviewStage: 'generate', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [], candidates: [] },
     request_budget_limit: 2,
     request_budget_used: 0,
     confirmed_requests: 0,
@@ -85,7 +86,7 @@ test('batch reference is frozen once and later preparation reuses it', async () 
   let frozen: unknown = null;
   let freezeUpdates = 0;
   const f = fixture((query) => {
-    if (query.sql.includes('from "ai_job_batches" as "b"')) return { rows: [{ job_id: 3n, product_ids: ['11'], step: 'request', reference_snapshot: frozen, prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock', rule_version: STANDARDIZATION_POLICY_VERSION }] };
+    if (query.sql.includes('from "ai_job_batches" as "b"')) return { rows: [{ job_id: 3n, product_ids: ['11'], step: 'request', reference_snapshot: frozen, job_type: 'manual_full', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock', rule_version: STANDARDIZATION_POLICY_VERSION }] };
     if (query.sql.includes('from "ai_job_inputs"')) return { rows: [{ input_id: 11n, input_bytes: 100n, estimated_tokens: 30n, previous_decision: null, payload: { id: '11', name: 'ChatGPT Plus' } }] };
     if (query.sql.includes('from "standardization_catalog_versions"')) return { rows: [{ version: 1n, alias_policy_version: IDENTITY_POLICY_VERSION }] };
     if (query.sql.includes('from "standard_products" as "sp"')) return { rows: [{
@@ -238,7 +239,7 @@ test('candidate catalog reuses its base and applies only versioned change rows',
         product_ids: [batchId === '7' ? '11' : '12'],
         step: 'request',
         reference_snapshot: frozen.get(batchId) ?? null,
-        prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock',
+        job_type: 'manual_full', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock',
         rule_version: STANDARDIZATION_POLICY_VERSION,
       }] };
     }
@@ -312,7 +313,7 @@ test('candidate catalog keeps the applied delta when non-blocking compaction fai
         product_ids: [batchId === '7' ? '11' : '12'],
         step: 'request',
         reference_snapshot: frozen.get(batchId) ?? null,
-        prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock',
+        job_type: 'manual_full', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: PIPELINE_VERSIONS, model: 'mock',
         rule_version: STANDARDIZATION_POLICY_VERSION,
       }] };
     }
@@ -386,7 +387,7 @@ test('provider request cannot be reserved before the reference is frozen', async
 });
 
 test('reservation clears a frozen reference when an active input has no candidate snapshot', async () => {
-  const batch = runningBatch({ reference_snapshot: { strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [], candidates: [] } });
+  const batch = runningBatch({ reference_snapshot: { reviewStage: 'generate', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [], candidates: [] } });
   const f = fixture(query => {
     if (query.sql.startsWith('select "job_id" from "ai_job_batches"')) return { rows: [{ job_id: 3n }] };
     if (query.sql.includes('from "ai_jobs"')) return { rows: [activeJob] };
@@ -407,7 +408,7 @@ test('reservation clears a frozen reference when an active input has no candidat
 test('tag extraction reserves requests using unique input-member IDs', async () => {
   const batch = runningBatch({
     product_ids: ['11'], product_count: 1n,
-    reference_snapshot: { strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs: [
+    reference_snapshot: { reviewStage: 'generate', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs: [
       { id: '11', candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } },
     ], candidates: [] },
   });
@@ -534,12 +535,12 @@ test('oversized inputs get an explicit terminal result without a provider reques
 test('unknown outcomes and exhausted budgets cannot reserve another provider request', async () => {
   for (const state of [
     runningBatch({ request_budget_used: 1, confirmed_requests: 0, unknown_requests: 1, reference_snapshot: {
-      strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [
+      reviewStage: 'generate', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [
         { id: '11', candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } },
       ], candidates: [],
     } }),
     runningBatch({ request_budget_used: 2, confirmed_requests: 2, unknown_requests: 0, reference_snapshot: {
-      strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [
+      reviewStage: 'generate', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '1', inputs: [
         { id: '11', candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } },
       ], candidates: [],
     } }),
@@ -607,34 +608,23 @@ test('local publication retry leaves provider budget and extraction progress unc
   await f.db.destroy();
 });
 
-test('attribute finalization locks the job and retains one retry for missing tag inputs', async () => {
+test('attribute finalization locks the job and finishes failed inputs without missing-ID retries', async () => {
   const f = fixture((query) => {
-    if (query.sql.includes('from "ai_jobs"') && query.sql.includes('for update')) return { rows: [{ ...activeJob, job_type: 'tag_extraction' }] };
-    if (query.sql.includes('from "ai_job_batches"') && query.sql.includes('"status" in')) return { rows: [] };
-    if (query.sql.includes('from "ai_job_input_members"') && query.sql.includes('"reason_code"')) {
-      return { rows: [
-        { input_id: 11n, product_id: 101n, content_version: 1n, fingerprint: 'a', payload: { id: '11' }, input_bytes: 10n, estimated_tokens: 3n },
-        { input_id: 11n, product_id: 102n, content_version: 1n, fingerprint: 'a', payload: { id: '11' }, input_bytes: 10n, estimated_tokens: 3n },
-      ] };
-    }
-    if (query.sql.includes('max(jsonb_array_length(product_ids))')) return { rows: [{ max_items: 1 }] };
-    if (query.sql.includes('from "ai_job_batches"') && query.sql.includes('"round" =')) return { rows: [] };
-    if (query.sql.includes('coalesce(max(batch_index)')) return { rows: [{ next: 1n }] };
+    if (query.sql.includes('from "ai_jobs"')) return { rows: [{ ...activeJob, job_type: 'tag_extraction', total: 2n }] };
+    if (query.sql.includes('from "ai_job_inputs"')) return { rows: [{ input_id: 11n }] };
+    if (query.sql.includes('from "ai_job_input_members"') && query.sql.includes('group by')) return { rows: [{ status: 'failed', count: 2 }] };
     return {};
   });
 
-  await f.db.transaction().execute(tx => finalizeOrScheduleMissing(tx, 3n));
+  await f.db.transaction().execute(tx => finalizeAiJob(tx, 3n));
 
-  const roundOne = f.queries.find(query => query.sql.startsWith('insert into "ai_job_batches"'));
-  assert.ok(roundOne);
-  assert.match(roundOne.sql, /"round".*"request_budget_limit"/);
-  assert.ok(roundOne.parameters.includes(1));
-  assert.equal(roundOne.parameters.includes(2), false, 'round 1 gets one provider request');
-  assert.ok(f.queries.find(query => query.sql.startsWith('update "ai_job_inputs"'))?.parameters.includes(1));
-  assert.ok(f.queries.find(query => query.sql.startsWith('update "ai_job_input_members"'))?.parameters.includes(1));
+  assert.equal(f.queries.some(query => query.sql.startsWith('insert into "ai_job_batches"')), false);
+  assert.equal(f.queries.some(query => /update "ai_job_(inputs|input_members)"/.test(query.sql)), false);
+  assert.equal(f.queries.some(query => query.sql.includes('missing_reprocess_count')), false);
   const lockIndex = f.queries.findIndex(query => query.sql.includes('from "ai_jobs"') && query.sql.includes('for update'));
-  const insertIndex = f.queries.findIndex(query => query.sql.startsWith('insert into "ai_job_batches"'));
-  assert.ok(lockIndex >= 0 && insertIndex > lockIndex);
+  const completionIndex = f.queries.findIndex(query => query.sql.startsWith('update "ai_jobs"'));
+  assert.ok(lockIndex >= 0 && completionIndex > lockIndex);
+  assert.ok(f.queries[completionIndex]!.parameters.includes('ready_with_errors'));
   await f.db.destroy();
 });
 
@@ -648,7 +638,7 @@ test('match-only finalization never schedules a missing-ID retry and completes u
     return {};
   });
 
-  await f.db.transaction().execute(tx => finalizeOrScheduleMissing(tx, 3n));
+  await f.db.transaction().execute(tx => finalizeAiJob(tx, 3n));
 
   assert.equal(f.queries.some(query => query.sql.startsWith('insert into "ai_job_batches"')), false);
   assert.equal(f.queries.some(query => query.parameters.includes('missing_id')), false);
@@ -659,15 +649,16 @@ test('match-only finalization never schedules a missing-ID retry and completes u
   await f.db.destroy();
 });
 
-test('paused and cancelled jobs cannot schedule missing reprocessing', async () => {
+test('paused and cancelled jobs cannot finalize or change inputs', async () => {
   for (const job of [
     { ...activeJob, status: 'paused', pause_requested: true },
     { ...activeJob, status: 'cancelled', cancel_requested: true },
   ]) {
     const f = fixture((query) => query.sql.includes('from "ai_jobs"') ? { rows: [job] } : {});
-    await f.db.transaction().execute(tx => finalizeOrScheduleMissing(tx, 3n));
+    await f.db.transaction().execute(tx => finalizeAiJob(tx, 3n));
     assert.equal(f.queries.some(query => query.sql.includes('"ai_job_input_members"')), false);
     assert.equal(f.queries.some(query => query.sql.startsWith('insert into "ai_job_batches"')), false);
+    assert.equal(f.queries.some(query => query.sql.startsWith('update "ai_jobs"')), false);
     await f.db.destroy();
   }
 });
@@ -735,7 +726,7 @@ test('recovery scans only active standardization jobs with no live batches', asy
 
   const scan = f.queries.find(query => query.sql.includes('from "ai_jobs" as "j"'));
   assert.ok(scan);
-  assert.match(scan.sql, /"j"\."phase" = .*not exists/);
+  assert.match(scan.sql, /"j"\."phase" = .*not exists/s);
   assert.ok(scan.parameters.includes('standardizing'));
   assert.ok(scan.parameters.includes(7));
   assert.ok(f.queries.some(query => query.sql.startsWith('update "ai_jobs"') && query.parameters.includes('succeeded')));

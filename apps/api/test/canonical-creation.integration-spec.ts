@@ -37,9 +37,10 @@ const review = (fixture: Fixture) => saveStandardizationThroughReview(db, fixtur
 });
 async function publish(fixture: Fixture, batchId: bigint) {
   await db.updateTable('ai_job_batches').set({
-    status: 'running', lease_until: new Date(Date.now() + 60_000),
+    status: 'running', claimed_by: fixture.claim.workerId, attempts: fixture.claim.attempt,
+    claim_token: fixture.claim.token, lease_until: new Date(Date.now() + 60_000),
   }).where('id', '=', batchId).execute();
-  await fixture.repo.publishBatch(batchId);
+  await fixture.repo.publishBatch(batchId, fixture.claim);
 }
 async function catalog() {
   return {
@@ -158,10 +159,10 @@ test('all-rejected decisions cannot publish from a tampered generation-stage ref
   const memberships = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', fixture.products[0]!.id).execute();
   const before = await catalog();
   await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({
-    ...fixture.batch.reference_snapshot as Record<string, JsonValue>, standardizationStage: 'generate',
+    ...fixture.batch.reference_snapshot as Record<string, JsonValue>, reviewStage: 'generate',
   }) }).where('id', '=', batchId).execute();
 
-  await assert.rejects(publish(fixture, batchId), /standardization publication requires reviewed decisions/);
+  await assert.rejects(publish(fixture, batchId), /Publication requires its completed review stage/);
   assert.deepEqual(await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', fixture.job.id).execute(), []);
   assert.deepEqual(await db.selectFrom('ai_publication_units').selectAll().where('batch_id', '=', batchId).execute(), units);
   assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', fixture.products[0]!.id).execute(), memberships);
@@ -189,7 +190,7 @@ for (const change of ['merged', 'quarantined', 'family', 'product', 'tier', 'nam
       await db.updateTable('standard_products').set({ merged_into_id: target.id }).where('id', '=', standardId).execute();
     } else if (change === 'missing candidate document') {
       await db.updateTable('ai_job_batches').set({ reference_snapshot: jsonb({
-        ...fixture.batch.reference_snapshot as Record<string, JsonValue>, standardizationStage: 'review', candidates: [],
+        ...fixture.batch.reference_snapshot as Record<string, JsonValue>, reviewStage: 'review', candidates: [],
       }) }).where('id', '=', batchId).execute();
     } else {
       const update = change === 'quarantined' ? { verification_state: 'quarantined' as const }

@@ -25,6 +25,13 @@ export interface ResponseDiagnostic {
   constraint?: Pick<StandardizationDiagnostic, 'expectedType' | 'actualType' | 'actualCount' | 'maxCount'>;
 }
 
+export interface AiBatchResultMetadata {
+  firstContentMs?: number | null; responseMs?: number | null; outputBytes?: number; retryClass?: string | null;
+  responseDiagnostic?: ResponseDiagnostic;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number; reasoningTokens?: number } | null;
+  responseModel?: string | null; responseId?: string | null;
+}
+
 /** Summaries contain coordinates and counts, never model text or proposed identity values. */
 export function buildResponseAudit(response: StreamingResult, inputCount: number,
   phase: ResponseDiagnostic['phase'], result?: ParsedStandardizationResponse, error?: unknown) {

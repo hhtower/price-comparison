@@ -69,7 +69,7 @@ export async function seedMatchOnlyReviewFixture(
     product_count: BigInt(products.length), step: 'request', status: 'running', claimed_by: claim.workerId,
     attempts: claim.attempt, claim_token: claim.token, lease_until: new Date(Date.now() + 60_000),
     request_budget_used: 1, request_budget_limit: 2,
-    reference_snapshot: jsonb({ strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs, candidates }),
+    reference_snapshot: jsonb({ reviewStage: 'generate', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs, candidates }),
   }).returningAll().executeTakeFirstOrThrow();
   const raw = { items: products.map((product, index) => ({
     id: String(product.id), standardProductId: inputs[index]!.candidateStandardProductIds[0]!, nullReason: null,
@@ -101,8 +101,8 @@ export async function saveStandardizationThroughReview(
     .where('id', '=', input.batchId).executeTakeFirstOrThrow();
   const reviews = await db.selectFrom('ai_job_batches').select('id')
     .where('job_id', '=', input.jobId)
-    .where(sql<string>`reference_snapshot->>'standardizationStage'`, '=', 'review')
-    .where(sql<string>`reference_snapshot->>'generationBatchId'`, '=', String(input.batchId)).execute();
+    .where(sql<string>`reference_snapshot->>'reviewStage'`, '=', 'review')
+    .where(sql<string>`reference_snapshot->>'proposalBatchId'`, '=', String(input.batchId)).execute();
   const proposals = generation.validated_decision as unknown as ParsedStandardizationResponse;
   if (!proposals.items.some(isReviewableStandardizationDecision)) {
     assert.equal(reviews.length, 0, 'local terminal decisions must not spend review requests');

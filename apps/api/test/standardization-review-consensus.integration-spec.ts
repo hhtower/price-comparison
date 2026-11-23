@@ -5,7 +5,7 @@ import { Kysely, PostgresDialect } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
-import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../src/ai/standardization-finalizer.js';
 import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
 import { parseStandardizationProtocolResponse } from '../src/ai/ai.schemas.js';
@@ -94,7 +94,7 @@ async function work(productId: bigint, options: WorkOptions = {}) {
   }).execute();
   if (options.pendingReview) await db.insertInto('ai_job_batches').values({
     job_id: job.id, batch_index: 0n, product_ids: jsonb([String(productId)]), product_count: 1n,
-    status: 'queued', step: 'request', reference_snapshot: jsonb({ standardizationStage: 'review' }),
+    status: 'queued', step: 'request', reference_snapshot: jsonb({ reviewStage: 'review' }),
   }).execute();
   return job.id;
 }
@@ -138,7 +138,7 @@ async function failedReview(productId: bigint, errorSource: string, options: Wor
   const document = parseStandardizationProtocolResponse({
     items: [{ id: String(productId), standardProductId: null, nullReason: 'insufficient_source', evidence: [{ path: 'name', quote: product.name }] }],
   }, inputs);
-  const reference = { strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs, candidates: [] };
+  const reference = { reviewStage: 'generate', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', inputs, candidates: [] };
   const generation = await db.insertInto('ai_job_batches').values({
     job_id: jobId, batch_index: 0n, product_ids: jsonb([String(productId)]), product_count: 1n,
     status: 'succeeded', step: 'done', validated_decision: jsonb(document as unknown as JsonValue),
@@ -147,9 +147,9 @@ async function failedReview(productId: bigint, errorSource: string, options: Wor
   await db.insertInto('ai_job_batches').values({
     job_id: jobId, batch_index: 1n, product_ids: jsonb([String(productId)]), product_count: 1n,
     status: 'failed', step: 'request', error_source: errorSource,
-    reference_snapshot: jsonb({ ...reference, standardizationStage: options.stage ?? 'review', generationBatchId: String(generation.id) }),
+    reference_snapshot: jsonb({ ...reference, reviewStage: options.stage ?? 'review', proposalBatchId: String(generation.id) }),
   }).execute();
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, jobId));
+  await db.transaction().execute(tx => finalizeAiJob(tx, jobId));
   const terminal = await db.selectFrom('ai_standardization_results').select(['decision', 'reason_code'])
     .where('job_id', '=', jobId).where('product_id', '=', productId).executeTakeFirstOrThrow();
   assert.equal(terminal.reason_code, errorSource);

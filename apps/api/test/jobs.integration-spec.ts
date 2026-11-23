@@ -181,8 +181,8 @@ describe('durable job queue leases', () => {
 
   for (const jobType of ['tag_extraction', 'manual_full'] as const) {
     const reviewReference = jobType === 'tag_extraction'
-      ? { tagStage: 'review', extractionBatchId: '1' }
-      : { standardizationStage: 'review', generationBatchId: '1' };
+      ? { reviewStage: 'review', proposalBatchId: '1' }
+      : { reviewStage: 'review', proposalBatchId: '1' };
     for (const stage of ['review', 'publish'] as const) test(`ready ${jobType} ${stage} precedes a thousand older generation batches`, async () => {
       await database.updateTable('ai_jobs').set({ status: 'cancelled' }).execute();
       const job = await queuedReviewJob(50, jobType);

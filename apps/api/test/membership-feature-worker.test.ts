@@ -61,7 +61,7 @@ function response(output: unknown, finishReason = 'stop') {
     { headers: { 'content-type': 'text/event-stream' } });
 }
 
-function repository(stage: 'extract' | 'review' | 'repair' = 'extract', proposed = proposals) {
+function repository(stage: 'generate' | 'review' | 'repair' = 'generate', proposed = proposals) {
   return {
     getBatchRequest: async () => assert.fail('membership classification must not query identity candidates'),
     getTagExtractionBatchInputs: async () => ({
@@ -77,7 +77,7 @@ function byProductId<T extends { productId: bigint }>(items: T[]) {
   return [...items].sort((a, b) => Number(a.productId - b.productId));
 }
 
-for (const stage of ['extract', 'review', 'repair'] as const) {
+for (const stage of ['generate', 'review', 'repair'] as const) {
   test(`membership ${stage} aggregates a mixed streamed batch into classification-only checkpoints`, async () => {
     let sends = 0;
     const call = createOpenAiModelCall(repository(stage) as never, environment, async (_url, init) => {
@@ -96,7 +96,7 @@ for (const stage of ['extract', 'review', 'repair'] as const) {
     });
     const result = await call(claimed(), new AbortController().signal);
     assert.equal(sends, 1);
-    assert.equal(result.tagExtractionStage, stage);
+    assert.equal(result.reviewStage, stage);
     assert.deepEqual(result.items, []);
     assert.equal(Object.hasOwn(result, 'identities'), false);
     assert.deepEqual(result.missingIds, []);

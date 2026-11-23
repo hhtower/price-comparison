@@ -92,7 +92,7 @@ async function protocolSmoke() {
     const call = makeCall({ items: [control.item] }, control.proposals);
     if (control.status) {
       const response = await call({ id: 1n }, new AbortController().signal);
-      assert.equal(response.standardizationStage, 'review');
+      assert.equal(response.reviewStage, 'review');
       assert.equal(response.items[0]?.status, control.status);
       assert.equal(response.items[0]?.reasonCode, control.reasonCode);
       const original = control.proposals.items[0]!;

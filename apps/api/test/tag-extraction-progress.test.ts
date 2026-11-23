@@ -25,9 +25,12 @@ test('clean and legacy snapshots do not invent rejected tags',()=>{
 test('two-stage counts describe batches independently of terminal member outcomes', () => {
   const p = progressSnapshotFromRow({ job_type: 'tag_extraction', member_total: 8, tag_counts: { updated: 1 },
     extraction_completed: 3, review_queued: 2, review_running: 1, review_completed: 4, publication_queued: 5 });
-  assert.deepEqual(p.tagStages, { extractionCompleted: 3, reviewQueued: 2, reviewRunning: 1, reviewCompleted: 4, publicationQueued: 5 });
+  assert.deepEqual(p.reviewStages, { generationCompleted: 3, reviewQueued: 2, reviewRunning: 1, reviewCompleted: 4, publicationQueued: 5 });
   assert.equal(p.processed, '1');
-  assert.equal(progressSnapshotFromRow({ job_type: 'identity_extraction', review_completed: 4 }).tagStages, undefined);
+  assert.deepEqual(progressSnapshotFromRow({ job_type: 'manual_full', review_completed: 4 }).reviewStages, {
+    generationCompleted: 0, reviewQueued: 0, reviewRunning: 0, reviewCompleted: 4, publicationQueued: 0,
+  });
+  assert.equal(p.tagStages, undefined);
 });
 
 for (const jobType of ['tag_extraction', 'membership_features'] as const) {
@@ -67,28 +70,28 @@ test(`${jobType} progress counts stored acceptance for completed members and its
       job_id: job.id, input_id: inputId, product_id: products[i]!.id, status: item.status, output: item.output ? jsonb(item.output) : null,
     }))).execute();
     const batches = [
-      { status: 'succeeded', step: 'done', reference: null },
-      { status: 'succeeded', step: 'done', reference: { tagStage: 'extract' } },
-      { status: 'queued', step: 'request', reference: { tagStage: 'review' } },
-      { status: 'running', step: 'request', reference: { tagStage: 'review' } },
-      { status: 'succeeded', step: 'done', reference: { tagStage: 'review' } },
-      { status: 'queued', step: 'publish', reference: { tagStage: 'review' } },
-      { status: 'failed', step: 'request', reference: { tagStage: 'review' } },
-      { status: 'cancelled', step: 'request', reference: { tagStage: 'review' } },
+      { status: 'succeeded', step: 'done', reference: { reviewStage: 'generate' } },
+      { status: 'succeeded', step: 'done', reference: { reviewStage: 'generate' } },
+      { status: 'queued', step: 'request', reference: { reviewStage: 'review' } },
+      { status: 'running', step: 'request', reference: { reviewStage: 'review' } },
+      { status: 'succeeded', step: 'done', reference: { reviewStage: 'review' } },
+      { status: 'queued', step: 'publish', reference: { reviewStage: 'review' } },
+      { status: 'failed', step: 'request', reference: { reviewStage: 'review' } },
+      { status: 'cancelled', step: 'request', reference: { reviewStage: 'review' } },
       { status: 'queued', step: 'request', reference: null },
-      { status: 'running', step: 'publish', reference: { tagStage: 'review' } },
-      { status: 'succeeded', step: 'request', reference: null },
-      { status: 'succeeded', step: 'done', reference: { tagStage: 'repair' } },
+      { status: 'running', step: 'publish', reference: { reviewStage: 'review' } },
+      { status: 'succeeded', step: 'request', reference: { reviewStage: 'generate' } },
+      { status: 'succeeded', step: 'done', reference: { reviewStage: 'repair' } },
     ] as const;
     const jobBatches = jobType === 'tag_extraction'
-      ? [...batches, { status: 'succeeded', step: 'done', reference: { tagStage: 'warranty' } } as const] : batches;
+      ? [...batches, { status: 'succeeded', step: 'done', reference: { reviewStage: 'warranty' } } as const] : batches;
     await db.insertInto('ai_job_batches').values(jobBatches.map((batch, i) => ({
       job_id: job.id, batch_index: i, round: 0, product_ids: jsonb([String(inputId)]), product_count: 1,
       status: batch.status, step: batch.step, reference_snapshot: batch.reference ? jsonb(batch.reference) : null,
     }))).execute();
     await db.insertInto('ai_job_batches').values({
       job_id: job.id, batch_index: -1, round: 0, product_ids: jsonb([]), product_count: 0,
-      status: 'queued', step: 'request', reference_snapshot: jsonb({ tagStage: 'review' }),
+      status: 'queued', step: 'request', reference_snapshot: jsonb({ reviewStage: 'review' }),
     }).execute();
     await db.insertInto('ai_job_progress').values({ job_id: job.id, total: 9n }).execute();
     const p = await getJobProgress(db, job.id);
@@ -101,25 +104,25 @@ test(`${jobType} progress counts stored acceptance for completed members and its
       ? { acceptedProducts: 1, rejectedProducts: 0 } : undefined);
     assert.equal(p?.failed, '0'); assert.equal(p?.requests.failedBatches, 1);
     assert.equal(p?.requests.totalBatches, jobBatches.length);
-    assert.deepEqual(p?.tagStages, { extractionCompleted: 3, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1 });
+    assert.deepEqual(p?.reviewStages, { generationCompleted: 3, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1 });
     const standardizationJob = await db.insertInto('ai_jobs').values({
       total: 9n, model: 'mock', job_type: 'manual_full', status: 'running',
     }).returning('id').executeTakeFirstOrThrow();
     await db.insertInto('ai_job_progress').values({ job_id: standardizationJob.id, total: 9n }).execute();
     await db.insertInto('ai_job_batches').values(batches.map((batch, i) => ({
-      job_id: standardizationJob.id, batch_index: i, round: batch.reference?.tagStage === 'review' ? 1 : 0,
+      job_id: standardizationJob.id, batch_index: i, round: batch.reference?.reviewStage === 'review' ? 1 : 0,
       product_ids: jsonb([String(inputId)]), product_count: 1, status: batch.status, step: batch.step,
-      reference_snapshot: batch.reference ? jsonb({ standardizationStage: batch.reference.tagStage, generationBatchId: '1' }) : null,
+      reference_snapshot: batch.reference ? jsonb({ reviewStage: batch.reference.reviewStage, proposalBatchId: '1' }) : null,
     }))).execute();
     await db.insertInto('ai_job_batches').values([
       { job_id: standardizationJob.id, batch_index: -1, round: 1, product_ids: jsonb([]), product_count: 0,
-        status: 'queued', step: 'request', reference_snapshot: jsonb({ standardizationStage: 'review' }) },
+        status: 'queued', step: 'request', reference_snapshot: jsonb({ reviewStage: 'review' }) },
       { job_id: standardizationJob.id, batch_index: 20, round: 0, product_ids: jsonb([]), product_count: 0,
-        status: 'queued', step: 'request', reference_snapshot: jsonb({ tagStage: 'review' }) },
+        status: 'queued', step: 'request', reference_snapshot: jsonb({ reviewStage: 'generate' }) },
     ]).execute();
     const standardization = await getJobProgress(db, standardizationJob.id);
     assert.equal(standardization?.jobType, 'manual_full');
-    assert.deepEqual(standardization?.standardizationStages, {
+    assert.deepEqual(standardization?.reviewStages, {
       generationCompleted: 3, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
     });
     assert.equal(standardization?.tagStages, undefined);

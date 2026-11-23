@@ -8,7 +8,7 @@ import { projectTagInput } from './tag-extraction-request.js';
 import { buildExtractionPayload, estimateInputSize, extractionContextKey } from './adaptive-batching.js';
 import { planBulkStandardizationBatches, planIndependentStandardizationBatches } from './standardization-batch-planner.js';
 import { currentManualDecision } from './ai-retry-pool.js';
-import { PIPELINE_VERSIONS, pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION, taskResultVersions } from './pipeline-versions.js';
+import { currentExecutionPipeline, pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION, taskResultVersions } from './pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from './standardization-request.js';
 import { readAiConcurrency } from './ai-concurrency.js';
 import { incrementJobProgress } from './ai-progress.repository.js';
@@ -27,11 +27,9 @@ export function currentTagMemberSource(member: 'm' | 'newer', warrantyEligible?:
   return sql<boolean>`${payload}->'shopSource'=jsonb_build_object('url',s.url,'protocol',s.protocol,'platform',s.platform)
     ${warrantyEligible ? sql`and ${payload}->'warrantyEligible'=to_jsonb(coalesce(${warrantyEligible},false))` : sql``}`;
 }
-/** Share history eligibility with queue counts; unfinished work still needs the full protocol. */
+/** Share history eligibility with queue counts; unfinished work needs its execution protocol. */
 export function currentAttributeMemberHistory(kind: AttributeJobKind, member: 'm' | 'newer' = 'm', job: 'j' | 'nj' = 'j', storedResultCurrent: RawBuilder<boolean> = sql<boolean>`false`) {
-  const execution = sql<boolean>`${sql.ref(`${job}.prompt_version`)}=${STANDARDIZATION_PROMPT_VERSION}
-    and ${sql.ref(`${job}.rule_version`)}=${STANDARDIZATION_POLICY_VERSION}
-    and ${sql.ref(`${job}.pipeline_versions`)} @> ${jsonb(PIPELINE_VERSIONS)}`;
+  const execution = currentExecutionPipeline(job);
   if (kind === 'text_review') return execution;
   // Cancelling an unsent retry provides no new evidence about an older request.
   const cancelledBeforeRequest = sql<boolean>`(
@@ -82,8 +80,7 @@ async function selection(db: Db, input: TagJobScope, lock = false, kind: Attribu
       .where('assignment.publication_state','=','published')
       .where('standard.verification_state','=','verified').where('standard.merged_into_id','is',null);
     if (kind === 'membership_features') query = query.where(aiMembership);
-    const currentExecution = sql<boolean>`j.prompt_version=${STANDARDIZATION_PROMPT_VERSION}
-      and j.rule_version=${STANDARDIZATION_POLICY_VERSION} and j.pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`;
+    const currentExecution = currentExecutionPipeline();
     // Unknown outcomes need an explicit retry even when the request protocol has changed.
     const unknownOutcome = sql<boolean>`${kind !== 'text_review' || unfinishedOnly}
       and (coalesce(m.output->>'reasonCode',m.reason_code)='request_outcome_unknown'
@@ -214,8 +211,7 @@ async function enqueueAllPendingAttributeJob(db: Kysely<DatabaseSchema>, input: 
     const active=await tx.selectFrom('ai_jobs').selectAll().where('job_type','=',kind)
       .where('status','in',['queued','running','paused','ready'])
       .where(sql<boolean>`requested_scope @> '{"scope":{"allPending":true}}'::jsonb`)
-      .where('prompt_version','=',STANDARDIZATION_PROMPT_VERSION).where('rule_version','=',STANDARDIZATION_POLICY_VERSION)
-      .where(sql<boolean>`pipeline_versions @> ${jsonb(PIPELINE_VERSIONS)}`).orderBy('id','desc').executeTakeFirst();
+      .where(currentExecutionPipeline('ai_jobs')).orderBy('id','desc').executeTakeFirst();
     if(active) {
       await tx.insertInto('ai_tag_job_requests').values({request_id:input.requestId.toLowerCase(),job_id:active.id}).execute();
       return active;
@@ -311,7 +307,7 @@ async function persistAttributeJob(tx:Transaction<DatabaseSchema>,input:TagJobIn
     job_id:job.id,batch_index:BigInt(offset+index),product_ids:jsonb(batch.productIds.map(String)),product_count:BigInt(batch.productIds.reduce((count,id)=>count+memberCounts.get(id)!,0)),
     input_bytes:BigInt(batch.inputBytes),estimated_tokens:BigInt(batch.estimatedTokens),status:'queued' as const,round:0,step:'request' as const,request_budget_limit:2,
     ...(kind === 'tag_extraction' ? { reference_snapshot: jsonb({
-      tagStage: warrantyInputIds.has(batch.productIds[0]!) ? 'warranty' : 'extract', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0',
+      reviewStage: warrantyInputIds.has(batch.productIds[0]!) ? 'warranty' : 'generate', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0',
       inputs: batch.productIds.map(id => ({ id: String(id), candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } })),
       candidates: [],
     }) } : {}),

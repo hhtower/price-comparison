@@ -91,7 +91,7 @@ test('feature admin previews published AI products, creates a separate job and e
   }] }) }).where('job_id', '=', jobId).execute();
   await db.insertInto('ai_job_batches').values({
     job_id: jobId, batch_index: 1n, product_ids: jsonb([String(member.input_id)]), product_count: 1n, status: 'queued',
-    reference_snapshot: jsonb({ tagStage: 'review' }),
+    reference_snapshot: jsonb({ reviewStage: 'review' }),
     validated_decision: jsonb({ items: [{
       productId: String(member.input_id), tags: [], rejectedTags: [], membershipKind: 'account', membershipRefs: [0], reviewed: true, classificationReviewed: true,
       membershipReview: { classificationDecision: true, code: null, refs: [] },

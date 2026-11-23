@@ -66,13 +66,13 @@ test('nonmember tag jobs skip warranty regardless of membership-looking title', 
  const f = await fixture();
  const job = await db.transaction().execute(tx => createTagJob(tx, { productIds: [f.inputId], model: 'mock' }));
  const batch = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', job.id).executeTakeFirstOrThrow();
- assert.equal((batch.reference_snapshot as any).tagStage, 'extract');
+ assert.equal((batch.reference_snapshot as any).reviewStage, 'generate');
  assert.ok((job.pipeline_versions as any).tagWarrantyPrompt);
  assert.equal(batch.step, 'request');
  assert.equal(batch.request_budget_used, 0);
  await f.repo.prepareBatch(batch.id);
  const inputs = await f.repo.getTagExtractionBatchInputs(batch.id);
- assert.equal(inputs.stage, 'extract');
+ assert.equal(inputs.stage, 'generate');
  assert.equal(inputs.warrantyLabels, undefined);
  assert.equal(inputs.proposals, undefined);
 });
@@ -92,8 +92,8 @@ test('membership eligibility splits identical text from nonmembers and uses sing
  const job = await db.transaction().execute(tx => createTagJob(tx, { productIds, model: 'mock' }));
  const batches = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', job.id).execute();
  assert.equal(batches.length, 2);
- const warranty = batches.find(b => (b.reference_snapshot as any).tagStage === 'warranty')!;
- const ordinary = batches.find(b => (b.reference_snapshot as any).tagStage === 'extract')!;
+ const warranty = batches.find(b => (b.reference_snapshot as any).reviewStage === 'warranty')!;
+ const ordinary = batches.find(b => (b.reference_snapshot as any).reviewStage === 'generate')!;
  assert.deepEqual(warranty.product_ids, [String(f.inputId)]);
  assert.equal(warranty.product_count, 2n);
  assert.deepEqual(ordinary.product_ids, [String(f.products[2]!.id)]);
@@ -286,9 +286,9 @@ test('all-pending and historical tag queue coverage use the latest current audit
  await db.updateTable('products').set({ standardization_locked: true }).where('id', '=', ids[8]!).execute();
  await db.deleteFrom('standard_product_members').where('product_id', '=', ids[9]!).execute();
  const old = await db.transaction().execute(tx => createTagJob(tx, { productIds: [ids[10]!], model: 'mock' }));
- await db.updateTable('ai_jobs').set({ prompt_version: 'old' }).where('id', 'in', [old.id, f.job.id]).execute();
- // Keep the original job current, except the newer obsolete task for product 10.
- await db.updateTable('ai_jobs').set({ prompt_version: STANDARDIZATION_PROMPT_VERSION }).where('id', '=', f.job.id).execute();
+ await db.updateTable('ai_jobs').set({
+   pipeline_versions: jsonb({ ...pipelineVersionSnapshot('mock') as object, reviewWorkflow: 'old' }),
+ }).where('id', '=', old.id).execute();
  await db.updateTable('ai_job_input_members').set({ output: null }).where('job_id', '=', f.job.id).where('product_id', '=', ids[10]!).execute();
  await db.updateTable('products').set({ standardization_revision: f.products[11]!.standardization_revision + 1n }).where('id', '=', ids[11]!).execute();
  await db.updateTable('ai_job_input_members').set({ output: jsonb({ ...success, outcome: 'unchanged' }) }).where('job_id', '=', f.job.id).where('product_id', '=', ids[12]!).execute();
@@ -302,7 +302,10 @@ test('all-pending and historical tag queue coverage use the latest current audit
      await db.updateTable('ai_job_input_members').set({ status: 'processing' }).where('job_id', '=', newer.id).execute();
    }
    if ([17, 18, 19, 20].includes(index)) {
-     await db.updateTable('ai_jobs').set(index === 17 || index === 20 ? { prompt_version: 'old' } : index === 18 ? { rule_version: 'old' } : { pipeline_versions: jsonb({ tagPrompt: 'old' }) }).where('id', '=', newer.id).execute();
+     await db.updateTable('ai_jobs').set({ pipeline_versions: jsonb({
+       ...pipelineVersionSnapshot('mock') as object,
+       ...(index === 17 || index === 20 ? { reviewWorkflow: 'old' } : index === 18 ? { offerEligibility: 'old' } : { tagPrompt: 'old' }),
+     }) }).where('id', '=', newer.id).execute();
      await db.updateTable('ai_job_input_members').set({ status: 'classified', output: jsonb({ ...success, outcome: index === 20 ? 'failed' : 'updated' }) }).where('job_id', '=', newer.id).execute();
      if (index !== 20) await db.deleteFrom('ai_job_input_members').where('job_id', '=', f.job.id).where('product_id', '=', ids[index]!).execute();
    }
@@ -349,7 +352,7 @@ test('claimed nonmember tag batches keep their type and use streaming general ex
    return new Response([content.slice(0, 12), content.slice(12)].map((chunk, i) => `data: ${JSON.stringify({ choices: [{ delta: { content: chunk }, finish_reason: i ? 'stop' : null }] })}\n\n`).join('') + 'data: [DONE]\n\n');
  });
  const result = await call(claimed, new AbortController().signal);
- assert.equal(result.tagExtractionStage, 'extract');
+ assert.equal(result.reviewStage, 'generate');
  assert.equal(result.tagExtractionItems?.[0]?.productId, f.inputId);
  assert.deepEqual(result.tagExtractionItems?.[0]?.tags, []);
  await db.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', job.id).execute();
@@ -361,9 +364,12 @@ test('tag queue retains obsolete history and exposes obsolete active tasks for a
  const scope = { jobType: 'tag_extraction', scopeShopId: f.products[0]!.shop_id };
  const current = await readAiTaskQueue(db, { ...scope, status: 'unfinished' });
  assert.equal(current.items.find(item => item.id === String(job.id))?.configurationCurrent, true);
+ await db.updateTable('ai_jobs').set({ prompt_version: 'old', rule_version: 'old' }).where('id', '=', job.id).execute();
+ assert.equal((await readAiTaskQueue(db, { ...scope, status: 'unfinished' })).items
+   .find(item => item.id === String(job.id))?.configurationCurrent, true, 'identity headers do not expire tag work');
  for (const change of [{ pipeline_versions: jsonb({ tagPrompt: 'old' }) },
-   { pipeline_versions: jsonb(pipelineVersionSnapshot('mock')), prompt_version: 'old' },
-   { prompt_version: STANDARDIZATION_PROMPT_VERSION, rule_version: 'old' }]) {
+   { pipeline_versions: jsonb({ ...pipelineVersionSnapshot('mock') as object, reviewWorkflow: 'old' }) },
+   { pipeline_versions: jsonb({ ...pipelineVersionSnapshot('mock') as object, offerEligibility: 'old' }) }]) {
    await db.updateTable('ai_jobs').set(change).where('id', '=', job.id).execute();
    const attention = await readAiTaskQueue(db, { ...scope, status: 'attention' });
    assert.deepEqual(attention.items.map(item => item.id), [String(job.id)]);

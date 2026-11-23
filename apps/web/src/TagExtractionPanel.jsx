@@ -77,7 +77,7 @@ const voteTitle = vote => vote === true ? 'YES (true)' : vote === false ? 'NO (f
 const metadata = (value, keys) => versions(Object.fromEntries(keys.filter(key => value?.[key] != null && ['string', 'number', 'boolean'].includes(typeof value[key])).map(key => [key, value[key]]))) || '未记录';
 const batchStageTitle = batch => batch.stage === 'review'
   ? Number(batch.reviewRepairRound) > 0 ? '修正复核' : '复核'
-  : batch.stage === 'repair' ? '修正提取' : batch.stage === 'extract' ? '提取'
+  : batch.stage === 'repair' ? '修正提取' : batch.stage === 'generate' ? '提取'
     : batch.stage === 'warranty' ? '质保判定' : '阶段未记录';
 function Completeness({ value }) {
   return typeof value === 'boolean' ? <p>完整性：{value ? '完整' : '不完整'}</p> : null;
@@ -125,18 +125,18 @@ function BatchAudit({ batch, data, outputSource, noun }) {
   const text = noun === '文案';
   const review = batch.stage === 'review';
   const stageTitle = text ? '文案审查' : batchStageTitle(batch);
-  const source = review ? data.batches?.find(item => ['extract', 'repair'].includes(item.stage) && batch.extraction_batch_id != null && String(item.id) === String(batch.extraction_batch_id)) : batch;
+  const source = review ? data.batches?.find(item => ['generate', 'repair'].includes(item.stage) && batch.proposal_batch_id != null && String(item.id) === String(batch.proposal_batch_id)) : batch;
   const output = data.member?.output;
   const sourceStage = source?.stage;
   const repairRound = source?.reviewRepairRound;
-  const round = sourceStage === 'extract' ? 1
+  const round = sourceStage === 'generate' ? 1
     : sourceStage === 'repair' && indexed(repairRound) && repairRound > 0 ? repairRound + 1 : undefined;
   const attempts = !feature && !text && round != null ? output?.attempts?.filter(attempt => attempt.round === round) : undefined;
   const attempt = attempts?.length === 1 ? attempts[0] : undefined;
   const linkedOutput = attempt ? {
     acceptedTags: attempt.tags, rejectedTags: attempt.rejectedTags,
     review: { mode: 'per_tag_binary', decisions: attempt.reviewDecisions },
-  } : !output?.attempts?.length && sourceStage === 'extract' && source?.id != null && String(source.id) === outputSource ? output : undefined;
+  } : !output?.attempts?.length && sourceStage === 'generate' && source?.id != null && String(source.id) === outputSource ? output : undefined;
   const diagnostic = batch.response_diagnostic;
   return <details><summary><span>{stageTitle}批次 #{batch.id ?? '未记录'} 详情</span><small>{stageTitle} · 第 {batch.batch_index == null ? '未记录' : Number(batch.batch_index) + 1} 批 · {batch.round ?? '未记录'} · {batch.status ?? '未记录'} · 耗时 {batch.response_ms == null ? '不可用' : `${batch.response_ms} 毫秒`} · token {batch.response_usage ? versions(batch.response_usage) : '用量不可用'}</small></summary>
     <p>阶段：{batch.stage ?? '未记录'} · 步骤：{batch.step ?? '未记录'} · 状态：{batch.status ?? '未记录'}</p>
@@ -154,7 +154,7 @@ function BatchAudit({ batch, data, outputSource, noun }) {
       {diagnostic?.issues?.length ? <ul>{diagnostic.issues.map((issue, index) => <li key={index}>{metadata(issue, ['stage', 'code', 'fieldPath', 'expectedType', 'actualType', 'actualCount', 'maxCount'])}</li>)}</ul> : null}
     </details>
     {review && !text ? <>
-      <p>来源提取批次：{batch.extraction_batch_id == null ? '未记录' : `#${batch.extraction_batch_id}`}</p>
+      <p>来源提取批次：{batch.proposal_batch_id == null ? '未记录' : `#${batch.proposal_batch_id}`}</p>
       {!feature ? <p>持久化原始投票：{booleanVotes(batch.review_decisions) ? JSON.stringify(batch.review_decisions) : '未记录（不能按最终采纳或拒绝反推）'}</p> : null}
     </> : null}
     {text ? null : feature ? <>
@@ -184,7 +184,7 @@ function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行
   const progress = snapshot?.progress || {};
   const results = (text ? progress.textReviewResults : progress.tagResults) || {};
   const acceptance = (feature ? progress.featureAcceptance : progress.tagAcceptance) || {};
-  const stages = progress.tagStages || {};
+  const stages = progress.reviewStages || {};
   const total = Number(progress.rawProductCount || 0);
   const processed = Math.min(total, Number(progress.processed || 0));
   const attention = (feature ? acceptance.rejectedProducts : acceptance.rejectedTags) > 0 || results.partial_success > 0 || results.review > 0 || results.failed > 0 || results.unrecorded > 0;
@@ -220,7 +220,7 @@ function TagTaskOverview({ snapshot, item, shops, actions, title = '任务运行
           ['文案审查', `${Number(progress.requests?.succeededBatches || 0)} 批已完成`],
           ['保存审查结果', `${Number(progress.publication?.queuedUnits || 0)} 份待保存`],
         ] : [
-          [feature ? '识别分类' : '提取标签', `${Number(stages.extractionCompleted || 0)} 批已提取`],
+          [feature ? '识别分类' : '提取标签', `${Number(stages.generationCompleted || 0)} 批已提取`],
           ['LLM 二元复核', [
             `${Number(stages.reviewCompleted || 0)} 批已完成`,
             stages.reviewQueued > 0 ? `${stages.reviewQueued} 批排队` : null,
@@ -249,7 +249,7 @@ function Audit({ data, noun = '标签' }) {
   const output = data.member?.output;
   const hasReviewVotes = data.batches?.some(batch => batch.stage === 'review' && (feature ? typeof batch.classification_decision === 'boolean' : booleanVotes(batch.review_decisions)));
   const recordedVotes = output?.review?.mode === 'per_tag_binary' && booleanVotes(output.review.decisions) ? output.review.decisions : undefined;
-  const reviewSources = [...new Set(data.batches?.filter(batch => batch.stage === 'review').map(batch => batch.extraction_batch_id == null ? null : String(batch.extraction_batch_id)))];
+  const reviewSources = [...new Set(data.batches?.filter(batch => batch.stage === 'review').map(batch => batch.proposal_batch_id == null ? null : String(batch.proposal_batch_id)))];
   const outputSource = reviewSources.length === 1 ? reviewSources[0] : undefined;
   const evidence = output && !feature && !text ? ['acceptedTags', 'rejectedTags'].map(key => <section key={key}><h5>{key === 'acceptedTags' ? `通过${noun}与证据` : `拒绝${noun}与诊断`}</h5>{output[key]?.length ? <ul>{output[key].map((tag, index) => <li key={index}><strong>{fieldTitle(tag.name)}：{auditValue(tag)}</strong><p>原候选索引：{indexed(tag.proposalIndex) ? `#${tag.proposalIndex}` : '未记录'} · {voteTitle(reviewVote(tag, output.review?.decisions))} · {key === 'acceptedTags' ? '程序采纳' : '程序拒绝'}</p>{tag.reasonCode ? <p title={tag.reasonCode}>{reasonTitle(tag.reasonCode, noun)}{tag.reason && output.review?.mode !== 'per_tag_binary' ? `：${taskText(tag.reason, noun)}` : ''}</p> : null}{tag.evidence?.length ? <ul>{tag.evidence.map((evidence, i) => <li key={i}>{evidence.path}：<q>{evidence.quote}</q></li>)}</ul> : null}</li>)}</ul> : <p>无</p>}</section>) : null;
   return <div className="tag-audit">

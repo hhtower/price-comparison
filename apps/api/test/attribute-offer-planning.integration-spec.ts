@@ -11,7 +11,7 @@ import {
   createManualTagJob, createManualMembershipFeatureJob, createManualProductTextReviewJob,
   previewTagJob, previewMembershipFeatureJob, previewProductTextReviewJob,
 } from '../src/ai/tag-extraction-jobs.js';
-import { finalizeOrScheduleMissing } from '../src/ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../src/ai/standardization-finalizer.js';
 import { StandardizationRepository } from '../src/standardization/standardization.repository.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { jsonb, type AttributeJobType, type DatabaseSchema } from '../src/database/types.js';
@@ -84,7 +84,7 @@ async function failUnknown(jobId: bigint) {
     status: 'failed', error_source: 'request_outcome_unknown', error: 'response lost',
     request_budget_used: 1, unknown_requests: 1,
   }).where('job_id', '=', jobId).execute();
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, jobId));
+  await db.transaction().execute(tx => finalizeAiJob(tx, jobId));
 }
 
 async function restock(productId: bigint) {
@@ -144,7 +144,7 @@ test('automatic scheduling uses the latest relevant outcome, not every historica
   const retry = await createManualTagJob(db, { ...scope, requestId: randomUUID(), previewDigest: preview.previewDigest });
   await db.updateTable('ai_job_batches').set({ status: 'failed', error_source: 'provider_error' })
     .where('job_id', '=', retry.id).execute();
-  await db.transaction().execute(tx => finalizeOrScheduleMissing(tx, retry.id));
+  await db.transaction().execute(tx => finalizeAiJob(tx, retry.id));
   await restock(product.id);
   assert.equal((await jobs(product.id, 'tag_extraction')).length, 3);
 });

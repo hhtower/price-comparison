@@ -90,7 +90,7 @@ async function reviewFixture(count = 1, fanout = false) {
   const rows = await db.selectFrom('ai_job_input_members').select(['input_id', 'payload']).where('job_id', '=', f.job.id).orderBy('input_id').execute();
   const members = [...new Map(rows.map(member => [String(member.input_id), member])).values()];
   const reference = {
-    strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', candidates: [],
+    reviewStage: 'generate', strategyVersion: 'approved-candidate-20261119-v1', catalogVersion: '0', candidates: [],
     inputs: members.map(member => ({ id: String(member.input_id), candidateStandardProductIds: [], stats: { scanned: 0, compared: 0, truncated: false } })),
   };
   await db.updateTable('ai_job_batches').set({
@@ -106,7 +106,7 @@ async function reviewFixture(count = 1, fanout = false) {
   const batch = await db.insertInto('ai_job_batches').values({
     job_id: f.job.id, batch_index: 1n, round: 1, status: 'queued', step: 'request',
     product_ids: jsonb(members.map(member => String(member.input_id))), product_count: BigInt(count),
-    reference_snapshot: jsonb({ ...reference, tagStage: 'review', extractionBatchId: String(f.batch.id) }),
+    reference_snapshot: jsonb({ ...reference, reviewStage: 'review', proposalBatchId: String(f.batch.id) }),
   }).returningAll().executeTakeFirstOrThrow();
   return { ...f, batch };
 }
@@ -178,11 +178,11 @@ for (const [limit, overrides] of [
   });
 }
 
-for (const stage of ['warranty', 'extract', 'review'] as const) test(`saved ${stage} request estimate describes the sent full frozen payload and model options`, async t => {
+for (const stage of ['warranty', 'generate', 'review'] as const) test(`saved ${stage} request estimate describes the sent full frozen payload and model options`, async t => {
   configureLimits(t);
   const f = await (stage === 'review' ? reviewFixture() : fixture());
-  if (stage === 'extract') await db.updateTable('ai_job_batches').set({
-    reference_snapshot: jsonb({ ...(f.batch.reference_snapshot as object), tagStage: 'extract' }),
+  if (stage === 'generate') await db.updateTable('ai_job_batches').set({
+    reference_snapshot: jsonb({ ...(f.batch.reference_snapshot as object), reviewStage: 'generate' }),
   }).where('id', '=', f.batch.id).execute();
   assert.equal((await f.repository.getTagExtractionBatchInputs(f.batch.id)).stage, stage);
   await f.repository.prepareBatch(f.batch.id);
@@ -253,7 +253,7 @@ test('boolean text output capacity splits independent text review batches before
   assert.equal(f.job.job_type, 'text_review');
   assert.equal(f.batch.reference_snapshot, null);
   const original = await f.repository.getTagExtractionBatchInputs(f.batch.id);
-  assert.equal(original.stage, 'extract');
+  assert.equal(original.stage, 'generate');
   assert.equal(original.proposals, undefined);
   const payloads = original.inputs.map(input => ({ ...(input.payload as object), id: String(input.productId),
     name: input.name, spec: input.spec, sourceData: input.sourceData }));
@@ -309,7 +309,7 @@ test('review feedback output budget splits whole inputs before any request reser
   assert.deepEqual(batches.flatMap(batch => batch.product_ids as string[]), original.inputs.map(input => String(input.productId)));
   for (const batch of batches) {
     assert.equal(batch.request_budget_used, 0);
-    assert.equal((batch.reference_snapshot as any).extractionBatchId, (f.batch.reference_snapshot as any).extractionBatchId);
+    assert.equal((batch.reference_snapshot as any).proposalBatchId, (f.batch.reference_snapshot as any).proposalBatchId);
     const restored = await f.repository.getTagExtractionBatchInputs(batch.id);
     assert.deepEqual(restored.proposals?.items, original.proposals!.items.filter(item => item.id === String(restored.inputs[0]!.productId)));
     await f.repository.prepareBatch(batch.id);
@@ -360,9 +360,9 @@ for (const dimension of ['bytes', 'context'] as const) test(`review preparation 
     assert.equal(batch.request_budget_used, 0);
     assert.equal(batch.round, 1);
     assert.equal(batch.request_budget_limit, 2);
-    const reference = batch.reference_snapshot as { tagStage: string; extractionBatchId: string; inputs: Array<{ id: string }> };
-    assert.equal(reference.tagStage, 'review');
-    assert.equal(reference.extractionBatchId, (f.batch.reference_snapshot as Record<string, string>).extractionBatchId);
+    const reference = batch.reference_snapshot as { reviewStage: string; proposalBatchId: string; inputs: Array<{ id: string }> };
+    assert.equal(reference.reviewStage, 'review');
+    assert.equal(reference.proposalBatchId, (f.batch.reference_snapshot as Record<string, string>).proposalBatchId);
     assert.deepEqual(reference.inputs.map(input => input.id), batch.product_ids);
     restoredInputs.push(...requestInputs);
     restoredProposals.push(...restored.proposals!.items);

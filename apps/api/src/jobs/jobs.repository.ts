@@ -5,11 +5,10 @@ import { DATABASE } from '../database/database.providers.js';
 import { PG_POOL } from '../database/database.providers.js';
 import type { DatabaseSchema } from '../database/types.js';
 import { extractionProgressDelta, incrementJobProgress } from '../ai/ai-progress.repository.js';
-import { finalizeOrScheduleMissing } from '../ai/standardization-finalizer.js';
+import { finalizeAiJob } from '../ai/standardization-finalizer.js';
 import { PgNotifications } from '../database/pg-notifications.js';
 import { readAiConcurrency } from '../ai/ai-concurrency.js';
-import { STANDARDIZATION_PROMPT_VERSION } from '../ai/standardization-request.js';
-import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from '../ai/pipeline-versions.js';
+import { currentExecutionPipeline } from '../ai/pipeline-versions.js';
 import { readCrawlerConfig } from '../config/env.js';
 import { readAiStandardizationFeatures } from '../ai/ai-standardization-features.js';
 import { claimAssistantTurns, completeAssistantTurn, failAssistantTurn, heartbeatAssistantTurn } from './assistant-queue.js';
@@ -109,9 +108,7 @@ function activeStandardizationBatch(windowSize: number) { return sql`exists (
   select 1 from ai_jobs j
   where j.id = q.job_id
     and (${readAiStandardizationFeatures().tagExtractionEnabled} or j.job_type <> 'tag_extraction')
-    and j.prompt_version = ${STANDARDIZATION_PROMPT_VERSION}
-    and j.rule_version = ${STANDARDIZATION_POLICY_VERSION}
-    and j.pipeline_versions @> ${JSON.stringify(PIPELINE_VERSIONS)}::jsonb
+    and ${currentExecutionPipeline()}
     and j.status not in ('paused','cancelled','failed','succeeded')
     and not j.pause_requested and not j.cancel_requested
     and q.batch_index < coalesce((
@@ -159,8 +156,7 @@ export class JobsRepository {
     const parentFilter = queue === 'ai_standardization'
       ? sql`and ${activeStandardizationBatch(windowSize)}`
       : sql``;
-    const batchPriority = sql`case when q.step = 'publish' or q.reference_snapshot->>'tagStage' = 'review'
-      or q.reference_snapshot->>'standardizationStage' = 'review' then 0 else 1 end`;
+    const batchPriority = sql`case when q.step = 'publish' or q.reference_snapshot->>'reviewStage' = 'review' then 0 else 1 end`;
     const priority = queue === 'ai_standardization'
       ? sql`coalesce((select j.priority from ai_jobs j where j.id = q.job_id), 50) desc, ${batchPriority}, `
       : sql``;
@@ -330,7 +326,7 @@ export class JobsRepository {
       const batch = await tx.selectFrom('ai_job_batches').select(['status', 'step', 'claimed_by', 'lease_until'])
         .where('id', '=', id).forUpdate().executeTakeFirstOrThrow();
       if (batch.status === 'succeeded' && batch.step === 'done') {
-        await finalizeOrScheduleMissing(tx, located.job_id);
+        await finalizeAiJob(tx, located.job_id);
         return;
       }
       // Preparation commits its own fenced completion; an older claim may finish after resume.
@@ -346,7 +342,7 @@ export class JobsRepository {
         return;
       }
       await tx.updateTable('ai_job_batches').set({ status: 'succeeded', claimed_by: null, claim_token: null, lease_until: null, finished_at: sql`now()`, error: null }).where('id', '=', id).execute();
-      await finalizeOrScheduleMissing(tx, located.job_id);
+      await finalizeAiJob(tx, located.job_id);
     });
   }
 
@@ -384,7 +380,7 @@ export class JobsRepository {
         'confirmed_requests', 'unknown_requests',
       ]).where('id', '=', id).forUpdate().executeTakeFirstOrThrow();
       if (['succeeded', 'failed', 'cancelled'].includes(batch.status)) {
-        await finalizeOrScheduleMissing(tx, located.job_id);
+        await finalizeAiJob(tx, located.job_id);
         return;
       }
       if (batch.status === 'queued') return;
@@ -424,7 +420,7 @@ export class JobsRepository {
       if (!retry && batch.step==='prepare') {
         await tx.updateTable('ai_jobs').set({status:'failed',phase:'completed',error,finished_at:sql`now()`}).where('id','=',located.job_id).execute();
         await incrementJobProgress(tx,{jobId:located.job_id});
-      } else if (!retry) await finalizeOrScheduleMissing(tx, located.job_id);
+      } else if (!retry) await finalizeAiJob(tx, located.job_id);
     });
   }
 

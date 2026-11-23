@@ -17,16 +17,16 @@ test('validated tag results checkpoint directly without a separate outcome audit
       prepareBatch: async () => {},
       reserveBatchRequest: async () => { events.push('reserve'); },
       recordBatchRequestOutcome: async () => { events.push('separate audit'); throw new Error('audit unavailable'); },
-      persistTagExtractionBatchDecision: async () => { events.push('product publication'); },
+      publishTagExtractionBatch: async () => { events.push('product publication'); },
       checkpointTagExtractionBatchDecision: async (_job: bigint, _batch: bigint, items: unknown, metadata: unknown, claim: unknown, stage: unknown) => {
         events.push('checkpoint');
         assert.deepEqual(items, []);
         assert.deepEqual(metadata, { responseId: 'mock' });
         assert.deepEqual(claim, { workerId: 'worker', attempt: 1n, token: 'claim' });
-        assert.equal(stage, 'extract');
+        assert.equal(stage, 'generate');
       },
     } as never,
-    modelCall: async () => { events.push('model'); return { items: [], missingIds: [], tagExtractionItems: [], tagExtractionStage: 'extract' as const, metadata: { responseId: 'mock' } }; },
+    modelCall: async () => { events.push('model'); return { items: [], missingIds: [], tagExtractionItems: [], reviewStage: 'generate' as const, metadata: { responseId: 'mock' } }; },
   });
   try { await worker.runOnce(); await settled.promise; } finally { await worker.stop(); }
   assert.deepEqual(events, ['reserve', 'model', 'checkpoint', 'complete']);
@@ -72,7 +72,7 @@ test('failure before a durable checkpoint remains terminal instead of sending an
       recordBatchRequestOutcome: async () => { auditWrites++; },
       checkpointTagExtractionBatchDecision: async () => { throw new Error('database unavailable'); },
     } as never,
-    modelCall: async () => { calls++; return { items: [], missingIds: [], tagExtractionItems: [] }; },
+    modelCall: async () => { calls++; return { items: [], missingIds: [], tagExtractionItems: [], reviewStage: 'generate' as const }; },
   });
   try { await worker.runOnce(); await settled.promise; } finally { await worker.stop(); }
   assert.equal(calls, 1);

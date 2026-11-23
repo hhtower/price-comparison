@@ -94,7 +94,7 @@ function ProgressOverview({ status }) {
   const progress = status?.progress || {};
   const requests = progress.requests || {};
   const results = progress.results || {};
-  const stages = progress.standardizationStages || {};
+  const stages = progress.reviewStages || {};
   const total = number(progress.rawProductCount);
   const processed = Math.min(total, number(results.classified) + number(results.unclassified));
   const pending = unresolved(results);

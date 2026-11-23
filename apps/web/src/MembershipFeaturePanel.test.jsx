@@ -53,13 +53,13 @@ function installApi({ state = 'succeeded', handle } = {}) {
       member: { content_version: '1', standardization_revision: '2', fingerprint: 'feature-source',
         payload: { name: '保订阅' }, output: { outcome: 'updated', classification, proposedMembershipKind: 'account',
           review: { mode: 'membership_binary', decision: true }, diff: [] } },
-      batches: [{ id: '4', stage: 'extract', reviewRepairRound: 0, proposed_membership_kind: 'account' },
-        { id: '5', stage: 'review', reviewRepairRound: 0, extraction_batch_id: '4', proposed_membership_kind: 'account', classification_decision: true }],
+      batches: [{ id: '4', stage: 'generate', reviewRepairRound: 0, proposed_membership_kind: 'account' },
+        { id: '5', stage: 'review', reviewRepairRound: 0, proposal_batch_id: '4', proposed_membership_kind: 'account', classification_decision: true }],
     });
     if (url.pathname.endsWith('/jobs/8')) return Response.json({
       job: { id: '8', status, model: 'feature-model', job_type: 'membership_features' },
       progress: { rawProductCount: 1, processed: status === 'running' ? 0 : 1, tagResults: { updated: 1 },
-        featureAcceptance: { acceptedProducts: 1, rejectedProducts: 0 }, tagStages: { extractionCompleted: 1, reviewCompleted: 1 } },
+        featureAcceptance: { acceptedProducts: 1, rejectedProducts: 0 }, reviewStages: { generationCompleted: 1, reviewCompleted: 1 } },
     });
     throw new Error(`Unexpected request: ${call.path}`);
   }));
@@ -295,10 +295,10 @@ test('分类统计以商品为单位显示通过和拒绝', async () => {
 
 test('分类批次展示各自提议与布尔判定，不从最终结果反推缺失的票', async () => {
   installClassificationApi({ batches: [
-    { id: '4', stage: 'extract', proposed_membership_kind: 'account' },
-    { id: '5', stage: 'review', extraction_batch_id: '4', proposed_membership_kind: 'account', classification_decision: false },
-    { id: '6', stage: 'review', extraction_batch_id: '4', proposed_membership_kind: 'rental', classification_decision: true },
-    { id: '7', stage: 'review', extraction_batch_id: 'missing' },
+    { id: '4', stage: 'generate', proposed_membership_kind: 'account' },
+    { id: '5', stage: 'review', proposal_batch_id: '4', proposed_membership_kind: 'account', classification_decision: false },
+    { id: '6', stage: 'review', proposal_batch_id: '4', proposed_membership_kind: 'rental', classification_decision: true },
+    { id: '7', stage: 'review', proposal_batch_id: 'missing' },
   ] });
   const user = userEvent.setup();
   render(<TagExtractionPanel taskKind="membership_features" shops={shops} view="history" />);
@@ -375,11 +375,11 @@ test.each(['queued', 'processing'])('未完成特性任务尚无分类和审计�
 
 test.each([true, false])('特性纠错前后保留独立分类判定，最终判定为 %s', async decision => {
   installClassificationApi({ kind: 'short_term', decision, batches: [
-    { id: '4', stage: 'extract', reviewRepairRound: 0, proposed_membership_kind: 'account' },
-    { id: '5', stage: 'review', reviewRepairRound: 0, extraction_batch_id: '4', classification_decision: false,
+    { id: '4', stage: 'generate', reviewRepairRound: 0, proposed_membership_kind: 'account' },
+    { id: '5', stage: 'review', reviewRepairRound: 0, proposal_batch_id: '4', classification_decision: false,
       classification_feedback: { classificationDecision: false, code: 'protection_mismatch', refs: [0] } },
     { id: '6', stage: 'repair', reviewRepairRound: 1, proposed_membership_kind: 'short_term' },
-    { id: '7', stage: 'review', reviewRepairRound: 1, extraction_batch_id: '6', classification_decision: decision,
+    { id: '7', stage: 'review', reviewRepairRound: 1, proposal_batch_id: '6', classification_decision: decision,
       classification_feedback: decision
         ? { classificationDecision: true }
         : { classificationDecision: false, code: 'source_conflict', refs: [1, 2] } },
@@ -419,8 +419,8 @@ test.each([true, false])('特性纠错前后保留独立分类判定，最终判
 
 test('分类复核来源不匹配时不借用其他批次分类或最终判定', async () => {
   installClassificationApi({ batches: [
-    { id: '4', stage: 'extract', reviewRepairRound: 0, proposed_membership_kind: 'account' },
-    { id: '5', stage: 'review', reviewRepairRound: 0, extraction_batch_id: 'missing', classification_decision: null },
+    { id: '4', stage: 'generate', reviewRepairRound: 0, proposed_membership_kind: 'account' },
+    { id: '5', stage: 'review', reviewRepairRound: 0, proposal_batch_id: 'missing', classification_decision: null },
   ] });
   const user = userEvent.setup();
   render(<TagExtractionPanel taskKind="membership_features" shops={shops} view="history" />);

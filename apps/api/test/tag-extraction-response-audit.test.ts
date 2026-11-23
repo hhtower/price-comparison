@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { createAiWorker, createOpenAiModelCall } from '../src/ai/ai.worker.js';
-import type { AiBatchResultMetadata } from '../src/ai/ai.repository.js';
+import type { AiBatchResultMetadata } from '../src/ai/response-audit.js';
 
 const job = { id: 7n, attempts: 1n, claimed_by: 'tag-audit-worker', lease_until: new Date(Date.now() + 60000),
   row: { job_id: 3n, job_type: 'tag_extraction', step: 'request', claim_token: 'tag-audit-claim' } };
@@ -19,8 +19,8 @@ function setup(content: string, finishReason: string | null = 'stop', auditUnava
   const repository = {
     prepareBatch: async () => undefined,
     reserveBatchRequest: async () => 'reserved',
-    getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', inputs,
-      ...(reviewProposals ? { stage: 'review', proposals: { items: [{ id: '11', tags: reviewProposals }, { id: '12', tags: [] }] } } : {}) }),
+    getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', inputs, stage: reviewProposals ? 'review' : 'generate',
+      ...(reviewProposals ? { proposals: { items: [{ id: '11', tags: reviewProposals }, { id: '12', tags: [] }] } } : {}) }),
     recordBatchRequestOutcome: async (_id: bigint, outcome: unknown, metadata: AiBatchResultMetadata | undefined, claim: unknown) => {
       if (auditUnavailable) throw new Error('audit unavailable');
       outcomes.push({ outcome, metadata, claim });

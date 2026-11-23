@@ -9,13 +9,11 @@ export interface ProgressSnapshot {
   requests: { totalBatches: number; queuedBatches: number; runningBatches: number; succeededBatches: number; failedBatches: number; cancelledBatches: number; confirmed: number; unknown: number; budgetUsed: number; budgetLimit: number };
   publication: { totalUnits: number; queuedUnits: number; runningUnits: number; succeededUnits: number; blockedUnits: number; failedUnits: number; cancelledUnits: number; publishedMembers: number; pendingMembers: number };
   results: { classified: number; unclassified: number; unclassifiedReasons: Record<string, number>; standardProducts: number };
-  missing: { scheduledInputs: number; reprocessedInputs: number };
   tagResults?: Record<string, number>;
   textReviewResults?: Record<string, number>;
   tagAcceptance?: { acceptedTags: number; rejectedTags: number; partialProducts: number };
   featureAcceptance?: { acceptedProducts: number; rejectedProducts: number };
-  tagStages?: { extractionCompleted: number; reviewQueued: number; reviewRunning: number; reviewCompleted: number; publicationQueued: number };
-  standardizationStages?: { generationCompleted: number; reviewQueued: number; reviewRunning: number; reviewCompleted: number; publicationQueued: number };
+  reviewStages?: { generationCompleted: number; reviewQueued: number; reviewRunning: number; reviewCompleted: number; publicationQueued: number };
   updatedAt: string;
 }
 
@@ -51,7 +49,7 @@ export async function incrementJobProgress(tx: ProgressDb, input: ProgressDeltas
 export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigint): Promise<ProgressSnapshot | null> {
   const row = await sql<Record<string, unknown>>`
     select j.job_type, members.*, p.job_id,p.version,j.phase,j.status,p.total,p.queued,p.running,p.processed,p.succeeded,p.failed,p.updated_at,
-      inputs.unique_input_count,inputs.scheduled_missing,inputs.reprocessed_missing,
+      inputs.unique_input_count,
       batches.batch_total,batches.batch_queued,batches.batch_running,batches.batch_succeeded,batches.batch_failed,batches.batch_cancelled,
       batches.confirmed_requests,batches.unknown_requests,batches.request_budget_used,batches.request_budget_limit,
       batches.extraction_completed,batches.review_queued,batches.review_running,batches.review_completed,batches.publication_queued,
@@ -85,8 +83,7 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
       from ai_job_input_members where job_id=j.id
     ) members on true
     left join lateral (
-      select count(*)::int unique_input_count, count(*) filter (where round=1)::int scheduled_missing,
-        count(*) filter (where missing_reprocess_count=1)::int reprocessed_missing from ai_job_inputs where job_id=j.id
+      select count(*)::int unique_input_count from ai_job_inputs where job_id=j.id
     ) inputs on true
     left join lateral (
       select count(*)::int batch_total, count(*) filter (where status='queued')::int batch_queued,
@@ -100,7 +97,7 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
         coalesce(sum(confirmed_requests),0)::int confirmed_requests, coalesce(sum(unknown_requests),0)::int unknown_requests,
         coalesce(sum(request_budget_used),0)::int request_budget_used, coalesce(sum(request_budget_limit),0)::int request_budget_limit
       from ai_job_batches
-      cross join lateral (select reference_snapshot->>(case when j.job_type in ('tag_extraction','membership_features') then 'tagStage' else 'standardizationStage' end) as stage) stage_marker
+      cross join lateral (select reference_snapshot->>'reviewStage' as stage) stage_marker
       where job_id=j.id and batch_index >= 0
     ) batches on true
     left join lateral (
@@ -139,15 +136,13 @@ export function progressSnapshotFromRow(row: Record<string, unknown>): ProgressS
     ...(row.job_type === 'membership_features' ? { featureAcceptance: {
       acceptedProducts: num(row.feature_accepted), rejectedProducts: num(row.feature_rejected),
     } } : {}),
-    ...(tag ? { tagStages: { extractionCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
-    ...(!attribute ? { standardizationStages: { generationCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
+    ...(tag || !attribute ? { reviewStages: { generationCompleted: num(row.extraction_completed), reviewQueued: num(row.review_queued), reviewRunning: num(row.review_running), reviewCompleted: num(row.review_completed), publicationQueued: num(row.publication_queued) } } : {}),
     jobId: str(row.job_id), jobType: String(row.job_type ?? ''), version: str(row.version), phase: String(row.phase ?? 'standardizing'), status: String(row.status),
     total: str(attribute ? row.member_total : row.total), queued: str(attribute ? row.member_queued : row.queued), running: str(attribute ? row.member_running : row.running), processed: str(attribute ? terminal : row.processed), succeeded: str(attribute ? terminal - tagResults.failed! - tagResults.cancelled! - tagResults.unrecorded! - tagResults.partial_success! : row.succeeded), failed: str(attribute ? tagResults.failed : row.failed),
     rawProductCount: num(attribute ? row.member_total : row.total), uniqueInputCount: num(row.unique_input_count),
     requests: { totalBatches: num(row.batch_total), queuedBatches: num(row.batch_queued), runningBatches: num(row.batch_running), succeededBatches: num(row.batch_succeeded), failedBatches: num(row.batch_failed), cancelledBatches: num(row.batch_cancelled), confirmed: num(row.confirmed_requests), unknown: num(row.unknown_requests), budgetUsed: num(row.request_budget_used), budgetLimit: num(row.request_budget_limit) },
     publication: { totalUnits: num(row.unit_total), queuedUnits: num(row.unit_queued), runningUnits: num(row.unit_running), succeededUnits: num(row.unit_succeeded), blockedUnits: num(row.unit_blocked), failedUnits: num(row.unit_failed), cancelledUnits: num(row.unit_cancelled), publishedMembers: num(row.published_members), pendingMembers: num(row.pending_members) },
     results: { classified: num(row.classified), unclassified: num(row.unclassified), unclassifiedReasons: reasons, standardProducts: num(row.standard_products) },
-    missing: { scheduledInputs: num(row.scheduled_missing), reprocessedInputs: num(row.reprocessed_missing) },
     updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at ?? ''),
   };
 }
