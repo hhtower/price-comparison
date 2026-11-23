@@ -33,7 +33,7 @@ import { STANDARDIZATION_PROMPT_VERSION, readStandardizationRequestLimits, asser
 import { needsStandardizationRepair, planStandardizationRepairs } from './standardization-repair.js';
 import { buildTagExtractionRequest, type TagExtractionInput, type TagExtractionResponse } from './tag-extraction-request.js';
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest, assertMembershipFeatureRefs,
-  assertMembershipFeatureReviewFeedback, needsMembershipFeatureRepair } from './membership-feature-request.js';
+  assertMembershipFeatureReviewFeedback, needsMembershipFeatureRepair, type MembershipFeatureReviewFeedback } from './membership-feature-request.js';
 import { planReviewWorkflow, reviewRequestBudget } from './review-workflow.js';
 import { standardizationResultSource } from './standardization-result-source.js';
 import { buildTagReviewRequest } from './tag-review-request.js';
@@ -1912,30 +1912,30 @@ export class AiRepository {
       'response_diagnostic', 'decision_hash', 'error_source', 'retry_class', 'error', 'reference_snapshot', 'validated_decision',
     ]).where('job_id', '=', jobId).where(sql<boolean>`product_ids @> ${jsonb([String(member.input_id)])}`).orderBy('batch_index').execute();
     const batches = rows.map(({ reference_snapshot, validated_decision, ...batch }) => {
-      const reference = reference_snapshot as { tagStage?: string; extractionBatchId?: string; reviewRepairRound?: number; tagRepairRound?: number } | null;
+      const reference = reference_snapshot as { tagStage?: string; extractionBatchId?: string; reviewRepairRound?: number } | null;
       const stage = reference?.tagStage === 'warranty' ? 'warranty' : reference?.tagStage === 'review' ? 'review' : reference?.tagStage === 'repair' ? 'repair' : 'extract';
       const document = validated_decision as unknown as {
-        items?: Array<{ productId: string; tags?: StandardizationTag[]; rejectedTags?: StandardizationTag[]; reviewDecisions?: unknown; reviewFeedback?: string; attempts?: Array<{ reviewDecisions?: unknown }>; membershipKind?: JsonValue; membershipReview?: JsonValue; classificationReviewed?: unknown }>;
+        items?: Array<{ productId: string; tags?: StandardizationTag[]; rejectedTags?: StandardizationTag[]; reviewDecisions?: unknown; reviewFeedback?: string; attempts?: Array<{ reviewDecisions?: unknown }>; membershipKind?: JsonValue; membershipReview?: MembershipFeatureReviewFeedback }>;
       } | null;
       const item = Array.isArray(document?.items) ? document.items.find(item => item?.productId === String(member.input_id)) : undefined;
       const votes = item?.attempts?.at(-1)?.reviewDecisions ?? item?.reviewDecisions;
       return { ...batch, error: batch.error ? sanitizeTagAuditText(batch.error) : null,
         request_estimate: redact(batch.request_estimate), response_diagnostic: redact(batch.response_diagnostic),
-        stage, tagRepairRound: reference?.reviewRepairRound ?? reference?.tagRepairRound ?? 0,
+        stage, reviewRepairRound: reference?.reviewRepairRound ?? 0,
         extraction_batch_id: reference?.extractionBatchId ?? null,
         ...(job.job_type === 'membership_features' ? {
           proposed_membership_kind: item?.membershipKind === undefined ? null : redact(item.membershipKind),
-          classification_decision: stage === 'review' && typeof item?.classificationReviewed === 'boolean' ? item.classificationReviewed : null,
-          classification_feedback: stage === 'review' && item?.membershipReview ? redact(item.membershipReview) : null,
+          classification_decision: stage === 'review' && typeof item?.membershipReview?.classificationDecision === 'boolean' ? item.membershipReview.classificationDecision : null,
+          classification_feedback: stage === 'review' && item?.membershipReview ? redact({ ...item.membershipReview }) : null,
         } : {}),
-        proposals: stage !== 'review' && Array.isArray(item?.tags) ? [...item.tags, ...(Array.isArray(item.rejectedTags) ? item.rejectedTags : [])].map((tag, proposalIndex) => redact({
+        proposals: job.job_type === 'tag_extraction' && stage !== 'review' && Array.isArray(item?.tags) ? [...item.tags, ...(Array.isArray(item.rejectedTags) ? item.rejectedTags : [])].map((tag, proposalIndex) => redact({
           proposalIndex, name: sanitizeTagAuditText(tag.name, 100), value: typeof tag.value === 'string' ? sanitizeTagAuditText(tag.value, 500) : tag.value,
           evidence: tag.evidence.slice(0, 8).map(citation => ({
             path: sanitizeTagAuditText(citation.path, 300), quote: sanitizeTagAuditText(citation.quote),
           })),
         })) : null,
-        review_decisions: stage === 'review' && Array.isArray(votes) && votes.every(vote => typeof vote === 'boolean') ? votes : null,
-        ...(item?.reviewFeedback !== undefined ? { review_feedback: sanitizeTagAuditText(item.reviewFeedback) } : {}) };
+        review_decisions: job.job_type === 'tag_extraction' && stage === 'review' && Array.isArray(votes) && votes.every(vote => typeof vote === 'boolean') ? votes : null,
+        ...(job.job_type === 'tag_extraction' && item?.reviewFeedback !== undefined ? { review_feedback: sanitizeTagAuditText(item.reviewFeedback) } : {}) };
     });
     return JSON.parse(JSON.stringify({job,member:{...member,payload:redact(member.payload),output:redact(member.output),outcome:(member.output as Record<string,JsonValue>|null)?.outcome??(['queued','processing'].includes(member.status)?member.status:'unrecorded')},batches},(_key,value)=>typeof value==='bigint'?String(value):value));
   }

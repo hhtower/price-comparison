@@ -114,7 +114,7 @@ test('standardization results and retry pool ignore attribute and scheduling ver
     tagPrompt: 'older', tagProtocol: 'older', tagReviewPrompt: 'older', tagWarrantyPrompt: 'older',
     tagValidation: 'older', membershipPolicy: 'older', membershipFeaturePrompt: 'older',
     membershipFeatureReviewPrompt: 'older', productTextReviewPrompt: 'older',
-    standardizationRepair: 'older', reviewWorkflow: 'older', attributeOrder: 'older', offerEligibility: 'older',
+    reviewWorkflow: 'older', attributeOrder: 'older', offerEligibility: 'older',
   });
   assert.equal(await currentResult(f), true);
   assert.equal((await currentUnclassifiedQuery(db).select('r.job_id').where('p.id', '=', f.product.id).execute())[0]?.job_id, f.job.id);
@@ -374,7 +374,7 @@ test('completed tags ignore standardization, feature and workflow versions and l
   await changeVersions(f, {
     prompt: 'older', schema: 'older', retrieval: 'older', mapping: 'older', standardizationPolicy: 'older',
     standardizationReviewPrompt: 'older', membershipPolicy: 'older', membershipFeaturePrompt: 'older', membershipFeatureReviewPrompt: 'older',
-    productTextReviewPrompt: 'older', standardizationRepair: 'older', reviewWorkflow: 'older',
+    productTextReviewPrompt: 'older', reviewWorkflow: 'older',
     attributeOrder: 'older', offerEligibility: 'older',
   });
   await db.updateTable('ai_jobs').set({ prompt_version: 'older', rule_version: 'older' }).where('id', '=', f.job.id).execute();

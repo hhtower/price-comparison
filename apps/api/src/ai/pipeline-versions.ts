@@ -33,7 +33,6 @@ export const PIPELINE_VERSIONS = Object.freeze({
   membershipFeatureReviewPrompt: MEMBERSHIP_FEATURE_REVIEW_PROMPT_VERSION,
   attributeOrder: 'standardization-first-20261112-v1',
   offerEligibility: 'latest-available-quote-20261123-v1',
-  standardizationRepair: 'review-feedback-once-20261123-v1',
   reviewWorkflow: REVIEW_WORKFLOW_VERSION,
 });
 /** Completed outputs depend on their business stage, not scheduling or other stages. */

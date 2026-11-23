@@ -815,10 +815,10 @@ test('两轮修正历史保留各轮候选、布尔票和完整性，不按最�
       { round: 2, tags: [], rejectedTags: [{ ...repaired, reasonCode: 'review_rejected' }], complete: false, reviewDecisions: [false] },
     ],
   } }, batches: [
-    { id: '21', reference_snapshot: { tagStage: 'extract' }, proposals: [initial] },
-    { id: '31', stage: 'review', extraction_batch_id: '21', review_decisions: [true] },
-    { id: '22', reference_snapshot: { tagStage: 'repair', tagRepairRound: 1 }, proposals: [repaired] },
-    { id: '32', reference_snapshot: { tagStage: 'review', tagRepairRound: 1 }, extraction_batch_id: '22', review_decisions: [false] },
+    { id: '21', stage: 'extract', reviewRepairRound: 0, proposals: [initial] },
+    { id: '31', stage: 'review', reviewRepairRound: 0, extraction_batch_id: '21', review_decisions: [true] },
+    { id: '22', stage: 'repair', reviewRepairRound: 1, proposals: [repaired] },
+    { id: '32', stage: 'review', reviewRepairRound: 1, extraction_batch_id: '22', review_decisions: [false] },
   ] });
   await userEvent.setup().click(within(audit).getByText('提取与修正历史'));
   const history = within(audit).getByText('提取与修正历史').closest('details');
@@ -851,10 +851,10 @@ test.each([true, false])('批次保留首轮投票，修正结果不继承首轮
       { round: 2, tags: [], rejectedTags: [{ ...repaired, reasonCode: 'review_rejected' }], complete: false, reviewDecisions: [false] },
     ],
   } }, batches: [
-    { id: '21', stage: 'extract', tagRepairRound: 0, proposals: [duration, warranty] },
-    { id: '31', stage: 'review', tagRepairRound: 0, extraction_batch_id: '21', review_decisions: recorded ? [true, false] : null },
-    { id: '22', stage: 'repair', tagRepairRound: 1, proposals: [repaired] },
-    { id: '32', stage: 'review', tagRepairRound: 1, extraction_batch_id: '22', review_decisions: recorded ? [false] : null },
+    { id: '21', stage: 'extract', reviewRepairRound: 0, proposals: [duration, warranty] },
+    { id: '31', stage: 'review', reviewRepairRound: 0, extraction_batch_id: '21', review_decisions: recorded ? [true, false] : null },
+    { id: '22', stage: 'repair', reviewRepairRound: 1, proposals: [repaired] },
+    { id: '32', stage: 'review', reviewRepairRound: 1, extraction_batch_id: '22', review_decisions: recorded ? [false] : null },
   ] });
   const user = userEvent.setup();
   await user.click(within(audit).getByText('复核批次 #31 详情'));
@@ -891,8 +891,8 @@ test.each(['missing-round', 'duplicate-attempt', 'missing-attempt'])('修正轮�
     rejectedTags: [{ ...repaired, proposalIndex: 1, reasonCode: 'review_rejected' }],
     ...(scenario === 'missing-attempt' ? {} : { attempts: scenario === 'duplicate-attempt' ? [attempt, attempt] : [attempt] }),
   } }, batches: [
-    { id: '22', stage: 'repair', ...(scenario === 'missing-round' ? {} : { tagRepairRound: 1 }), proposals: [repaired] },
-    { id: '32', stage: 'review', tagRepairRound: 1, extraction_batch_id: '22', review_decisions: null },
+    { id: '22', stage: 'repair', ...(scenario === 'missing-round' ? {} : { reviewRepairRound: 1 }), proposals: [repaired] },
+    { id: '32', stage: 'review', reviewRepairRound: 1, extraction_batch_id: '22', review_decisions: null },
   ] });
   await userEvent.setup().click(within(audit).getByText('修正复核批次 #32 详情'));
   const table = within(audit).getByRole('table', { name: '修正复核批次 #32 候选判定' });
@@ -937,11 +937,13 @@ test('不完整但未拒绝候选仍显示部分成功和零失败数，并展�
 });
 
 test.each([
-  ['warranty', '质保判定'], ['repair', '修正提取'], ['review', '修正复核'],
-])('在途批次读取冻结阶段（%s）', async (stage, title) => {
+  ['extract', '提取', 0], ['review', '复核', 0],
+  ['warranty', '质保判定', 0], ['repair', '修正提取', 1], ['review', '修正复核', 1],
+  [null, '阶段未记录', null],
+])('在途批次读取当前阶段和修正轮次（%s / %s）', async (stage, title, reviewRepairRound) => {
   installApi({ state: 'running', handle(call, job) {
     if (call.path.endsWith('/jobs/8')) return Response.json({ job, progress: { rawProductCount: 1 }, currentBatches: [{
-      batch_index: 2, step: 'request', product_count: 1, reference_snapshot: { tagStage: stage, tagRepairRound: 1 },
+      batch_index: 2, step: 'request', product_count: 1, stage, reviewRepairRound,
     }] });
   } });
   const user = userEvent.setup();
