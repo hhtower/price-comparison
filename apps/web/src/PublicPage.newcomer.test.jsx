@@ -39,7 +39,7 @@ test('first visit defaults to browse with collapsed membership kinds and four of
   localStorage.removeItem(storageKey);
   const requests = mockMembershipCatalog({ offersPerKind: 4 });
   mount(undefined, 2400);
-  for (const kind of ['成品号', '代充', '租号', '短期']) {
+  for (const kind of ['成品号', '代充 · 通用', '租号', '短期']) {
     const link = await screen.findByRole('button', { name: 'ChatGPT Plus · ' + kind });
     expect(link.closest('article').querySelectorAll('.shop-offer')).toHaveLength(0);
     fireEvent.click(link);
@@ -184,7 +184,8 @@ test('the page remains usable when browser storage is unavailable', async () => 
 function mockMembershipCatalog({ onlyKind, emptyKind, offersPerKind = 1 } = {}) {
   const requests = [];
   const products = [
-    { id: '10', name: 'ChatGPT Plus', platform: 'openai', isAiMembership: true, kind: '账号与订阅' },
+    { id: '10', name: 'ChatGPT Plus', platform: 'openai', isAiMembership: true, kind: '账号与订阅',
+      identity: { family: 'openai', product: 'chatgpt', tier: 'plus' } },
     { id: '4', name: 'YouTube Premium', platform: 'google', isAiMembership: false },
     { id: '5', name: 'ChatGPT 接码', platform: 'openai', isAiMembership: false },
   ];
@@ -235,7 +236,7 @@ test('membership categories without available offers are hidden while non-AI pro
   mount(undefined, 2400);
   await screen.findByRole('button', { name: 'YouTube Premium' });
   expect(screen.getByRole('button', { name: 'ChatGPT Plus · 成品号' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'ChatGPT Plus · 代充' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'ChatGPT Plus · 代充 · 通用' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'ChatGPT Plus · 短期' })).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'ChatGPT Plus · 租号' })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'YouTube Premium' })).toBeInTheDocument();
@@ -382,7 +383,9 @@ test('AI detail filters persist and reset, and newcomer never broadens an empty 
 });
 
 test.each([
-  ['ChatGPT Plus 代充', 'top_up', 'ChatGPT Plus'],
+  ['ChatGPT Plus 代充', ['top_up', 'top_up_half_price'], 'ChatGPT Plus'],
+  ['ChatGPT Plus 代充 通用', 'top_up', 'ChatGPT Plus'],
+  ['ChatGPT Plus 代充 需半价资格', 'top_up_half_price', 'ChatGPT Plus'],
   ['ChatGPT Plus 成品号', 'account', 'ChatGPT Plus'],
   ['ChatGPT Plus 短期', 'short_term', 'ChatGPT Plus'],
   ['ChatGPT Plus 租号', 'rental', 'ChatGPT Plus'],
@@ -419,7 +422,7 @@ test.each([
   await waitFor(() => {
     const request = requests.filter(url => url.pathname === '/api/catalog').at(-1);
     expect(request?.searchParams.get('q')).toBe(expectedQuery);
-    expect(request.searchParams.getAll('membershipKind')).toEqual(kind ? [kind] : []);
+    expect(request.searchParams.getAll('membershipKind')).toEqual(Array.isArray(kind) ? kind : kind ? [kind] : []);
   });
   if (kind) {
     expect(screen.getByRole('switch', { name: '新手' })).not.toBeChecked();

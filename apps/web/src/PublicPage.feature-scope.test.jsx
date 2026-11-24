@@ -8,11 +8,12 @@ vi.mock('react-virtuoso', () => ({ Virtuoso: ({ data, itemContent }) =>
   <>{data.map((item, index) => <React.Fragment key={index}>{itemContent(index, item)}</React.Fragment>)}</> }));
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-const kinds = ['account', 'top_up', 'rental', 'short_term', 'unclassified'];
-const labels = ['成品号', '代充', '租号', '短期', '未分类'];
-const regions = ['us', 'ph', 'jp', 'hk', 'us'];
-const regionLabels = ['美区', '菲区', '日区', '港区', '美区'];
-const identity = { id: '42', name: 'ChatGPT GO', platform: 'openai', isAiMembership: true };
+const kinds = ['account', 'top_up', 'top_up_half_price', 'rental', 'short_term', 'unclassified'];
+const labels = ['成品号', '代充 · 通用', '代充 · 半价资格', '租号', '短期', '未分类'];
+const regions = ['us', 'ph', 'tw', 'jp', 'hk', 'us'];
+const regionLabels = ['美区', '菲区', '台区', '日区', '港区', '美区'];
+const identity = { id: '42', name: 'ChatGPT Plus', platform: 'openai', isAiMembership: true,
+  identity: { family: 'openai', product: 'chatgpt', tier: 'plus' } };
 const offers = kinds.flatMap((kind, group) => Array.from({ length: 13 + group }, (_, index) => ({
   productId: `${kind}-${index}`, membershipKind: kind === 'unclassified' ? null : kind,
   name: index === 1 ? `原商家${group} · ${labels[group]}` : `商家原名${group}-${index}`,
@@ -88,12 +89,12 @@ test.each(kinds.filter(kind => kind !== 'unclassified'))('%s cards, both dialogs
   render(<App />);
   const group = kinds.indexOf(kind);
   const values = featureOffers(kind);
-  const title = `ChatGPT GO · ${labels[group]}`;
-  const link = await screen.findByRole('button', { name: `ChatGPT GO · ${labels[group]}` });
+  const title = `ChatGPT Plus · ${labels[group]}`;
+  const link = await screen.findByRole('button', { name: `ChatGPT Plus · ${labels[group]}` });
   const card = link.closest('article');
   function checkHint(scope) {
     const label = scope.queryByText('商家保订阅');
-    if (!['account', 'top_up'].includes(kind)) {
+    if (!['account', 'top_up', 'top_up_half_price'].includes(kind)) {
       expect(label).not.toBeInTheDocument();
       return;
     }
@@ -180,7 +181,7 @@ test('changing feature clears old quotes, counts, history and facets during load
   control.failFacets = true;
   window.history.pushState({}, '', '/products/42/features/short_term');
   fireEvent(window, new PopStateEvent('popstate'));
-  await screen.findByRole('heading', { name: 'ChatGPT GO · 短期', level: 1 });
+  await screen.findByRole('heading', { name: 'ChatGPT Plus · 短期', level: 1 });
   fireEvent.click(screen.getByRole('button', { name: '筛选', exact: true }));
   expect(screen.getByText('正在加载筛选条件…')).toBeInTheDocument();
   expect(screen.queryByText('商家原名0-0')).not.toBeInTheDocument();
@@ -191,8 +192,8 @@ test('changing feature clears old quotes, counts, history and facets during load
   await screen.findByText('筛选条件加载失败');
   const filters = screen.getByRole('region', { name: '筛选报价' });
   expect(within(filters).queryByRole('checkbox')).not.toBeInTheDocument();
-  await screen.findByText('商家原名3-0', { selector: '.offer-name' });
-  await screen.findByText('¥400.25', { selector: 'strong' });
+  await screen.findByText('商家原名4-0', { selector: '.offer-name' });
+  await screen.findByText('¥500.25', { selector: 'strong' });
   assertOnlyFeature(document.querySelector('.product-page-details'), 'short_term');
   control.failFacets = false;
   fireEvent.click(within(filters).getByRole('button', { name: '重试筛选' }));

@@ -4,9 +4,9 @@ import { CatalogRepository, type CatalogFacets, type CatalogPage, type CatalogQu
 import { DomainValidationError } from '../common/errors.js';
 import { normalizeCatalogFilter, parseCatalogSearch, tagValueKey } from '@price-comparison/catalog/purchase-attributes';
 import { normalizeCatalogPlatform } from '@price-comparison/catalog/platform-groups';
-import { MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
+import { MEMBERSHIP_GROUPS, membershipSearchKinds, membershipSearchPattern, membershipGroupingVersion, type MembershipGroup } from '@price-comparison/catalog/membership-policy';
 
-const membershipWords = /成品账号|成品帐号|现成账号|成品号|代充|充值|租号(?:\s*\(\s*(?:共享|合租)\s*\))?|共享|合租|短期|\b(?:ready\s+account|account\s+ready|top[ -]?up|shared(?:\s+access)?)\b/giu;
+const membershipWords = new RegExp(membershipSearchPattern(), 'giu');
 const membershipNegation = new RegExp(`(?:不(?:要|需要|想要?|接受|支持|提供|适合|能|是)?|没有|未明确|未说明|无需|禁止|非|是否|可能|或许|不确定)\\s*(?:是|为)?\\s*(?:${membershipWords.source})|(?:${membershipWords.source})\\s*(?:状态)?\\s*(?:不(?:要|支持|提供|可用|确定|保证)|未说明|未知)`, 'iu');
 
 export interface CatalogQueryInput {
@@ -45,7 +45,7 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
     || (input.membershipKinds !== undefined && !Array.isArray(input.membershipKinds))
     || (membershipKinds && (!membershipKinds.length || membershipKinds.length > MEMBERSHIP_GROUPS.length
       || membershipKinds.some(kind => !MEMBERSHIP_GROUPS.includes(kind))))) {
-    throw new DomainValidationError('INVALID_MEMBERSHIP_KIND', '会员商品分组须为account、top_up、rental、short_term或unclassified');
+    throw new DomainValidationError('INVALID_MEMBERSHIP_KIND', `会员商品分组须为${MEMBERSHIP_GROUPS.join('、')}`);
   }
   if (input.newcomer !== undefined && ![true, false, 'true', 'false'].includes(input.newcomer as boolean | string)) {
     throw new DomainValidationError('INVALID_NEWCOMER_MODE', '新手模式参数无效');
@@ -126,10 +126,7 @@ export function normalizeCatalogQuery(input: CatalogQueryInput): CatalogQuery {
   const explicitNames = new Set(explicit.map(tag => tag.name));
   const membershipTerms = input.searchMode === 'literal' || negatedMembership
     ? [] : [...new Set(search.toLowerCase().match(membershipWords) ?? [])];
-  const inferredKinds = [...new Set([
-    ...membershipTerms.map((term): MembershipKind => term === '短期' ? 'short_term'
-      : /成品|现成|account/u.test(term) ? 'account' : /充|^top/u.test(term) ? 'top_up' : 'rental'),
-  ])].sort();
+  const inferredKinds = [...new Set(membershipTerms.flatMap(membershipSearchKinds))].sort();
   const tags = [...parsed.tags.filter(tag => !explicitNames.has(tag.name)), ...explicit]
     .map(({ name, value }) => ({ name, value }))
     .sort((a, b) => a.name.localeCompare(b.name) || (typeof a.value === 'number' && typeof b.value === 'number'
@@ -205,12 +202,12 @@ export class CatalogService {
   async getFacets(input: Pick<CatalogQueryInput, 'platform' | 'q' | 'search' | 'searchMode' | 'tags' | 'tag' | 'newcomer'
     | 'standardProductId' | 'shopQuery' | 'shopId' | 'priceMin' | 'priceMax' | 'currency' | 'offerSort' | 'membershipKind' | 'membershipKinds'>): Promise<CatalogFacets> {
     const { limit: _limit, offerSort: _offerSort, ...query } = normalizeCatalogQuery(input);
-    return this.readCached(`catalog:facets:v5:${JSON.stringify(query)}`, () => this.repository.facets(query));
+    return this.readCached(`catalog:facets:v6:${membershipGroupingVersion()}:${JSON.stringify(query)}`, () => this.repository.facets(query));
   }
 
   async getCatalog(input: CatalogQueryInput): Promise<CatalogPage> {
     const query = normalizeCatalogQuery(input);
-    return this.readCached(`catalog:page:v6:${JSON.stringify(query)}`, () => this.repository.search(query));
+    return this.readCached(`catalog:page:v7:${membershipGroupingVersion()}:${JSON.stringify(query)}`, () => this.repository.search(query));
   }
 
   getReferenceOffers(input: Pick<CatalogQueryInput, 'standardProductId' | 'currency' | 'priceMax' | 'tags' | 'newcomer' | 'membershipKinds'>) {

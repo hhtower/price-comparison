@@ -11,6 +11,25 @@ import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.
 import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
 
 const identity = { family: 'openai', product: 'chatgpt', tier: 'plus' };
+test('admin shop and platform responses expose one field format including deletion state', async () => {
+  const deletedAt = new Date('2026-11-24T00:00:00Z');
+  const controller = new AdminController({
+    listShops: async () => ({ items: [{
+      id: 1n, protocol: null, platform: 'test', url: 'https://shop.invalid', name: 'Shop',
+      enabled: false, last_fetch_at: null, last_error: null, deleted_at: deletedAt,
+    }], nextCursor: null }),
+    listPlatforms: async () => ({ items: [{ id: '2', name: 'test', enabled: true, standard_product_count: 3n }],
+      total: 1, page: 1, pageSize: 20 }),
+  } as never);
+  assert.deepEqual((await controller.listShops({} as never)).items, [{
+    id: '1', protocol: null, platform: 'test', url: 'https://shop.invalid', name: 'Shop',
+    enabled: false, lastFetchAt: null, lastError: null, deletedAt,
+  }]);
+  assert.deepEqual((await controller.listPlatforms({} as never)).items, [{
+    id: '2', name: 'test', enabled: true, standardProductCount: '3',
+  }]);
+});
+
 test('admin exposes confirmed AI membership eligibility independently of a feature snapshot', async () => {
   const repository = {
     listProducts: async () => ({ items: [{
@@ -32,6 +51,7 @@ const standard = (id: bigint) => ({
 const product = {
   id: 1n, name: 'ChatGPT Plus account', spec: '', source_category: '', source_data: {}, deleted_at: null,
   content_version: 2n, content_fingerprint: 'current', standardization_revision: 3n, membership_features: null,
+  shop_url: 'https://shop.invalid', shop_protocol: null, shop_platform: 'test',
 };
 
 function fixture(options: { standards?: ReturnType<typeof standard>[]; products?: object[]; members?: object[] } = {}) {

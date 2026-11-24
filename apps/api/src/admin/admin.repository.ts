@@ -84,12 +84,16 @@ export interface AdminShopRow {
   readonly enabled: boolean;
   readonly last_fetch_at: Date | null;
   readonly last_error: string | null;
+  readonly deleted_at: Date | null;
 }
 
 export interface AdminProductRow {
   readonly id: bigint;
   readonly shop_id: bigint;
   readonly shop_name: string | null;
+  readonly shop_url: string;
+  readonly shop_protocol: string | null;
+  readonly shop_platform: string;
   readonly external_id: string;
   readonly name: string;
   readonly spec: string;
@@ -194,7 +198,7 @@ export class AdminRepository {
       .selectFrom('shops')
       .select([
         'shops.id', 'shops.platform', 'shops.protocol', 'shops.url', 'shops.name', 'shops.enabled',
-        'shops.last_fetch_at', 'shops.last_error',
+        'shops.last_fetch_at', 'shops.last_error', 'shops.deleted_at',
       ])
       .orderBy('shops.id', 'asc')
       ;
@@ -275,13 +279,15 @@ export class AdminRepository {
     const page = normalizePageRequest(filter);
     let query = database
       .selectFrom('products')
+      .innerJoin('shops as feature_shop', 'feature_shop.id', 'products.shop_id')
       .select([
         'products.id', 'products.shop_id', 'products.external_id', 'products.name', 'products.spec',
         'products.source_category', 'products.source_data', 'products.normalized_key', 'products.url',
         'products.image_url', 'products.updated_at', 'products.deleted_at',
         'products.content_version', 'products.content_fingerprint', 'products.standardization_revision', 'products.membership_features',
         (filter.pending === true ? sql<null>`null` : productStandardizationOutcome('products')).as('standardization_outcome'),
-        sql<string | null>`(select s.name from shops s where s.id = products.shop_id)`.as('shop_name'),
+        'feature_shop.name as shop_name', 'feature_shop.url as shop_url',
+        'feature_shop.protocol as shop_protocol', 'feature_shop.platform as shop_platform',
         sql<string | null>`(select sp.name from standard_product_members m join standard_products sp on sp.id = m.standard_product_id where m.product_id = products.id limit 1)`.as('standard_product_name'),
         publishedAiMembership.as('is_ai_membership'),
         sql<JsonValue>`coalesce((select jsonb_agg(jsonb_build_object('name', t.name, 'value', t.value) order by t.name, t.value) from product_tags t where t.product_id = products.id), '[]'::jsonb)`.as('tags'),
@@ -573,6 +579,7 @@ export class AdminRepository {
       .innerJoin('product_tags', 'product_tags.product_id', 'products.id')
       .innerJoin('shops', 'shops.id', 'products.shop_id')
       .select(['products.id', 'products.shop_id', 'products.external_id', 'products.name', 'products.spec', 'products.source_category', 'products.source_data', 'products.normalized_key', 'products.url', 'products.image_url', 'products.updated_at', 'products.deleted_at', 'shops.name as shop_name',
+        'shops.url as shop_url', 'shops.protocol as shop_protocol', 'shops.platform as shop_platform',
         'products.content_version', 'products.content_fingerprint', 'products.standardization_revision', 'products.membership_features',
         publishedAiMembership.as('is_ai_membership'),
         sql<string | null>`(select sp.name from standard_product_members m join standard_products sp on sp.id = m.standard_product_id where m.product_id = products.id limit 1)`.as('standard_product_name'),

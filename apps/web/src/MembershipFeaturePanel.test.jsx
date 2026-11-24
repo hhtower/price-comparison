@@ -6,22 +6,19 @@ import TagExtractionPanel from './TagExtractionPanel.jsx';
 
 beforeEach(() => { vi.unstubAllGlobals(); vi.stubGlobal('EventSource', undefined); });
 const shops = { items: [{ id: '1', name: '测试店' }] };
-const classification = { kind: 'account', reason: 'full_subscription_promise', durationSource: 'default', requiredWarrantyDays: 28 };
+const classification = { kind: 'account', reason: 'llm_reviewed' };
 
 test.each([
-  ['rental', '租号', 'rental_or_shared_account', '租用或共享账号'],
-  ['rental', '租号', 'rental_or_shared_account', '租用或共享账号', 'explicit'],
-  ['short_term', '短期', 'ownership_invalid_or_conflicting', '账号归属不明确或存在冲突'],
-])('特性任务显示 %s 分类原因', async (kind, label, reason, reasonLabel, durationSource = 'default') => {
+  ['rental', '租号'], ['short_term', '短期'],
+])('特性任务显示 %s 当前分类审核结果', async (kind, label) => {
   installApi({ handle: call => call.path.endsWith('/feature-results') ? Response.json({
     items: [{ id: '3', name: '待核对会员', outcome: 'updated', acceptedCount: 1, rejectedCount: 0,
-      classification: { ...classification, kind, reason, durationSource, requiredWarrantyDays: kind === 'rental' ? null : 28 } }],
+      classification: { ...classification, kind } }],
   }) : undefined });
   render(<TagExtractionPanel taskKind="membership_features" shops={shops} view="history" />);
   await userEvent.click(await screen.findByRole('button', { name: '查看特性任务 #8' }));
-  expect(await screen.findByText(`会员分类：${label} · 原因：${reasonLabel}`)).toBeInTheDocument();
-  if (kind === 'rental') expect(screen.queryByText(/^分类周期：/)).not.toBeInTheDocument();
-  else expect(screen.getByText('分类周期：默认一个月（非商家承诺）')).toBeInTheDocument();
+  expect(await screen.findByText(`会员分类：${label} · 原因：LLM 分类复核通过`)).toBeInTheDocument();
+  expect(screen.queryByText(/^分类周期：/)).not.toBeInTheDocument();
 });
 
 function installApi({ state = 'succeeded', handle } = {}) {
@@ -78,7 +75,7 @@ test('特性识别范围预览与费用确认使用专用接口，任务详情�
   const create = within(dialog).getByRole('button', { name: '确认创建特性任务' });
   expect(create).toBeDisabled();
   expect(dialog).toHaveTextContent('仅处理已完成标准化、通过身份验证并已发布的 AI 会员报价');
-  expect(dialog).toHaveTextContent('分类属于单件报价，同一标准商品可包含成品号、代充、租号和短期');
+  expect(dialog).toHaveTextContent('分类属于单件报价，同一标准商品可包含成品号、代充、租号和短期；商品特有的分组按对应规则展示');
   expect(dialog).not.toHaveTextContent('标签');
   expect(dialog).toHaveTextContent('每件商品只提出一个分类');
   expect(dialog).not.toHaveTextContent('多个候选特性');
@@ -98,7 +95,7 @@ test('特性详情显示单分类原因、冻结输入、复核与进度', async
   await user.click(await screen.findByRole('button', { name: '查看特性任务 #8' }));
   const dialog = screen.getByRole('dialog', { name: '特性任务详情' });
   expect(await within(dialog).findByText(/会员分类：成品号/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/明确保障完整订阅期/)).toBeInTheDocument();
+  expect(within(dialog).getByText(/LLM 分类复核通过/)).toBeInTheDocument();
   await user.click(within(dialog).getByRole('button', { name: '查看商品 #3 依据' }));
   expect(await within(dialog).findByText('输入指纹：feature-source')).toBeInTheDocument();
   await user.click(within(dialog).getByText('冻结输入 JSON'));
@@ -233,7 +230,7 @@ function installClassificationApi({ kind = 'account', decision = true, classific
 }
 
 test.each([
-  ['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期'],
+  ['account', '成品号'], ['top_up', '代充'], ['top_up_half_price', '代充 · 半价资格'], ['rental', '租号'], ['short_term', '短期'],
 ])('新特性任务每件商品展示一个 %s 分类及一次复核', async (kind, label) => {
   installClassificationApi({ kind });
   const user = userEvent.setup();

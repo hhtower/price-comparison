@@ -2,8 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CatalogController } from '../src/catalog/catalog.controller.js';
 import { CatalogService } from '../src/catalog/catalog.service.js';
-import type { CatalogQuery, CatalogRepository } from '../src/catalog/catalog.repository.js';
+import { decodeCatalogCursor, type CatalogQuery, type CatalogRepository } from '../src/catalog/catalog.repository.js';
 import { createCache } from '../src/cache/cache.js';
+
+test('retired ranked cursors are rejected rather than reinterpreted as another ordering', () => {
+  const ranked = Buffer.from(JSON.stringify({ v: 4, s: '0', sp: '42', r: 107 })).toString('base64url');
+  assert.throws(() => decodeCatalogCursor(ranked), { code: 'INVALID_CURSOR' });
+});
 
 test('public product endpoints return metadata, preserve merges and return real 404 without masking failures', async () => {
   let unavailable = false;
@@ -24,7 +29,8 @@ test('public product endpoints return metadata, preserve merges and return real 
 });
 
 test('internal platform groups and identity names do not change the public product metadata response', async () => {
-  const product = { id: '42', name: '邮箱', platform: 'google', kind: '账号与订阅' };
+  const product = { id: '42', name: '邮箱', platform: 'google', kind: '账号与订阅',
+    identity: { family: 'google', product: 'gmail', tier: 'standard' } };
   const controller = new CatalogController({
     getProducts: async () => ({ items: [{ ...product, platformGroup: 'email', identityNames: ['google mail'] }] }),
     getProduct: async () => ({ ...product, platformGroup: 'email', identityNames: ['google mail'] }),
@@ -159,6 +165,6 @@ test('literal detail search preserves purchase words in shop names for lists and
     assert.deepEqual(query.tags, []);
   }
   await controller.getCatalog({ q: '星河代充 独享' });
-  assert.deepEqual(actual[2]!.membershipSearch?.kinds, ['top_up']);
+  assert.deepEqual(actual[2]!.membershipSearch?.kinds, ['top_up', 'top_up_half_price']);
   assert.deepEqual(actual[2]!.tags, []);
 });

@@ -10,8 +10,8 @@ import { CATALOG_QUOTE_POLICY, defaultQuotePolicy, type QuotePolicy } from './qu
 import { CATALOG_DISPLAY_SEARCH_LABELS, sanitizeOfferName, standardProductDisplayName, standardProductKind } from '@price-comparison/catalog/catalog-display';
 import { catalogIdentityNames } from '@price-comparison/catalog/catalog-search';
 import { PriceHistoryRepository } from './price-history.repository.js';
-import { isAiMembership, MEMBERSHIP_GROUPS, MEMBERSHIP_POLICY_VERSION, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
-import { failedMembershipFeatures } from '../standardization/membership-classification.js';
+import { isAiMembership, MEMBERSHIP_GROUPS, MEMBERSHIP_POLICY_VERSION, membershipGroupingVersion, newcomerMembershipKinds, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
+import { failedMembershipFeatures, membershipGroupKind } from '../standardization/membership-classification.js';
 import { minimumDaysDimension, type PurchaseTag } from '@price-comparison/catalog/purchase-attributes';
 import { PRODUCT_TAG_RULES } from '@price-comparison/catalog/product-tag-policy';
 
@@ -44,7 +44,7 @@ function membershipScope(input: Pick<CatalogQuery, 'newcomer' | 'membershipKinds
   if (input.membershipKinds?.length) return sql<boolean>`(${ai} and coalesce(${kind}, 'unclassified') = any(${input.membershipKinds}::text[])
     ${input.membershipKinds.includes('unclassified') ? sql`and (${kind} is not null or ${failed})` : sql``})`;
   if (input.membershipSearch) return sql<boolean>`(not (${ai}) or ${kind} = any(${input.membershipSearch.kinds}::text[]))`;
-  return input.newcomer ? sql<boolean>`(not (${ai}) or ${kind} in ('account', 'top_up'))` : sql<boolean>`true`;
+  return input.newcomer ? sql<boolean>`(not (${ai}) or ${kind} = any(${newcomerMembershipKinds()}::text[]))` : sql<boolean>`true`;
 }
 
 export type CatalogTag = Pick<PurchaseTag, 'name' | 'value'>;
@@ -113,6 +113,7 @@ export interface CatalogMembershipGroup {
 }
 
 export interface CatalogItem {
+  readonly identity?: { family: string; product: string; tier: string };
   readonly isAiMembership?: boolean;
   readonly id: string;
   readonly name: string;
@@ -223,7 +224,7 @@ export function encodeCatalogCursor(cursor: CatalogCursor): string {
 export function decodeCatalogCursor(value: string): CatalogCursor {
   try {
     const payload = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Record<string, unknown>;
-    if ((payload.v !== 2 && payload.v !== 3 && payload.v !== 4) || typeof payload.s !== 'string' || typeof payload.sp !== 'string') throw new Error();
+    if ((payload.v !== 2 && payload.v !== 3) || typeof payload.s !== 'string' || typeof payload.sp !== 'string') throw new Error();
     if (!/^-?\d+$/.test(payload.s) || !/^\d+$/.test(payload.sp)) throw new Error();
     const sortOrder = BigInt(payload.s);
     const standardProductId = BigInt(payload.sp);
@@ -232,10 +233,6 @@ export function decodeCatalogCursor(value: string): CatalogCursor {
       if ((payload.order !== 'price' && payload.order !== 'updated') || typeof payload.k !== 'string'
         || (!/^-?[0-9]{1,30}(\.[0-9]{1,12})?$/u.test(payload.k) && !(payload.order === 'price' && payload.k === 'Infinity'))) throw new Error();
       return { sortOrder, standardProductId, sort: payload.order, sortValue: payload.k };
-    }
-    if (payload.v === 4) {
-      // Accept existing ranked cursors, but ordering now belongs to sort_order alone.
-      if (typeof payload.r !== 'number' || !Number.isInteger(payload.r) || payload.r < 100 || payload.r > 999) throw new Error();
     }
     return { sortOrder, standardProductId };
   } catch {
@@ -320,7 +317,7 @@ export class CatalogRepository {
 
   async referenceOffers(input: CatalogQuery): Promise<CatalogOffer[]> {
     const ai = sql<boolean>`sp.is_ai_membership`;
-    const kind = sql<MembershipKind | null>`mk.kind`;
+    const kind = membershipGroupKind(sql<MembershipKind | null>`mk.kind`);
     const failed = sql<boolean>`(select ${failedMembershipFeatures('p', 'source_shop')}
       from products p join shops source_shop on source_shop.id = p.shop_id where p.id = r.product_id)`;
     const verified = sql`r.settlement_price is not null and r.settlement_price >= 0 and r.settlement_price < 'Infinity'::numeric
@@ -328,7 +325,8 @@ export class CatalogRepository {
     const price = sql`case when ${verified} then r.settlement_price else r.listed_price end`;
     // Reference quotes need no freshness gate, catalog totals or merchant-review hydration.
     const result = await sql<CatalogOffer>`with reference_standard as materialized (
-        select sp.id, is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier) as is_ai_membership
+        select sp.id, sp.canonical_family, sp.canonical_product, sp.canonical_tier,
+          is_ai_membership(sp.canonical_family, sp.canonical_product, sp.canonical_tier) as is_ai_membership
         from standard_products sp where sp.id = ${input.standardProductId}::bigint and ${publicStandard('sp')}
       )
       select r.product_id::text as "productId", r.shop_id::text as "shopId",
@@ -406,7 +404,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   const membershipFiltered = Boolean(input.newcomer || input.membershipKinds?.length || input.membershipSearch);
   const needsMembership = !optionsOnly || membershipFiltered;
   const ai = sql<boolean>`cs.is_ai_membership`;
-  const kind = sql<MembershipKind | null>`mk.kind`;
+  const kind = membershipGroupKind(sql<MembershipKind | null>`mk.kind`, 'cs');
   const failed = sql<boolean>`(select ${failedMembershipFeatures('p', 'source_shop')}
     from products p join shops source_shop on source_shop.id = p.shop_id where p.id = r.product_id)`;
   const verified = sql`r.settlement_price is not null and r.settlement_price >= 0 and r.settlement_price < 'Infinity'::numeric
@@ -484,7 +482,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
   // Source changes use live rows until the worker publishes all totals in the same transaction.
   const membershipPublished = (id: RawBuilder<unknown>) => sql<boolean>`exists (
     select 1 from catalog_read_shop_totals ready where ready.standard_product_id = ${id}
-      and ready.membership_policy_version = ${MEMBERSHIP_POLICY_VERSION}
+      and ready.membership_policy_version = ${membershipGroupingVersion()}
   ) and not exists (select 1 from catalog_projection_changes pending where pending.standard_product_id = ${id})`;
   const preparedScope = membershipFiltered ? sql`(
       select t.standard_product_id, t.shop_id, t.currency, min(t.min_price) as min_price,
@@ -523,7 +521,8 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
         sum(product_count)::int as product_count, count(*)::int as shop_count
       from shop_totals group by standard_product_id
     ), page as (
-      select t.*, sp.sort_order, sp.name as standard_product_name, sp.platform, sp.is_ai_membership, ${sortValue} as sort_value
+      select t.*, sp.sort_order, sp.name as standard_product_name, sp.platform, sp.is_ai_membership,
+        sp.canonical_family, sp.canonical_product, sp.canonical_tier, ${sortValue} as sort_value
       from product_totals t join catalog_standards sp on sp.id = t.standard_product_id
       where ${afterCursor}
       order by sort_value, sort_order, standard_product_id limit ${limit + 1}
@@ -566,6 +565,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
         ${input.standardProductId ? sql`and sp.id = ${input.standardProductId}::bigint` : sql``}
     ), catalog_standards as materialized (
       select cs.id, cs.name, cs.platform, cs.sort_order, cs.platform_group, cs.search_text,
+        cs.canonical_family, cs.canonical_product, cs.canonical_tier,
         is_ai_membership(cs.canonical_family, cs.canonical_product, cs.canonical_tier) as is_ai_membership
       from catalog_groups cs
       ${standardWords.length ? sql`where ${sql.join(standardWords.map(wordCondition), sql` and `)}` : sql``}
@@ -638,9 +638,11 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       from detail_entries d group by d.standard_product_id
     )` : sql``}, catalog_items as (
       select page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.is_ai_membership, page.sort_value,
+        page.canonical_family, page.canonical_product, page.canonical_tier,
         page.product_count, page.shop_count, page.latest_captured_at, json_agg(${offerPayload('w')} order by w.price nulls last, case when w.price is null then w.captured_at end desc, w.shop_id, w.product_id) as offers
       from visible_page page join preview_skus w using (standard_product_id)
       group by page.sort_order, page.standard_product_id, page.standard_product_name, page.platform, page.is_ai_membership, page.sort_value,
+        page.canonical_family, page.canonical_product, page.canonical_tier,
         page.product_count, page.shop_count, page.latest_captured_at
     ), prepared_membership_page as materialized (
       select page.* from visible_page page where page.is_ai_membership and ${preparedMembership}
@@ -709,6 +711,7 @@ function buildCatalogQuery(input: CatalogQuery, _policy: QuotePolicy, optionsOnl
       (select count(*) > ${limit} from page) as has_next,
       (select coalesce(json_agg(${input.detailKind ? sql`jsonb_build_object` : sql`json_build_object`}(
         'id', standard_product_id::text, 'name', standard_product_name, 'platform', platform, 'isAiMembership', is_ai_membership,
+        'identity', json_build_object('family', canonical_family, 'product', canonical_product, 'tier', canonical_tier),
         'sortOrder', sort_order::text, 'sortValue', sort_value::text, 'offers', offers,
         'shopCount', shop_count, 'productCount', product_count, 'latestCapturedAt', latest_captured_at
       )${input.detailKind ? sql` || jsonb_build_object('detail', jsonb_build_object(

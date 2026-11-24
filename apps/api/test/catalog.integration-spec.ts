@@ -572,10 +572,10 @@ describe('catalog SQL read model', () => {
         [String(standardTwo), String(standardOne), ...ids.toReversed()]);
     }
     assert.deepEqual((await repository.publicProducts()).items.map(item => item.id), expected);
-    const legacyCursor = encodeCatalogCursor({ sortOrder: 97n, standardProductId: BigInt(ids[3]!) });
-    assert.deepEqual((await readPublished({ tags: [], limit: 100, cursor: legacyCursor })).items.map(item => item.id), ids.slice(0, 3).reverse());
+    const defaultCursor = encodeCatalogCursor({ sortOrder: 97n, standardProductId: BigInt(ids[3]!) });
+    assert.deepEqual((await readPublished({ tags: [], limit: 100, cursor: defaultCursor })).items.map(item => item.id), ids.slice(0, 3).reverse());
     const rankedCursor = Buffer.from(JSON.stringify({ v: 4, s: '97', sp: ids[3], r: 107 })).toString('base64url');
-    assert.deepEqual((await readPublished({ tags: [], limit: 100, cursor: rankedCursor })).items.map(item => item.id), ids.slice(0, 3).reverse());
+    await assert.rejects(readPublished({ tags: [], limit: 100, cursor: rankedCursor }), { code: 'INVALID_CURSOR' });
     await database.updateTable('standard_products').set({ sort_order: -1n }).where('id', '=', BigInt(ids[0]!)).execute();
     assert.equal((await readPublished({ tags: [], limit: 1 })).items[0]?.id, ids[0]);
     assert.equal((await repository.publicProducts()).items[0]?.id, ids[0]);
@@ -602,10 +602,10 @@ describe('catalog SQL read model', () => {
     assert.deepEqual(await repository.publicProducts(), { items: [
       { id: String(standardOne), name: 'Codex 手机接码', platform: 'Alpha', platformGroup: 'other', kind: '手机接码',
         identity: { family: 'openai', product: 'codex', tier: 'sms' }, isAiMembership: false,
-        identityNames: ['openai / codex / sms', 'openai codex sms'] },
+        identityNames: ['openai / codex / sms', 'Codex 手机接码', 'openai codex sms'] },
       { id: String(standardTwo), name: 'Widget Two', platform: 'Alpha', platformGroup: 'other', kind: '其他',
         identity: { family: '', product: '', tier: '' }, isAiMembership: false,
-        identityNames: ['Widget Two', ''] },
+        identityNames: ['Widget Two', ' /  / '] },
     ] });
     assert.equal((await repository.publicProduct(String(standardOne)))?.name, 'Codex 手机接码');
     await database.updateTable('standard_product_members').set({ publication_state: 'provisional' }).where('standard_product_id', '=', standardOne).execute();
@@ -1905,7 +1905,7 @@ describe('catalog SQL read model', () => {
     const cursor = encodeCatalogCursor({ sortOrder: 2n, standardProductId: 42n });
     assert.deepEqual(decodeCatalogCursor(cursor), { sortOrder: 2n, standardProductId: 42n });
     const ranked = Buffer.from(JSON.stringify({ v: 4, s: '-2', sp: '42', r: 107 })).toString('base64url');
-    assert.deepEqual(decodeCatalogCursor(ranked), { sortOrder: -2n, standardProductId: 42n });
+    assert.throws(() => decodeCatalogCursor(ranked), { code: 'INVALID_CURSOR' });
     for (const rank of [null, '107', 99, 1000, 107.5]) {
       assert.throws(() => decodeCatalogCursor(Buffer.from(JSON.stringify({ v: 4, s: '2', sp: '42', r: rank })).toString('base64url')), { code: 'INVALID_CURSOR' });
     }

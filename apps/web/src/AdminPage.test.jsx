@@ -17,15 +17,11 @@ describe('AdminPage', () => {
   });
 
   test.each([
-    ['account', '成品号', 'warranty_covers_subscription', '质保覆盖订阅周期'],
-    ['account', '成品号', 'warranty_covers_subscription', '质保覆盖订阅周期', 'explicit'],
-    ['rental', '租号', 'rental_or_shared_account', '租用或共享账号'],
-    ['rental', '租号', 'rental_or_shared_account', '租用或共享账号', 'explicit'],
-    ['short_term', '短期', 'ownership_invalid_or_conflicting', '账号归属不明确或存在冲突'],
-  ])('成员判定 %s 展示原因与事实，仅非租号展示分类周期', async (kind, label, reason, reasonLabel, durationSource = 'default') => {
+    ['account', '成品号'], ['rental', '租号'], ['short_term', '短期'],
+  ])('成员判定 %s 展示当前审核结果与事实，不补充默认周期', async (kind, label) => {
     vi.stubGlobal('fetch', vi.fn(async input => jsonResponse(paged(new URL(input, 'http://localhost').pathname === '/api/admin/products' ? [{
       id: '1', name: '测试会员', membershipFeatures: {
-        decision: { kind, reason, durationSource, requiredWarrantyDays: kind === 'rental' ? null : 28 },
+        decision: { kind, reason: 'llm_reviewed' },
         tags: [{ name: 'warranty_days', value: '30' }, { name: 'duration', value: '1 month' }],
         evidence: [{ name: 'warranty_days', value: '30', path: 'sourceData.evidence', quote: '售后保障30天' }],
       },
@@ -33,16 +29,15 @@ describe('AdminPage', () => {
     render(<AdminPage initialAuthenticated />);
     await userEvent.click(await screen.findByRole('button', { name: '商品管理' }));
     expect(await screen.findByText('会员判定：' + label)).toBeInTheDocument();
-    if (kind === 'rental') expect(screen.queryByText(/^分类周期：/)).not.toBeInTheDocument();
-    else expect(screen.getByText(durationSource === 'default' ? '分类周期：默认一个月（非商家承诺）' : '分类周期：商家明确说明')).toBeInTheDocument();
-    expect(screen.getByText(reasonLabel)).toBeInTheDocument();
+    expect(screen.queryByText(/^分类周期：/)).not.toBeInTheDocument();
+    expect(screen.getByText('LLM 分类复核通过')).toBeInTheDocument();
     expect(screen.getByText('warranty_days：30')).toBeInTheDocument();
     expect(screen.getByText('duration：1 month')).toBeInTheDocument();
     expect(screen.getByText('描述：「售后保障30天」')).toBeInTheDocument();
   });
 
   test.each([
-    ['account', '成品号'], ['top_up', '代充'], ['short_term', '短期'],
+    ['account', '成品号'], ['top_up', '代充'], ['top_up_half_price', '代充 · 半价资格'], ['short_term', '短期'],
   ])('新分类 %s 未提供周期来源时不暗示商家承诺', async (kind, label) => {
     vi.stubGlobal('fetch', vi.fn(async input => jsonResponse(paged(new URL(input, 'http://localhost').pathname === '/api/admin/products' ? [{
       id: '1', name: '无周期会员', membershipFeatures: {
@@ -74,7 +69,7 @@ describe('AdminPage', () => {
   });
 
   test('同一标准商品的四种报价分别显示分类，未分类只属于缺少分类的报价', async () => {
-    const kinds = [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期']];
+    const kinds = [['account', '成品号'], ['top_up', '代充'], ['top_up_half_price', '代充 · 半价资格'], ['rental', '租号'], ['short_term', '短期']];
     vi.stubGlobal('fetch', vi.fn(async input => jsonResponse(paged(new URL(input, 'http://localhost').pathname === '/api/admin/products' ? [
       ...kinds.map(([kind, label], index) => ({ id: String(index + 1), name: `${label}报价`, standardProductName: 'ChatGPT Plus',
         isAiMembership: true, membershipFeatures: { decision: { kind, reason: 'llm_reviewed' }, tags: [], evidence: [] } })),
@@ -746,8 +741,8 @@ describe('AdminPage', () => {
       if (url.pathname === '/api/admin/products') {
         requests.push(url.search);
         return jsonResponse(paged(url.searchParams.get('shopId') === '2'
-          ? [{ id: 2, name: '乙商品', shop_name: '商铺乙' }]
-          : [{ id: 1, name: '甲商品', shop_name: '商铺甲' }]));
+          ? [{ id: 2, name: '乙商品', shopName: '商铺乙' }]
+          : [{ id: 1, name: '甲商品', shopName: '商铺甲' }]));
       }
       return jsonResponse({ error: 'Unhandled' }, 404);
     }));
@@ -771,8 +766,8 @@ describe('AdminPage', () => {
       if (url.pathname === '/api/auth/me') return jsonResponse({ ok: true });
       if (url.pathname === '/api/admin/shops') return jsonResponse(paged([]));
       if (url.pathname === '/api/admin/products') return jsonResponse(paged([
-        { id: '3', name: '商品甲', shop_name: '商铺甲' },
-        { id: '4', name: '商品乙', shop_name: '商铺乙' },
+        { id: '3', name: '商品甲', shopName: '商铺甲' },
+        { id: '4', name: '商品乙', shopName: '商铺乙' },
       ]));
       if (url.pathname === '/api/admin/standard-products') return jsonResponse(paged([{ id: '11', name: '标准商品甲', platform: '平台甲' }]));
       if (url.pathname === '/api/admin/products/standard-products/bind' && init.method === 'POST') {
@@ -1194,7 +1189,7 @@ describe('AdminPage', () => {
       if (url.pathname === '/api/auth/me') return jsonResponse({ ok: true });
       if (url.pathname === '/api/admin/shops') return jsonResponse(paged([{ id: 1, name: '测试店', platform: 'liandong', enabled: 1 }]));
       if (url.pathname === '/api/admin/shop-submissions') return jsonResponse(paged([]));
-      if (url.pathname === '/api/admin/products') return jsonResponse(paged([{ id: 3, name: '原始商品', shop_name: '测试店', tags: [{ name: '旧条件', value: '旧值' }] }]));
+      if (url.pathname === '/api/admin/products') return jsonResponse(paged([{ id: 3, name: '原始商品', shopName: '测试店', tags: [{ name: '旧条件', value: '旧值' }] }]));
       if (url.pathname === '/api/admin/products/3/tags') {
         if (init?.method === 'PUT') { saved = JSON.parse(init.body); return jsonResponse({ ok: true }); }
         return jsonResponse({ items: [{ name: '旧条件', value: '旧值' }] });
@@ -1241,12 +1236,12 @@ describe('AdminPage', () => {
         return jsonResponse(paged([{ id: 1, name: '日刷plus', url: 'https://wzyp.cn/shop/a', platform: 'liandong', enabled: 1 }]));
       }
       if (url.pathname === '/api/admin/products') {
-        return jsonResponse(paged([{ id: 3, name: '洗发水 500ml', spec: '500ml', shop_id: 1, shop_name: '日刷plus', standard_product_name: null, updated_at: '2026-09-07 08:00:00' }]));
+        return jsonResponse(paged([{ id: 3, name: '洗发水 500ml', spec: '500ml', shopId: 1, shopName: '日刷plus', standardProductName: null, updatedAt: '2026-09-07 08:00:00' }]));
       }
       if (url.pathname === '/api/admin/standard-products') {
         return jsonResponse(paged([{ id: 11, name: '洗发水', platform: '个护清洁', count: 2 }]));
       }
-      if (url.pathname === '/api/admin/platforms') return jsonResponse(paged([{ id: 1, name: '个护清洁', standard_product_count: 1 }]));
+      if (url.pathname === '/api/admin/platforms') return jsonResponse(paged([{ id: 1, name: '个护清洁', standardProductCount: 1 }]));
       if (url.pathname === '/api/admin/products/standard-products/bind' && init?.method === 'POST') return jsonResponse({ success: ['3'], skipped: [], conflicts: [] }, 201);
       return jsonResponse({ error: `Unhandled ${url.pathname}` }, 404);
     }));

@@ -35,7 +35,7 @@ test('membership query parsing no longer relies on removed tags', () => {
     ['Ready Account', 'account'], ['代充', 'top_up'], ['top-up', 'top_up'], ['共享', 'rental'], ['shared access', 'rental'],
     ['短期', 'short_term']]) {
     const query = normalizeCatalogQuery({ q });
-    assert.deepEqual(query.membershipSearch?.kinds, [kind]);
+    assert.deepEqual(query.membershipSearch?.kinds, kind === 'top_up' ? ['top_up', 'top_up_half_price'] : [kind]);
     assert.deepEqual(query.tags, []);
   }
 });

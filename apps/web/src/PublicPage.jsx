@@ -14,7 +14,7 @@ import { MAX_DURATION_DAYS, minimumDaysDimension, normalizeCatalogFilter, parseC
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import { FilterRow, SearchFilterRow } from './components/PurchaseFilterRow.jsx';
 import { standardProductDisplayName } from '@price-comparison/catalog/catalog-display';
-import { MEMBERSHIP_GROUPS, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
+import { MEMBERSHIP_GROUPS, membershipKindLabel, membershipSearchKinds, membershipSearchPattern, membershipGroupKinds, membershipFilterKinds, normalizeMembershipSelection, membershipSelections, isNewcomerMembership } from '@price-comparison/catalog/membership-policy';
 import { REFERENCE_WEBSITES } from '@price-comparison/catalog/official-reference';
 import { updatePageMetadata } from './page-metadata.js';
 import { PRODUCT_PAGE_SIZE, productPagePath, publicPageNumber } from '../../api/src/seo/page-metadata.ts';
@@ -37,12 +37,12 @@ const NOOP = () => {};
 const CATALOG_OVERSCAN = { top: 300, bottom: 500 };
 const catalogItemKey = (_index, item) => item.key || item.id;
 const BROWSING_MODE_KEY = 'catalog-browsing-mode';
-const membershipWords = /成品号|代充|租号(?:\s*[（(]\s*(?:共享|合租)\s*[）)])?|共享|合租|短期/gu;
-const membershipNegation = new RegExp(`(?:不(?:要|需要|想要?|接受|支持|提供|适合|能|是)?|没有|未明确|未说明|无需|禁止|非|是否|可能|或许|不确定)\\s*(?:是|为)?\\s*(?:${membershipWords.source})|(?:${membershipWords.source})\\s*(?:状态)?\\s*(?:不(?:要|支持|提供|可用|确定|保证)|未说明|未知)`, 'u');
-const membershipFilterLabel = kind => kind === 'rental' ? '租号（共享）' : membershipKindLabel(kind);
+const membershipWords = new RegExp(membershipSearchPattern(), 'giu');
+const membershipNegation = new RegExp(`(?:不(?:要|需要|想要?|接受|支持|提供|适合|能|是)?|没有|未明确|未说明|无需|禁止|非|是否|可能|或许|不确定)\\s*(?:是|为)?\\s*(?:${membershipWords.source})|(?:${membershipWords.source})\\s*(?:状态)?\\s*(?:不(?:要|支持|提供|可用|确定|保证)|未说明|未知)`, 'iu');
+const membershipFilterLabel = (kind, identity) => kind === 'rental' ? '租号（共享）' : membershipKindLabel(kind, identity);
 
 function MembershipHint({ kind }) {
-  if (kind !== 'account' && kind !== 'top_up') return null;
+  if (!isNewcomerMembership(kind)) return null;
   return <>
     <span className="membership-note">商家保订阅</span>
     <span aria-hidden="true"> · </span>
@@ -52,7 +52,7 @@ function MembershipHint({ kind }) {
 function membershipSearch(query, enabled) {
   const kinds = new Set();
   const text = enabled && !membershipNegation.test(query) ? query.replace(membershipWords, word => {
-    kinds.add(/^(?:租号|共享|合租)/u.test(word) ? 'rental' : MEMBERSHIP_GROUPS.find(kind => membershipKindLabel(kind) === word));
+    for (const kind of membershipSearchKinds(word)) kinds.add(kind);
     return ' ';
   }).replace(/\s+/gu, ' ').trim() : query;
   return { text, kinds: MEMBERSHIP_GROUPS.filter(kind => kinds.has(kind)) };
@@ -64,19 +64,24 @@ function matchingProducts(products, query, platform) {
     && words.every(word => formatStandardName(item.name).toLowerCase().includes(word)));
 }
 
-function MembershipFilter({ value, onChange }) {
+function MembershipFilter({ value, onChange, identity }) {
   return <FilterRow label="AI会员类型" unlimited={!value.length} onClear={() => onChange([])}><div className="filter-options">
-    {MEMBERSHIP_GROUPS.filter(kind => kind !== 'unclassified').map(kind => <label key={kind} className={value.includes(kind) ? 'is-selected' : ''}>
-      <input type="checkbox" aria-label={membershipFilterLabel(kind)} checked={value.includes(kind)}
-        onChange={() => onChange(MEMBERSHIP_GROUPS.filter(candidate => candidate === kind ? !value.includes(candidate) : value.includes(candidate)))} />
-      <span>{membershipFilterLabel(kind)}</span>
-    </label>)}
+    {membershipGroupKinds(identity).filter(kind => kind !== 'unclassified').map(kind => {
+      const selection = membershipFilterKinds(kind, identity);
+      const checked = selection.every(candidate => value.includes(candidate));
+      return <label key={kind} className={checked ? 'is-selected' : ''}>
+        <input type="checkbox" aria-label={membershipFilterLabel(kind, identity)} checked={checked}
+          onChange={() => onChange(MEMBERSHIP_GROUPS.filter(candidate =>
+            selection.includes(candidate) ? !checked : value.includes(candidate)))} />
+        <span>{membershipFilterLabel(kind, identity)}</span>
+      </label>;
+    })}
   </div></FilterRow>;
 }
 
 function membershipName(item, kind = '') {
   const name = formatStandardName(item.name);
-  const label = MEMBERSHIP_GROUPS.includes(kind) ? membershipKindLabel(kind) : '';
+  const label = MEMBERSHIP_GROUPS.includes(kind) ? membershipKindLabel(kind, item.identity) : '';
   return label ? `${name} · ${label}` : name;
 }
 
@@ -711,7 +716,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
         draftTags={draft.tags}
         onChangeTags={tags => field('tags', tags)}
         onClear={() => { setDraft(current => ({ ...current, tags: new Set(), priceMin: '', priceMax: '', membershipKinds: [] })); setRangeError(''); }} onApply={apply} onClose={() => setFilterOpen(false)}>
-        {detail.item.isAiMembership && !fixedMembershipKind ? <MembershipFilter value={draft.membershipKinds} onChange={membershipKinds => field('membershipKinds', membershipKinds)} /> : null}
+        {detail.item.isAiMembership && !fixedMembershipKind ? <MembershipFilter identity={detail.item.identity} value={draft.membershipKinds} onChange={membershipKinds => field('membershipKinds', membershipKinds)} /> : null}
         <FilterRow label="价格区间" unlimited={!draft.priceMin && !draft.priceMax} onClear={() => { setDraft(current => ({ ...current, priceMin: '', priceMax: '' })); setRangeError(''); }}><div className="detail-price-range" role="group" aria-label="人民币金额区间"><label><span aria-hidden="true">¥</span><input type="number" aria-label="最低价格" placeholder="最低价" min="0" max="999999999999.99" step="0.01" value={draft.priceMin} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMin', event.target.value)} /></label><span>—</span><label><span aria-hidden="true">¥</span><input type="number" aria-label="最高价格" placeholder="最高价" min="0" max="999999999999.99" step="0.01" value={draft.priceMax} aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'detail-price-error' : undefined} onChange={event => field('priceMax', event.target.value)} /></label></div>{rangeError ? <span id="detail-price-error" role="alert" className="report-error detail-query-error">{rangeError}</span> : null}</FilterRow>
       </FilterPanel>
       </div>
@@ -729,7 +734,7 @@ function CatalogDetailDialog({ detail, onClose, onOfferDetails, comparison, onCo
 }
 
 function hasOfficialReference(item, group) {
-  return group ? group.kind === 'account' || group.kind === 'top_up'
+  return group ? isNewcomerMembership(group.kind)
     : item.name === 'Notion Business' || REFERENCE_WEBSITES.some(source => source.plans.some(plan =>
       referenceTitle(plan.name, source.appId) === referenceTitle(item.name, source.appId)));
 }
@@ -1030,10 +1035,17 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
   const hasRecognizedIntent = intentTags.length > 0 || searchMembership.kinds.length > 0;
   const selectedTagList = useMemo(() => allTags.filter(tag => selectedTags.has(tagKey(tag))), [allTags, selectedTags]);
   const activeTagLabels = useMemo(() => selectedTagList.map(displayTag), [selectedTagList]);
-  const selectedCount = selectedTags.size + Number(Boolean(selectedProduct)) + effectiveKinds.length;
+  const selectedMemberships = membershipSelections(effectiveKinds, productQuery.data?.identity);
+  const selectedCount = selectedTags.size + Number(Boolean(selectedProduct)) + selectedMemberships.length;
   const draftProductData = products.find(item => item.id === draftProduct) || (draftProduct === selectedProduct ? productQuery.data : undefined);
   const showMembershipFilter = draftProduct ? draftProductData?.isAiMembership : matchedProducts.some(item => item.isAiMembership);
   const draftKinds = draftProductData?.isAiMembership === false ? EMPTY_LIST : draftMembershipKinds;
+  const changeDraftProduct = id => {
+    const selected = products.find(item => item.id === id);
+    setDraftProduct(id);
+    setDraftMembershipKinds(current => selected?.isAiMembership === false ? []
+      : normalizeMembershipSelection(current, selected?.identity));
+  };
   const draftRequest = catalogParams(searchMembership.text, platform, draftTags, draftProduct, newcomer, draftKinds).toString();
   // Platform switches return the same `platformFacets`, so only the list blanks behind the skeleton.
   const visibleItems = useMemo(() => catalogQuery.isPlaceholderData || !membershipReady ? EMPTY_LIST
@@ -1128,7 +1140,12 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
 
   const productDetail = useMemo(() => productQuery.data ? { item: productQuery.data, kind: 'offers', membershipKind, query: '' } : null, [productQuery.data, membershipKind]);
   const selectedProductName = formatStandardName(productQuery.data?.name || data.items.find(item => item.id === selectedProduct)?.name || '已选商品');
-  const changeSearch = value => { setQuery(value); setSelectedProduct(''); setDraftProduct(''); };
+  const clearSelectedProduct = () => {
+    setSelectedProduct(''); setDraftProduct('');
+    setMembershipKinds(current => normalizeMembershipSelection(current, undefined));
+    setDraftMembershipKinds(current => normalizeMembershipSelection(current, undefined));
+  };
+  const changeSearch = value => { setQuery(value); if (selectedProduct) clearSelectedProduct(); else { setSelectedProduct(''); setDraftProduct(''); } };
   const changePlatform = value => {
     setPlatformPickerOpen(false);
     if (value === platform) return;
@@ -1214,21 +1231,18 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
       </ModalDialog> : null}
       {invalidFilters && <p role="alert">部分旧筛选条件已失效，请重新选择。<button type="button" className="text-button" onClick={() => setInvalidFilters(false)}>知道了</button></p>}
       {facetLoading && <span className="filter-loading-status" role="status">正在加载筛选条件…</span>}
-      <FilterPanel open={filterOpen && !facetLoading} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen || disclaimerOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => { if (productsQuery.isError) productsQuery.refetch(); if (facetQuery.isError) facetQuery.refetch(); }} draftTags={draftTags} draftProduct={draftProduct} extraCount={draftKinds.length} onChangeTags={setDraftTags} onClear={() => { setDraftTags(new Set()); setDraftProduct(''); setDraftMembershipKinds([]); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
+      <FilterPanel open={filterOpen && !facetLoading} inline={desktopFilters} covered={Boolean(platformPickerOpen || catalogDetail || reportOffer || shopDialogOpen || communityOpen || comparisonOpen || disclaimerOpen)} tags={allTags} loading={facetLoading} error={facetError} onRetry={() => { if (productsQuery.isError) productsQuery.refetch(); if (facetQuery.isError) facetQuery.refetch(); }} draftTags={draftTags} draftProduct={draftProduct} extraCount={membershipSelections(draftKinds, draftProductData?.identity).length} onChangeTags={setDraftTags} onClear={() => { setDraftTags(new Set()); setDraftProduct(''); setDraftMembershipKinds([]); }} onClose={() => setFilterOpen(false)} onApply={applyFilters}
         preview={filterOpen && membershipReady ? <FilterCount params={draftRequest} enabled={draftRequest !== request} current={draftRequest === request && catalogQuery.data && !catalogQuery.isPlaceholderData ? data : undefined} /> : null}>
-        {products.length || draftProduct ? <SearchFilterRow single label="标准商品" options={products.filter(item => platform === '全部' || normalizeCatalogPlatform(item.platform || '') === platform).map(item => ({ key: item.id, label: membershipName(item), keywords: item.identityNames?.join(' ') }))} selected={draftProduct ? [{ key: draftProduct, label: draftProductData ? membershipName(draftProductData) : selectedProductName }] : []} onClear={() => setDraftProduct('')} onRemove={() => setDraftProduct('')} onChoose={id => {
-          setDraftProduct(id);
-          if (products.find(item => item.id === id)?.isAiMembership === false) setDraftMembershipKinds([]);
-        }} /> : null}
-        {showMembershipFilter ? <MembershipFilter value={draftKinds} onChange={setDraftMembershipKinds} /> : null}
+        {products.length || draftProduct ? <SearchFilterRow single label="标准商品" options={products.filter(item => platform === '全部' || normalizeCatalogPlatform(item.platform || '') === platform).map(item => ({ key: item.id, label: membershipName(item), keywords: item.identityNames?.join(' ') }))} selected={draftProduct ? [{ key: draftProduct, label: draftProductData ? membershipName(draftProductData) : selectedProductName }] : []} onClear={() => changeDraftProduct('')} onRemove={() => changeDraftProduct('')} onChoose={changeDraftProduct} /> : null}
+        {showMembershipFilter ? <MembershipFilter identity={draftProductData?.identity} value={draftKinds} onChange={setDraftMembershipKinds} /> : null}
       </FilterPanel>
       <div className="catalog-scroll">
         {intentTags.length ? <div className="intent-chips" aria-label="已识别购买条件">{intentTags.map((tag) => <button type="button" key={tagKey(tag)} aria-label={`移除${displayPurchaseValue(tag)}`} onClick={() => { setQuery(removeSearchIntent(query, tag)); }}>{displayPurchaseValue(tag)} <span aria-hidden="true">×</span></button>)}<button type="button" className="intent-clear" onClick={() => { setQuery(parseCatalogSearch(searchMembership.text).text); }}>清除已识别条件</button></div> : null}
-        {selectedCount ? <div className="selected-filters" aria-label="已选筛选条件">{selectedProduct ? <button type="button" onClick={() => { setSelectedProduct(''); setDraftProduct(''); trackUsage('filter'); }}>{selectedProductName} ×</button> : null}
-          {effectiveKinds.map(kind => <button type="button" key={kind} onClick={() => {
-            const next = effectiveKinds.filter(value => value !== kind); setMembershipKinds(next); setDraftMembershipKinds(next);
+        {selectedCount ? <div className="selected-filters" aria-label="已选筛选条件">{selectedProduct ? <button type="button" onClick={() => { clearSelectedProduct(); trackUsage('filter'); }}>{selectedProductName} ×</button> : null}
+          {selectedMemberships.map(({ kind, kinds }) => <button type="button" key={kind} onClick={() => {
+            const next = effectiveKinds.filter(value => !kinds.includes(value)); setMembershipKinds(next); setDraftMembershipKinds(next);
             if (searchMembership.kinds.length) { setQuery(searchMembership.text); setSearch(searchMembership.text); }
-          }}>AI会员：{membershipKindLabel(kind)} ×</button>)}
+          }}>AI会员：{membershipKindLabel(kind, productQuery.data?.identity)} ×</button>)}
           {selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{minimumDaysDimension(tag.name) ? `${TAG_LABELS[minimumDaysDimension(tag.name)]}至少 ${tag.value} 天` : displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
         {error ? <div className="catalog-error" role="alert"><span>{error}</span><button type="button" onClick={() => catalogQuery.refetch()}>重新加载</button></div> : null}
         {loading && !visibleItems.length ? <CatalogSkeleton /> : null}

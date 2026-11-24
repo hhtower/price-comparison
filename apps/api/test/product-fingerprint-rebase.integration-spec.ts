@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
@@ -125,7 +126,7 @@ test('dry-run and apply preserve completed standard/tag/feature results, manual 
     assert.equal(p.text_review_key, before.products[0]!.text_review_key);
     const expected = { ...fixture.features, fingerprint: fixture.next } as unknown as Record<string, JsonValue>;
     delete expected.evidenceKey;
-    assert.deepEqual(p.membership_features, expected); assert.ok(readCurrentMembershipFeatures(p.membership_features, p));
+    assert.deepEqual(p.membership_features, expected); assert.ok(readCurrentMembershipFeatures(p.membership_features, await withMembershipSource(db, p)));
     assert.deepEqual(after.jobs, before.jobs); assert.deepEqual(after.tags, before.tags); assert.deepEqual(after.memberships, before.memberships);
     for (const row of [...after.inputs, ...after.members, ...after.results, ...after.executions, ...after.events, ...after.outbox]) assert.equal(row.fingerprint, fixture.next);
     assert.equal(after.manual[0]!.content_fingerprint, fixture.next);
@@ -146,7 +147,7 @@ test('old evidenceKey-only stale membership and stale text review stay invalid a
     await db.updateTable('products').set({ text_review: jsonb(staleText) }).where('id', '=', f.p.id).execute();
     await rebaseProductFingerprints(db, { apply: true });
     const p = await db.selectFrom('products').selectAll().executeTakeFirstOrThrow();
-    assert.deepEqual(p.membership_features, f.features); assert.equal(readCurrentMembershipFeatures(p.membership_features, p), null);
+    assert.deepEqual(p.membership_features, f.features); assert.equal(readCurrentMembershipFeatures(p.membership_features, await withMembershipSource(db, p)), null);
     assert.deepEqual(p.text_review, staleText); assert.equal(p.text_review_key, null);
   });
 });
@@ -290,7 +291,7 @@ test('category, usage and merchant attributes outside the four-field hash do not
     assert.ok(rows.every(r => r.fingerprint === f.next && r.status === 'classified'));
     const p = await db.selectFrom('products').selectAll().executeTakeFirstOrThrow();
     // It was already stale under the old evidenceKey check; removal must not resurrect it.
-    assert.equal(readCurrentMembershipFeatures(p.membership_features, p), null);
+    assert.equal(readCurrentMembershipFeatures(p.membership_features, await withMembershipSource(db, p)), null);
   });
 });
 
@@ -303,7 +304,7 @@ for (const proof of [true, false]) test(`display title to original title require
       assert.deepEqual(preview.blocked, []);
       await rebaseProductFingerprints(db, { apply: true });
       const p = await db.selectFrom('products').selectAll().executeTakeFirstOrThrow();
-      assert.equal(p.content_fingerprint, f.next); assert.ok(readCurrentMembershipFeatures(p.membership_features, p));
+      assert.equal(p.content_fingerprint, f.next); assert.ok(readCurrentMembershipFeatures(p.membership_features, await withMembershipSource(db, p)));
     } else {
       const before = await snapshot(db);
       const report = await rebaseProductFingerprints(db, { apply: true });

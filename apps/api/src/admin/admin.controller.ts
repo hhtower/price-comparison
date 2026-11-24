@@ -44,6 +44,7 @@ interface ShopResponse {
   readonly enabled: boolean;
   readonly lastFetchAt: Date | null;
   readonly lastError: string | null;
+  readonly deletedAt: Date | null;
 }
 
 interface ProductResponse {
@@ -297,7 +298,7 @@ export class AdminController {
   @Get('platforms')
   async listPlatforms(@Query(new ValidationPipe({ expectedType: ListPlatformsQueryDto, transform: true, whitelist: true, forbidNonWhitelisted: true })) query: ListPlatformsQueryDto) {
     const page = await this.service.listPlatforms({ page: query.page, limit: query.limit, ...(query.keyword === undefined ? {} : { keyword: query.keyword }), ...(query.status === undefined ? {} : { status: query.status }) } satisfies PlatformListFilter);
-    return { items: page.items.map((p) => ({ id: p.id, name: p.name, enabled: p.enabled, standardProductCount: p.standard_product_count.toString(), standard_product_count: p.standard_product_count.toString() })), total: page.total, page: page.page, pageSize: page.pageSize };
+    return { items: page.items.map((p) => ({ id: p.id, name: p.name, enabled: p.enabled, standardProductCount: p.standard_product_count.toString() })), total: page.total, page: page.page, pageSize: page.pageSize };
   }
 
   @Post('platforms')
@@ -325,7 +326,7 @@ export class AdminController {
 }
 
 function toPlatformResponse(row: { id: string; name: string; enabled: boolean; standard_product_count: bigint }) {
-  return { id: row.id, name: row.name, enabled: row.enabled, standardProductCount: row.standard_product_count.toString(), standard_product_count: row.standard_product_count.toString() };
+  return { id: row.id, name: row.name, enabled: row.enabled, standardProductCount: row.standard_product_count.toString() };
 }
 
 function pageRequest(query: AdminPageQueryDto): { cursor?: string; limit?: number; page?: number } {
@@ -364,6 +365,7 @@ function toShopResponse(row: AdminShopRow): ShopResponse {
     enabled: row.enabled,
     lastFetchAt: row.last_fetch_at,
     lastError: row.last_error,
+    deletedAt: row.deleted_at,
   };
 }
 

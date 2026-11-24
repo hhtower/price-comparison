@@ -50,7 +50,7 @@ test('both stages preserve the same complete original fields and exclude assignm
 });
 
 test('classification parses exactly one allowed category per unique product ID', () => {
-  const items = ['account', 'top_up', 'rental', 'short_term'].map((membershipKind, index) =>
+  const items = ['account', 'top_up', 'top_up_half_price', 'rental', 'short_term'].map((membershipKind, index) =>
     ({ id: String(index + 1), refs: [0], membershipKind }));
   assert.deepEqual(parseMembershipFeatureResponse(JSON.stringify({ items })), { items });
   for (const invalid of [
@@ -137,7 +137,7 @@ test('prompt examples obey the same strict batched schemas as real responses', (
   const extracted = parseMembershipFeatureResponse(blocks[1]![2]!);
   assert.deepEqual(extracted.items.map(item => item.id), exampleInputs.map((item: { id: string }) => item.id));
   assert.deepEqual([...new Set(extracted.items.map(item => item.membershipKind))].sort(),
-    ['account', 'rental', 'short_term', 'top_up']);
+    ['account', 'rental', 'short_term', 'top_up', 'top_up_half_price']);
   const reviewBlocks = [...MEMBERSHIP_FEATURE_REVIEW_PROMPT.matchAll(/<(input|output)>([\s\S]*?)<\/\1>/gu)];
   assert.equal(reviewBlocks.length, 2);
   const reviewInput = JSON.parse(reviewBlocks[0]![2]!);
@@ -153,12 +153,60 @@ test('prompt examples obey the same strict batched schemas as real responses', (
     { id: '107', classificationDecision: false, code: 'protection_mismatch', refs: [0, 1] },
     { id: '108', classificationDecision: true, code: null, refs: [] },
     { id: '109', classificationDecision: false, code: 'protection_mismatch', refs: [0, 1] },
+    { id: '110', classificationDecision: false, code: 'delivery_mismatch', refs: [0, 1] },
+    { id: '111', classificationDecision: false, code: 'delivery_mismatch', refs: [0, 1] },
+    { id: '112', classificationDecision: true, code: null, refs: [] },
+    { id: '113', classificationDecision: false, code: 'delivery_mismatch', refs: [0, 1] },
+    { id: '114', classificationDecision: false, code: 'protection_mismatch', refs: [0, 1] },
+    { id: '115', classificationDecision: true, code: null, refs: [] },
+    { id: '116', classificationDecision: true, code: null, refs: [] },
+    { id: '117', classificationDecision: false, code: 'delivery_mismatch', refs: [0, 1] },
+    { id: '118', classificationDecision: false, code: 'delivery_mismatch', refs: [0, 1] },
+    { id: '119', classificationDecision: true, code: null, refs: [] },
   ]);
-  assert.deepEqual(extracted.items.slice(-3).map(({ id, membershipKind }) => ({ id, membershipKind })), [
+  assert.deepEqual(extracted.items.slice(6).map(({ id, membershipKind }) => ({ id, membershipKind })), [
     { id: '107', membershipKind: 'top_up' },
     { id: '108', membershipKind: 'top_up' },
     { id: '109', membershipKind: 'short_term' },
+    { id: '110', membershipKind: 'top_up_half_price' },
+    { id: '111', membershipKind: 'top_up' },
+    { id: '112', membershipKind: 'top_up' },
+    { id: '113', membershipKind: 'top_up' },
+    { id: '114', membershipKind: 'short_term' },
+    { id: '115', membershipKind: 'top_up_half_price' },
+    { id: '116', membershipKind: 'top_up_half_price' },
+    { id: '117', membershipKind: 'top_up_half_price' },
+    { id: '118', membershipKind: 'top_up' },
+    { id: '119', membershipKind: 'top_up_half_price' },
   ]);
+});
+
+test('generation and review identify requirements independently of product grouping policy', () => {
+  for (const prompt of [buildMembershipFeatureRequest([], 'mock').messages[0]!.content, MEMBERSHIP_FEATURE_REVIEW_PROMPT]) {
+    const rules = prompt.split('# Examples')[0]!;
+    assert.doesNotMatch(rules, /ChatGPT|Grok|Cursor|半价卡密充值/u);
+    const input = JSON.parse([...prompt.matchAll(/<input>([\s\S]*?)<\/input>/gu)][0]![1]!);
+    for (const [id, name] of [['115', 'Grok Plus'], ['116', 'ChatGPT Pro']]) {
+      assert.match(input.inputs.find((item: { id: string }) => item.id === id).lines[0].text, new RegExp(name));
+    }
+  }
+});
+
+test('shared policy and contrastive examples distinguish eligibility from promotional pricing', () => {
+  const generation = buildMembershipFeatureRequest([], 'mock').messages[0]!.content;
+  const policy = (prompt: string) => prompt.split('# Classification policy\n')[1]!.split('# Output\n')[0]!;
+  assert.equal(policy(generation), policy(MEMBERSHIP_FEATURE_REVIEW_PROMPT));
+  assert.doesNotMatch(policy(generation), /"半价卡密充值"|"半价充值"|"半价代充"/u);
+  const input = JSON.parse([...generation.matchAll(/<input>([\s\S]*?)<\/input>/gu)][0]![1]!);
+  const output = JSON.parse([...generation.matchAll(/<output>([\s\S]*?)<\/output>/gu)][0]![1]!);
+  const example = (id: string) => input.inputs.find((item: { id: string }) => item.id === id);
+  const kind = (id: string) => output.items.find((item: { id: string }) => item.id === id).membershipKind;
+  assert.equal(example('117').name, example('118').name);
+  assert.equal(kind('117'), 'top_up_half_price');
+  assert.equal(kind('118'), 'top_up');
+  assert.match(example('118').lines[1].text, /无需账号优惠资格/u);
+  assert.doesNotMatch(JSON.stringify(example('119')), /半价/u);
+  assert.equal(kind('119'), 'top_up_half_price');
 });
 
 test('feature review planner budgets the actual compact prompt and preserves whole product batches', () => {

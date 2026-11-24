@@ -1,3 +1,5 @@
+import { withMembershipSource } from './membership-fixture.js';
+import { MEMBERSHIP_GROUPS } from '@price-comparison/catalog/membership-policy';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
@@ -152,7 +154,7 @@ test('history scopes separate membership daily minima and include only failed AI
     const id = await addProduct(kind);
     ids[kind] = id;
     const current = await db.selectFrom('products').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
-    await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], current, [], kind) as unknown as JsonValue) })
+    await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, current), [], kind) as unknown as JsonValue) })
       .where('id', '=', id).execute();
     const offer = await quote(id, price);
     await db.updateTable('offers').set({ settlement_price: String(Number(price) - 1), settlement_verified_at: new Date('2026-10-14T10:00:00Z') })
@@ -161,7 +163,7 @@ test('history scopes separate membership daily minima and include only failed AI
   await quote(product, '2.00');
   const staleId = await addProduct('stale-account');
   const staleProduct = await db.selectFrom('products').selectAll().where('id', '=', staleId).executeTakeFirstOrThrow();
-  await db.updateTable('products').set({ membership_features: jsonb({ ...buildMembershipFeatures([], staleProduct, [], 'account'),
+  await db.updateTable('products').set({ membership_features: jsonb({ ...buildMembershipFeatures([], await withMembershipSource(db, staleProduct), [], 'account'),
     policyVersion: 'stale' } as unknown as JsonValue) }).where('id', '=', staleId).execute();
   await quote(staleId, '3.00', '2026-10-14T10:00:00Z');
   assert.deepEqual((await history.get(String(standard), undefined, 'CNY', { membershipKinds: ['unclassified'] })).points, []);
@@ -176,7 +178,7 @@ test('history scopes separate membership daily minima and include only failed AI
     from products p join shops sh on sh.id = p.shop_id where p.id in (${product}, ${staleId})`.execute(db);
   const dollars = await addProduct('dollar-account');
   const dollarProduct = await db.selectFrom('products').selectAll().where('id', '=', dollars).executeTakeFirstOrThrow();
-  await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], dollarProduct, [], 'account') as unknown as JsonValue) })
+  await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, dollarProduct), [], 'account') as unknown as JsonValue) })
     .where('id', '=', dollars).execute();
   await quote(dollars, '0.50', '2026-10-13T12:00:00Z', 'USD');
 
@@ -208,7 +210,7 @@ test('history scopes separate membership daily minima and include only failed AI
   assert.equal((await db.selectFrom('products').select('membership_features').where('id', '=', product).executeTakeFirstOrThrow()).membership_features, null);
 
   const current = await db.selectFrom('products').selectAll().where('id', '=', ids.account!).executeTakeFirstOrThrow();
-  await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], current, [], 'rental') as unknown as JsonValue) })
+  await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, current), [], 'rental') as unknown as JsonValue) })
     .where('id', '=', ids.account!).execute();
   assert.deepEqual(await prices({ membershipKind: 'account', productId: String(ids.account) }), []);
   assert.deepEqual(await prices({ membershipKind: 'rental', productId: String(ids.account) }), [['2026-10-13', '40.00'], ['2026-10-14', '39']]);
@@ -233,7 +235,7 @@ test('history rejects malformed membership and newcomer filters through the publ
   const controller = new CatalogController(service);
   for (const scope of [
     { membershipKind: 'unknown' }, { membershipKind: [] }, { membershipKind: ['account', 'unknown'] },
-    { membershipKind: null }, { membershipKind: {} }, { membershipKind: ['account', 'top_up', 'rental', 'short_term', 'unclassified', 'account'] },
+    { membershipKind: null }, { membershipKind: {} }, { membershipKind: Array(MEMBERSHIP_GROUPS.length + 1).fill('account') },
     { membershipKinds: 'account' }, { membershipKind: 'account', membershipKinds: ['rental'] },
     { newcomer: 'yes' }, { newcomer: ['true', 'false'] }, { newcomer: null },
   ]) {

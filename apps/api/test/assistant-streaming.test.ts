@@ -67,7 +67,7 @@ test('fragmented JSON is aggregated by shared transport and committed once only 
     assert.equal(request.max_tokens, 8192);
     assert.deepEqual(request.messages.map((message: { role: string }) => message.role), ['system', 'user']);
     const examples = [...request.messages[0].content.matchAll(/<output>\s*([\s\S]*?)<\/output>/gu)];
-    assert.equal(examples.length, 4);
+    assert.equal(examples.length, 5);
     for (const example of examples) {
       assert.deepEqual(Object.keys(JSON.parse(example[1]!)).sort(), ['evidence', 'intent', 'options', 'patch', 'question']);
     }

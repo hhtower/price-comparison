@@ -359,7 +359,7 @@ test('standard identity gates AI membership and only offer features establish it
     assert.equal(selectCandidates([known], needs, now).length, 0);
     assert.equal(selectCandidates([known], { ...needs, newcomer: false }, now).length, 1);
   }
-  for (const membershipKind of ['account', 'top_up'] as const) {
+  for (const membershipKind of ['account', 'top_up', 'top_up_half_price'] as const) {
     const classified = { ...candidate, standardProduct: { ...candidate.standardProduct, isAiMembership: true },
       offer: { ...candidate.offer, membershipKind } };
     assert.equal(selectCandidates([classified], needs, now).length, 1);

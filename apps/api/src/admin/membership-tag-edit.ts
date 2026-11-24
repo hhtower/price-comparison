@@ -5,9 +5,11 @@ import { readCurrentMembershipFeatures } from '../standardization/membership-cla
 export async function advanceAdminDisplayRevision(tx: Transaction<DatabaseSchema>, productIds: readonly bigint[]): Promise<void> {
   if (!productIds.length) return;
   const products = await tx.selectFrom('products')
-    .select(['id', 'name', 'spec', 'source_category', 'source_data', 'content_version', 'content_fingerprint',
-      'standardization_revision', 'membership_features'])
-    .where('id', 'in', [...new Set(productIds)]).orderBy('id').forUpdate().execute();
+    .innerJoin('shops', 'shops.id', 'products.shop_id')
+    .select(['products.id', 'products.name', 'products.spec', 'products.source_category', 'products.source_data',
+      'products.content_version', 'products.content_fingerprint', 'products.standardization_revision', 'products.membership_features',
+      'shops.url as shop_url', 'shops.protocol as shop_protocol', 'shops.platform as shop_platform'])
+    .where('products.id', 'in', [...new Set(productIds)]).orderBy('products.id').forUpdate('products').execute();
   for (const product of products) {
     const features = readCurrentMembershipFeatures(product.membership_features, product);
     // Display labels never replace the earlier validated feature evidence.

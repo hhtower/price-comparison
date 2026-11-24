@@ -8,6 +8,14 @@ const facts = [
   { id: 'd2', title: '分类说明', text: '短期包括保障或交付信息不明确的商品。', path: '/guide' },
 ];
 
+test('consultation knowledge explains both top-up features and the limits of general eligibility', () => {
+  const knowledge = consultationKnowledge(new Date());
+  const topUp = knowledge.find(fact => fact.title === '代充');
+  assert.ok(topUp);
+  assert.match(topUp.text, /明确要求半价资格.*需半价资格.*其余.*通用/u);
+  assert.match(topUp.text, /通用不保证.*其他购买限制/u);
+});
+
 test('fact placeholders preserve numbers while complete scope stays in expandable details', () => {
   const result = renderConsultation({ text: '先了解分类：{{d2}}', evidenceIds: ['d2'] }, facts, ['d1']);
   assert.equal(result.text, `先了解分类：${facts[1]!.text}`);

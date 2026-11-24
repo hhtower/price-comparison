@@ -119,7 +119,7 @@ test('equal warranty durations remain distinct in badges and details', () => {
   expect(within(screen.getByRole('dialog')).getByText('使用质保30天')).toBeVisible();
 });
 
-test.each(['account', 'top_up'])('%s omits subscription warranty and preserves usage coverage', membershipKind => {
+test.each(['account', 'top_up', 'top_up_half_price'])('%s omits subscription warranty and preserves usage coverage', membershipKind => {
   const tags = [
     { name: 'subscription_warranty', value: '质保 30 天' },
     { name: 'usage_warranty', value: '质保 7 天' },
@@ -136,7 +136,7 @@ test.each(['account', 'top_up'])('%s omits subscription warranty and preserves u
   expect(tags).toHaveLength(3);
 });
 
-test.each(['account', 'top_up'])('%s never turns subscription warranty into usage warranty', membershipKind => {
+test.each(['account', 'top_up', 'top_up_half_price'])('%s never turns subscription warranty into usage warranty', membershipKind => {
   const tags = [{ name: 'subscription_warranty', value: '质保（期限未注明）' }];
   const view = render(<OfferFacts tags={tags} membershipKind={membershipKind} />);
   expect(screen.queryByLabelText('商品标签')).not.toBeInTheDocument();

@@ -196,7 +196,8 @@ test.each([
 function renderCatalog({ groups, referenceFailure = false, product = {}, referenceCatalog = catalog } = {}) {
   const requests = [];
   const item = { id: '42', name: 'ChatGPT Plus', platform: 'openai', isAiMembership: true,
-    offers: [offer], shopCount: 2, productCount: 2, membershipGroups: groups || ['account', 'top_up'].map(kind => ({
+    identity: { family: 'openai', product: 'chatgpt', tier: 'plus' },
+    offers: [offer], shopCount: 2, productCount: 2, membershipGroups: groups || ['account', 'top_up', 'top_up_half_price'].map(kind => ({
       kind, minPrice: '88', maxPrice: '88', shopCount: 1, productCount: 1,
       offers: [{ ...offer, membershipKind: kind, productId: kind }],
     })), ...product,
@@ -248,7 +249,7 @@ test('business card labels the official price as a single seat rather than a who
 test('membership cards show the estimate beside the lowest price and share one official reference request', async () => {
   const requests = renderCatalog();
   await screen.findAllByLabelText('官方最低参考价');
-  for (const kind of ['成品号', '代充']) {
+  for (const kind of ['成品号', '代充 · 通用', '代充 · 半价资格']) {
     const card = screen.getByRole('button', { name: `ChatGPT Plus · ${kind}` }).closest('article');
     const lowest = card.querySelector('.product-lowest-price');
     expect(lowest).toHaveTextContent('¥88 起');

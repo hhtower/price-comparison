@@ -8,7 +8,7 @@ import { isCanonicalProductTag, PRODUCT_TAG_RULES } from '@price-comparison/cata
 import { PURCHASE_GUIDE_FIELDS } from '@price-comparison/catalog/purchase-guide-content';
 import type { CatalogOffer, PublicCatalogProduct } from '../catalog/catalog.repository.js';
 import { capabilitySupportsPurpose, type CapabilityEvidence } from './assistant-capabilities.js';
-import { isAiMembership, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
+import { isAiMembership, isNewcomerMembership, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
 
 export interface AssistantCandidate {
   standardProduct: PublicCatalogProduct;
@@ -29,15 +29,14 @@ function isMembershipProduct(product: PublicCatalogProduct): boolean {
 export function isBeginnerRecommendation(candidate: AssistantCandidate, needs: ShoppingNeeds): boolean {
   const product = candidate.standardProduct;
   return needs.newcomer !== false && !needs.membershipKinds?.length && isMembershipProduct(product)
-    && (candidate.offer.membershipKind === 'account' || candidate.offer.membershipKind === 'top_up');
+    && isNewcomerMembership(candidate.offer.membershipKind);
 }
 
 function matchesMembership(candidate: AssistantCandidate, needs: ShoppingNeeds): boolean {
   const { standardProduct: product, offer } = candidate;
   if (needs.membershipKinds?.length) return isMembershipProduct(product)
     && needs.membershipKinds.includes(offer.membershipKind ?? 'unclassified');
-  return needs.newcomer === false || !isMembershipProduct(product)
-    || offer.membershipKind === 'account' || offer.membershipKind === 'top_up';
+  return needs.newcomer === false || !isMembershipProduct(product) || isNewcomerMembership(offer.membershipKind);
 }
 
 function matchesPlatform(product: PublicCatalogProduct, requested: string): boolean {
@@ -196,7 +195,7 @@ export function candidateEvidence(candidate: AssistantCandidate): Array<{ id: st
     fact('availability', `采集于 ${offer.capturedAt}；采集时库存：${offer.inStock ? '有货' : '无货'}。同步存在时间差，实际价格与库存请向商家确认。`),
     ...(offer.spec.trim() ? [fact('spec', `商品规格与购买条件：${offer.spec}`)] : []),
     ...(isMembershipProduct(candidate.standardProduct) && offer.membershipKind ? [fact('membershipKind',
-      `会员商品特性：${membershipKindLabel(offer.membershipKind)}。`)] : []),
+      `会员商品特性：${membershipKindLabel(offer.membershipKind, candidate.standardProduct.identity)}。`)] : []),
     ...tags.map(tag => {
       const label = PURCHASE_GUIDE_FIELDS[tag.name]?.label ?? tag.name;
       return fact(`tag:${tag.name}:${tagValueKey(tag.value)}`, `${label}：${purchaseTagLabel(tag)}`);

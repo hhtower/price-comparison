@@ -1,6 +1,6 @@
 import { emptyShoppingNeeds, validateShoppingNeeds, type ShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
 import { catalogNameMatch } from '@price-comparison/catalog/catalog-search';
-import { MEMBERSHIP_GROUPS, membershipKindLabel } from '@price-comparison/catalog/membership-policy';
+import { membershipGroupKinds, membershipFilterKinds, membershipKindLabel, isNewcomerMembership } from '@price-comparison/catalog/membership-policy';
 import { CATALOG_PLATFORMS, groupCatalogPlatforms } from '@price-comparison/catalog/platform-groups';
 import { PURCHASE_ATTRIBUTE_DEFINITIONS, purchaseTagLabel } from '@price-comparison/catalog/purchase-attributes';
 import type { CatalogPage, PublicCatalogProduct } from '../catalog/catalog.repository.js';
@@ -89,7 +89,7 @@ export async function readAssistantData(
 
   const currency = query.currency!;
   const currencyLabel = `${currency}${!request.currency && !selected.budget ? '（默认币种）' : ''}`;
-  const membership = query.membershipKinds?.map(membershipKindLabel).join('、')
+  const membership = query.membershipKinds?.map(kind => membershipKindLabel(kind)).join('、')
     ?? (query.newcomer ? '新手范围（AI会员限成品号、代充；保留非会员）' : '全部类别');
   const scopeFact = () => fact('查询范围', [
     prefix,
@@ -155,10 +155,12 @@ export async function readAssistantData(
     const facts = [scopeFact(), fact('目录总计', `${currencyLabel}；${counts(total)}按全部匹配记录统计，不仅是当前页面展示的条目。`,
       countSummary(request.scope === 'catalog' ? '公开目录' : '当前筛选', total), '/', total.offerTotal === undefined)];
     if (request.groupBy === 'membership') {
-      const kinds = query.membershipKinds ?? (query.newcomer ? ['account', 'top_up'] as const : MEMBERSHIP_GROUPS);
+      const kinds = query.membershipKinds ?? membershipGroupKinds(product?.identity)
+        .filter(kind => !query.newcomer || isNewcomerMembership(kind));
       for (const kind of kinds) {
-        const group = await read(() => catalog.getCatalog(normalizeCatalogQuery({ ...query, membershipKinds: [kind] })));
-        const label = `会员分组：${membershipKindLabel(kind)}`;
+        const group = await read(() => catalog.getCatalog(normalizeCatalogQuery({ ...query,
+          membershipKinds: query.membershipKinds ? [kind] : membershipFilterKinds(kind, product?.identity) })));
+        const label = `会员分组：${membershipKindLabel(kind, product?.identity)}`;
         facts.push(fact(label, `${currency}；保留相同筛选，${counts(group)}`,
           countSummary(label, group), '/', group.offerTotal === undefined));
       }

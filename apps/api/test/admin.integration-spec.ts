@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import { tagRows } from './tag-fixtures.js';
 import { pipelineVersionSnapshot, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import assert from 'node:assert/strict';
@@ -517,7 +518,7 @@ describe('admin lists over real PostgreSQL', () => {
       const snapshot = buildMembershipFeatures([
         { name: 'delivery', value: 'account', evidence: [{ path: 'sourceData.evidence', quote: '交付账号' }] },
         { name: 'warranty_days', value: '28', evidence: [{ path: 'sourceData.evidence', quote: '质保28天' }] },
-      ], current, [], kind);
+      ], await withMembershipSource(database, current), [], kind);
       await database.updateTable('products').set({ membership_features: jsonb(snapshot as unknown as JsonValue) }).where('id', '=', current.id).execute();
       const bound = await mutate('POST', '/products/standard-products/bind', {
         productIds: [String(current.id)], standardProductId: String(target.id), confirmOwnershipChange: true,

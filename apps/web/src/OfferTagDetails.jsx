@@ -4,13 +4,14 @@ import { PURCHASE_GUIDE_FIELDS, PURCHASE_GUIDE_GROUPS } from '@price-comparison/
 import { normalizePurchaseTag } from '@price-comparison/catalog/purchase-attributes';
 import { sanitizeOfferName } from '@price-comparison/catalog/catalog-display';
 import { displayPurchaseTagText, displayPurchaseTagValue } from './purchase-tag-values.js';
+import { isNewcomerMembership } from '@price-comparison/catalog/membership-policy';
 
 export function offerConditions(offer, formatValue = displayPurchaseTagValue) {
   const facts = new Map();
   for (const raw of offer.tags || []) {
     for (const tag of normalizePurchaseTag(raw)) {
       if (!tag || !PURCHASE_GUIDE_FIELDS[tag.name]) continue;
-      if (tag.name === 'subscription_warranty' && ['account', 'top_up'].includes(offer.membershipKind)) continue;
+      if (tag.name === 'subscription_warranty' && isNewcomerMembership(offer.membershipKind)) continue;
       const value = formatValue(tag);
       facts.set(`${tag.name}:${value}`, { ...tag, value, ...PURCHASE_GUIDE_FIELDS[tag.name] });
     }

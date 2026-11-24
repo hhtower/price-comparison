@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -92,7 +93,7 @@ test('real catalog recommendation persists canonical UTC cards from PostgreSQL o
       { name: 'subscription_warranty', value: '质保 30 天' },
     ].map(tag => ({ product_id: source.id, ...tag, value: jsonb(tag.value) }))).execute();
     const current = await database.selectFrom('products').selectAll().where('id', '=', source.id).executeTakeFirstOrThrow();
-    await database.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], current, [], 'account') as unknown as JsonValue) })
+    await database.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(database, current), [], 'account') as unknown as JsonValue) })
       .where('id', '=', source.id).execute();
     const capturedAt = sql<Date>`timestamptz '2026-10-31T11:59:00.123456Z'`;
     await database.insertInto('offers').values({

@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import { tagRows } from './tag-fixtures.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -50,7 +51,7 @@ async function fixture(options: { human?: boolean; locked?: boolean; nonAi?: boo
   }).execute();
   await db.insertInto('product_tags').values(tagRows([...facts, { name: 'supported_client', value: 'codex' }].map(tag => ({ product_id: product.id, ...tag })))).execute();
   const current = await db.selectFrom('products').selectAll().where('id', '=', product.id).executeTakeFirstOrThrow();
-  const features = options.nonAi || options.unclassified ? null : buildMembershipFeatures([], current, [], options.shortTerm ? 'short_term' : 'account');
+  const features = options.nonAi || options.unclassified ? null : buildMembershipFeatures([], await withMembershipSource(db, current), [], options.shortTerm ? 'short_term' : 'account');
   if (features && options.stale) features.fingerprint = 'old';
   await db.updateTable('products').set({
     membership_features: features ? jsonb(features as unknown as JsonValue) : null,
@@ -120,7 +121,7 @@ test('adding warranty labels does not change features or split the shared identi
   assert.equal(current.standardId, account.standardId);
   assert.deepEqual(binding.skipped, [String(current.id)]);
   assert.deepEqual(binding.conflicts, []);
-  assert.equal(readCurrentMembershipFeatures(after.product.membership_features, after.product)?.decision.kind, 'short_term');
+  assert.equal(readCurrentMembershipFeatures(after.product.membership_features, await withMembershipSource(db, after.product))?.decision.kind, 'short_term');
 });
 
 test('unrelated tag edits keep a valid feature snapshot current; no-op binds do not change revision', async () => {
@@ -139,7 +140,7 @@ test('unrelated tag edits keep a valid feature snapshot current; no-op binds do 
     await edit();
     const after = await state(current.id);
     assert.equal(after.member.publication_state, 'published');
-    assert.equal(readCurrentMembershipFeatures(after.product.membership_features, after.product)?.decision.kind, 'account');
+    assert.equal(readCurrentMembershipFeatures(after.product.membership_features, await withMembershipSource(db, after.product))?.decision.kind, 'account');
   }
 });
 
@@ -158,7 +159,7 @@ test('an unrelated edit cannot revive a stale membership snapshot', async () => 
   assert.equal(after.member.publication_state, 'provisional');
   assert.deepEqual(after.member, before.member);
   assert.deepEqual(after.product.membership_features, current.membership_features);
-  assert.equal(readCurrentMembershipFeatures(after.product.membership_features, after.product), null);
+  assert.equal(readCurrentMembershipFeatures(after.product.membership_features, await withMembershipSource(db, after.product)), null);
 });
 
 test('cosmetic standard edits retain current features', async () => {
@@ -168,7 +169,7 @@ test('cosmetic standard edits retain current features', async () => {
   assert.deepEqual(after.product.membership_features, {
     ...current.membership_features, revision: String(after.product.standardization_revision),
   });
-  assert.ok(readCurrentMembershipFeatures(after.product.membership_features, after.product));
+  assert.ok(readCurrentMembershipFeatures(after.product.membership_features, await withMembershipSource(db, after.product)));
 });
 
 test('display label edits preserve legacy human publication without inventing a review requirement', async () => {
@@ -185,7 +186,7 @@ test('display label edits preserve legacy human publication without inventing a 
   assert.deepEqual(after.history, []);
   assert.equal(after.member.assignment_source, 'human');
   assert.equal(after.member.publication_state, 'published');
-  assert.equal(readCurrentMembershipFeatures(after.product.membership_features, after.product)?.decision.kind, 'account');
+  assert.equal(readCurrentMembershipFeatures(after.product.membership_features, await withMembershipSource(db, after.product))?.decision.kind, 'account');
 });
 
 test('revision persistence failure rolls back display labels and the snapshot revision together', async () => {

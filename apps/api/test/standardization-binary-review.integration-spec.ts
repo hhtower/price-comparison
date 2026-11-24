@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
@@ -552,11 +553,11 @@ for (const matched of [false, true]) for (const protection of ['none', 'locked',
     });
     await db.updateTable('products').set({
       standardization_locked: protection === 'locked',
-      membership_features: jsonb(buildMembershipFeatures([], product, [], 'account') as unknown as JsonValue),
+      membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, product), [], 'account') as unknown as JsonValue),
     }).where('id', '=', product.id).execute();
     const before = await db.selectFrom('products').selectAll().where('id', '=', product.id).executeTakeFirstOrThrow();
     const audit = await db.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', product.id).execute();
-    assert.equal(readCurrentMembershipFeatures(before.membership_features, before)?.decision.kind, 'account');
+    assert.equal(readCurrentMembershipFeatures(before.membership_features, await withMembershipSource(db, before))?.decision.kind, 'account');
     await claimBatch(batch.id);
     await f.repo.publishBatch(batch.id, claim);
     const members = await db.selectFrom('standard_product_members').select(['standard_product_id', 'assignment_source']).where('product_id', '=', product.id).execute();
@@ -566,7 +567,7 @@ for (const matched of [false, true]) for (const protection of ['none', 'locked',
     const after = await db.selectFrom('products').selectAll().where('id', '=', product.id).executeTakeFirstOrThrow();
     assert.equal(after.standardization_revision, before.standardization_revision);
     assert.deepEqual(after.membership_features, before.membership_features);
-    assert.equal(readCurrentMembershipFeatures(after.membership_features, after)?.decision.kind, 'account');
+    assert.equal(readCurrentMembershipFeatures(after.membership_features, await withMembershipSource(db, after))?.decision.kind, 'account');
     assert.deepEqual(await db.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', product.id).execute(), audit);
     const result = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
     assert.equal(result.reason_code, protection !== 'none' ? 'manual_decision_preserved' : matched ? null : 'insufficient_source');

@@ -34,7 +34,9 @@ export async function recordManualDecisions(database: Kysely<DatabaseSchema>, pr
 }): Promise<void> {
   if (!productIds.length) return;
   const ids = [...new Set(productIds)].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-  const products = await database.selectFrom('products').selectAll().where('id', 'in', ids).orderBy('id').forUpdate().execute();
+  const products = await database.selectFrom('products').innerJoin('shops', 'shops.id', 'products.shop_id')
+    .selectAll('products').select(['shops.url as shop_url', 'shops.protocol as shop_protocol', 'shops.platform as shop_platform'])
+    .where('products.id', 'in', ids).orderBy('products.id').forUpdate('products').execute();
   if (products.length !== ids.length) throw new Error('Manual decision products changed before review');
   if (decision.standardProductId !== null && ['assign', 'merge'].includes(decision.action) && !decision.allowEvidenceConflict) {
     for (const product of products) {

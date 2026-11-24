@@ -32,13 +32,6 @@ const REASONS = {
   human_assignment: '已保留人工归类', product_locked: '商品已锁定，未应用标签', revision_changed: '商品修订已变化，请按最新资料重试',
   manual_decision: '已保留人工决定', missing_id: '模型未返回该商品',
   job_cancelled: '任务已取消', cancelled: '任务已取消', unrecorded: '历史未记录审计结果',
-  warranty_covers_subscription: '质保覆盖订阅周期', full_subscription_promise: '明确保障完整订阅期',
-  duration_invalid_or_conflicting: '订阅周期不明确或存在冲突', warranty_none_or_conflicting: '未提供有效保障',
-  warranty_limited_scope: '仅保障首登、激活等操作', warranty_invalid_or_conflicting: '保障证据不明确或存在冲突',
-  warranty_terms_unresolved_or_limited: '保障条款存在限制或待确认', warranty_window_scope_unknown: '保障期限适用范围不明',
-  warranty_shorter_than_subscription: '保障期限不足', warranty_coverage_unproven: '缺少覆盖订阅期的保障证据',
-  delivery_unknown_or_conflicting: '交付对象不明确或存在冲突', conflicting_evidence: '当前销售事实存在冲突',
-  rental_or_shared_account: '租用或共享账号', ownership_invalid_or_conflicting: '账号归属不明确或存在冲突',
   llm_reviewed: 'LLM 分类复核通过', classification_review_rejected: 'LLM 分类复核拒绝',
 };
 const taskText = (text, noun) => noun !== '标签' && typeof text === 'string' ? text.replaceAll('标签', noun) : text;
@@ -54,10 +47,9 @@ function resultTitle(outcome, accepted = 0, rejected = 0, noun = '标签') {
 }
 const classificationVerdict = decision => decision === true ? '通过（true）' : decision === false ? '拒绝（false）' : '未记录';
 function MembershipClassification({ value, proposedKind, reviewed }) {
-  const decision = value?.decision ?? value;
+  const decision = value;
   return <div className="tag-classification">
     {decision?.kind ? <p>会员分类：{membershipKindLabel(decision.kind)} · 原因：{reasonTitle(decision.reason, '特性')}</p> : <p>提议分类：{membershipKindLabel(proposedKind) || '未记录'}</p>}
-    {decision?.kind !== 'rental' && decision?.durationSource ? <p>分类周期：{decision.durationSource === 'default' ? '默认一个月（非商家承诺）' : '商家明确说明'}</p> : null}
     <p>分类复核：{classificationVerdict(reviewed)}</p>
   </div>;
 }
@@ -600,7 +592,7 @@ export default function TagExtractionPanel({ shops, onProductsChanged, onRefresh
     </ModalDialog> : null}
     {dialog ? <ModalDialog open onClose={() => { if (!busy) { setDialog(null); invalidateDraft(); } }} aria-label={`创建${noun}任务`} className="management-dialog tag-create-dialog"><div className="dialog-body">
       <h3>{dialog.allPending ? `批量新建${noun}任务` : `创建${noun}任务`}</h3>
-      {text ? <p>独立审查商品标题和完整正文，包含 8 项信息披露与 6 项一致性判定。</p> : feature ? <p>仅处理已完成标准化、通过身份验证并已发布的 AI 会员报价。分类属于单件报价，同一标准商品可包含成品号、代充、租号和短期。</p> : <p>标签抽取在标准化发布后独立执行，不依赖会员分类。</p>}
+      {text ? <p>独立审查商品标题和完整正文，包含 8 项信息披露与 6 项一致性判定。</p> : feature ? <p>仅处理已完成标准化、通过身份验证并已发布的 AI 会员报价。分类属于单件报价，同一标准商品可包含成品号、代充、租号和短期；商品特有的分组按对应规则展示。</p> : <p>标签抽取在标准化发布后独立执行，不依赖会员分类。</p>}
       {dialog.allPending ? <p>{text ? '为全站符合条件、需要文案审查的商品创建新任务。' : feature ? '为符合上述条件、需要分类的报价创建新任务。' : '为全站符合条件、需要抽取标签的商品创建新任务。'}看板中的“待处理商品”仅统计当前已有任务。</p> : null}
       {!dialog.allPending ? <>
         <label>范围店铺<select disabled={busy} value={scopeShop} onChange={event => { setScopeShop(event.target.value); invalidateDraft(); }}><option value="">使用商品 ID</option>{shops?.items?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>

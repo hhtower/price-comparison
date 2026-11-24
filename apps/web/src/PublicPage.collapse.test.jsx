@@ -19,6 +19,7 @@ function mount(membership = false, latestCapturedAt, inStock = true, stockQuanti
     productUrl: `https://example.com/${index}`, tags: [], inStock, stockQuantity,
   }));
   const item = { id: '1', name: 'ChatGPT Plus', platform: 'openai', shopCount: 5, productCount: 9, offers, latestCapturedAt,
+    identity: { family: 'openai', product: 'chatgpt', tier: 'plus' },
     ...(membership ? { isAiMembership: true, membershipGroups: [
       { kind: 'top_up', shopCount: 5, productCount: 9, minPrice: '10', maxPrice: '14', offers, latestCapturedAt },
     ] } : {}) };
@@ -28,7 +29,7 @@ function mount(membership = false, latestCapturedAt, inStock = true, stockQuanti
     return Response.json({ items: url.searchParams.has('detailKind')
       ? [{ ...item, detail: { entries: url.searchParams.get('detailKind') === 'shops'
         ? offers.map(offer => ({ key: offer.shopId, name: offer.shop, count: 1, offer })) : offers, total: 5 } }]
-      : [item, { ...item, id: '2', name: 'ChatGPT Go' }], platformFacets: ['openai'] });
+      : [item, { ...item, id: '2', name: 'ChatGPT Go', identity: { family: 'openai', product: 'chatgpt', tier: 'go' } }], platformFacets: ['openai'] });
   }));
   return render(<VirtuosoMockContext.Provider value={{ viewportHeight: 1600, itemHeight: 100 }}>
     <PublicPage />
@@ -50,13 +51,13 @@ test('platform icon belongs to the product title and clicking it expands quotes 
 
 test.each([false, true])('expanded quotes show stock status in previews and details (membership: %s)', async membership => {
   mount(membership);
-  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充' : 'ChatGPT Plus' });
+  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充 · 通用' : 'ChatGPT Plus' });
   fireEvent.click(trigger);
   const card = within(trigger.closest('article'));
   expect(card.getAllByText('有货')).toHaveLength(4);
   expect(card.getAllByText('有货')[0]).toHaveAttribute('title', '采集时显示有货，实际库存以商家页面为准');
   fireEvent.click(card.getByRole('button', { name: '9 条报价' }));
-  const dialog = await screen.findByRole('dialog', { name: membership ? 'ChatGPT Plus · 代充 · 报价' : 'ChatGPT Plus · 报价' });
+  const dialog = await screen.findByRole('dialog', { name: membership ? 'ChatGPT Plus · 代充 · 通用 · 报价' : 'ChatGPT Plus · 报价' });
   expect(await within(dialog).findAllByText('有货')).toHaveLength(5);
 });
 
@@ -71,12 +72,12 @@ test('quotes without a collected quantity show the availability status', async (
 
 test.each([false, true])('expanded previews and details show the collected stock quantity (membership: %s)', async membership => {
   mount(membership, undefined, true, 16);
-  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充' : 'ChatGPT Plus' });
+  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充 · 通用' : 'ChatGPT Plus' });
   fireEvent.click(trigger);
   const card = within(trigger.closest('article'));
   expect(card.getAllByText('库存 16')).toHaveLength(4);
   fireEvent.click(card.getByRole('button', { name: '9 条报价' }));
-  const dialog = await screen.findByRole('dialog', { name: membership ? 'ChatGPT Plus · 代充 · 报价' : 'ChatGPT Plus · 报价' });
+  const dialog = await screen.findByRole('dialog', { name: membership ? 'ChatGPT Plus · 代充 · 通用 · 报价' : 'ChatGPT Plus · 报价' });
   expect(await within(dialog).findAllByText('库存 16')).toHaveLength(5);
 });
 
@@ -123,7 +124,7 @@ test.each([false, true])('collapsed summaries show the latest collection time wi
   vi.spyOn(Date, 'now').mockReturnValue(now);
   const capturedAt = new Date(now - 6 * 60 * 1000).toISOString();
   mount(membership, capturedAt);
-  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充' : 'ChatGPT Plus' });
+  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充 · 通用' : 'ChatGPT Plus' });
   const card = trigger.closest('article');
   const timestamp = within(card).getByText('6 分钟前更新');
   expect(timestamp).toHaveAttribute('dateTime', capturedAt);
@@ -174,7 +175,7 @@ test('summary whitespace and price toggle quotes without navigating away', async
 
 test.each([false, true])('estimated starting prices keep a compact label beside the price (membership: %s)', async membership => {
   mount(membership);
-  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充' : 'ChatGPT Plus', exact: true });
+  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充 · 通用' : 'ChatGPT Plus', exact: true });
   const card = trigger.closest('article');
   expect(card.querySelector('.lowest-note')).toHaveTextContent('¥10 起');
   expect(card.querySelector('.lowest-note')).not.toHaveTextContent('预估');
@@ -188,7 +189,7 @@ test.each([false, true])('estimated starting prices keep a compact label beside 
 
 test.each([false, true])('verified starting prices have no estimate label (membership: %s)', async membership => {
   mount(membership, undefined, true, undefined, 'verified');
-  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充' : 'ChatGPT Plus', exact: true });
+  const trigger = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充 · 通用' : 'ChatGPT Plus', exact: true });
   expect(within(trigger.closest('header')).queryByLabelText('预估价')).not.toBeInTheDocument();
 });
 
@@ -210,14 +211,14 @@ test('product names toggle the preview and keep a separate detail link', async (
 
 test('membership titles read as one product name and previews keep one page entry', async () => {
   mount(true);
-  const title = await screen.findByRole('button', { name: 'ChatGPT Plus · 代充', exact: true });
-  expect(title).toHaveTextContent('ChatGPT Plus · 代充');
+  const title = await screen.findByRole('button', { name: 'ChatGPT Plus · 代充 · 通用', exact: true });
+  expect(title).toHaveTextContent('ChatGPT Plus · 代充 · 通用');
   expect(title.querySelector('.product-kind')).toBeNull();
   fireEvent.click(title);
   const card = within(title.closest('article'));
   expect(card.queryByRole('button', { name: /^查看全部/ })).not.toBeInTheDocument();
   expect(card.queryByText(/^展示前/)).not.toBeInTheDocument();
-  const link = card.getByRole('link', { name: '更多报价：ChatGPT Plus · 代充' });
+  const link = card.getByRole('link', { name: '更多报价：ChatGPT Plus · 代充 · 通用' });
   expect(link).toHaveTextContent(/^更多$/);
   expect(link).toHaveAttribute('href', '/products/1/features/top_up');
 });
@@ -243,7 +244,7 @@ test('the row indicator is decorative while the title and count actions remain a
 
 test.each([false, true])('expanded quotes follow the summary directly without a preview label or price range (membership: %s)', async membership => {
   mount(membership);
-  const title = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充' : 'ChatGPT Plus', exact: true });
+  const title = await screen.findByRole('button', { name: membership ? 'ChatGPT Plus · 代充 · 通用' : 'ChatGPT Plus', exact: true });
   const card = title.closest('article');
   expect(within(card).queryByText('报价预览')).not.toBeInTheDocument();
   fireEvent.click(title);

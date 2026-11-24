@@ -18,15 +18,6 @@ import './ai-workbench.css';
 const PAGE_SIZE = 10;
 const PROCESSING_DISPOSITIONS = { review_required: '需人工审核', retry_available: '处理失败，可重试', pending: '等待处理', handled: '已排除' };
 const PROCESSING_REASONS = { unmatched: '未匹配，待处理', candidate_unavailable: '候选目录未覆盖', insufficient_source: '商品资料不足', offer_unavailable: '等待报价恢复' };
-const MEMBERSHIP_REASONS = {
-  warranty_covers_subscription: '质保覆盖订阅周期', full_subscription_promise: '明确保障完整订阅期',
-  duration_invalid_or_conflicting: '订阅周期不明确或存在冲突', warranty_invalid_or_conflicting: '保障证据不明确或存在冲突',
-  warranty_none_or_conflicting: '未提供有效保障', warranty_limited_scope: '仅保障首登、激活等操作',
-  warranty_terms_unresolved_or_limited: '保障条款存在限制或待确认', warranty_window_scope_unknown: '保障期限适用范围不明',
-  warranty_shorter_than_subscription: '保障期限不足', warranty_coverage_unproven: '缺少覆盖订阅期的保障证据',
-  delivery_unknown_or_conflicting: '交付对象不明确或存在冲突', conflicting_evidence: '当前销售事实存在冲突',
-  rental_or_shared_account: '租用或共享账号', ownership_invalid_or_conflicting: '账号归属不明确或存在冲突',
-};
 const emptyPage = { items: [], total: 0, page: 1, pageSize: PAGE_SIZE };
 const normalizePage = (data) => { const items = data.items || []; return { items, total: data.total ?? (items.length + (data.nextCursor ? PAGE_SIZE : 0)), page: data.page || 1, pageSize: data.pageSize || PAGE_SIZE }; };
 const CONFLICT_FIELDS = { warranty: '质保时长', sms_verification: '接码状态', credentials: '是否带账密', renewal: '续费规则' };
@@ -49,13 +40,11 @@ const batchManagementMessage = (action, result) => {
 };
 const standardIdentity = (standardProduct) => {
   const fields = [
-    standardProduct.canonicalFamily ?? standardProduct.canonical_family,
-    standardProduct.canonicalProduct ?? standardProduct.canonical_product,
-    standardProduct.canonicalTier ?? standardProduct.canonical_tier,
+    standardProduct.canonicalFamily,
+    standardProduct.canonicalProduct,
+    standardProduct.canonicalTier,
   ].map(value => String(value ?? '').trim());
-  if (fields.every(Boolean)) return fields;
-  const fromName = String(standardProduct.name ?? '').split('/').map(value => value.trim());
-  return fromName.length === 3 && fromName.every(Boolean) ? fromName : null;
+  return fields.every(Boolean) ? fields : null;
 };
 
 function PendingShops({ setMessage }) {
@@ -309,11 +298,11 @@ function ConnectedShops({ setMessage, initialStandardProduct = null, onViewProdu
                     <a className="table-url" href={shop.url} target="_blank" rel="noreferrer" title={shop.url}>{shop.url.replace(/^https?:\/\//, '')}</a>
                   </td>
                   <td><span className='platform-pill'>{shop.platform}</span><small className='shop-protocol-label'>{shop.protocol ?? '历史域名匹配'}</small></td>
-                  <td><span className={`status-pill ${shop.deleted_at ? 'is-deleted' : shop.enabled ? 'is-enabled' : 'is-disabled'}`}>{shop.deleted_at ? '已删除' : shop.enabled ? '启用' : '停用'}</span></td>
-                  <td className="table-time">{formatTime(shop.lastFetchAt ?? shop.last_fetch_at)}</td>
+                  <td><span className={`status-pill ${shop.deletedAt ? 'is-deleted' : shop.enabled ? 'is-enabled' : 'is-disabled'}`}>{shop.deletedAt ? '已删除' : shop.enabled ? '启用' : '停用'}</span></td>
+                  <td className="table-time">{formatTime(shop.lastFetchAt)}</td>
                   <td><div className="row-actions">
                     {onViewProducts ? <button type="button" className="quiet-button" onClick={() => onViewProducts(shop, standardProduct)}>{standardProduct ? '查看绑定商品' : '查看商品'}</button> : null}
-                    {shop.deleted_at ? (
+                    {shop.deletedAt ? (
                       <IconButton action="restore-shop" id={shop.id} label="恢复商铺" icon="rotate-ccw" onClick={(_, id) => restoreRecord(id)} />
                     ) : (
                       <>
@@ -961,7 +950,7 @@ function ProductManagement({ setMessage }) {
                 </tr></thead>
                 <tbody>{tagRows.items.map(tag => <tr key={tagIdentity(tag)}>
                   <td className="selection-column"><input aria-label={`选择标签 ${tag.name}：${purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}`} type="checkbox" checked={selectedTagKeys.includes(tagIdentity(tag))} onChange={(event) => toggleTagSelection(tag, event.target.checked)} /></td>
-                  <td>{tag.name}</td><td>{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</td><td>{tag.productCount ?? tag.product_count ?? 0}</td>
+                  <td>{tag.name}</td><td>{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</td><td>{tag.productCount ?? 0}</td>
                   <td><div className="row-actions"><IconButton action="view-tag-products" id={tagIdentity(tag)} label="查看商品" icon="eye" onClick={() => openTagProducts(tag)} /><IconButton action="rename-tag" id={tagIdentity(tag)} label="重命名" icon="pencil" onClick={() => renameTag(tag)} /><IconButton action="delete-tag" id={tagIdentity(tag)} label="删除标签" icon="trash-2" onClick={() => removeTag(tag)} /></div></td>
                 </tr>)}</tbody>
               </table>
@@ -997,20 +986,19 @@ function ProductManagement({ setMessage }) {
                       {product.latestPrice ? <small className="product-spec">{product.latestCurrency || 'CNY'} {formatMoney(product.latestPrice, '')}</small> : null}
                       {product.tags?.length ? <div className="tag-chips">{product.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</span>)}</div> : null}
                     </td>
-                    <td>{product.shopName ?? product.shop_name ?? `商铺 #${product.shopId ?? product.shop_id ?? ''}`}</td>
+                    <td>{product.shopName ?? `商铺 #${product.shopId ?? ''}`}</td>
                     <td className="standardization-cell">
-                      <span className={`standard-product-pill ${product.standardProductName ?? product.standard_product_name ? 'is-assigned' : 'is-unassigned'}`} title={product.standardizationOutcome === 'cannot_process' ? '不能处理：当前商品信息不足或非售卖商品' : product.standardProductName ?? product.standard_product_name ?? '待处理'}>{product.standardizationOutcome === 'cannot_process' ? '不能处理' : product.standardProductName ?? product.standard_product_name ?? '待处理'}</span>
+                      <span className={`standard-product-pill ${product.standardProductName ? 'is-assigned' : 'is-unassigned'}`} title={product.standardizationOutcome === 'cannot_process' ? '不能处理：当前商品信息不足或非售卖商品' : product.standardProductName ?? '待处理'}>{product.standardizationOutcome === 'cannot_process' ? '不能处理' : product.standardProductName ?? '待处理'}</span>
                       {product.membershipFeatures ? <details>
                         <summary>会员判定：{membershipKindLabel(product.membershipFeatures.decision.kind)}</summary>
-                        <p>{MEMBERSHIP_REASONS[product.membershipFeatures.decision.reason] ?? '依据当前销售事实判定'}</p>
-                        {product.membershipFeatures.decision.kind !== 'rental' && product.membershipFeatures.decision.durationSource ? <p>分类周期：{product.membershipFeatures.decision.durationSource === 'default' ? '默认一个月（非商家承诺）' : '商家明确说明'}</p> : null}
+                        <p>LLM 分类复核通过</p>
                         <div className="tag-chips">{product.membershipFeatures.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</span>)}</div>
                         {(product.membershipFeatures.evidence ?? []).map((fact, index) => <p key={index}>{conflictSource(fact.path)}：「{fact.quote}」</p>)}
                       </details> : product.isAiMembership === true ? <p>会员判定：未分类</p> : null}
                     </td>
-                    <td className="table-time">{formatTime(product.updatedAt ?? product.updated_at)}</td>
+                    <td className="table-time">{formatTime(product.updatedAt)}</td>
                     <td><div className="row-actions">
-                      {product.deletedAt ?? product.deleted_at ? (
+                      {product.deletedAt ? (
                         <IconButton action="restore-product" id={product.id} label="恢复商品" icon="rotate-ccw" onClick={(_, id) => productAction({ id }, 'restore')} />
                       ) : (
                         <><IconButton action="choose-standard" id={product.id} label="选择标准商品" icon="link" onClick={() => setPicker({ open: true, productId: product.id })} /><IconButton action="delete-product" id={product.id} label="删除商品" icon="trash-2" onClick={(_, id) => productAction({ id }, 'delete')} /></>
@@ -1040,7 +1028,7 @@ function ProductManagement({ setMessage }) {
         </div> : null}
         <div className="data-table-wrap pending-products-table admin-scroll-area">
           {products.items.length ? <table><thead><tr><th><input aria-label="选择本页商品" type="checkbox" disabled={updatingProducts} checked={products.items.length > 0 && products.items.every(product => selectedProductIds.includes(String(product.id)))} onChange={event => setSelectedProductIds(event.target.checked ? [...new Set([...selectedProductIds, ...products.items.map(product => String(product.id))])] : selectedProductIds.filter(id => !products.items.some(product => String(product.id) === id)))} /></th><th>商品 / 规格</th><th>商铺</th><th>待处理原因</th><th>最近更新</th><th>操作</th></tr></thead><tbody>
-            {products.items.map(product => <tr key={product.id}><td><input aria-label={`选择 ${product.name}`} type="checkbox" disabled={updatingProducts} checked={selectedProductIds.includes(String(product.id))} onChange={event => setSelectedProductIds(event.target.checked ? [...new Set([...selectedProductIds, String(product.id)])] : selectedProductIds.filter(id => id !== String(product.id)))} /></td><td className="product-cell"><strong title={product.name}>{product.name}</strong>{product.spec && <small className="product-spec">{product.spec}</small>}{product.evidenceConflict ? <small className="evidence-conflict" role="note">{describeEvidenceConflict(product.evidenceConflict)}</small> : null}{product.latestPrice ? <small className="product-spec">{product.latestCurrency || 'CNY'} {formatMoney(product.latestPrice, '')}</small> : null}{product.tags?.length ? <div className="tag-chips">{product.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</span>)}</div> : null}</td><td>{product.shopName ?? product.shop_name ?? `商铺 #${product.shopId ?? product.shop_id ?? ''}`}</td><td className="product-cell processing-summary">{product.processingSummary ? <><strong>{PROCESSING_REASONS[product.processingSummary.reasonCode] || PROCESSING_DISPOSITIONS[product.processingSummary.processingDisposition] || '等待处理'}</strong><small>{product.processingSummary.reason}</small>{product.processingSummary.evidence?.length ? <details><summary>查看匹配证据</summary>{product.processingSummary.evidence.map((citation, index) => <blockquote key={index}>{citation.quote}</blockquote>)}</details> : null}</> : <small>暂无处理摘要</small>}</td><td className="table-time">{formatTime(product.updatedAt ?? product.updated_at)}</td><td><div className="row-actions">{product.deletedAt ?? product.deleted_at ? <IconButton action="restore-product" id={product.id} label="恢复商品" icon="rotate-ccw" onClick={(_, id) => productAction({ id }, 'restore')} /> : <><IconButton action="choose-standard" id={product.id} label="选择标准商品" icon="link" onClick={() => setPicker({ open: true, productId: product.id })} /><IconButton action="edit-tags" id={product.id} label="编辑标签" icon="pencil" onClick={() => editTags(product)} /><IconButton action="delete-product" id={product.id} label="删除商品" icon="trash-2" onClick={(_, id) => productAction({ id }, 'delete')} /></>}</div></td></tr>)}
+            {products.items.map(product => <tr key={product.id}><td><input aria-label={`选择 ${product.name}`} type="checkbox" disabled={updatingProducts} checked={selectedProductIds.includes(String(product.id))} onChange={event => setSelectedProductIds(event.target.checked ? [...new Set([...selectedProductIds, String(product.id)])] : selectedProductIds.filter(id => id !== String(product.id)))} /></td><td className="product-cell"><strong title={product.name}>{product.name}</strong>{product.spec && <small className="product-spec">{product.spec}</small>}{product.evidenceConflict ? <small className="evidence-conflict" role="note">{describeEvidenceConflict(product.evidenceConflict)}</small> : null}{product.latestPrice ? <small className="product-spec">{product.latestCurrency || 'CNY'} {formatMoney(product.latestPrice, '')}</small> : null}{product.tags?.length ? <div className="tag-chips">{product.tags.map(tag => <span key={JSON.stringify(tag)} className="tag-chip">{tag.name}：{purchaseTagLabel(tag) || (typeof tag.value === 'string' ? tag.value : tagValueKey(tag.value))}</span>)}</div> : null}</td><td>{product.shopName ?? `商铺 #${product.shopId ?? ''}`}</td><td className="product-cell processing-summary">{product.processingSummary ? <><strong>{PROCESSING_REASONS[product.processingSummary.reasonCode] || PROCESSING_DISPOSITIONS[product.processingSummary.processingDisposition] || '等待处理'}</strong><small>{product.processingSummary.reason}</small>{product.processingSummary.evidence?.length ? <details><summary>查看匹配证据</summary>{product.processingSummary.evidence.map((citation, index) => <blockquote key={index}>{citation.quote}</blockquote>)}</details> : null}</> : <small>暂无处理摘要</small>}</td><td className="table-time">{formatTime(product.updatedAt)}</td><td><div className="row-actions">{product.deletedAt ? <IconButton action="restore-product" id={product.id} label="恢复商品" icon="rotate-ccw" onClick={(_, id) => productAction({ id }, 'restore')} /> : <><IconButton action="choose-standard" id={product.id} label="选择标准商品" icon="link" onClick={() => setPicker({ open: true, productId: product.id })} /><IconButton action="edit-tags" id={product.id} label="编辑标签" icon="pencil" onClick={() => editTags(product)} /><IconButton action="delete-product" id={product.id} label="删除商品" icon="trash-2" onClick={(_, id) => productAction({ id }, 'delete')} /></>}</div></td></tr>)}
           </tbody></table> : <EmptyState>暂无待处理商品</EmptyState>}
         </div>
         <Pagination total={products.total} page={products.page} pageSize={PAGE_SIZE} onChange={page => setProducts({ ...products, items: [], page })} label="待处理商品" />
@@ -1089,7 +1077,7 @@ function ProductManagement({ setMessage }) {
                       {standardProduct.platform && !enabledPlatforms.some((platform) => platform.name === standardProduct.platform) ? <option value={standardProduct.platform}>{standardProduct.platform}</option> : null}
                       {enabledPlatforms.map((platform) => <option key={platform.id} value={platform.name}>{platform.name}</option>)}
                     </select>
-                    <span className="standard-product-count"><button type="button" className="standard-count-link" aria-label={`查看 ${standardProduct.name} 的原始商品`} onClick={() => openStandardMembers(standardProduct)}>{standardProduct.memberCount ?? standardProduct.member_count ?? 0} 件</button> / <button type="button" className="standard-count-link" aria-label={`查看 ${standardProduct.name} 的商铺`} onClick={() => setStandardShopView(standardProduct)}>{standardProduct.shopCount ?? standardProduct.shop_count ?? 0} 店</button></span>
+                    <span className="standard-product-count"><button type="button" className="standard-count-link" aria-label={`查看 ${standardProduct.name} 的原始商品`} onClick={() => openStandardMembers(standardProduct)}>{standardProduct.memberCount ?? 0} 件</button> / <button type="button" className="standard-count-link" aria-label={`查看 ${standardProduct.name} 的商铺`} onClick={() => setStandardShopView(standardProduct)}>{standardProduct.shopCount ?? 0} 店</button></span>
                     <span className={`status-pill ${standardProduct.mergedIntoId || standardProduct.hidden ? 'is-disabled' : 'is-enabled'}`}>{standardProduct.mergedIntoId ? `已合并至 ${standardProduct.mergedIntoId}` : standardProduct.hidden ? '已隐藏' : '展示中'}</span>
                     <div className="row-actions"><button type="button" className="quiet-button" disabled={Boolean(standardProduct.mergedIntoId) || saving} onClick={(event) => saveStandardProduct(standardProduct, event)}>{saving ? '保存中…' : '保存'}</button><button type="button" className="quiet-button" disabled={Boolean(standardProduct.mergedIntoId) || saving} onClick={async () => { try { await updateStandardVisibility(standardProduct.id, !standardProduct.hidden); setMessage(standardProduct.hidden ? '标准商品已恢复展示' : '标准商品已隐藏'); setStandardProductReload(v => v + 1); } catch (error) { setMessage(error.message); } }}>{standardProduct.hidden ? '恢复展示' : '隐藏'}</button></div>
                   </div>
@@ -1151,7 +1139,7 @@ function ProductManagement({ setMessage }) {
             {platforms.items.length ? platforms.items.map((platform) => (
               <div key={platform.id} className="platform-row">
                 <div className="platform-identity-cell"><input type="checkbox" aria-label={`选择商品平台 ${platform.name}`} checked={selectedPlatformNames.includes(platform.name)} onChange={event => togglePlatforms([platform.name], event.target.checked)} /><input aria-label={`商品平台名称 ${platform.name}`} defaultValue={platform.name} /></div>
-                <span>{platform.standardProductCount ?? platform.standard_product_count ?? 0} 个标准商品 · {platform.enabled === false ? '已停用' : '已启用'}</span>
+                <span>{platform.standardProductCount ?? 0} 个标准商品 · {platform.enabled === false ? '已停用' : '已启用'}</span>
                 <button type="button" className="quiet-button" onClick={(event) => savePlatform(platform, event)}>保存</button>
                 <button type="button" className="quiet-button" onClick={async () => { try { if (platform.enabled === false) await requestJson('/api/admin/platforms', { method: 'POST', body: JSON.stringify({ name: platform.name }) }); else await requestJson(`/api/admin/platforms/${encodeURIComponent(platform.id)}`, { method: 'DELETE' }); setSelectedPlatformNames(current => current.filter(name => name !== platform.name)); setPlatformReload(value => value + 1); } catch (error) { setMessage(error.message); } }}>{platform.enabled === false ? '启用' : '停用'}</button>
               </div>
@@ -1192,12 +1180,12 @@ function ProductManagement({ setMessage }) {
             {standardCreateProducts.items.length ? standardCreateProducts.items.map(productItem => {
               const id = String(productItem.id);
               const selected = standardCreateSelectedIds.includes(id);
-              const currentStandard = productItem.standardProductName ?? productItem.standard_product_name;
+              const currentStandard = productItem.standardProductName;
               return <button key={id} type="button" className={`standard-create-product ${selected ? 'is-selected' : ''}`} aria-pressed={selected} onClick={() => {
                 setStandardCreateSelectedIds(current => selected ? current.filter(value => value !== id) : [...current, id]);
                 setStandardCreateSelectedItems(current => { const next = { ...current }; if (selected) delete next[id]; else next[id] = { id, name: productItem.name }; return next; });
               }}>
-                <span><strong>{productItem.name}</strong><small>{productItem.shopName ?? productItem.shop_name ?? '未知商铺'}{productItem.spec ? ` · ${productItem.spec}` : ''}</small>{currentStandard ? <small>已绑定：{currentStandard}</small> : null}</span>
+                <span><strong>{productItem.name}</strong><small>{productItem.shopName ?? '未知商铺'}{productItem.spec ? ` · ${productItem.spec}` : ''}</small>{currentStandard ? <small>已绑定：{currentStandard}</small> : null}</span>
                 <span>{selected ? '已选' : '选择'}</span>
               </button>;
             }) : <EmptyState>暂无商品</EmptyState>}

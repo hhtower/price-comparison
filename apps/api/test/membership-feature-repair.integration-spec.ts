@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
@@ -163,7 +164,7 @@ for (const code of ['protection_mismatch', 'delivery_mismatch', 'evidence_mismat
       .where('job_id', '=', f.job.id).executeTakeFirstOrThrow()).output, null);
     await publish(restarted, review.id);
     const product = await db.selectFrom('products').selectAll().where('id', '=', f.products[0]!.id).executeTakeFirstOrThrow();
-    assert.equal(readCurrentMembershipFeatures(product.membership_features, product)?.decision.kind, 'account');
+    assert.equal(readCurrentMembershipFeatures(product.membership_features, await withMembershipSource(db, product))?.decision.kind, 'account');
     const audit = await restarted.tagProductAudit(f.job.id, product.id);
     assert.deepEqual(audit.member.output.review, { mode: 'membership_binary', decision: true, code: null, refs: [] });
     assert.equal(audit.member.output.outcome, 'updated');

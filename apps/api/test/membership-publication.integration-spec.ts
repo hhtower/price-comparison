@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import { tagRows } from './tag-fixtures.js';
 import { seedUsableOffers } from './standardization-review-fixture.js';
 import assert from 'node:assert/strict';
@@ -266,7 +267,7 @@ test('compact feature batch streams extraction and mixed review through real che
   const publish = await claimBatch(batchId);
   await repo.publishTagExtractionBatch(batchId, claimToken(publish));
   const products = await db.selectFrom('products').selectAll().where('id', 'in', ids).orderBy('id').execute();
-  assert.deepEqual(readCurrentMembershipFeatures(products[0]!.membership_features, products[0]!)?.decision,
+  assert.deepEqual(readCurrentMembershipFeatures(products[0]!.membership_features, await withMembershipSource(db, products[0]!))?.decision,
     { kind: 'account', reason: 'llm_reviewed' });
   assert.equal(products[1]!.membership_features, null);
   const results = await repo.listTagJobResults({ jobId: job.id, limit: 10 });
@@ -309,7 +310,7 @@ test('identity publication precedes feature children and every membership kind k
     assert.equal(member.publication_state, 'published');
     standardIds.add(member.standard_product_id);
     const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
-    assert.equal(readCurrentMembershipFeatures(product.membership_features, product)?.decision.kind, kind);
+    assert.equal(readCurrentMembershipFeatures(product.membership_features, await withMembershipSource(db, product))?.decision.kind, kind);
     const result = await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
     assert.equal((result.output as Record<string, unknown>).proposedMembershipKind, kind);
     assert.equal((result.output as Record<string, unknown>).classificationReviewed, true);
@@ -374,7 +375,7 @@ test('changing features on a published SKU updates the snapshot and catalog with
   assert.deepEqual(current, published);
   assert.deepEqual(await db.selectFrom('ai_standardization_results').selectAll().where('product_id', '=', f.product.id).execute(), identityResults);
   const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
-  assert.equal(readCurrentMembershipFeatures(product.membership_features, product)?.decision.kind, 'rental');
+  assert.equal(readCurrentMembershipFeatures(product.membership_features, await withMembershipSource(db, product))?.decision.kind, 'rental');
   const changed = await db.selectFrom('catalog_cache_versions').select('version').where('id', '=', 1).executeTakeFirstOrThrow();
   assert.ok(changed.version > version.version);
   const rejected = await rerunFeatures(f.product.id);
@@ -427,7 +428,7 @@ test('first empty-fact short-term classification is updated, repeated kind uncha
     const task = outcome === 'updated' ? await featureTask(f.product.id) : await rerunFeatures(f.product.id);
     await saveFeature(task, kind, approved);
     const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
-    const snapshot = readCurrentMembershipFeatures(product.membership_features, product);
+    const snapshot = readCurrentMembershipFeatures(product.membership_features, await withMembershipSource(db, product));
     assert.deepEqual(snapshot?.decision, { kind: 'short_term', reason: 'llm_reviewed' });
     assert.deepEqual(snapshot?.tags, []);
     const result = await task.repo.tagProductAudit(task.job.id, f.product.id);
@@ -700,7 +701,7 @@ test('identical crawler evidence with captured shop text preserves published mem
   await publishIdentity(f);
   await db.updateTable('products').set({ source_data: jsonb(sourceData) }).where('id', '=', f.product.id).execute();
   const published = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
-  const features = buildMembershipFeatures([], published, [], 'account');
+  const features = buildMembershipFeatures([], await withMembershipSource(db, published), [], 'account');
   const before = await db.updateTable('products').set({ membership_features: jsonb(features as unknown as JsonValue) })
     .where('id', '=', f.product.id).returningAll().executeTakeFirstOrThrow();
   const member = await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', before.id).executeTakeFirstOrThrow();
@@ -719,7 +720,7 @@ test('identical crawler evidence with captured shop text preserves published mem
   assert.equal(after.content_version, before.content_version);
   assert.equal(after.standardization_revision, before.standardization_revision);
   assert.deepEqual(after.membership_features, before.membership_features);
-  assert.equal(readCurrentMembershipFeatures(after.membership_features, after)?.decision.kind, 'account');
+  assert.equal(readCurrentMembershipFeatures(after.membership_features, await withMembershipSource(db, after))?.decision.kind, 'account');
   assert.deepEqual(await db.selectFrom('standard_product_members').selectAll().where('product_id', '=', before.id).executeTakeFirstOrThrow(), member);
   assert.equal((await db.selectFrom('product_tags').select('id').where('product_id', '=', before.id).execute()).length, 1);
 });
@@ -741,7 +742,7 @@ for (const path of ['fetch', 'batch', 'update'] as const) {
         .where('id', '=', f.product.id).execute();
       if (state === 'features_only') {
         const product = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
-        await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], product, [], 'account') as unknown as JsonValue) })
+        await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, product), [], 'account') as unknown as JsonValue) })
           .where('id', '=', product.id).execute();
       }
       const products = new ProductsRepository(db);
@@ -782,11 +783,11 @@ for (const path of ['fetch', 'batch', 'update'] as const) {
     const task = await featureTask(f.product.id);
     await saveFeature(task, 'account');
     const features = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
-    assert.ok(readCurrentMembershipFeatures(features.membership_features, features),
+    assert.ok(readCurrentMembershipFeatures(features.membership_features, await withMembershipSource(db, features)),
       JSON.stringify((await db.selectFrom('ai_job_input_members').select('output').where('job_id', '=', task.job.id).execute())));
     await publishIdentity(f);
     const before = await db.selectFrom('products').selectAll().where('id', '=', f.product.id).executeTakeFirstOrThrow();
-    assert.equal(readCurrentMembershipFeatures(before.membership_features, before)?.decision.kind, 'account');
+    assert.equal(readCurrentMembershipFeatures(before.membership_features, await withMembershipSource(db, before))?.decision.kind, 'account');
     const products = new ProductsRepository(db);
     const input = { shopId: before.shop_id, externalId: before.external_id, name: before.name, spec: before.spec,
       normalizedKey: before.normalized_key, url: before.url, sourceData: { warranty_info: '无质保' } };
@@ -795,7 +796,7 @@ for (const path of ['fetch', 'batch', 'update'] as const) {
     else await products.update(before.id, { sourceData: input.sourceData });
     const after = await db.selectFrom('products').selectAll().where('id', '=', before.id).executeTakeFirstOrThrow();
     assert.equal(after.content_version, before.content_version + 1n);
-    assert.equal(readCurrentMembershipFeatures(after.membership_features, after), null);
+    assert.equal(readCurrentMembershipFeatures(after.membership_features, await withMembershipSource(db, after)), null);
     assert.equal((await db.selectFrom('standard_product_members').select('product_id')
       .where('product_id', '=', before.id).where('publication_state', '=', 'published').execute()).length, 0);
   });

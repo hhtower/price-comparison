@@ -67,3 +67,22 @@ test('older shop search responses cannot replace the current results', async () 
   expect(screen.getByText('新结果商铺')).toBeInTheDocument();
   expect(screen.queryByText('旧结果商铺')).not.toBeInTheDocument();
 });
+
+test('deleted shops use the current deletedAt field and expose restore', async () => {
+  const user = userEvent.setup();
+  const requests = [];
+  vi.stubGlobal('fetch', vi.fn(async (input, init) => {
+    const url = new URL(input, 'http://localhost');
+    requests.push({ path: url.pathname, method: init?.method });
+    if (url.pathname === '/api/admin/shops') return Response.json(paged(url.searchParams.get('status') === 'deleted'
+      ? [{ ...shop('7', '归档商铺'), enabled: false, deletedAt: '2026-11-24T00:00:00Z' }] : []));
+    return Response.json({ ok: true, ...paged([]) });
+  }));
+  render(<AdminPage initialAuthenticated />);
+  await user.click(await screen.findByRole('button', { name: '商铺管理' }));
+  await user.click(screen.getByRole('checkbox', { name: '回收站' }));
+  await screen.findByText('归档商铺');
+  expect(screen.getByText('已删除')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '恢复商铺' }));
+  await waitFor(() => expect(requests).toContainEqual({ path: '/api/admin/shops/7/restore', method: 'POST' }));
+});

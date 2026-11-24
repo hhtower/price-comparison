@@ -60,14 +60,14 @@ patch只允许purpose、platform、product、budget、requiredTags、preferences
 - budget：只含{amount:"金额字符串",currency:"三位大写币种",basis:"purchase或month"}；明确取消预算才为null。amount为非负十进制字符串，整数部分最多${ASSISTANT_LIMITS.amountIntegerMaxDigits}位、总长最多${ASSISTANT_LIMITS.amountMaxChars}字符，除0外无前导零，可带1至2位小数，例如"80.00"。月预算与一次付款不同；用户提出预算但币种不明时澄清。
 - requiredTags：[{name,value}]，最多${ASSISTANT_LIMITS.tagsMax}项，每项仅含name和value，按附后的标签词表填写，文本值最多${ASSISTANT_LIMITS.tagValueMaxChars}字符。同一name/value不重复，仅${Object.entries(PRODUCT_TAG_RULES).filter(([, rule]) => rule.multiple).map(([name]) => name).join('、')}允许同名多值。该数组出现时整体替换，保留未撤销的已有条件；明确取消所有标签条件才为[]，不能为null。
 - preferences：去重数组，只允许${ASSISTANT_PREFERENCES.join('、')}，最多${ASSISTANT_PREFERENCES.length}项；出现时整体替换，明确取消所有偏好才为[]，不能为null。便宜一点/省心/新手是偏好，不能转成预算或硬条件。
-- membershipKinds：成品号=membershipKinds:["account"]，代充=membershipKinds:["top_up"]，租号、共享、合租=membershipKinds:["rental"]，短期=membershipKinds:["short_term"]，未分类=membershipKinds:["unclassified"]。取上述值的非空去重数组，明确取消分类限制时为null，不能为[]。已有账号是用户现状，不等于要买成品号；否定租号不等于选择rental。
+- membershipKinds：成品号=membershipKinds:["account"]，代充=membershipKinds:["top_up","top_up_half_price"]，通用代充=membershipKinds:["top_up"]，需半价资格代充=membershipKinds:["top_up_half_price"]，租号、共享、合租=membershipKinds:["rental"]，短期=membershipKinds:["short_term"]，未分类=membershipKinds:["unclassified"]。取上述值的非空去重数组，明确取消分类限制时为null，不能为[]。已有账号是用户现状，不等于要买成品号；否定租号不等于选择rental。
 - newcomer：布尔值。明确关闭新手范围或查看全部类别时，newcomer=false、membershipKinds=null；明确恢复默认时，newcomer=true、membershipKinds=null，并为两个字段分别引用原文证据。其他情况下不输出默认分类或默认新手范围，后续程序自行应用默认值。
 
 购买条件的含义
 duration用有限正数天数：1个月=30、1年=365、12个月=360、12小时=0.5。范围用{kind:"range",min:天数,max:天数}，至少/最多/约用{kind:"min"|"max"|"approx",days:天数}，永久用{kind:"permanent"}；不输出期限字符串，不把范围或约数当精确期限。月预算仅匹配精确30天。
 region表示商品自身地区，包括IP商品；账号推荐的网络地区不算商品地区。subscription_override只允许"无"；bulk_purchase取supported、required、bundle，支持批量不等于强制起购，不提供数量或总价。
 subscription_warranty和usage_warranty仅用于AI会员，分别使用“质保 X 小时”“质保 X 天”或“质保（期限未注明）”；usage_warranty还允许“首登”。仅提取用户明确要求，不能从会员分类、会员期限或另一类质保推断；首登不等于连续使用保障。最低质保天数/更长质保暂不能编码成筛选条件，须clarify，询问用户要核对的保障范围及条款，不能忽略或伪装成精确匹配。
-交付方式、独享共享、续费资格等词表外条件不生成标签；会员分类只用membershipKinds。用户没要求的预算、时长、质保、独享不补设。
+交付方式、独享共享、续费资格等词表外条件不生成标签；会员分类只用membershipKinds。排除半价资格代充时，从当前允许的类别中仅移除top_up_half_price，保留其他类别；当前未限定类别时，默认新手范围保留account和top_up，关闭新手时保留其余所有类别；移除后为空时先澄清，不扩大类别或输出空数组。通用仅表示未明确要求半价资格，不保证账号没有其他限制。用户没要求的预算、时长、质保、独享不补设。
 所有字符串不得含控制字符，purpose、quote、question可含换行或制表符；options不得含链接。完整JSON的UTF-8大小不超过${ASSISTANT_LIMITS.outputMaxBytes}字节。
 
 以下仅为示例，不能当作当前用户需求。
@@ -76,7 +76,7 @@ subscription_warranty和usage_warranty仅用于AI会员，分别使用“质保 
 {"userText":"我要ChatGPT Plus代充，必须一个月，便宜一点。","needs":{"purpose":"写代码","platform":null,"product":null,"budget":null,"requiredTags":[],"preferences":[]}}
 </input>
 <output>
-{"intent":"recommend","patch":{"platform":"openai","product":"ChatGPT Plus","membershipKinds":["top_up"],"requiredTags":[{"name":"duration","value":30}],"preferences":["lower_price"]},"evidence":[{"field":"platform","quote":"ChatGPT Plus"},{"field":"product","quote":"ChatGPT Plus"},{"field":"membershipKinds","quote":"代充"},{"field":"requiredTags","quote":"必须一个月"},{"field":"preferences","quote":"便宜一点"}],"question":null,"options":[]}
+{"intent":"recommend","patch":{"platform":"openai","product":"ChatGPT Plus","membershipKinds":["top_up","top_up_half_price"],"requiredTags":[{"name":"duration","value":30}],"preferences":["lower_price"]},"evidence":[{"field":"platform","quote":"ChatGPT Plus"},{"field":"product","quote":"ChatGPT Plus"},{"field":"membershipKinds","quote":"代充"},{"field":"requiredTags","quote":"必须一个月"},{"field":"preferences","quote":"便宜一点"}],"question":null,"options":[]}
 </output>
 </understanding_example>
 <understanding_example>
@@ -92,7 +92,7 @@ subscription_warranty和usage_warranty仅用于AI会员，分别使用“质保 
 {"userText":"我已有账号，想找 ChatGPT Plus 一个月代充","needs":{"purpose":null,"platform":null,"product":null,"budget":null,"requiredTags":[],"preferences":[]}}
 </input>
 <output>
-{"intent":"recommend","patch":{"platform":"openai","product":"ChatGPT Plus","membershipKinds":["top_up"],"requiredTags":[{"name":"duration","value":30}]},"evidence":[{"field":"platform","quote":"ChatGPT Plus"},{"field":"product","quote":"ChatGPT Plus"},{"field":"membershipKinds","quote":"代充"},{"field":"requiredTags","quote":"一个月"}],"question":null,"options":[]}
+{"intent":"recommend","patch":{"platform":"openai","product":"ChatGPT Plus","membershipKinds":["top_up","top_up_half_price"],"requiredTags":[{"name":"duration","value":30}]},"evidence":[{"field":"platform","quote":"ChatGPT Plus"},{"field":"product","quote":"ChatGPT Plus"},{"field":"membershipKinds","quote":"代充"},{"field":"requiredTags","quote":"一个月"}],"question":null,"options":[]}
 </output>
 </understanding_example>
 <understanding_example>
@@ -101,6 +101,14 @@ subscription_warranty和usage_warranty仅用于AI会员，分别使用“质保 
 </input>
 <output>
 {"intent":"recommend","patch":{"membershipKinds":null,"newcomer":false},"evidence":[{"field":"membershipKinds","quote":"查看全部类别"},{"field":"newcomer","quote":"关闭新手"}],"question":null,"options":[]}
+</output>
+</understanding_example>
+<understanding_example>
+<input>
+{"userText":"不要半价资格代充，其他条件不变","needs":{"purpose":null,"platform":"openai","product":"ChatGPT Plus","budget":null,"requiredTags":[],"preferences":[],"membershipKinds":["account","top_up","top_up_half_price"]}}
+</input>
+<output>
+{"intent":"recommend","patch":{"membershipKinds":["account","top_up"]},"evidence":[{"field":"membershipKinds","quote":"不要半价资格代充"}],"question":null,"options":[]}
 </output>
 </understanding_example>`;
 

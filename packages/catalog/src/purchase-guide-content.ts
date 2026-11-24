@@ -38,7 +38,7 @@ export const PURCHASE_GUIDE_CONTENT = {
     },
     {
       id: 'guide-top-up', title: '代充', choice: '用你自己的账号',
-      text: '已包含订阅保障，为自己的账号开通或续费会员。',
+      text: '已包含订阅保障，为自己的账号开通或续费会员。ChatGPT Plus 的代充进一步区分“通用”和“半价资格”，其他会员显示“代充”。通用不保证没有地区、订阅状态等其他购买限制，下单前仍需核对商品说明。',
     },
     {
       id: 'guide-rental', title: '租号', choice: '使用商家账号，按约定租用',

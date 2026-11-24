@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -37,7 +38,7 @@ async function fixture() {
 }
 async function reviewMembership(id: bigint) {
   const product = await db.selectFrom('products').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
-  await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], product, [], 'short_term') as unknown as JsonValue) }).where('id', '=', id).execute();
+  await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, product), [], 'short_term') as unknown as JsonValue) }).where('id', '=', id).execute();
 }
 async function history(id: bigint) { return (await sql<Record<string, unknown>>`select * from product_standardization_decisions where product_id = ${id} order by id`.execute(db)).rows; }
 
@@ -71,7 +72,7 @@ test('application assignment and unbinding record sanitized review evidence with
   assert.equal(rows[0]?.content_version, before!.content_version);
   assert.equal(rows[0]?.standardization_revision, before!.standardization_revision + 1n);
   const assigned = (await repository.findById(id))!;
-  assert.equal(readCurrentMembershipFeatures(assigned.membership_features, assigned)?.decision.kind, 'short_term');
+  assert.equal(readCurrentMembershipFeatures(assigned.membership_features, await withMembershipSource(db, assigned))?.decision.kind, 'short_term');
   assert.equal('membershipKind' in (rows[0]?.target_snapshot as object), false);
   await repository.assignStandardProduct(id, null);
   rows = await history(id);

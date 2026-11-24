@@ -3,16 +3,51 @@ import test from 'node:test';
 import { createCache } from '../src/cache/cache.js';
 import { CatalogService, normalizeCatalogQuery, type CatalogQueryInput } from '../src/catalog/catalog.service.js';
 import type { CatalogFacets, CatalogPage, CatalogQuery, CatalogRepository } from '../src/catalog/catalog.repository.js';
+import { MEMBERSHIP_BRANCH_POLICIES } from '@price-comparison/catalog/membership-policy';
 
 const emptyPage = { items: [], platformFacets: [], total: 0 };
+
+test('branch rule changes invalidate page and facet caches without a manual version bump', async () => {
+  let pages = 0, facets = 0;
+  const cache = createCache();
+  const service = new CatalogService({
+    search: async () => { pages++; return emptyPage; },
+    facets: async () => { facets++; return { tagFacets: [] }; },
+  } as unknown as CatalogRepository, cache);
+  const policies = MEMBERSHIP_BRANCH_POLICIES as Array<(typeof MEMBERSHIP_BRANCH_POLICIES)[number]>;
+  const originalLength = policies.length;
+  try {
+    for (let i = 0; i < 2; i++) { await service.getCatalog({}); await service.getFacets({}); }
+    assert.deepEqual([pages, facets], [1, 1]);
+    policies.push({ ...policies[0]!, identity: { family: 'xai', product: 'grok', tier: 'plus' } });
+    await service.getCatalog({}); await service.getFacets({});
+    assert.deepEqual([pages, facets], [2, 2]);
+  } finally { policies.splice(originalLength); await cache.disconnect(); }
+});
 
 test('rental and all four membership kinds pass catalog validation without changing newcomer scope', () => {
   assert.deepEqual(normalizeCatalogQuery({ membershipKind: 'rental', newcomer: true }),
     { membershipKinds: ['rental'], newcomer: true, tags: [], limit: 20 });
-  const kinds = ['account', 'top_up', 'rental', 'short_term'];
+  const kinds = ['account', 'top_up', 'top_up_half_price', 'rental', 'short_term'];
   assert.deepEqual(normalizeCatalogQuery({ membershipKinds: kinds }).membershipKinds, [...kinds].sort());
   for (const membershipKinds of [[], ['unknown'], [...kinds, 'unclassified', 'rental']]) {
     assert.throws(() => normalizeCatalogQuery({ membershipKinds }), { code: 'INVALID_MEMBERSHIP_KIND' });
+  }
+});
+
+test('top-up search includes both features unless a specific eligibility feature is requested', () => {
+  for (const [term, kinds] of [
+    ['代充', ['top_up', 'top_up_half_price']],
+    ['top-up', ['top_up', 'top_up_half_price']],
+    ['代充 通用', ['top_up']],
+    ['代充 · 通用', ['top_up']],
+    ['代充 需半价资格', ['top_up_half_price']],
+    ['半价资格代充', ['top_up_half_price']],
+    ['代充 · 半价资格', ['top_up_half_price']],
+  ] as const) {
+    const query = normalizeCatalogQuery({ q: `ChatGPT ${term}` });
+    assert.deepEqual(query.membershipSearch?.kinds, kinds, term);
+    assert.deepEqual(query.membershipSearch?.terms, [term]);
   }
 });
 

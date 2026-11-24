@@ -287,7 +287,7 @@ test('automatic children skip current membership features but retain missing/sta
       const { product, job } = await fixture();
       if (state !== 'missing') await db.updateTable('products').set({
         membership_features: jsonb(buildMembershipFeatures([], {
-          ...product, content_fingerprint: state === 'stale' ? 'old' : product.content_fingerprint,
+          ...await withMembershipSource(db, product), content_fingerprint: state === 'stale' ? 'old' : product.content_fingerprint,
         }, [], 'short_term') as unknown as JsonValue),
       }).where('id', '=', product.id).execute();
       const standard = await db.insertInto('standard_products').values({
@@ -362,3 +362,4 @@ test('claims and identity queue reject old rules and snapshots while admitting c
   const oldBatches = await db.selectFrom('ai_job_batches').select('status').where('job_id', 'in', obsolete.map(parent => parent.id)).execute();
   assert.deepEqual(oldBatches.map(batch => batch.status), ['queued', 'queued']);
 });
+import { withMembershipSource } from './membership-fixture.js';

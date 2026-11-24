@@ -35,9 +35,9 @@ const filters = {
   priceMax: money.optional(),
   tags: z.array(tag).max(50).optional(),
   membershipKinds: z.array(z.enum(MEMBERSHIP_GROUPS)).min(1).max(MEMBERSHIP_GROUPS.length).optional()
-    .describe('AI membership query groups; unclassified selects offers without a valid classification. Explicit groups override newcomer scope.'),
+    .describe('AI membership query groups. top_up is top-up; products with an eligibility branch distinguish general top-ups from top_up_half_price. Select both for all top-ups. unclassified selects offers without a valid classification. Explicit groups override newcomer scope.'),
   newcomer: z.boolean().optional()
-    .describe('When true, AI memberships must be account or top_up; other products are unaffected. No rental or short-term fallback.'),
+    .describe('When true, AI memberships must be account, top_up or top_up_half_price; other products are unaffected. No rental or short-term fallback.'),
 };
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 

@@ -13,6 +13,7 @@ import { CatalogService } from '../src/catalog/catalog.service.js';
 import type { CatalogQuery } from '../src/catalog/catalog.repository.js';
 import { McpAccess } from '../src/mcp/mcp-access.js';
 import { registerMcpEndpoint } from '../src/mcp/mcp-server.js';
+import { MEMBERSHIP_GROUPS } from '@price-comparison/catalog/membership-policy';
 
 const { McpServer } = createRequire(import.meta.url)('@modelcontextprotocol/server') as typeof import('@modelcontextprotocol/server');
 
@@ -309,15 +310,15 @@ test('price history keeps decimal prices, capture times and purchase quantities'
 test('MCP history carries feature scope with product and currency through shared validation', async t => {
   const { call, historyQueries } = await harness(t);
   const response = await call('get_price_history', { standardProductId: '1', productId: '11', currency: 'USD',
-    membershipKinds: ['top_up', 'account', 'account'], newcomer: true });
+    membershipKinds: ['top_up', 'top_up_half_price', 'account', 'account'], newcomer: true });
   assert.equal(response.json().result.isError, undefined);
-  assert.deepEqual(historyQueries, [['1', '11', 'USD', { membershipKinds: ['account', 'top_up'], newcomer: true }]]);
+  assert.deepEqual(historyQueries, [['1', '11', 'USD', { membershipKinds: ['account', 'top_up', 'top_up_half_price'], newcomer: true }]]);
   assert.equal((await call('get_price_history', { standardProductId: '1', newcomer: true })).json().result.isError, undefined);
   assert.deepEqual(historyQueries.at(-1), ['1', undefined, 'CNY', { newcomer: true }]);
   for (const scope of [
     { membershipKinds: [] }, { membershipKinds: ['unknown'] }, { membershipKinds: ['account', 'bad'] },
     { membershipKinds: 'account' }, { membershipKinds: null },
-    { membershipKinds: ['account', 'top_up', 'rental', 'short_term', 'unclassified', 'account'] }, { newcomer: 'true' }, { newcomer: null },
+    { membershipKinds: [...MEMBERSHIP_GROUPS, 'account'] }, { newcomer: 'true' }, { newcomer: null },
   ]) {
     const result = (await call('get_price_history', { standardProductId: '1', ...scope })).json();
     assert.ok(result.result?.isError || result.error);
@@ -355,9 +356,9 @@ test('MCP forwards unclassified queries for search, offers and history', async t
   }
 });
 
-test('MCP accepts rental and all query groups for search and offers and rejects a sixth entry', async t => {
+test('MCP accepts rental and all query groups for search and offers and rejects excess entries', async t => {
   const { call, queries } = await harness(t);
-  for (const membershipKinds of [['rental'], ['account', 'top_up', 'rental', 'short_term', 'unclassified']]) {
+  for (const membershipKinds of [['rental'], [...MEMBERSHIP_GROUPS]]) {
     for (const name of ['search_products', 'get_product_offers']) {
       const args = { membershipKinds, newcomer: true, ...(name === 'get_product_offers' ? { standardProductId: '1' } : {}) };
       assert.equal((await call(name, args)).json().result.isError, undefined);
@@ -365,7 +366,7 @@ test('MCP accepts rental and all query groups for search and offers and rejects 
       assert.equal(queries.at(-1)?.newcomer, true);
     }
   }
-  const invalid = await call('search_products', { membershipKinds: ['account', 'top_up', 'rental', 'short_term', 'unclassified', 'rental'] });
+  const invalid = await call('search_products', { membershipKinds: [...MEMBERSHIP_GROUPS, 'rental'] });
   assert.ok(invalid.json().result?.isError || invalid.json().error);
   assert.equal(queries.length, 4);
 });

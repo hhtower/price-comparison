@@ -55,7 +55,7 @@ test('understanding prompt examples validate evidence and preserve or explicitly
   assert.match(state.prompts[0]!, /租号、共享、合租=membershipKinds:\["rental"\]/u);
   assert.match(state.prompts[0]!, /未分类=membershipKinds:\["unclassified"\]/u);
   const examples = [...state.prompts[0]!.matchAll(/<understanding_example>\s*<input>([\s\S]*?)<\/input>\s*<output>([\s\S]*?)<\/output>\s*<\/understanding_example>/gu)];
-  assert.equal(examples.length, 4);
+  assert.equal(examples.length, 5);
   const needs = examples.map(example => {
     const input = JSON.parse(example[1]!);
     const understanding = parseUnderstanding(JSON.parse(example[2]!), input.userText);
@@ -63,14 +63,16 @@ test('understanding prompt examples validate evidence and preserve or explicitly
   });
   assert.deepEqual(needs[0], {
     purpose: '写代码', platform: 'openai', product: 'ChatGPT Plus', budget: null,
-    requiredTags: [{ name: 'duration', value: 30 }], membershipKinds: ['top_up'], preferences: ['lower_price'],
+    requiredTags: [{ name: 'duration', value: 30 }], membershipKinds: ['top_up', 'top_up_half_price'], preferences: ['lower_price'],
   });
   assert.deepEqual(needs[1], { purpose: '写代码', platform: 'openai', product: 'ChatGPT Plus', budget: null,
     requiredTags: [], preferences: [] });
   assert.deepEqual(needs[2], { purpose: null, platform: 'openai', product: 'ChatGPT Plus', budget: null,
-    requiredTags: [{ name: 'duration', value: 30 }], preferences: [], membershipKinds: ['top_up'] });
+    requiredTags: [{ name: 'duration', value: 30 }], preferences: [], membershipKinds: ['top_up', 'top_up_half_price'] });
   assert.deepEqual(needs[3], { purpose: null, platform: 'openai', product: 'ChatGPT Plus', budget: null,
     requiredTags: [{ name: 'duration', value: 30 }], preferences: [], membershipKinds: null, newcomer: false });
+  assert.deepEqual(needs[4], { purpose: null, platform: 'openai', product: 'ChatGPT Plus', budget: null,
+    requiredTags: [], preferences: [], membershipKinds: ['account', 'top_up'] });
 });
 
 test('one complete understanding request can end in one question without querying arbitrary products', async () => {

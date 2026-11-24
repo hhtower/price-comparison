@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { emptyShoppingNeeds, type ShoppingNeeds } from '@price-comparison/catalog/assistant-contract';
 import { CATALOG_PLATFORMS } from '@price-comparison/catalog/platform-groups';
-import { MEMBERSHIP_GROUPS } from '@price-comparison/catalog/membership-policy';
 import type { CatalogPage, PublicCatalogProduct } from '../src/catalog/catalog.repository.js';
 import type { PriceHistory, PriceHistoryPoint } from '../src/catalog/price-history.repository.js';
 import type { CatalogService } from '../src/catalog/catalog.service.js';
@@ -132,7 +131,7 @@ test('membership grouping includes unclassified, with an independent overlapping
   assert.match(text, /不可相加|不能相加/u);
   assert.match(text, /非会员/u);
   assert.deepEqual(calls.filter(call => call.method === 'getCatalog').slice(1).map(call => (call.args[0] as any).membershipKinds),
-    MEMBERSHIP_GROUPS.map(kind => [kind]));
+    [['account'], ['top_up', 'top_up_half_price'], ['rental'], ['short_term'], ['unclassified']]);
   assert.ok(calls.length <= 8);
 });
 
@@ -143,7 +142,7 @@ test('membership grouping respects selected kinds over newcomer, and default new
     .map(call => (call.args[0] as any).membershipKinds), [['rental'], ['unclassified']]);
   const newcomer = await read({ tool: 'statistics', scope: 'current', groupBy: 'membership' });
   assert.deepEqual(newcomer.calls.filter(call => call.method === 'getCatalog').slice(1)
-    .map(call => (call.args[0] as any).membershipKinds), [['account'], ['top_up']]);
+    .map(call => (call.args[0] as any).membershipKinds), [['account'], ['top_up', 'top_up_half_price']]);
 });
 
 test('platform grouping queries whole aggregates in at most eight reads including other', async () => {

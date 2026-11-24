@@ -41,7 +41,7 @@ test('shared metadata keeps feature paths and labels in paginated schema without
   const product = { id: '42', name: 'ChatGPT Plus' };
   assert.equal(productPagePath('42'), '/products/42');
   assert.equal(productPageMetadata(product, 2).path, '/products/42?page=2');
-  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
+  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充 · 通用'], ['top_up_half_price', '代充 · 需半价资格'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
     const path = `/products/42/features/${kind}`;
     assert.equal(productPagePath('42', 1, kind), path);
     const metadata = productPageMetadata(product, 2, kind);
@@ -65,7 +65,7 @@ test('feature SSR pins its filter and preserves canonical, title and pagination 
       return { ...page, items: [{ ...page.items[0]!, detail: { kind: 'offers', entries: [offer], total: 30, page: input.detailPage, pageSize: 12 } }] };
     },
   });
-  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
+  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充 · 通用'], ['top_up_half_price', '代充 · 需半价资格'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
     const path = `/products/42/features/${kind}`;
     const response = await server.inject(path + '?page=2&membershipKind=rental&membershipKinds=short_term&newcomer=true&utm_source=test');
     assert.equal(response.statusCode, 200);

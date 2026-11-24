@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import assert from 'node:assert/strict';
 import { seedUsableOffers } from './standardization-review-fixture.js';
 import { randomUUID } from 'node:crypto';
@@ -375,9 +376,23 @@ test('active feature work suppresses only current feature members in all-pending
   assert.deepEqual(members.map(member => member.product_id), [f.ids[0]]);
 });
 
+test('legacy top-ups reenter pending feature jobs without rerunning already reviewed features', async () => {
+  const f = await fixture(3, true);
+  for (const [index, kind] of ['top_up', 'top_up', 'account'].entries()) {
+    const snapshot = buildMembershipFeatures([], await withMembershipSource(db, f.products[index]), [], kind as 'top_up' | 'account');
+    if (index === 0) delete snapshot.topUpPolicyVersion;
+    await db.updateTable('products').set({ membership_features: jsonb(snapshot as unknown as JsonValue) })
+      .where('id', '=', f.ids[index]).execute();
+  }
+  const pending = await createManualMembershipFeatureJob(db, { allPending: true, model: 'mock', requestId: randomUUID() });
+  assert.equal((await prepare(pending.id)).total, 1n);
+  const members = await db.selectFrom('ai_job_input_members').select('product_id').where('job_id', '=', pending.id).execute();
+  assert.deepEqual(members.map(member => member.product_id), [f.ids[0]]);
+});
+
 test('current feature snapshots suppress automatic work while stale and missing snapshots do not', async () => {
   const f = await fixture(4);
-  const current = buildMembershipFeatures([], f.products[0], [], 'short_term');
+  const current = buildMembershipFeatures([], await withMembershipSource(db, f.products[0]), [], 'short_term');
   await db.updateTable('products').set({ membership_features: jsonb(current as unknown as JsonValue) }).where('id', '=', f.ids[0]).execute();
   await db.updateTable('products').set({
     membership_features: jsonb({ ...current, contentVersion: '0' } as unknown as JsonValue),
@@ -414,7 +429,7 @@ for (const changed of ['name', 'spec', 'source_data'] as const) {
     f.products[0]!.name = `ChatGPT Plus fingerprint ${changed}`;
     await db.updateTable('products').set({ name: f.products[0]!.name }).where('id', '=', f.ids[0]).execute();
     await db.updateTable('products').set({
-      membership_features: jsonb(buildMembershipFeatures([], f.products[0], [], 'short_term') as unknown as JsonValue),
+      membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, f.products[0]), [], 'short_term') as unknown as JsonValue),
     }).where('id', '=', f.ids[0]).execute();
     const updated = await new ProductsRepository(db).update(f.ids[0]!, changed === 'source_data'
       ? { sourceData: { evidence: 'new subscription terms' } } : { [changed]: 'changed evidence' });

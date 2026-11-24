@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, beforeEach, describe, test, type TestContext } from 'node:test';
@@ -93,7 +94,7 @@ describe('assistant public identity and real offers', { skip: !process.env.TEST_
       }).where('id', '=', sample.standard.id).execute();
       if (family === 'anthropic' && product === 'claude') {
         const source = await database.selectFrom('products').selectAll().where('id', '=', sample.source.id).executeTakeFirstOrThrow();
-        await database.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], source, [], 'account') as unknown as JsonValue) })
+        await database.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(database, source), [], 'account') as unknown as JsonValue) })
           .where('id', '=', sample.source.id).execute();
       }
       const identity = { ...sample.identity, platform: family, product };

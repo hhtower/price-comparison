@@ -1,3 +1,4 @@
+import { withMembershipSource } from './membership-fixture.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, afterEach, before, describe, test } from 'node:test';
@@ -15,7 +16,10 @@ import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.re
 import { createCache } from '../src/cache/cache.js';
 import { buildMembershipFeatures, currentMembershipKind } from '../src/standardization/membership-classification.js';
 import { up as installMembershipKinds, down as removeMembershipKinds } from '../src/database/migrations/037_catalog_membership_kinds_20261113.js';
-import { MEMBERSHIP_KINDS, MEMBERSHIP_GROUPS, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
+import { up as upgradeTopUpKinds } from '../src/database/migrations/052_top_up_half_price_feature_20261123.js';
+import { up as requireMembershipSource } from '../src/database/migrations/054_membership_source_binding_20261124.js';
+import { up as removeDecisionMetadata } from '../src/database/migrations/055_membership_decision_metadata_20261124.js';
+import { MEMBERSHIP_KINDS, MEMBERSHIP_GROUPS, MEMBERSHIP_BRANCH_POLICIES, membershipGroupingVersion, type MembershipGroup, type MembershipKind } from '@price-comparison/catalog/membership-policy';
 import { VersioningType } from '@nestjs/common';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
@@ -41,7 +45,9 @@ describe('membership catalog features share standard identities', { skip: !proce
   });
 
   async function saveFeature(id: string, kind: MembershipKind) {
-    const product = await db.selectFrom('products').selectAll().where('id', '=', BigInt(id)).executeTakeFirstOrThrow();
+    const product = await db.selectFrom('products').innerJoin('shops', 'shops.id', 'products.shop_id')
+      .selectAll('products').select(['shops.url as shop_url', 'shops.protocol as shop_protocol', 'shops.platform as shop_platform'])
+      .where('products.id', '=', BigInt(id)).executeTakeFirstOrThrow();
     await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], product, [], kind) as unknown as JsonValue) })
       .where('id', '=', BigInt(id)).execute();
   }
@@ -145,6 +151,199 @@ describe('membership catalog features share standard identities', { skip: !proce
     };
     walk(plan);
     assert.ok(readsProjection);
+  });
+
+  test('half-price feature upgrades an installed trigger and backfills reviewed snapshots atomically', async () => {
+    await assert.rejects(db.transaction().execute(async tx => {
+      const { rows } = await sql<{ definition: string }>`select pg_get_functiondef(
+        'catalog_membership_kinds_changed()'::regprocedure) as definition`.execute(tx);
+      const definition = rows[0]!.definition;
+      assert.ok(definition.includes(", 'top_up_half_price'"));
+      await sql.raw(definition.replace(", 'top_up_half_price'", '')).execute(tx);
+      const product = await tx.selectFrom('products').selectAll().where('id', '=', BigInt(products.top_up!)).executeTakeFirstOrThrow();
+      await tx.updateTable('products').set({
+        membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, product), [], 'top_up_half_price') as unknown as JsonValue),
+      }).where('id', '=', product.id).execute();
+      assert.equal((await tx.selectFrom('catalog_membership_kinds').select('kind')
+        .where('product_id', '=', product.id).executeTakeFirst()), undefined);
+      await upgradeTopUpKinds(tx);
+      assert.equal((await tx.selectFrom('catalog_membership_kinds').select('kind')
+        .where('product_id', '=', product.id).executeTakeFirstOrThrow()).kind, 'top_up_half_price');
+      await tx.updateTable('products').set({
+        membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, product), [], 'top_up') as unknown as JsonValue),
+      }).where('id', '=', product.id).execute();
+      assert.equal((await tx.selectFrom('catalog_membership_kinds').select('kind')
+        .where('product_id', '=', product.id).executeTakeFirstOrThrow()).kind, 'top_up');
+      throw new Error('rollback top-up upgrade probe');
+    }), /rollback top-up upgrade probe/);
+  });
+
+  test('half-price top-ups have independent groups, filters and history and remain in newcomer scope', async () => {
+    try {
+      await saveFeature(products.top_up!, 'top_up_half_price');
+      await sql`insert into offer_price_history (product_id, standard_product_id, content_version, name, spec,
+        price, currency, quantity, payment_method, verified_at)
+        select id, ${ids.base}::bigint, content_version, name, spec, 50, 'CNY', 1, 'test', now()
+        from products where id = ${products.top_up}::bigint`.execute(db);
+      while (await publishNextCatalogChange(db)) {}
+      const newcomer = await repository.search({ standardProductId: ids.base, newcomer: true, tags: [], limit: 20 });
+      assert.deepEqual(newcomer.items[0]?.membershipGroups?.map(group => group.kind), ['account', 'top_up_half_price']);
+      const halfPrice = await service.getCatalog({ standardProductId: ids.base, membershipKinds: ['top_up_half_price'] });
+      assert.deepEqual(halfPrice.items[0]?.membershipGroups?.map(group => group.kind), ['top_up_half_price']);
+      assert.equal(halfPrice.items[0]?.productCount, 1);
+      assert.equal((await service.getCatalog({ standardProductId: ids.base, membershipKinds: ['top_up'] })).items.length, 0);
+      assert.deepEqual((await service.getCatalog({ q: 'ChatGPT 代充' })).items[0]?.membershipGroups?.map(group => group.kind),
+        ['top_up_half_price']);
+      assert.deepEqual((await service.getReferenceOffers({ standardProductId: ids.base, membershipKinds: ['top_up_half_price'] }))
+        .map(offer => offer.productId), [products.top_up]);
+      const history = await repository.priceHistory(ids.base!, products.top_up, 'CNY', { membershipKinds: ['top_up_half_price'] });
+      assert.ok(history.points.length > 0);
+      const generalHistory = await repository.priceHistory(ids.base!, products.top_up, 'CNY', { membershipKinds: ['top_up'] });
+      assert.equal(generalHistory.points.length, 0);
+    } finally {
+      await db.deleteFrom('offer_price_history').where('product_id', '=', BigInt(products.top_up!)).execute();
+      await saveFeature(products.top_up!, 'top_up');
+      while (await publishNextCatalogChange(db)) {}
+    }
+  });
+
+  test('product policy merges unconfigured branches for counts, filters, references and history', async () => {
+    try {
+      for (const key of ['account', 'top_up']) {
+        await db.updateTable('standard_product_members').set({ standard_product_id: BigInt(ids.pending!) })
+          .where('product_id', '=', BigInt(products[key]!)).execute();
+      }
+      await saveFeature(products.account!, 'top_up');
+      await saveFeature(products.top_up!, 'top_up_half_price');
+      await sql`insert into offer_price_history (product_id, standard_product_id, content_version, name, spec,
+        price, currency, quantity, payment_method, verified_at)
+        select id, ${ids.pending}::bigint, content_version, name, spec, 50, 'CNY', 1, 'test', now()
+        from products where id = ${products.top_up}::bigint`.execute(db);
+      for (const prepared of [false, true]) {
+        if (prepared) while (await publishNextCatalogChange(db)) {}
+        const result = await repository.search({ standardProductId: ids.pending, membershipKinds: ['top_up'], tags: [], limit: 20 });
+        assert.equal(result.items[0]?.productCount, 2);
+        assert.deepEqual(result.items[0]?.membershipGroups?.map(group => [group.kind, group.productCount]), [['top_up', 2]]);
+        assert.equal((await repository.search({ standardProductId: ids.pending,
+          membershipKinds: ['top_up_half_price'], tags: [], limit: 20 })).items.length, 0);
+        const details = await repository.search({ standardProductId: ids.pending, membershipKinds: ['top_up'],
+          tags: [], limit: 20, detailKind: 'offers', detailPage: 0, detailPageSize: 10 });
+        assert.equal(details.items[0]?.detail?.entries.length, 2);
+      }
+      assert.deepEqual((await repository.referenceOffers({ standardProductId: ids.pending, membershipKinds: ['top_up'],
+        tags: [], limit: 20 })).map(offer => offer.membershipKind), ['top_up', 'top_up']);
+      assert.equal((await repository.priceHistory(ids.pending!, products.top_up, 'CNY', { membershipKinds: ['top_up'] })).points.length, 1);
+      assert.equal((await repository.priceHistory(ids.pending!, products.top_up, 'CNY', { membershipKinds: ['top_up_half_price'] })).points.length, 0);
+      assert.equal((await db.selectFrom('catalog_membership_kinds').select('kind')
+        .where('product_id', '=', BigInt(products.top_up!)).executeTakeFirstOrThrow()).kind, 'top_up_half_price');
+    } finally {
+      await db.deleteFrom('offer_price_history').where('product_id', '=', BigInt(products.top_up!)).execute();
+      for (const key of ['account', 'top_up']) {
+        await db.updateTable('standard_product_members').set({ standard_product_id: BigInt(ids.base!) })
+          .where('product_id', '=', BigInt(products[key]!)).execute();
+        await saveFeature(products[key]!, key as MembershipKind);
+      }
+      while (await publishNextCatalogChange(db)) {}
+    }
+  });
+
+  test('adding a product branch invalidates prepared groups and schedules rebuilding automatically', async () => {
+    const policies = MEMBERSHIP_BRANCH_POLICIES as Array<(typeof MEMBERSHIP_BRANCH_POLICIES)[number]>;
+    const original = await db.selectFrom('products').select('membership_features')
+      .where('id', '=', BigInt(products.pending!)).executeTakeFirstOrThrow();
+    try {
+      await saveFeature(products.pending!, 'top_up_half_price');
+      while (await publishNextCatalogChange(db)) {}
+      const before = membershipGroupingVersion();
+      policies.push({ ...policies[0]!, identity: { family: 'anthropic', product: 'claude', tier: 'pro' } });
+      assert.notEqual(membershipGroupingVersion(), before);
+      const query = { standardProductId: ids.pending, tags: [], limit: 10, membershipKinds: ['top_up_half_price' as const] };
+      assert.equal((await repository.search(query)).offerTotal, 1);
+      assert.equal((await repository.search({ ...query, detailKind: 'offers' })).offerTotal, 1);
+      assert.equal(await publishNextCatalogChange(db), true);
+      while (await publishNextCatalogChange(db)) {}
+      assert.equal((await repository.search(query)).offerTotal, 1);
+    } finally {
+      if (policies.at(-1)?.identity.family === 'anthropic') policies.pop();
+      await db.updateTable('products').set({ membership_features: original.membership_features === null ? null : jsonb(original.membership_features) })
+        .where('id', '=', BigInt(products.pending!)).execute();
+      while (await publishNextCatalogChange(db)) {}
+    }
+  });
+
+  test('source-binding migration removes unbound projections and reinstalls strict validation', async () => {
+    await assert.rejects(db.transaction().execute(async tx => {
+      const product = await tx.selectFrom('products').selectAll()
+        .where('id', '=', BigInt(products.account!)).executeTakeFirstOrThrow();
+      const snapshot = buildMembershipFeatures([], await withMembershipSource(tx, product), [], 'account');
+      const { source: _source, ...unbound } = snapshot;
+      await tx.updateTable('products').set({ membership_features: jsonb(unbound as unknown as JsonValue) })
+        .where('id', '=', product.id).execute();
+      await tx.insertInto('catalog_membership_kinds').values({
+        product_id: product.id, kind: 'account', policy_version: snapshot.policyVersion,
+      }).execute();
+      await requireMembershipSource(tx);
+      assert.equal(await tx.selectFrom('catalog_membership_kinds').select('kind')
+        .where('product_id', '=', product.id).executeTakeFirst(), undefined);
+      await tx.updateTable('products').set({ membership_features: jsonb(snapshot as unknown as JsonValue) })
+        .where('id', '=', product.id).execute();
+      assert.equal((await tx.selectFrom('catalog_membership_kinds').select('kind')
+        .where('product_id', '=', product.id).executeTakeFirstOrThrow()).kind, 'account');
+      await tx.updateTable('products').set({ membership_features: jsonb(unbound as unknown as JsonValue) })
+        .where('id', '=', product.id).execute();
+      assert.equal(await tx.selectFrom('catalog_membership_kinds').select('kind')
+        .where('product_id', '=', product.id).executeTakeFirst(), undefined);
+      throw new Error('rollback source-binding probe');
+    }), /rollback source-binding probe/);
+  });
+
+  test('decision metadata cleanup preserves reviewed evidence and restores projections without model jobs', async () => {
+    await assert.rejects(db.transaction().execute(async tx => {
+      const product = await tx.selectFrom('products').selectAll()
+        .where('id', '=', BigInt(products.account!)).executeTakeFirstOrThrow();
+      const snapshot = buildMembershipFeatures([
+        { name: 'duration', value: '30', evidence: [{ path: 'spec', quote: '30 days' }] },
+      ], await withMembershipSource(tx, product), ['region'], 'account');
+      const beforeJobs = await tx.selectFrom('ai_jobs').select('id').execute();
+      const beforeAssignments = await tx.selectFrom('standard_product_members').selectAll()
+        .where('product_id', '=', product.id).execute();
+      await tx.updateTable('products').set({ membership_features: jsonb({
+        ...snapshot, decision: { ...snapshot.decision, durationSource: 'default', requiredWarrantyDays: 28 },
+      } as unknown as JsonValue) }).where('id', '=', product.id).execute();
+      assert.equal(await tx.selectFrom('catalog_membership_kinds').select('kind')
+        .where('product_id', '=', product.id).executeTakeFirst(), undefined);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await removeDecisionMetadata(tx);
+        const updated = await tx.selectFrom('products').selectAll()
+          .where('id', '=', product.id).executeTakeFirstOrThrow();
+        assert.deepEqual(updated, { ...product, membership_features: snapshot });
+        assert.equal((await tx.selectFrom('catalog_membership_kinds').select('kind')
+          .where('product_id', '=', product.id).executeTakeFirstOrThrow()).kind, 'account');
+      }
+      assert.deepEqual(await tx.selectFrom('ai_jobs').select('id').execute(), beforeJobs);
+      assert.deepEqual(await tx.selectFrom('standard_product_members').selectAll()
+        .where('product_id', '=', product.id).execute(), beforeAssignments);
+      throw new Error('rollback decision metadata probe');
+    }), /rollback decision metadata probe/);
+  });
+
+  test('upgrade removes legacy top-ups from the public projection without deleting their reviewed snapshots', async () => {
+    await assert.rejects(db.transaction().execute(async tx => {
+      const product = await tx.selectFrom('products').selectAll().where('id', '=', BigInt(products.top_up!)).executeTakeFirstOrThrow();
+      const legacy = buildMembershipFeatures([], await withMembershipSource(db, product), [], 'top_up');
+      delete legacy.topUpPolicyVersion;
+      await tx.updateTable('products').set({ membership_features: jsonb(legacy as unknown as JsonValue) }).where('id', '=', product.id).execute();
+      await tx.insertInto('catalog_membership_kinds').values({
+        product_id: product.id, kind: 'top_up', policy_version: legacy.policyVersion,
+      }).execute();
+      await upgradeTopUpKinds(tx);
+      assert.equal(await tx.selectFrom('catalog_membership_kinds').select('kind').where('product_id', '=', product.id).executeTakeFirst(), undefined);
+      assert.deepEqual((await tx.selectFrom('products').select('membership_features').where('id', '=', product.id).executeTakeFirstOrThrow())
+        .membership_features, legacy);
+      assert.equal((await tx.selectFrom('catalog_membership_kinds').select('kind')
+        .where('product_id', '=', BigInt(products.account!)).executeTakeFirstOrThrow()).kind, 'account');
+      throw new Error('rollback legacy top-up probe');
+    }), /rollback legacy top-up probe/);
   });
 
   test('membership previews are not rescanned for every category', async () => {
@@ -344,7 +543,7 @@ describe('membership catalog features share standard identities', { skip: !proce
     assert.equal(item.standardProductId, ids.base);
     assert.equal(item.detail?.total, 4);
     assert.equal(item.detail?.entries.length, 4);
-    assert.deepEqual(item.membershipGroups?.map(group => group.kind), MEMBERSHIP_KINDS);
+    assert.deepEqual(item.membershipGroups?.map(group => group.kind), MEMBERSHIP_KINDS.filter(kind => products[kind]));
     for (const group of item.membershipGroups ?? []) {
       assert.equal(group.shopCount, 1);
       assert.equal(group.productCount, 1);
@@ -592,8 +791,8 @@ describe('membership catalog features share standard identities', { skip: !proce
   });
 
   test('HTTP feature scopes isolate offer and shop pages, prices, facets and cached reads for mixed merchants', async () => {
-    const standard = await db.insertInto('standard_products').values({ name: 'Scoped Claude Pro', platform: 'anthropic',
-      canonical_family: 'anthropic', canonical_product: 'claude', canonical_tier: 'pro', verification_state: 'verified',
+    const standard = await db.insertInto('standard_products').values({ name: 'Scoped ChatGPT Plus', platform: 'openai',
+      canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus', verification_state: 'verified',
     }).returning('id').executeTakeFirstOrThrow();
     const samples: Array<{ id: string; shopId: string; kind: MembershipGroup; price: number; name: string; duration: number }> = [];
     for (let merchant = 0; merchant < 5; merchant++) {
@@ -601,7 +800,7 @@ describe('membership catalog features share standard identities', { skip: !proce
         url: `https://scoped${merchant}.invalid` }).returning('id').executeTakeFirstOrThrow();
       for (const [key, kind, price, duration] of [
         ['account', 'account', 100, 30], ['account-extra', 'account', 300, 30],
-        ['top_up', 'top_up', 200, 60], ['rental', 'rental', 10, 90],
+        ['top_up', 'top_up', 200, 60], ['top_up_half_price', 'top_up_half_price', 80, 60], ['rental', 'rental', 10, 90],
         ['short_term', 'short_term', 50, 120], ['unknown', null, 1, 120],
       ] as const) {
         const name = `Original merchant quote ${merchant}/${key}${merchant === 0 ? ' 长效' : ''}`;
@@ -645,7 +844,7 @@ describe('membership catalog features share standard identities', { skip: !proce
     try {
       const all = await read('', {});
       assert.equal(all.total, 1);
-      assert.equal(all.offerTotal, 30);
+      assert.equal(all.offerTotal, 35);
       assert.deepEqual(all.items[0].membershipGroups.map((group: { kind: string }) => group.kind), MEMBERSHIP_GROUPS);
       for (const [detailKind, membershipKind] of [['offers', 'short_term'], ['shops', 'top_up']] as const) {
         const scope = { q: '长效', searchMode: 'literal', detailKind, membershipKind, detailPageSize: '12', limit: '1' };
@@ -654,7 +853,7 @@ describe('membership catalog features share standard identities', { skip: !proce
         assert.equal(page.items[0].detail.total, 1);
         const [entry] = page.items[0].detail.entries;
         checkOffer(detailKind === 'shops' ? entry.offer : entry, samples.filter(sample => sample.kind === membershipKind && sample.name.includes('长效')));
-        assert.deepEqual((await read('', { ...scope, q: 'Claude Scoped 长效' })).items, page.items);
+        assert.deepEqual((await read('', { ...scope, q: 'ChatGPT Scoped 长效' })).items, page.items);
         assert.equal((await read('', { ...scope, q: '长效%' })).total, 0);
       }
       for (const kind of [...MEMBERSHIP_GROUPS, ...MEMBERSHIP_GROUPS.toReversed()]) {
@@ -713,7 +912,7 @@ describe('membership catalog features share standard identities', { skip: !proce
         checkOffer(narrow.items[0].detail.entries[0].offer, narrowExpected);
       }
       const combined = await read('', { membershipKinds: ['account', 'top_up'], detailKind: 'shops', detailPageSize: '10' });
-      assert.equal(combined.offerTotal, 15, 'plural HTTP membershipKinds must reach SQL instead of returning all 30 offers');
+      assert.equal(combined.offerTotal, 15, 'plural HTTP membershipKinds must reach SQL instead of returning all 35 offers');
       assert.equal(combined.items[0].detail.total, 5);
       assert.ok(combined.items[0].detail.entries.every((entry: { count: number }) => entry.count === 3));
       assert.deepEqual(await read('', { membershipKind: ['account', 'top_up'], detailKind: 'shops', detailPageSize: '10' }), combined);

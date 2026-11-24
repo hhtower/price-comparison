@@ -69,7 +69,7 @@ test('feature admin previews published AI products, creates a separate job and e
     .where('product_id', '=', item.id).executeTakeFirstOrThrow()).publication_state, 'published');
   const queue = await new AiAdminController(repository).taskQueue('10', undefined, 'all', 'membership_features');
   assert.ok(queue.items.some(row => String(row.id) === String(jobId)));
-  const classification = { kind: 'account', reason: 'llm_reviewed', durationSource: 'default', requiredWarrantyDays: null };
+  const classification = { kind: 'account', reason: 'llm_reviewed' };
   const historicalOutput = {
     outcome: 'updated', classification, proposedMembershipKind: 'account', classificationReviewed: true,
     acceptedTags: Array.from({ length: 7 }, () => ({ name: 'warranty_scope', value: 'subscription', evidence: [{ path: 'name', quote: '保订阅' }] })),

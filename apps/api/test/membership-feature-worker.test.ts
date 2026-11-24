@@ -10,7 +10,7 @@ const payloads = [
   { id: '11', name: 'ChatGPT Plus', spec: '商家账号，订阅1个月，质保25天。',
     description: '账号由商家交付。', details: { delivery: '邮箱、密码、2FA' }, warranty: '保订阅25天，首登十分钟内反馈。',
     sourceData: { description: '封号不保，另保整月订阅。', selectedOptions: ['1个月'] } },
-  { id: '12', name: '会员充值', spec: '给买家账号充值，保使用25天。',
+  { id: '12', name: '会员半价资格号充值', spec: '给买家有半价资格的账号充值，保使用25天。',
     sourceData: { description: '建议使用共享IP，不交付共享账号。', selectedOptions: ['自备账号'] } },
   { id: '13', name: '独享租号', spec: '仅出租账号使用权，独享账号，保使用25天。',
     sourceData: { description: '不转让账号。', selectedOptions: ['25天'] } },
@@ -19,7 +19,7 @@ const payloads = [
 ];
 const extraction = { items: [
   { id: '1', refs: [0, 1], membershipKind: 'account' },
-  { id: '2', refs: [0, 1], membershipKind: 'top_up' },
+  { id: '2', refs: [0, 1], membershipKind: 'top_up_half_price' },
   { id: '3', refs: [0, 1], membershipKind: 'rental' },
   { id: '4', refs: [0, 1], membershipKind: 'short_term' },
 ] };
@@ -33,7 +33,7 @@ const review = { items: [
 ] };
 const extracted = [
   { productId: 11n, tags: [], rejectedTags: [], membershipKind: 'account', membershipRefs: [0, 1] },
-  { productId: 12n, tags: [], rejectedTags: [], membershipKind: 'top_up', membershipRefs: [0, 1] },
+  { productId: 12n, tags: [], rejectedTags: [], membershipKind: 'top_up_half_price', membershipRefs: [0, 1] },
   { productId: 13n, tags: [], rejectedTags: [], membershipKind: 'rental', membershipRefs: [0, 1] },
   { productId: 14n, tags: [], rejectedTags: [], membershipKind: 'short_term', membershipRefs: [0, 1] },
 ];

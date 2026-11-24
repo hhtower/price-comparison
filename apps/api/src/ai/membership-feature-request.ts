@@ -3,8 +3,8 @@ import { MEMBERSHIP_KINDS, type MembershipKind } from '@price-comparison/catalog
 import { OFFER_EVIDENCE_POLICY } from './offer-evidence-policy.js';
 import type { TagExtractionDecision } from './tag-extraction-result.js';
 
-export const MEMBERSHIP_FEATURE_PROMPT_VERSION = 'membership-features-20261123-v9';
-export const MEMBERSHIP_FEATURE_REVIEW_PROMPT_VERSION = 'membership-feature-review-20261123-v9';
+export const MEMBERSHIP_FEATURE_PROMPT_VERSION = 'membership-features-20261124-v12';
+export const MEMBERSHIP_FEATURE_REVIEW_PROMPT_VERSION = 'membership-feature-review-20261124-v12';
 export const MEMBERSHIP_FEATURE_MAX_ITEMS = 3;
 const REQUEST_OPTIONS = { temperature: 0.2, maxOutputTokens: 8192 } as const;
 const policy = `# Classification policy
@@ -15,19 +15,26 @@ A non-short-term offer requires at least 25 days of subscription protection OR c
 Use the guaranteed period, not merely subscription lifespan. An unqualified warranty covers the selected sold period when that period is stated. For ranges use the minimum; an approximate period is not a guaranteed minimum. Apply specific limits within the evidence hierarchy above; only conflicts still unresolved after title priority or missing protection mean short_term.
 
 After the protection requirement is met, classify the actual login-account delivery:
-- top_up: recharge, renew or invite the buyer's own account/email.
+- top_up / top_up_half_price: recharge, renew or invite the buyer's own account/email; select one using the eligibility rule below.
 - rental: access to a seller account that is rented, shared by multiple buyers, or reclaimed after use.
 - account: a seller-provided account without those rental conditions.
 - short_term: delivery remains unknown or unselected.
 
-Account roles and delivery formats do not establish ownership. Use the described account interaction. Separate buyer accounts in one workspace are not a shared seller login.`;
+Account roles and delivery formats do not establish ownership. Use the described account interaction. Separate buyer accounts in one workspace are not a shared seller login.
+
+## Top-up eligibility
+Apply only after the offer meets the protection requirement and delivers to the buyer's own account/email.
+- top_up_half_price: the selected recharge uses an account-level half-price subscription entitlement. The title may identify this eligible-account recharge route; applicable specifications or terms may state the prerequisite directly. Describe the buyer's account requirement, not a merchant's promotional price.
+- top_up: every other top-up, including new/old-account offers, explicitly waived half-price eligibility, and offers with no stated half-price requirement. This does not establish that all accounts qualify.
+Determine what the offer means in context, not whether it matches a phrase. Resolve whether the discount describes the account's subscription entitlement or only the merchant's sale price, preserving negation and the current offer's scope.
+Use the same evidence hierarchy and scope rules. A low price, discount, generic eligibility requirement, another offer's conditions, or a negated requirement alone does not establish half-price eligibility. Do not infer it from market knowledge. Do not create an unknown eligibility group or choose short_term merely because eligibility is unstated. Identify source facts independently of how the application groups particular products.`;
 
 const generationPrompt = `# Task
 Classify each AI subscription offer using the following policy.
 ${policy}
 # Output
 Return only {"items":[{"id":"ID","refs":[0,2],"membershipKind":"account"}]}.
-Return each required ID once. refs contains 1-3 distinct line numbers from that item's input supporting the classification; include line 0 when the title resolves a conflict. membershipKind is account, top_up, rental or short_term. No other fields.`;
+Return each required ID once. refs contains 1-3 distinct line numbers from that item's input supporting the classification; include line 0 when the title resolves a conflict and cite the explicit prerequisite for top_up_half_price. membershipKind is ${MEMBERSHIP_KINDS.join(', ')}. No other fields.`;
 
 const reviewPrompt = `# Task
 Verify each proposed classification against the complete original offer.
@@ -38,7 +45,7 @@ Return each required ID once. true means the category and citations are correct 
 For true, code must be null and refs must be empty.
 For false, cite 1-3 distinct nonempty original lines in refs and choose one code:
 - protection_mismatch: the proposal misreads protection length or scope.
-- delivery_mismatch: the proposal misreads whose account is used or what is delivered.
+- delivery_mismatch: the proposal misreads whose account is used, what is delivered, or whether half-price eligibility is explicitly required.
 - evidence_mismatch: the proposed category might fit but its cited lines do not establish it.
 - insufficient_source: the source cannot support a valid classification under the policy.
 - source_conflict: a decisive source contradiction remains unresolved after applying the evidence hierarchy.
@@ -80,6 +87,16 @@ const examples: Array<{ id: string; name: string; spec: string; expected: Member
   { id: '107', name: '买家自有账号代充 保订阅30天', spec: '店家共享账号，只保首登。', expected: 'top_up', proposed: 'short_term' },
   { id: '108', name: '会员账号', spec: '买家提供自己的账号充值，保订阅30天。', expected: 'top_up', proposed: 'top_up' },
   { id: '109', name: '独享成品账号 使用30天', spec: '卖家提供账号，仅保首登。', expected: 'short_term', proposed: 'account' },
+  { id: '110', name: 'Plus 半价资格号代充', spec: '买家自备有半价资格的账号，保订阅30天。', expected: 'top_up_half_price', proposed: 'top_up' },
+  { id: '111', name: 'Plus 新旧号代充', spec: '给买家自己的账号充值，保订阅30天。', expected: 'top_up', proposed: 'top_up_half_price' },
+  { id: '112', name: 'Plus 代充 无需半价资格', spec: '给买家自己的账号充值，保订阅30天。', expected: 'top_up', proposed: 'top_up' },
+  { id: '113', name: 'Plus 代充', spec: '本商品给买家账号充值，保订阅30天。另售更便宜的套餐：仅限半价资格号。', expected: 'top_up', proposed: 'top_up_half_price' },
+  { id: '114', name: 'Plus 半价资格号代充', spec: '给买家账号充值，订阅30天，仅保首登。', expected: 'short_term', proposed: 'top_up_half_price' },
+  { id: '115', name: 'Grok Plus 半价资格代充', spec: '给买家自己的账号充值，必须有半价资格，保订阅30天。', expected: 'top_up_half_price', proposed: 'top_up_half_price' },
+  { id: '116', name: 'ChatGPT Pro 半价资格代充', spec: '给买家自己的账号充值，必须有半价资格，保订阅30天。', expected: 'top_up_half_price', proposed: 'top_up_half_price' },
+  { id: '117', name: 'plus 半价卡密充值 质保订阅30天', spec: '发货形式为卡密加充值网址，提交买家账号 Session 自助充值。', expected: 'top_up_half_price', proposed: 'top_up' },
+  { id: '118', name: 'plus 半价卡密充值 质保订阅30天', spec: '半价指本店促销价格，给买家自己的账号充值，无需账号优惠资格。', expected: 'top_up', proposed: 'top_up_half_price' },
+  { id: '119', name: '会员月卡代充', spec: '仅限官方结算页显示五折订阅优惠的买家账号，给自己的账号充值，保订阅30天。', expected: 'top_up_half_price', proposed: 'top_up_half_price' },
 ];
 const inputs = examples.map(({ id, name, spec }) => encodeMembershipFeatureInput({ id, name, spec }));
 const requiredIds = inputs.map(row => row.id);
