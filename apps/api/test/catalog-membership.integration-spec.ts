@@ -815,6 +815,7 @@ describe('membership catalog features share standard identities', { skip: !proce
         await db.insertInto('offers').values({ product_id: source.id, idempotency_key: `scoped/${merchant}/${key}`,
           price: String(price + merchant), currency: 'CNY', captured_at: new Date(), stock_available: true, is_stale: false,
           settlement_price: String(price + merchant), settlement_verified_at: new Date(), settlement_payment_method: 'card',
+          settlement_quantity: 1, settlement_total_amount: String(price + merchant),
         }).execute();
         samples.push({ id: String(source.id), shopId: String(shop.id), kind: kind ?? 'unclassified', price: price + merchant, name, duration });
       }

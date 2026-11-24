@@ -12,6 +12,7 @@ import { MetricsService } from '../observability/metrics.js';
 import { StructuredLogger } from '../observability/request-context.js';
 import { platformForUrl, FX_URL, latestCnyPerUsd } from '../platforms/index.js';
 import type { SettlementResult } from '../platforms/index.js';
+import { isEstimatedSettlement } from '../platforms/settlement.js';
 import { buildRatingManifest } from '../platforms/source-evidence.js';
 import { ProductsRepository } from '../products/products.repository.js';
 import { lockProductRowNames, softDeleteProductNames } from '../products/product-name-deletion.js';
@@ -123,7 +124,7 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
         .leftJoin('offers as o', 'o.product_id', 'p.id')
         .distinctOn('p.external_id')
         .select(['p.external_id', 'p.name', 'p.spec', 'p.source_category', 'p.source_data',
-          'o.price', 'o.is_stale', 'o.settlement_price', 'o.settlement_verified_at', 'o.settlement_payment_method',
+          'o.price', 'o.is_stale', 'o.settlement_price', 'o.settlement_verified_at', 'o.settlement_payment_method', 'o.settlement_kind',
           'o.settlement_quantity', 'o.settlement_total_amount',
           sql<boolean>`coalesce(m.publication_state = 'published' and sp.verification_state = 'verified'
             and not sp.hidden and sp.merged_into_id is null, false)`.as('eligible')])
@@ -132,7 +133,8 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
       const previousById = new Map(previousProducts.map(product => [product.external_id, product]));
       const { ttlMs, now } = defaultQuotePolicy();
       const needsSettlement = (item: import('../platforms/index.js').CrawlProduct, quantity: number): boolean =>
-        needsSettlementRefresh(item, previousById.get(String(item.externalId)), now(), ttlMs, quantity);
+        adapter.canVerifySettlement === false
+          || needsSettlementRefresh(item, previousById.get(String(item.externalId)), now(), ttlMs, quantity);
       const outcomes = new Map<string, SettlementResult>();
       let shopObservation: ShopObservation | undefined;
       let partialList = false;
@@ -196,17 +198,20 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
           settlementPrice: item.settlement?.price ?? null,
           settlementVerifiedAt: item.settlement?.verifiedAt ?? null,
           settlementPaymentMethod: item.settlement?.paymentMethod ?? null,
+          settlementKind: item.settlement?.kind ?? 'verified',
           settlementQuantity: item.settlement?.quantity ?? null,
           settlementTotalAmount: item.settlement?.totalAmount ?? null,
-          settlementRefreshAt: item.settlement ? new Date(Date.parse(item.settlement.verifiedAt) + ttlMs)
-            : ['deferred', 'recently_verified', 'not_selected'].includes(outcomes.get(String(item.externalId))?.reason ?? '')
+          settlementRefreshAt: adapter.canVerifySettlement === false ? null
+            : item.settlement && !isEstimatedSettlement(item.settlement) ? new Date(Date.parse(item.settlement.verifiedAt) + ttlMs)
+              : ['deferred', 'recently_verified', 'not_selected'].includes(outcomes.get(String(item.externalId))?.reason ?? '')
               ? needsSettlementRefresh(item, previousById.get(String(item.externalId)), now(), ttlMs,
                 adapter.purchaseQuantity?.(item) ?? 1) ? new Date()
                 : new Date(previousById.get(String(item.externalId))!.settlement_verified_at!.getTime() + ttlMs)
               : null,
-          preserveSettlement: (previousById.get(String(item.externalId))?.settlement_quantity ?? 1)
+          preserveSettlement: adapter.canVerifySettlement !== false
+            && previousById.get(String(item.externalId))?.settlement_quantity
               === (adapter.purchaseQuantity ? adapter.purchaseQuantity(item) : 1)
-            && (outcomes.get(String(item.externalId))?.retryable === true
+            && (isEstimatedSettlement(item.settlement) || outcomes.get(String(item.externalId))?.status === 'failed'
               || ['recently_verified', 'not_selected', 'deferred'].includes(outcomes.get(String(item.externalId))?.reason ?? '')),
         }));
         await insertOffersInTransaction(transaction, shopId, offersInput, partialList);
@@ -238,7 +243,7 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
         }
         await enqueueSettlementRetry(transaction, job, shop, [...outcomes.values()]
           // 仅入队可重试失败;no_payment_channel/invalid_quote 等永久原因随下轮列表自然重试,不再烧限额
-          .filter(outcome => outcome.status === 'failed' && outcome.retryable)
+          .filter(outcome => adapter.canVerifySettlement !== false && outcome.status === 'failed' && outcome.retryable)
           .map(outcome => changes.productIds.get(`${shopId}:${outcome.externalId}`)!).filter(Boolean));
         await transaction.updateTable('shops').set({
           rating_manifest: jsonb(manifest),
@@ -314,13 +319,18 @@ async function insertOffersInTransaction(transaction: Kysely<DatabaseSchema>, sh
   idempotencyKey: string; productId: bigint; price: string; capturedAt: Date; stockAvailable: boolean;
   stockQuantity: number | null;
   settlementPrice: string | null; settlementVerifiedAt: string | null; settlementPaymentMethod: string | null;
+  settlementKind: 'verified' | 'estimated';
   settlementQuantity: number | null; settlementTotalAmount: string | null;
   settlementRefreshAt: Date | null;
   preserveSettlement: boolean;
 }[], partialList: boolean): Promise<void> {
   const keys = input.map((offer) => offer.idempotencyKey);
   const preservedIds = input.filter(offer => offer.preserveSettlement).map(offer => String(offer.productId));
-  const preserve = sql<boolean>`offers.product_id = any(${preservedIds}::bigint[]) and offers.price = excluded.price and offers.stock_available and excluded.stock_available and not offers.is_stale`;
+  const estimatedIds = input.filter(offer => offer.settlementKind === 'estimated').map(offer => String(offer.productId));
+  const preserve = sql<boolean>`offers.product_id = any(${preservedIds}::bigint[]) and offers.price = excluded.price
+    and offers.stock_available and excluded.stock_available and not offers.is_stale
+    and (excluded.settlement_price is null or (offers.product_id = any(${estimatedIds}::bigint[])
+      and offers.settlement_price is not null and offers.settlement_kind = 'verified'))`;
   if (input.length) await transaction.insertInto('offers').values(input.map((offer, index) => ({
     idempotency_key: keys[index]!, product_id: offer.productId, price: offer.price,
     currency: 'CNY', captured_at: offer.capturedAt, is_stale: false,
@@ -329,6 +339,7 @@ async function insertOffersInTransaction(transaction: Kysely<DatabaseSchema>, sh
     settlement_price: offer.settlementPrice,
     settlement_verified_at: offer.settlementVerifiedAt,
     settlement_payment_method: offer.settlementPaymentMethod,
+    settlement_kind: offer.settlementKind,
     settlement_quantity: offer.settlementQuantity,
     settlement_total_amount: offer.settlementTotalAmount,
     settlement_refresh_at: offer.settlementRefreshAt,
@@ -336,11 +347,12 @@ async function insertOffersInTransaction(transaction: Kysely<DatabaseSchema>, sh
     price: ref('excluded.price'), captured_at: ref('excluded.captured_at'), is_stale: false,
     stock_available: ref('excluded.stock_available'),
     stock_quantity: ref('excluded.stock_quantity'),
-    settlement_price: sql`case when ${preserve} and excluded.settlement_price is null then offers.settlement_price else excluded.settlement_price end`,
-    settlement_verified_at: sql`case when ${preserve} and excluded.settlement_price is null then offers.settlement_verified_at else excluded.settlement_verified_at end`,
-    settlement_payment_method: sql`case when ${preserve} and excluded.settlement_price is null then offers.settlement_payment_method else excluded.settlement_payment_method end`,
-    settlement_quantity: sql`case when ${preserve} and excluded.settlement_price is null then offers.settlement_quantity else excluded.settlement_quantity end`,
-    settlement_total_amount: sql`case when ${preserve} and excluded.settlement_price is null then offers.settlement_total_amount else excluded.settlement_total_amount end`,
+    settlement_price: sql`case when ${preserve} then offers.settlement_price else excluded.settlement_price end`,
+    settlement_verified_at: sql`case when ${preserve} then offers.settlement_verified_at else excluded.settlement_verified_at end`,
+    settlement_payment_method: sql`case when ${preserve} then offers.settlement_payment_method else excluded.settlement_payment_method end`,
+    settlement_kind: sql`case when ${preserve} then offers.settlement_kind else excluded.settlement_kind end`,
+    settlement_quantity: sql`case when ${preserve} then offers.settlement_quantity else excluded.settlement_quantity end`,
+    settlement_total_amount: sql`case when ${preserve} then offers.settlement_total_amount else excluded.settlement_total_amount end`,
     settlement_refresh_at: ref('excluded.settlement_refresh_at'),
   }))).execute();
   if (partialList) return;

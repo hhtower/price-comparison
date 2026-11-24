@@ -90,7 +90,8 @@ export async function settle(_shop, products, fetchImpl = globalThis.fetch, opti
     quote: product => {
       const micro = product.sourceData?.microPrice;
       if (!Number.isSafeInteger(micro) || micro < 0) return undefined;
-      return { code: 1, paymentMethod: 'USDT 汇率折算（预估）', data: { total_amount: centsText(cnyCents(BigInt(micro), rate)), quantity: 1 } };
+      return { code: 1, kind: 'estimated', paymentMethod: 'USDT 汇率折算（预估）',
+        data: { total_amount: centsText(cnyCents(BigInt(micro), rate)), quantity: 1 } };
     },
   }, options);
 }
@@ -103,4 +104,4 @@ export async function probe(shop, fetchImpl = globalThis.fetch) {
   return items.slice(0, 3).map(item => ({ externalId: String(item.id), name: item.name.trim(), spec: '', price: microUsdt(BigInt(item.price)), url: new URL(shop.url).href, inStock: item.stock > 0 }));
 }
 
-export default { id, name: '棱镜货源（USDT 折算）', hosts: ['shop.558686.xyz'], crawl, probe, settle };
+export default { id, name: '棱镜货源（USDT 折算）', hosts: ['shop.558686.xyz'], canVerifySettlement: false, crawl, probe, settle };

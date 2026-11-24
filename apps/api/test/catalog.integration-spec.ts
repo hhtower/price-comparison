@@ -112,7 +112,7 @@ describe('catalog SQL read model', () => {
       { idempotency_key: 'two-visible', product_id: productTwo, price: '6.00', currency: 'CNY', captured_at: new Date('2026-09-10T02:00:00Z'), is_stale: false, stock_available: true },
       { idempotency_key: 'three-old', product_id: productThree, price: '4.00', currency: 'CNY', captured_at: new Date('2026-09-10T01:00:00Z'), is_stale: false, stock_available: true },
       { idempotency_key: 'three-out', product_id: productThree, price: '3.00', currency: 'CNY', captured_at: new Date('2026-09-10T01:00:00Z'), is_stale: false, stock_available: false },
-    ].map(offer => ({ ...offer, settlement_price: offer.price, settlement_verified_at: offer.captured_at, settlement_payment_method: 'alipay' }))).execute();
+    ].map(offer => ({ ...offer, settlement_price: offer.price, settlement_quantity: 1, settlement_total_amount: offer.price, settlement_verified_at: offer.captured_at, settlement_payment_method: 'alipay' }))).execute();
     await publishChanges();
   });
 
@@ -135,6 +135,25 @@ describe('catalog SQL read model', () => {
     assert.equal(after.items[0]?.offers[0]?.inventoryExpiresAt, null);
     await database.updateTable('offers').set({ stock_available: false }).where('product_id', '=', productOne).execute();
     assert.deepEqual((await readPublished({ tags: [], limit: 20 })).items.map(item => item.id), [String(standardTwo)]);
+  });
+
+  test('estimated settlement amounts remain usable without claiming actual verification', async () => {
+    await database.updateTable('offers').set({
+      settlement_price: '10.40', settlement_total_amount: '10.40', settlement_payment_method: '支付价（预估：售价加4%）', settlement_kind: 'estimated',
+    }).where('product_id', '=', productOne).execute();
+    const page = await readPublished({ tags: [], limit: 20 });
+    const offer = page.items.find(item => item.id === String(standardOne))!.offers[0]!;
+    assert.equal(offer.price, '10.40');
+    assert.equal(offer.priceStatus, 'estimated');
+    assert.equal(offer.priceVerifiedAt, null);
+    assert.equal(offer.paymentMethod, '支付价（预估：售价加4%）');
+    const detail = await readPublished({ tags: [], standardProductId: String(standardOne), detailKind: 'offers', limit: 20 });
+    assert.equal(detailOffers(detail.items[0]!)[0]!.priceStatus, 'estimated');
+    const reference = (await repository.referenceOffers({ tags: [], standardProductId: String(standardOne) }))
+      .find(item => item.productId === String(productOne))!;
+    assert.equal(reference.price, '10.40');
+    assert.equal(reference.priceStatus, 'estimated');
+    assert.equal(reference.priceVerifiedAt, null);
   });
 
   test('stock quantities follow the latest quote in previews, details and references', async () => {
@@ -202,6 +221,7 @@ describe('catalog SQL read model', () => {
     await database.insertInto('offers').values({
       idempotency_key: `sku-${product.id}`, product_id: product.id, price, captured_at: new Date(), currency: 'CNY',
       settlement_price: price === 'NaN' ? null : price, settlement_verified_at: price === 'NaN' ? null : new Date(), settlement_payment_method: price === 'NaN' ? null : 'alipay',
+      settlement_quantity: price === 'NaN' ? null : 1, settlement_total_amount: price === 'NaN' ? null : price,
     }).execute();
     return product.id;
   }
@@ -669,8 +689,8 @@ describe('catalog SQL read model', () => {
       assert.equal('settlement_total_amount' in offer, false);
     }
     if (query.detailKind) assert.equal(item.detail?.entries.length, 1);
-    else assert.equal(page.items[1]?.offers[0]?.settlementQuantity, 1, 'legacy null quantity defaults to one');
-    for (const [quantity, total, price, expected] of [[null, null, '1', '1.00'], [1, '1.50', '1.5', '1.50'],
+    else assert.equal(page.items[1]?.offers[0]?.settlementQuantity, 1, 'single-unit quotes retain their explicit quantity');
+    for (const [quantity, total, price, expected] of [[1, '1.00', '1', '1.00'], [1, '1.50', '1.5', '1.50'],
       [5, '0.01', '0.002', '0.002'], [3, '1.00', '0.333333333333', '0.333333333333']] as const) {
       await sql`update offers set settlement_quantity = ${quantity}, settlement_total_amount = ${total}::numeric, settlement_price = ${price}::numeric
         where idempotency_key = 'one-new'`.execute(database);
@@ -679,7 +699,7 @@ describe('catalog SQL read model', () => {
       for (const offer of [...formatted.offers,
         ...(formatted.detail?.entries.map(entry => 'offer' in entry ? entry.offer : entry) ?? [])]) {
         assert.equal(offer.price, expected);
-        assert.equal(offer.settlementQuantity, quantity ?? 1);
+        assert.equal(offer.settlementQuantity, quantity);
       }
     }
     await database.updateTable('shops').set({ protocol: '16688' }).where('id', '=', shopOne).execute();
@@ -692,11 +712,11 @@ describe('catalog SQL read model', () => {
     const shop = await database.insertInto('shops').values({ platform: 'alpha', url: 'https://settlement-b.invalid', name: 'B' }).returning('id').executeTakeFirstOrThrow();
     const b = await addSku(shop.id, 'settlement-b', '95.00');
     const c = await addSku(shop.id, 'settlement-c', '1.00');
-    await database.updateTable('offers').set({ settlement_price: null, settlement_verified_at: null, settlement_payment_method: null }).where('product_id', '=', c).execute();
+    await database.updateTable('offers').set({ settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_verified_at: null, settlement_payment_method: null }).where('product_id', '=', c).execute();
     await database.updateTable('offers').set({ stock_available: false }).where('product_id', '=', productOne).execute();
     const now = new Date();
-    await database.updateTable('offers').set({ settlement_price: '98.00', settlement_verified_at: now, settlement_payment_method: 'alipay', captured_at: now }).where('product_id', '=', a).execute();
-    await database.updateTable('offers').set({ settlement_price: '95.00', settlement_verified_at: now, settlement_payment_method: 'alipay', captured_at: now }).where('product_id', '=', b).execute();
+    await database.updateTable('offers').set({ settlement_price: '98.00', settlement_total_amount: '98.00', settlement_verified_at: now, settlement_payment_method: 'alipay', captured_at: now }).where('product_id', '=', a).execute();
+    await database.updateTable('offers').set({ settlement_price: '95.00', settlement_total_amount: '95.00', settlement_verified_at: now, settlement_payment_method: 'alipay', captured_at: now }).where('product_id', '=', b).execute();
     const page = await readPublished({ standardProductId: String(standardOne), detailKind: 'offers', detailPageSize: 50, tags: [], limit: 20 });
     assert.equal(page.items[0]?.minPrice, '1.00');
     assert.deepEqual(page.items[0]?.offers.map(offer => offer.productId), [c, a].map(String));
@@ -750,9 +770,9 @@ describe('catalog SQL read model', () => {
   });
 
   test('missing payment prices use explicit listed-price estimates across catalog views, filters and cursors', async () => {
-    await database.updateTable('offers').set({ settlement_price: null, settlement_verified_at: null, settlement_payment_method: null }).execute();
+    await database.updateTable('offers').set({ settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_verified_at: null, settlement_payment_method: null }).execute();
     const newer = await addSku(shopOne, 'newer-unknown', '1.00');
-    await database.updateTable('offers').set({ settlement_price: null, settlement_verified_at: null, settlement_payment_method: null }).where('product_id', '=', newer).execute();
+    await database.updateTable('offers').set({ settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_verified_at: null, settlement_payment_method: null }).where('product_id', '=', newer).execute();
     const first = await readPublished({ sort: 'price', tags: [], limit: 1 });
     assert.equal(first.items[0]?.minPrice, '1.00');
     assert.equal(first.items[0]?.offers[0]?.productId, String(newer));
@@ -764,7 +784,7 @@ describe('catalog SQL read model', () => {
     const next = await readPublished({ sort: 'price', tags: [], limit: 1, cursor: first.nextCursor });
     assert.equal(next.items[0]?.id, String(standardTwo));
     assert.equal(next.nextCursor, undefined);
-    await database.updateTable('offers').set({ settlement_price: '99.00', settlement_verified_at: new Date(), settlement_payment_method: 'alipay' }).where('product_id', '=', productTwo).execute();
+    await database.updateTable('offers').set({ settlement_price: '99.00', settlement_quantity: 1, settlement_total_amount: '99.00', settlement_verified_at: new Date(), settlement_payment_method: 'alipay' }).where('product_id', '=', productTwo).execute();
     const verifiedFirst = await readPublished({ sort: 'price', tags: [], limit: 20 });
     assert.deepEqual(verifiedFirst.items.map(item => item.id), [standardOne, standardTwo].map(String));
     for (const query of [{}, { detailKind: 'offers' }, { detailKind: 'shops' }] as const) {
@@ -778,7 +798,7 @@ describe('catalog SQL read model', () => {
 
   test('old estimated listings survive time but respect shop disable and explicit stock updates', async context => {
     await database.updateTable('offers').set({ captured_at: new Date(Date.now() - 7 * 86_400_000),
-      settlement_price: null, settlement_verified_at: null, settlement_payment_method: null }).execute();
+      settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_verified_at: null, settlement_payment_method: null }).execute();
     context.mock.timers.tick(7 * 86_400_000);
     const page = await readPublished({ tags: [], limit: 20 });
     assert.equal(page.total, 2);
@@ -1490,7 +1510,7 @@ describe('catalog SQL read model', () => {
   });
 
   test('keeps sorted cursors stable on tied prices and restores a caller transaction JIT setting', async () => {
-    await database.updateTable('offers').set({ price: '6.00', settlement_price: '6.00' }).where('product_id', '=', productOne).execute();
+    await database.updateTable('offers').set({ price: '6.00', settlement_price: '6.00', settlement_total_amount: '6.00' }).where('product_id', '=', productOne).execute();
     const first = await readPublished({ sort: 'price', tags: [], limit: 1 });
     const second = await readPublished({ sort: 'price', tags: [], limit: 1, cursor: first.nextCursor });
     assert.deepEqual([first.items[0]?.id, second.items[0]?.id], [String(standardOne), String(standardTwo)]);

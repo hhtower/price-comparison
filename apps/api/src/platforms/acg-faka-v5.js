@@ -2,8 +2,10 @@ import { createDecipheriv } from 'node:crypto';
 import { parse } from 'parse5';
 import { buildSourceEvidence, captureRatingText, rawProductContent } from './source-evidence.js';
 import { normalizeSpec } from '../products/product-spec.js';
+import { minimumPurchaseQuantity } from './settlement.js';
 
 export const id = 'acg-faka-v5';
+export const purchaseQuantity = product => minimumPurchaseQuantity(product.sourceData?.quantityRestriction, 'min');
 const fail = message => { throw new Error(`${id} goods HTML: ${message}`); };
 const attr = (node, name) => node?.attrs?.find(item => item.name === name)?.value;
 const hasClass = (node, name) => (attr(node, 'class') ?? '').split(/\s+/).includes(name);
@@ -136,4 +138,4 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
   return result;
 }
 
-export default { id, name: 'ACG-Faka 5（HimenoSena）', hosts: ['lemon-watermelon.com'], responseFormat: 'html', crawl, probe };
+export default { id, name: 'ACG-Faka 5（HimenoSena）', hosts: ['lemon-watermelon.com'], responseFormat: 'html', crawl, probe, purchaseQuantity };

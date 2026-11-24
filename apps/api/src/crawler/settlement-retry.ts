@@ -3,6 +3,7 @@ import { jsonb, type DatabaseSchema } from '../database/types.js';
 import type { ClaimedJob } from '../jobs/jobs.repository.js';
 import { latestCnyPerUsd } from '../platforms/index.js';
 import type { CrawlProduct, PlatformAdapter, SettlementResult } from '../platforms/index.js';
+import { isEstimatedSettlement } from '../platforms/settlement.js';
 import type { Shop } from '../shops/shops.repository.js';
 import { bumpCatalogVersion } from '../catalog/catalog-version.repository.js';
 import type { CrawlRunMetrics } from './run-metrics.js';
@@ -43,12 +44,15 @@ export function crawlClaim(job: ClaimedJob, live = true) {
 
 export function settlementReport(outcomes: Iterable<SettlementResult>, listStatus = 'succeeded') {
   const report = {
-    listStatus, verified: 0, failed: 0, skipped: 0, retryable: 0,
+    listStatus, verified: 0, estimated: 0, failed: 0, skipped: 0, retryable: 0,
     reasons: {} as Record<string, number>, issues: [] as Array<{ externalId: string; reason: string }>,
     terminalReasons: {} as Record<string, number>,
+    terminalEstimated: 0,
   };
   for (const outcome of outcomes) {
-    report[outcome.status]++;
+    const estimated = outcome.status === 'estimated' || outcome.estimated === true;
+    if (estimated) report.estimated++;
+    if (outcome.status !== 'estimated' && !(outcome.status === 'verified' && estimated)) report[outcome.status]++;
     if (outcome.retryable) report.retryable++;
     if (outcome.reason) {
       report.reasons[outcome.reason] = (report.reasons[outcome.reason] ?? 0) + 1;
@@ -92,7 +96,8 @@ async function retryCandidates(db: Kysely<DatabaseSchema>, shop: Shop, payload: 
   if (!payload.products.length || !sourceMatches(shop, payload)) return [];
   const rows = await db.selectFrom('products as p').innerJoin('offers as o', 'o.product_id', 'p.id')
     .select(['p.id', 'p.external_id', 'p.content_version', 'p.content_fingerprint', 'p.name', 'p.spec', 'p.source_category', 'p.source_data', 'p.url',
-      'o.id as offer_id', 'o.price', 'o.captured_at', 'o.settlement_verified_at'])
+      'o.id as offer_id', 'o.price', 'o.captured_at', 'o.settlement_verified_at',
+      'o.settlement_price', 'o.settlement_payment_method', 'o.settlement_kind', 'o.settlement_quantity'])
     .where('p.shop_id', '=', shop.id).where('p.id', 'in', payload.products.map(item => BigInt(item.productId)))
     .where('p.deleted_at', 'is', null).where('o.is_stale', '=', false).where('o.stock_available', '=', true)
     .where('o.captured_at', '>', new Date(Date.now() - defaultQuotePolicy().ttlMs))
@@ -124,7 +129,7 @@ export async function runSettlementRetry(
   const outcomes = new Map<string, SettlementResult>();
   const settlementStarted = performance.now();
   try {
-    if (products.length && adapter.settle) await adapter.settle(shop, products, fetchImpl, {
+    if (products.length && adapter.settle && adapter.canVerifySettlement !== false) await adapter.settle(shop, products, fetchImpl, {
       signal, maxSettlementProducts: settlementBatchSize(adapter.id),
       // prism: the crawler egress cannot reach the FX feed; reuse the official-reference snapshot.
       ...(adapter.id === 'prism' ? { cnyPerUsd: await latestCnyPerUsd(db) } : {}),
@@ -146,7 +151,8 @@ export async function runSettlementRetry(
     const byExternal = new Map(products.map(product => [String(product.externalId), product]));
     const remaining = new Set<string>();
     const applicableOutcomes: SettlementResult[] = [];
-    const verified: Array<{ id: string; price: string; at: string; method: string; quantity: number; total: string }> = [];
+    const quotes: Array<{ id: string; price: string; at: string; method: string; kind: 'verified' | 'estimated';
+      quantity: number; total: string; estimated: boolean }> = [];
     const deferred: bigint[] = [];
     const retired: bigint[] = [];
     for (const row of current) {
@@ -154,39 +160,53 @@ export async function runSettlementRetry(
       if (outcome) applicableOutcomes.push(outcome);
       if (outcome?.reason === 'product_unavailable') { retired.push(row.id); continue; }
       const quote = byExternal.get(row.external_id)?.settlement;
-      if (quote) verified.push({ id: String(row.offer_id), price: quote.price, at: quote.verifiedAt,
-        method: quote.paymentMethod, quantity: quote.quantity, total: quote.totalAmount });
+      const estimated = isEstimatedSettlement(quote);
+      // A retry's estimate must not invalidate its frozen verification baseline or replace a real quote.
+      if (quote && (!estimated || (!outcome?.retryable && (row.settlement_price === null
+        || isEstimatedSettlement({ kind: row.settlement_kind })
+        || row.settlement_quantity !== quote.quantity)))) {
+        quotes.push({ id: String(row.offer_id), price: quote.price, at: quote.verifiedAt,
+          method: quote.paymentMethod, kind: estimated ? 'estimated' : 'verified',
+          quantity: quote.quantity, total: quote.totalAmount, estimated });
+      }
       if (outcome?.retryable) remaining.add(String(row.id));
       if (outcome?.reason === 'deferred') deferred.push(row.offer_id);
     }
     if (retired.length) await softDeleteProductNames(tx, retired, 'crawler_missing');
-    if (verified.length) {
+    if (current.length) await tx.updateTable('offers').set({ settlement_refresh_at: null })
+      .where('id', 'in', current.map(row => row.offer_id)).execute();
+    if (quotes.length) {
       await sql`update offers o set settlement_price = v.price::numeric, settlement_verified_at = v.at::timestamptz,
         settlement_payment_method = v.method, settlement_quantity = v.quantity,
+        settlement_kind = v.kind,
         settlement_total_amount = v.total::numeric,
-        settlement_refresh_at = v.at::timestamptz + ${defaultQuotePolicy().ttlMs} * interval '1 millisecond'
-        from jsonb_to_recordset(${JSON.stringify(verified)}::jsonb)
-        as v(id text, price text, at text, method text, quantity integer, total text) where o.id = v.id::bigint`.execute(tx);
+        settlement_refresh_at = case when v.estimated then null
+          else v.at::timestamptz + ${defaultQuotePolicy().ttlMs} * interval '1 millisecond' end
+        from jsonb_to_recordset(${JSON.stringify(quotes)}::jsonb)
+        as v(id text, price text, at text, method text, kind text, quantity integer, total text, estimated boolean) where o.id = v.id::bigint`.execute(tx);
     }
-    if (verified.length || retired.length) await bumpCatalogVersion(tx);
-    if (deferred.length) await tx.updateTable('offers').set({ settlement_refresh_at: new Date() })
+    if (quotes.length || retired.length) await bumpCatalogVersion(tx);
+    if (deferred.length && adapter.canVerifySettlement !== false) await tx.updateTable('offers').set({ settlement_refresh_at: new Date() })
       .where('id', 'in', deferred).execute();
     // Only a first claim can restore eligibility; later claims may have already spent a retry budget.
     const unattempted = currentShop && job.attempts === 1n && metrics.data.attempts === 1
       ? (await retryCandidates(tx, currentShop, payload, false))
       .filter(row => !outcomes.has(row.external_id)) : [];
-    if (unattempted.length) await tx.updateTable('offers').set({ settlement_refresh_at: new Date() })
+    if (unattempted.length && adapter.canVerifySettlement !== false) await tx.updateTable('offers').set({ settlement_refresh_at: new Date() })
       .where('id', 'in', unattempted.map(row => row.offer_id)).execute();
     const report = settlementReport(applicableOutcomes, 'not_requested');
     const previousReport = job.row.settlement_report as ReturnType<typeof settlementReport> | null;
     report.verified += previousReport?.verified ?? 0;
     report.skipped += previousReport?.skipped ?? 0;
+    report.estimated += previousReport?.terminalEstimated ?? 0;
+    report.terminalEstimated = previousReport?.terminalEstimated ?? 0;
     for (const [reason, count] of Object.entries(previousReport?.terminalReasons ?? {})) {
       report.failed += count;
       report.reasons[reason] = (report.reasons[reason] ?? 0) + count;
       report.terminalReasons[reason] = count;
     }
     for (const outcome of applicableOutcomes) {
+      if (!outcome.retryable && (outcome.status === 'estimated' || outcome.estimated)) report.terminalEstimated++;
       if (outcome.status === 'failed' && !outcome.retryable) {
         const reason = outcome.reason ?? 'invalid_quote';
         report.terminalReasons[reason] = (report.terminalReasons[reason] ?? 0) + 1;

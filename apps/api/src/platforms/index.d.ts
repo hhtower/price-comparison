@@ -13,21 +13,38 @@ export interface CrawlProduct {
   imageUrl?: string | null;
   inStock: boolean;
   stockQuantity?: number | null;
-  settlement?: { price: string; totalAmount: string; quantity: number; verifiedAt: string; paymentMethod: string };
+  settlement?: { price: string; totalAmount: string; quantity: number; verifiedAt: string; paymentMethod: string;
+    kind: 'verified' | 'estimated' };
 }
 export interface PlatformAdapter {
   id: string; name: string; hosts: string[];
   responseFormat?: 'html';
   crawl(page: unknown, shop: { url: string }, fetchImpl?: typeof fetch, options?: CrawlOptions): Promise<CrawlProduct[]>;
   probe(shop: { url: string }, fetchImpl?: typeof fetch): Promise<CrawlProduct[]>;
+  canVerifySettlement?: boolean;
   settle?(shop: { url: string }, products: CrawlProduct[], fetchImpl?: typeof fetch, options?: CrawlOptions): Promise<CrawlProduct[]>;
   purchaseQuantity?(product: CrawlProduct): number | undefined;
+  estimatePurchaseQuantity?(product: CrawlProduct): number | undefined;
+  settlementFeePath?: string;
+  readSettlementFees?(payload: unknown, endpoint: URL): { key: string; fees: SettlementFee[] };
+  settlementFeeKey?(product: CrawlProduct): string;
+  preferPublicSettlementFees?: boolean;
+  settlementPaymentChannelIds?(product: CrawlProduct): number[] | undefined;
+}
+export interface SettlementFee {
+  channelId?: number;
+  min: bigint;
+  max: bigint;
+  cost(base: bigint): bigint;
+  label: string;
 }
 export interface SettlementResult {
   externalId: string;
-  status: 'verified' | 'failed' | 'skipped';
+  status: 'verified' | 'estimated' | 'failed' | 'skipped';
   reason?: string;
   retryable: boolean;
+  /** An estimate is displayed; failed/skipped status and retry policy still describe the native attempt. */
+  estimated?: boolean;
 }
 export interface ShopObservation {
   deposit: { amountMinor: number; currency: 'CNY'; purpose: null } | null;

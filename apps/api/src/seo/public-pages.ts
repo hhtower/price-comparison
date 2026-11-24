@@ -38,7 +38,7 @@ function renderOffer(offer: CatalogOffer): string {
   const name = escapeHtml(offer.name);
   const price = offer.price != null && ['verified', 'expired', 'estimated'].includes(offer.priceStatus ?? '')
     ? escapeHtml(offer.price) + ' ' + escapeHtml(offer.currency)
-      + (offer.priceStatus === 'expired' || offer.priceStatus === 'estimated' || offer.paymentMethod?.includes('预估') ? ' · 预估' : '')
+      + (offer.priceStatus === 'expired' || offer.priceStatus === 'estimated' ? ' · 预估' : '')
     : '—';
   return '<li><p>' + (source ? '<a href="' + escapeHtml(source) + '" rel="noopener noreferrer">' + name + '</a>' : name)
     + ' · ' + escapeHtml(offer.shop) + (offer.independentShop ? '（自建站）' : '') + '</p><p>' + price

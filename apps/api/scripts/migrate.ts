@@ -40,10 +40,19 @@ export async function migrateToLatest(database: Kysely<DatabaseSchema>): Promise
 }
 
 async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (args.length && (args.length !== 2 || args[0] !== '--to' || !args[1]?.trim())) {
+    throw new Error('Usage: db:migrate [--to migration_name]');
+  }
   const pool = createPostgresPool();
   const database = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({ pool }) });
   try {
-    await migrateToLatest(database);
+    if (args.length) {
+      const { error, results } = await new Migrator({ db: database, provider: migrationProvider,
+        migrationTableSchema: process.env.PG_SCHEMA?.trim() || 'public' }).migrateTo(args[1]!);
+      for (const result of results ?? []) console.info(`${result.status}: ${result.migrationName}`);
+      if (error) throw error;
+    } else await migrateToLatest(database);
   } finally {
     await database.destroy();
   }

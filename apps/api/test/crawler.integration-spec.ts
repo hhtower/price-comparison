@@ -17,7 +17,7 @@ import { createCache } from '../src/cache/cache.js';
 import { Keyv } from 'keyv';
 import { createHash } from 'node:crypto';
 import { AdminRepository } from '../src/admin/admin.repository.js';
-import { createCrawlerHandler } from '../src/workers/crawler.worker.js';
+import { createCrawlerHandler, createCrawlerWorker } from '../src/workers/crawler.worker.js';
 import { StandardizationRepository } from '../src/standardization/standardization.repository.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
 import { settlementPayload } from '../src/crawler/settlement-retry.js';
@@ -70,6 +70,16 @@ describe('complete shop snapshot synchronization', () => {
       .where('p.shop_id', '=', shopId).execute();
     return database.insertInto('fetch_runs').values({ shop_id: shopId, task_type: 'settlement', status: 'queued',
       started_at: new Date(), settlement_payload: jsonb(settlementPayload(source, rows)) }).returningAll().executeTakeFirstOrThrow();
+  }
+  async function runSupplement(handler: ReturnType<typeof createCrawlerHandler>, runId: bigint) {
+    await database.updateTable('fetch_runs').set({ available_at: new Date(0) }).where('id', '=', runId).execute();
+    const settled = Promise.withResolvers<void>();
+    const jobs = Object.assign(new JobsRepository(database), { onSettled: () => settled.resolve() });
+    const worker = createCrawlerWorker(jobs, { handler, transientRetryBaseMs: 1, transientRetryMaxMs: 1 });
+    try {
+      assert.equal(await worker.runOnce(), 1);
+      await settled.promise;
+    } finally { await worker.stop(); }
   }
   async function refresh(shopId: bigint, list: (ReturnType<typeof listing> & { image?: string })[], job?: ClaimedJob) {
     const previous = globalThis.fetch;
@@ -273,7 +283,7 @@ describe('complete shop snapshot synchronization', () => {
     assert.deepEqual(offers, [{ price: '15.00', is_stale: false, stock_available: true }]);
   });
 
-  test('crawler stores real totals and estimates when an expired quote cannot be refreshed', async () => {
+  test('crawler keeps real totals without renewing their age when an expired quote cannot be refreshed', async () => {
     const s = await shop();
     let quote: unknown = '98.00';
     const handler = createCrawlerHandler(database, new ProductsRepository(database), {
@@ -293,7 +303,9 @@ describe('complete shop snapshot synchronization', () => {
     await database.updateTable('offers').set({ settlement_verified_at: new Date(0) }).where('product_id', '=', product.id).execute();
     await handler(await claim(s.id));
     offer = await database.selectFrom('offers').select(['price', 'settlement_price', 'settlement_payment_method']).where('product_id', '=', product.id).executeTakeFirstOrThrow();
-    assert.deepEqual(offer, { price: '90.00', settlement_price: '90.00', settlement_payment_method: '支付价（预估：售价）' });
+    assert.deepEqual(offer, { price: '90.00', settlement_price: '98.00', settlement_payment_method: '支付宝' });
+    assert.deepEqual((await database.selectFrom('offers').select('settlement_verified_at')
+      .where('product_id', '=', product.id).executeTakeFirstOrThrow()).settlement_verified_at, new Date(0));
   });
 
   test('fresh unchanged settlements skip payment requests without renewing verification', async () => {
@@ -406,7 +418,7 @@ describe('complete shop snapshot synchronization', () => {
     assert.match(offer.settlement_payment_method!, /预估/);
   });
 
-  test('settlement failures replace expired quotes with labeled estimates and persist separate crawl results', async () => {
+  test('settlement failures preserve expired actual quotes and queue retries without failing the complete list', async () => {
     const s = await shop();
     await refresh(s.id, [listing('retry'), listing('private')]);
     const published = await publish(s.id, 'retry');
@@ -430,20 +442,32 @@ describe('complete shop snapshot synchronization', () => {
     const retry = await claim(s.id);
     await handler(retry);
     const retained = await database.selectFrom('offers').selectAll().where('product_id', '=', published.id).executeTakeFirstOrThrow();
-    assert.equal(retained.settlement_price, '10.00');
-    assert.ok(retained.settlement_verified_at!.getTime() > 0);
-    assert.match(retained.settlement_payment_method!, /预估/);
+    assert.equal(retained.settlement_price, '10.30');
+    assert.equal(retained.settlement_verified_at!.getTime(), 0);
+    assert.equal(retained.settlement_payment_method, 'Alipay');
     const row = await database.selectFrom('fetch_runs').selectAll().where('id', '=', retry.id).executeTakeFirstOrThrow();
     assert.equal(row.status, 'succeeded', 'settlement failure must not retry the shop list');
     assert.equal(row.item_count, 2n, 'the complete goods snapshot is already committed');
     const report = Reflect.get(row, 'settlement_report');
     assert.equal(report.listStatus, 'succeeded');
-    assert.equal(report.failed, 0);
-    assert.equal(report.retryable, 0);
-    assert.equal(report.reasons.estimated, 1);
+    assert.equal(report.failed, 1);
+    assert.equal(report.retryable, 1);
+    assert.equal(report.estimated, 1);
+    assert.equal(report.verified, 0);
+    assert.equal(report.reasons.request_failed, 1);
     assert.equal(report.skipped, 1);
-    assert.equal(row.error, null);
-    assert.deepEqual(await database.selectFrom('fetch_runs').select('id').where('source_fetch_run_id', '=', retry.id).execute(), []);
+    assert.match(row.error!, /settlement network failure/);
+    const supplement = await database.selectFrom('fetch_runs').selectAll().where('source_fetch_run_id', '=', retry.id).executeTakeFirstOrThrow();
+    assert.equal(supplement.status, 'queued');
+    assert.equal((supplement.settlement_payload as any).products[0].verifiedAt, new Date(0).toISOString());
+    await runSupplement(handler, supplement.id);
+    const failedAttempt = await database.selectFrom('fetch_runs').selectAll().where('id', '=', supplement.id).executeTakeFirstOrThrow();
+    assert.equal(failedAttempt.status, 'queued');
+    assert.equal((failedAttempt.settlement_payload as any).products[0].verifiedAt, new Date(0).toISOString());
+    fail = false;
+    await runSupplement(handler, supplement.id);
+    assert.equal((await database.selectFrom('fetch_runs').selectAll().where('id', '=', supplement.id).executeTakeFirstOrThrow()).status, 'succeeded');
+    fail = true;
     price = 12;
     const changed = await claim(s.id);
     await handler(changed);
@@ -460,10 +484,11 @@ describe('complete shop snapshot synchronization', () => {
     })(job);
     const row = await database.selectFrom('fetch_runs').selectAll().where('id', '=', job.id).executeTakeFirstOrThrow();
     assert.equal(row.status, 'succeeded');
-    assert.equal(Reflect.get(row, 'settlement_report').reasons.estimated, 1);
-    assert.equal(row.error, null);
+    assert.equal(Reflect.get(row, 'settlement_report').reasons.no_payment_channel, 1);
+    assert.equal(Reflect.get(row, 'settlement_report').estimated, 1);
+    assert.match(row.error!, /settlement failure/);
     const page = await new AdminRepository(database).listRunHistory({ shopId: s.id, limit: 100 });
-    assert.equal(Reflect.get(page.items.find(item => item.id === job.id)!, 'settlement_report').failed, 0);
+    assert.equal(Reflect.get(page.items.find(item => item.id === job.id)!, 'settlement_report').failed, 1);
     const supplements = await database.selectFrom('fetch_runs').select('id').where('source_fetch_run_id', '=', job.id).execute();
     assert.deepEqual(supplements, [], 'terminal failures must not burn quota in the 5s retry queue');
   });
@@ -473,7 +498,7 @@ describe('complete shop snapshot synchronization', () => {
     await refresh(s.id, [listing('fresh-failure')]);
     const product = await publish(s.id, 'fresh-failure');
     const verifiedAt = new Date(Date.now() - 2000);
-    await database.updateTable('offers').set({ settlement_price: '10.30', settlement_verified_at: verifiedAt, settlement_payment_method: 'Alipay' })
+    await database.updateTable('offers').set({ settlement_price: '10.30', settlement_quantity: 1, settlement_total_amount: '10.30', settlement_verified_at: verifiedAt, settlement_payment_method: 'Alipay' })
       .where('product_id', '=', product.id).execute();
     await createCrawlerHandler(database, new ProductsRepository(database), {
       fetchFactory: () => async url => {
@@ -501,13 +526,14 @@ describe('complete shop snapshot synchronization', () => {
     await handler(run);
     const completed = await database.selectFrom('fetch_runs').selectAll().where('id', '=', run.id).executeTakeFirstOrThrow();
     assert.equal(completed.status, 'succeeded');
-    assert.equal((completed.settlement_report as any).reasons.estimated, 1);
+    assert.equal((completed.settlement_report as any).reasons.proxy_authentication, 1);
+    assert.equal((completed.settlement_report as any).estimated, 1);
     assert.equal((completed.settlement_report as any).retryable, 0);
     const supplements = await database.selectFrom('fetch_runs').select('id').where('source_fetch_run_id', '=', run.id).execute();
     assert.deepEqual(supplements, []);
   });
 
-  test('mixed actual and estimated prices avoid retries and real quotes replace estimates on refresh', async () => {
+  test('mixed actual and estimated prices retry only failures and replace estimates on recovery', async () => {
     const s = await shop();
     const listings = [listing('ok'), listing('retry-one'), listing('retry-two')];
     await refresh(s.id, listings);
@@ -527,22 +553,27 @@ describe('complete shop snapshot synchronization', () => {
     });
     const listJob = await claim(s.id);
     await handler(listJob);
-    assert.deepEqual(await database.selectFrom('fetch_runs').select('id').where('source_fetch_run_id', '=', listJob.id).execute(), []);
+    const queue = await database.selectFrom('fetch_runs').selectAll().where('source_fetch_run_id', '=', listJob.id).executeTakeFirstOrThrow();
+    assert.equal((queue.settlement_payload as any).products.length, 2);
     const initialOffers = await database.selectFrom('offers').selectAll().where('product_id', 'in',
       database.selectFrom('products').select('id').where('shop_id', '=', s.id)).execute();
     assert.equal(initialOffers.filter(row => row.settlement_payment_method!.includes('预估')).length, 2);
-    const queue = await queueSupplement(s.id);
-    const jobs = new JobsRepository(database);
+    phase = 1;
+    await runSupplement(handler, queue.id);
+    const intermediate = await database.selectFrom('fetch_runs').selectAll().where('id', '=', queue.id).executeTakeFirstOrThrow();
+    assert.equal(intermediate.status, 'queued');
+    assert.equal((intermediate.settlement_report as any).verified, 1);
+    assert.equal((intermediate.settlement_report as any).estimated, 1);
     phase = 2;
-    const retry = (await jobs.claimNext('fetch_run', 'settlement-test', 120000))!;
-    assert.equal(retry.id, queue.id);
-    await handler(retry);
+    await runSupplement(handler, queue.id);
     assert.equal(listCalls, 1, 'supplements must never refetch the list');
-    assert.deepEqual(quoted, [['ok', 'retry-one', 'retry-two'], [], ['ok', 'retry-one', 'retry-two']]);
+    assert.deepEqual(quoted, [['ok', 'retry-one', 'retry-two'], ['retry-one', 'retry-two'], ['retry-one']]);
     const row = await database.selectFrom('fetch_runs').selectAll().where('id', '=', queue.id).executeTakeFirstOrThrow();
     assert.equal(row.status, 'succeeded');
-    assert.equal((row.crawl_metrics as any).attempts, 1);
+    assert.equal((row.crawl_metrics as any).attempts, 2);
     assert.equal((row.crawl_metrics as any).listSucceeded, 0);
+    assert.equal((row.settlement_report as any).verified, 2);
+    assert.equal((row.settlement_report as any).estimated, 0);
     assert.deepEqual((row.settlement_payload as any).products, []);
     assert.ok((await database.selectFrom('offers').select('settlement_payment_method').where('product_id', 'in',
       database.selectFrom('products').select('id').where('shop_id', '=', s.id)).execute()).every(row => row.settlement_payment_method === 'Alipay'));
@@ -570,8 +601,9 @@ describe('complete shop snapshot synchronization', () => {
     const estimate = await database.selectFrom('offers').selectAll().where('product_id', '=', product.id).executeTakeFirstOrThrow();
     assert.equal(estimate.settlement_quantity, 5);
     assert.equal(estimate.settlement_total_amount, '50.00');
-    const queued = await queueSupplement(s.id);
+    const queued = await database.selectFrom('fetch_runs').selectAll().where('source_fetch_run_id', '=', initial.id).executeTakeFirstOrThrow();
     failing = false;
+    await database.updateTable('fetch_runs').set({ available_at: new Date(0) }).where('id', '=', queued.id).execute();
     const retry = (await new JobsRepository(database).claimNext('fetch_run', 'bulk-retry', 120000))!;
     assert.equal(retry.id, queued.id);
     await handler(retry);
@@ -706,7 +738,7 @@ describe('complete shop snapshot synchronization', () => {
       });
       const listJob = await claim(s.id);
       await handler(listJob);
-      const queue = await queueSupplement(s.id);
+      const queue = await database.selectFrom('fetch_runs').selectAll().where('source_fetch_run_id', '=', listJob.id).executeTakeFirstOrThrow();
       if (change === 'source') await database.updateTable('shops').set({ url: 'https://www.16688.com.cn/shop/changed' }).where('id', '=', s.id).execute();
       if (change === 'product') await database.updateTable('products').set({ content_version: sql`content_version + 1` }).where('id', '=', product.id).execute();
       if (change === 'newer-quote') await database.updateTable('offers').set({ settlement_price: '9.99', settlement_total_amount: '9.99', settlement_verified_at: new Date(), settlement_payment_method: 'Alipay' }).where('product_id', '=', product.id).execute();
@@ -719,7 +751,7 @@ describe('complete shop snapshot synchronization', () => {
     }
   });
 
-  test('invalid and network quotes both estimate, and later valid quotes replace both', async () => {
+  test('terminal failures retain their reason while transient estimates recover within the same retry job', async () => {
     const s = await shop();
     const listings = [listing('invalid'), listing('recover')];
     await refresh(s.id, listings);
@@ -735,22 +767,24 @@ describe('complete shop snapshot synchronization', () => {
     });
     const initial = await claim(s.id);
     await handler(initial);
-    let queued = await queueSupplement(s.id);
-    const jobs = new JobsRepository(database);
-    await database.updateTable('fetch_runs').set({ available_at: new Date(0) }).where('id', '=', queued.id).execute();
+    const queued = await database.selectFrom('fetch_runs').selectAll().where('source_fetch_run_id', '=', initial.id).executeTakeFirstOrThrow();
     phase = 1;
-    const retry = (await jobs.claimNext('fetch_run', 'retry', 120000))!;
-    await handler(retry);
+    await runSupplement(handler, queued.id);
     const estimated = await database.selectFrom('fetch_runs').selectAll().where('id', '=', queued.id).executeTakeFirstOrThrow();
-    assert.equal((estimated.settlement_report as any).reasons.estimated, 2);
-    assert.equal(estimated.status, 'succeeded');
-    queued = await queueSupplement(s.id);
+    assert.equal((estimated.settlement_report as any).estimated, 2);
+    assert.equal((estimated.settlement_report as any).failed, 2);
+    assert.equal((estimated.settlement_report as any).reasons.invalid_quote, 1);
+    assert.equal((estimated.settlement_report as any).reasons.request_failed, 1);
+    assert.equal(estimated.status, 'queued');
     phase = 2;
-    await handler((await jobs.claimNext('fetch_run', 'retry', 120000))!);
+    await runSupplement(handler, queued.id);
     const final = await database.selectFrom('fetch_runs').selectAll().where('id', '=', queued.id).executeTakeFirstOrThrow();
-    assert.equal(final.status, 'succeeded');
-    assert.equal((final.settlement_report as any).failed, 0);
-    assert.equal((final.settlement_report as any).verified, 2);
+    assert.equal(final.status, 'failed');
+    assert.equal((final.settlement_report as any).failed, 1);
+    assert.equal((final.settlement_report as any).verified, 1);
+    assert.equal((final.settlement_report as any).estimated, 1);
+    assert.equal((final.settlement_report as any).reasons.invalid_quote, 1);
+    assert.equal((final.settlement_report as any).reasons.request_failed, undefined);
   });
 
   test('crawler transaction allows a concurrent heartbeat and fences a replacement claim before commit', async () => {
@@ -823,12 +857,12 @@ describe('complete shop snapshot synchronization', () => {
     const product = await database.selectFrom('products').select('id').where('shop_id', '=', s.id).executeTakeFirstOrThrow();
     for (const price of ['NaN', 'Infinity', '-Infinity', '-1', '1000000000000']) {
       await assert.rejects(database.updateTable('offers').set({
-        settlement_price: price, settlement_verified_at: new Date(), settlement_payment_method: 'Alipay',
+        settlement_price: price, settlement_quantity: 1, settlement_total_amount: price, settlement_verified_at: new Date(), settlement_payment_method: 'Alipay',
       }).where('product_id', '=', product.id).execute(), error => ['23514', '22003'].includes((error as { code: string }).code));
     }
-    await assert.rejects(database.updateTable('offers').set({ settlement_price: '98.00' })
+    await assert.rejects(database.updateTable('offers').set({ settlement_price: '98.00', settlement_quantity: 1, settlement_total_amount: '98.00' })
       .where('product_id', '=', product.id).execute(), error => (error as { code: string }).code === '23514');
-    await database.updateTable('offers').set({ settlement_price: '999999999999.99', settlement_verified_at: new Date(), settlement_payment_method: 'Alipay' })
+    await database.updateTable('offers').set({ settlement_price: '999999999999.99', settlement_quantity: 1, settlement_total_amount: '999999999999.99', settlement_verified_at: new Date(), settlement_payment_method: 'Alipay' })
       .where('product_id', '=', product.id).execute();
     assert.equal((await database.selectFrom('offers').select('settlement_price').where('product_id', '=', product.id).executeTakeFirstOrThrow()).settlement_price, '999999999999.99');
   });
@@ -895,17 +929,22 @@ describe('complete shop snapshot synchronization', () => {
         ? { goods_no: 'stock', name, price: 10, stock_available_quantity: quantity, stock_available_status: Number(quantity) === 0 ? 'out' : '' }
         : { goods_key: 'stock', link: 'https://wzyp.cn/item/stock', name, price: 10, extend: { stock_count: quantity, show_stock_type: 0 } };
       const handler = createCrawlerHandler(database, new ProductsRepository(database), {
-        fetchFactory: () => async (_url, options) => new Response(JSON.stringify({
-          code: 1, data: { list: JSON.parse(options.body).current > 1 ? [] : [item] },
-        })),
+        fetchFactory: () => async (url, options) => {
+          if (String(url).endsWith('/payment/list')) return Response.json({ code: 1, data: { list: [{ id: 1, show_name: 'Alipay' }] } });
+          if (String(url).endsWith('/getUserChannel')) return Response.json({ code: 1, data: [{ id: 1, show_name: 'Alipay', status: 1, custom_status: 1 }] });
+          if (/\/(quotePrice|getGoodsPrice)$/.test(String(url))) return Response.json({ code: 1, data: { total_amount: '10.00' } });
+          return Response.json({ code: 1, data: { list: JSON.parse(options.body).current > 1 ? [] : [item] } });
+        },
       });
       await handler(await claim(s.id));
     };
     await refreshStock(5);
     const original = await publish(s.id, 'stock', 'human');
+    await refreshStock(5);
+    await publishChanges();
     const values = new Map<string, unknown>();
     const service = new CatalogService(new CatalogRepository(database), createCache({ stores: [new Keyv({ store: values })], ttl: 30_000 }));
-    const query = { search: name, tags: [], limit: 100 };
+    const query = { shopId: String(s.id), tags: [], limit: 100 };
     const initial = await service.getCatalog(query);
     assert.deepEqual(initial.items.flatMap(item => item.offers.map(offer => offer.productId)), [String(original.id)]);
     assert.deepEqual(await service.getCatalog(query), initial);
@@ -972,6 +1011,7 @@ describe('complete shop snapshot synchronization', () => {
       // Only published products are eligible for settlement verification.
       await refresh(5);
     }
+    await publishChanges();
     const values = new Map<string, unknown>();
     const service = new CatalogService(new CatalogRepository(database), createCache({ stores: [new Keyv({ store: values })], ttl: 30_000 }));
     const query = { search: name, tags: [], limit: 100 };
@@ -1048,10 +1088,10 @@ describe('complete shop snapshot synchronization', () => {
       assert.deepEqual(await database.selectFrom('standard_product_members').selectAll().where('product_id', '=', before.id).execute(), changed ? [] : members);
       const events = await database.selectFrom('product_change_events').select(['event_type', 'fingerprint'])
         .where('product_id', '=', before.id).orderBy('id').execute();
-      assert.deepEqual(events.map(event => event.event_type), changed ? ['created', 'evidence_changed'] : ['created']);
+      assert.deepEqual(events.map(event => event.event_type), changed ? ['created', 'evidence_changed'] : ['created', 'restored']);
       const pending = await database.selectFrom('standardization_outbox').select('fingerprint')
         .where('product_id', '=', before.id).where('status', '=', 'queued').execute();
-      assert.deepEqual(pending, changed ? [{ fingerprint: restored.content_fingerprint }] : []);
+      assert.deepEqual(pending, [{ fingerprint: restored.content_fingerprint }]);
     });
   }
 
@@ -1171,7 +1211,7 @@ describe('complete shop snapshot synchronization', () => {
     const s = await shop();
     await refresh(s.id, [listing('cached-failure')]);
     const product = await publish(s.id, 'cached-failure');
-    await database.updateTable('offers').set({ settlement_price: '10.00', settlement_verified_at: new Date(), settlement_payment_method: 'alipay' }).where('product_id', '=', product.id).execute();
+    await database.updateTable('offers').set({ settlement_price: '10.00', settlement_quantity: 1, settlement_total_amount: '10.00', settlement_verified_at: new Date(), settlement_payment_method: 'alipay' }).where('product_id', '=', product.id).execute();
     const values = new Map<string, unknown>();
     const service = new CatalogService(new CatalogRepository(database), createCache({ stores: [new Keyv({ store: values })], ttl: 30_000 }));
     const query = { search: `standard-${sequence}`, limit: 100 };
@@ -1193,7 +1233,7 @@ describe('complete shop snapshot synchronization', () => {
     assert.equal(recovered.items[0]?.offers[0]?.productId, String(product.id));
     assert.equal(recovered.items[0]?.offers[0]?.price, '12.00');
     assert.equal(recovered.items[0]?.offers[0]?.listedPrice, '12.00');
-    assert.equal(recovered.items[0]?.offers[0]?.priceStatus, 'verified');
+    assert.equal(recovered.items[0]?.offers[0]?.priceStatus, 'estimated');
     assert.match(recovered.items[0]?.offers[0]?.paymentMethod!, /预估/);
   });
 
@@ -1397,7 +1437,7 @@ describe('complete shop snapshot synchronization', () => {
     assert.equal((await database.selectFrom('products').select('name').where('id', '=', product.id).executeTakeFirstOrThrow()).name, 'ChatGPT Pro');
   });
 
-  test('concurrent crawler and API first imports share one product and one review event', async () => {
+  test('concurrent crawler and API first imports share one product and one creation event', async () => {
     const s = await shop();
     const source = await database.selectFrom('shops').select('url').where('id', '=', s.id).executeTakeFirstOrThrow();
     const repository = new ProductsRepository(database);
@@ -1408,7 +1448,13 @@ describe('complete shop snapshot synchronization', () => {
     const products = await database.selectFrom('products').selectAll().where('shop_id', '=', s.id).where('external_id', '=', 'first-import').execute();
     assert.equal(products.length, 1);
     assert.equal(products[0]!.content_version, 1n);
-    assert.equal((await database.selectFrom('product_change_events').select('id').where('product_id', '=', products[0]!.id).execute()).length, 1);
+    const events = await database.selectFrom('product_change_events').select(['event_type', 'fingerprint'])
+      .where('product_id', '=', products[0]!.id).orderBy('id').execute();
+    assert.equal(events.filter(event => event.event_type === 'created').length, 1);
+    // If API import wins, the crawler subsequently introduces the first available offer.
+    assert.ok(events.length <= 2);
+    assert.ok(events.slice(1).every(event => event.event_type === 'restored'));
+    assert.ok(events.every(event => event.fingerprint === products[0]!.content_fingerprint));
     assert.equal((await database.selectFrom('standardization_outbox').select('id').where('product_id', '=', products[0]!.id).execute()).length, 1);
     assert.equal((await database.selectFrom('offers').select('is_stale').where('product_id', '=', products[0]!.id).executeTakeFirstOrThrow()).is_stale, false);
   });
@@ -1512,11 +1558,11 @@ describe('complete shop snapshot synchronization', () => {
       const nonSaleShop = await shop();
       await refresh(nonSaleShop.id, [{ ...listing('not-for-sale'), stock_available_quantity: 0 }]);
       const nonSale = await database.selectFrom('products').select('id').where('shop_id', '=', nonSaleShop.id).executeTakeFirstOrThrow();
-      const nonSaleJob = await consume('trace-non-sale');
-      assert.ok(nonSaleJob);
-      await new AiRepository(database).cancelJob(nonSaleJob.id);
-      assert.equal((await database.selectFrom('ai_standardization_executions').select('status')
-        .where('product_id', '=', nonSale.id).executeTakeFirstOrThrow()).status, 'cancelled');
+      assert.deepEqual(await standardization.claimOutbox('trace-non-sale'), []);
+      assert.equal((await database.selectFrom('standardization_outbox').select('status')
+        .where('product_id', '=', nonSale.id).executeTakeFirstOrThrow()).status, 'queued');
+      assert.deepEqual(await database.selectFrom('ai_standardization_executions').select('id')
+        .where('product_id', '=', nonSale.id).execute(), []);
     } finally {
       if (previousModel === undefined) delete process.env.AI_MODEL;
       else process.env.AI_MODEL = previousModel;

@@ -164,7 +164,7 @@ function OfferPrice({ offer, className = '', starting = false }) {
   const listed = Number(offer?.listedPrice);
   const listedAmount = offer?.listedPrice != null && String(offer.listedPrice).trim() && Number.isFinite(listed) && listed >= 0
     ? formatMoney(listed, available ? '' : offer.currency) : '—';
-  const estimated = offer?.priceStatus === 'estimated' || offer?.paymentMethod?.includes('预估');
+  const estimated = offer?.priceStatus === 'estimated';
   const hint = available ? [offer.paymentMethod,
     offer.priceVerifiedAt ? `核价于 ${new Date(offer.priceVerifiedAt).toLocaleString('zh-CN')}` : null].filter(Boolean).join(' · ') : undefined;
   return <span className={`offer-price ${className}${available ? '' : ' price-unavailable'}`} title={hint}>
@@ -748,7 +748,7 @@ const StandardProductCard = memo(function StandardProductCard({ item, group, exp
   const minOffer = shopOffers.find(offer => availableOffer(offer)
     && (!group || group.minPrice != null && Number(offer.price) === Number(group.minPrice) && offer.currency === currency));
   const estimated = (group ? group.minPrice != null : availableOffer(minOffer))
-    && (minOffer?.priceStatus === 'estimated' || minOffer?.paymentMethod?.includes('预估'));
+    && minOffer?.priceStatus === 'estimated';
   const latestCapturedAt = group ? group.latestCapturedAt : item.latestCapturedAt;
   const updatedLabel = formatRelativeTime(latestCapturedAt);
   const shopCount = Number(group ? group.shopCount : item.shopCount ?? new Set(offers.map((offer) => offer.shopId || offer.shop)).size);

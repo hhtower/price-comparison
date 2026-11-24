@@ -1,7 +1,9 @@
 import { buildSourceEvidence, captureRatingText, rawProductContent } from './source-evidence.js';
 import { normalizeSpec } from '../products/product-spec.js';
+import { minimumPurchaseQuantity } from './settlement.js';
 
 export const id = 'orion-key';
+export const purchaseQuantity = product => minimumPurchaseQuantity(product.sourceData, 'quantity_step');
 const PAGE_SIZE = 100;
 const MAX_PAGES = 1000;
 const fail = message => { throw new Error(`${id} goods API: ${message}`); };
@@ -106,4 +108,4 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
   fail('pagination limit exceeded');
 }
 
-export default { id, name: 'Orion Key', hosts: ['gpt.ybkjs.top', 'chong.nerver.cc', 'shop.desolate.run'], crawl, probe };
+export default { id, name: 'Orion Key', hosts: ['gpt.ybkjs.top', 'chong.nerver.cc', 'shop.desolate.run'], crawl, probe, purchaseQuantity };

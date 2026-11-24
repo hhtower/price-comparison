@@ -27,6 +27,8 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   // Block source writes until triggers and the initial projection become visible together.
   await sql`lock table products, offers, catalog_product_facts, standard_product_members
     in share row exclusive mode`.execute(database);
+  const columns = COLUMNS;
+  const priceColumns = PRICE_COLUMNS;
   await sql`create function catalog_read_offers_max_warranty_days(tags jsonb)
     returns integer language sql immutable parallel safe set search_path to 'pg_catalog' as $function$
       select max(case when days between -2147483648::bigint and 2147483647 then days::integer end)
@@ -141,24 +143,24 @@ export async function up(database: Kysely<unknown>): Promise<void> {
         delete from catalog_read_offers r where r.product_id = any(product_ids)
           and not exists (select 1 from candidates c where c.product_id = r.product_id)
       )
-      insert into catalog_read_offers as stored (${sql.raw(COLUMNS.join(', '))})
-        select ${sql.raw(COLUMNS.join(', '))} from candidates order by product_id
+      insert into catalog_read_offers as stored (${sql.raw(columns.join(', '))})
+        select ${sql.raw(columns.join(', '))} from candidates order by product_id
       on conflict (product_id) do update set
-        ${sql.raw(COLUMNS.slice(1).map(column => `${column} = excluded.${column}`).join(', '))}
-      where (${sql.raw(COLUMNS.slice(1).map(column => `stored.${column}`).join(', '))})
-        is distinct from (${sql.raw(COLUMNS.slice(1).map(column => `excluded.${column}`).join(', '))});
+        ${sql.raw(columns.slice(1).map(column => `${column} = excluded.${column}`).join(', '))}
+      where (${sql.raw(columns.slice(1).map(column => `stored.${column}`).join(', '))})
+        is distinct from (${sql.raw(columns.slice(1).map(column => `excluded.${column}`).join(', '))});
       -- Reuse the completed wide rows while still holding the same product locks.
       with removed as (
         delete from catalog_read_offer_prices r where r.product_id = any(product_ids)
           and not exists (select 1 from catalog_read_offers w where w.product_id = r.product_id)
       )
-      insert into catalog_read_offer_prices as stored (${sql.raw(PRICE_COLUMNS.join(', '))})
-        select ${sql.raw(PRICE_COLUMNS.join(', '))} from catalog_read_offers
+      insert into catalog_read_offer_prices as stored (${sql.raw(priceColumns.join(', '))})
+        select ${sql.raw(priceColumns.join(', '))} from catalog_read_offers
         where product_id = any(product_ids) order by product_id
       on conflict (product_id) do update set
-        ${sql.raw(PRICE_COLUMNS.slice(1).map(column => `${column} = excluded.${column}`).join(', '))}
-      where (${sql.raw(PRICE_COLUMNS.slice(1).map(column => `stored.${column}`).join(', '))})
-        is distinct from (${sql.raw(PRICE_COLUMNS.slice(1).map(column => `excluded.${column}`).join(', '))});
+        ${sql.raw(priceColumns.slice(1).map(column => `${column} = excluded.${column}`).join(', '))}
+      where (${sql.raw(priceColumns.slice(1).map(column => `stored.${column}`).join(', '))})
+        is distinct from (${sql.raw(priceColumns.slice(1).map(column => `excluded.${column}`).join(', '))});
     end
     $function$`.execute(database);
 

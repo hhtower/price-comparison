@@ -6,9 +6,12 @@ import { migrateToLatest } from '../scripts/migrate.js';
 import { jsonb, type DatabaseSchema } from '../src/database/types.js';
 import { enqueueDueSettlements } from '../src/crawler/settlement-scheduler.js';
 import { JobsRepository } from '../src/jobs/jobs.repository.js';
-import { createCrawlerHandler } from '../src/workers/crawler.worker.js';
+import { createCrawlerHandler, createCrawlerWorker } from '../src/workers/crawler.worker.js';
 import { ProductsRepository } from '../src/products/products.repository.js';
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
+import { runSettlementRetry } from '../src/crawler/settlement-retry.js';
+import { CrawlRunMetrics } from '../src/crawler/run-metrics.js';
+import { platformForUrl } from '../src/platforms/index.js';
 
 describe('independent settlement expiry scheduling', () => {
   let db: Kysely<DatabaseSchema>, admin: Pool, schema: string;
@@ -32,6 +35,16 @@ describe('independent settlement expiry scheduling', () => {
   });
   beforeEach(async () => { await sql`truncate shops, standard_products restart identity cascade`.execute(db); });
 
+  async function runAttempt(handler: ReturnType<typeof createCrawlerHandler>) {
+    const settled = Promise.withResolvers<void>();
+    const jobs = Object.assign(new JobsRepository(db), { onSettled: () => settled.resolve() });
+    const worker = createCrawlerWorker(jobs, { handler, transientRetryBaseMs: 1, transientRetryMaxMs: 1 });
+    try {
+      assert.equal(await worker.runOnce(), 1);
+      await settled.promise;
+    } finally { await worker.stop(); }
+  }
+
   async function fixture(count = 1) {
     const shop = await db.insertInto('shops').values({ url: 'https://www.16688.com.cn/shop/expiry',
       platform: '16688', name: 'Expiry', enabled: true, next_fetch_at: new Date(now.getTime() + 3_600_000) }).returningAll().executeTakeFirstOrThrow();
@@ -47,6 +60,7 @@ describe('independent settlement expiry scheduling', () => {
       }).execute();
       await db.insertInto('offers').values({ product_id: product.id, idempotency_key: `${shop.id}:${i}`,
         price: '10.00', settlement_price: '10.30', settlement_verified_at: new Date(now.getTime() - ttlMs - 1000),
+        settlement_quantity: 1, settlement_total_amount: '10.30',
         settlement_payment_method: 'Alipay', captured_at: now, settlement_refresh_at: now,
       }).execute();
     }
@@ -107,11 +121,10 @@ describe('independent settlement expiry scheduling', () => {
   for (const [protocol, url] of [
     ['public-products-v1', 'https://suqiai.cc/'],
     ['acg-faka', 'https://douyiner.cn/'],
-    ['dujiaoka', 'https://ouvg.top/'],
   ]) test(`custom ${protocol} storefronts receive missing-price and expiry supplements`, async () => {
     const shop = await fixture();
     await db.updateTable('shops').set({ protocol, url, platform: '独立站' }).where('id', '=', shop.id).execute();
-    await db.updateTable('offers').set({ settlement_price: null, settlement_verified_at: null,
+    await db.updateTable('offers').set({ settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_verified_at: null,
       settlement_payment_method: null }).execute();
     assert.equal(await enqueueDueSettlements(db, 32, now, ttlMs), 1);
     const run = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
@@ -121,17 +134,74 @@ describe('independent settlement expiry scheduling', () => {
     assert.equal(await enqueueDueSettlements(db, 32, now, ttlMs), 0);
   });
 
-  test('list-only custom storefronts receive estimates without remote requests', async () => {
+  for (const protocol of ['orion-key', 'prism', 'dujiaoka']) test(`${protocol} estimate-only storefronts are excluded from native verification scheduling`, async () => {
     const shop = await fixture();
-    await db.updateTable('shops').set({ protocol: 'orion-key', url: 'https://chong.nerver.cc/', platform: '自研' })
+    await db.updateTable('shops').set({ protocol, url: 'https://chong.nerver.cc/', platform: '自研' })
       .where('id', '=', shop.id).execute();
-    assert.equal(await enqueueDueSettlements(db, 32, now, ttlMs), 1);
-    await createCrawlerHandler(db, new ProductsRepository(db), { fetchFactory: () => async () => {
-      throw new Error('list-only estimate must not request the network');
-    } })((await new JobsRepository(db).claimNext('fetch_run', 'estimate', 120000))!);
+    assert.equal(await enqueueDueSettlements(db, 32, now, ttlMs), 0);
+    assert.equal((await db.selectFrom('fetch_runs').select('id').execute()).length, 0);
+  });
+
+  test('capability downgrade replaces a legacy actual quote with an estimate on the next list', async () => {
+    const shop = await fixture();
+    await db.updateTable('shops').set({ protocol: 'dujiaoka', url: 'https://ouvg.top/', platform: '独立站' })
+      .where('id', '=', shop.id).execute();
+    await db.updateTable('products').set({ external_id: '1' }).execute();
+    await db.updateTable('offers').set({ idempotency_key: `${shop.id}:1`, settlement_price: '10.00', settlement_total_amount: '10.00',
+      settlement_verified_at: now, settlement_payment_method: '支付宝（无手续费）' }).execute();
+    await db.insertInto('fetch_runs').values({ shop_id: shop.id, task_type: 'list', status: 'queued', started_at: now }).execute();
+    const fetchImpl: typeof fetch = async url => {
+      const path = new URL(String(url)).pathname;
+      assert.ok(path === '/' || path === '/buy/1');
+      return new Response(path === '/'
+        ? '<html><link href="/assets/unicorn/app.css"><div id="goodsTabContent"><div id="group-all"><a href="/buy/1">Plus</a></div><div id="group-1"><a href="/buy/1">Plus</a></div></div></html>'
+        : '<html><input name="gid" value="1"><h3 class="card-title">Plus</h3><div id="display_price">￥10.00</div><div id="stock_tips">库存：10</div></html>');
+    };
+    await createCrawlerHandler(db, new ProductsRepository(db), {
+      publicFetchFactory: async () => ({ fetch: fetchImpl, close: async () => {} }),
+    })((await new JobsRepository(db).claimNext('fetch_run', 'downgraded', 120000))!);
     const offer = await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow();
     assert.equal(offer.settlement_price, '10.00');
     assert.match(offer.settlement_payment_method!, /预估/);
+    assert.equal(offer.settlement_refresh_at, null);
+    const run = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
+    assert.equal((run.settlement_report as any).verified, 0);
+    assert.equal((run.settlement_report as any).estimated, 1);
+    assert.equal(await enqueueDueSettlements(db), 0);
+  });
+
+  test('estimate-only FX failure preserves diagnostics but cancels old supplements without creating a retry', async () => {
+    const shop = await fixture();
+    await db.updateTable('shops').set({ protocol: 'prism', url: 'https://shop.558686.xyz/', platform: '独立站' })
+      .where('id', '=', shop.id).execute();
+    await db.updateTable('products').set({ external_id: '1' }).execute();
+    await db.updateTable('offers').set({ idempotency_key: `${shop.id}:1` }).execute();
+    await db.insertInto('fetch_runs').values({ shop_id: shop.id, task_type: 'list', status: 'queued', started_at: now }).execute();
+    const job = (await new JobsRepository(db).claimNext('fetch_run', 'fx-list', 120000))!;
+    const old = await db.insertInto('fetch_runs').values({
+      shop_id: shop.id, task_type: 'settlement', status: 'queued', started_at: now,
+    }).returning('id').executeTakeFirstOrThrow();
+    let rates = 0;
+    const fetchImpl: typeof fetch = async url => {
+      if (new URL(String(url)).pathname === '/api/catalog') return Response.json({
+        products: [{ id: 1, name: 'Plus', price: 1000000, stock: 10 }],
+      });
+      assert.match(String(url), /currencies\/cny\.json$/);
+      if (++rates > 1) throw new Error('network unavailable');
+      return Response.json({ cny: { usd: 0.1 } });
+    };
+    await createCrawlerHandler(db, new ProductsRepository(db), {
+      publicFetchFactory: async () => ({ fetch: fetchImpl, close: async () => {} }),
+    })(job);
+    const run = await db.selectFrom('fetch_runs').selectAll().where('id', '=', job.id).executeTakeFirstOrThrow();
+    assert.equal(run.status, 'succeeded');
+    assert.equal((run.settlement_report as any).failed, 1);
+    assert.equal((run.settlement_report as any).retryable, 1);
+    assert.equal((run.settlement_report as any).estimated, 1);
+    assert.equal((run.settlement_report as any).reasons.request_failed, 1);
+    assert.equal((await db.selectFrom('fetch_runs').select('status').where('id', '=', old.id).executeTakeFirstOrThrow()).status, 'cancelled');
+    assert.equal((await db.selectFrom('fetch_runs').select('id').where('status', 'in', ['queued', 'running']).execute()).length, 0);
+    assert.equal((await db.selectFrom('offers').select('settlement_refresh_at').executeTakeFirstOrThrow()).settlement_refresh_at, null);
   });
 
   test('future, fresh, stale, sold-out and unpublished quotes do not generate requests', async () => {
@@ -147,6 +217,8 @@ describe('independent settlement expiry scheduling', () => {
 
   test('a large list bounds native requests and estimates remaining prices in the same snapshot', async () => {
     const shop = await fixture(25);
+    await db.updateTable('offers').set({ settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_verified_at: null,
+      settlement_payment_method: null }).execute();
     await db.insertInto('fetch_runs').values({ shop_id: shop.id, task_type: 'list', status: 'queued', started_at: now }).execute();
     let quotes = 0, observations = 0;
     await createCrawlerHandler(db, new ProductsRepository(db), { fetchFactory: () => async url => {
@@ -166,13 +238,17 @@ describe('independent settlement expiry scheduling', () => {
     const run = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
     assert.equal(run.status, 'succeeded');
     assert.equal(run.item_count, 25n);
-    assert.equal((run.settlement_report as any).reasons.estimated, 20);
+    assert.equal((run.settlement_report as any).verified, 5);
+    assert.equal((run.settlement_report as any).estimated, 20);
+    assert.equal((run.settlement_report as any).reasons.deferred, 20);
     assert.equal((run.settlement_report as any).failed, 0);
     const rows = await db.selectFrom('offers').selectAll().execute();
     assert.equal(rows.filter(row => row.settlement_price === '11.30').length, 5);
     assert.equal(rows.filter(row => row.settlement_price === '10.00' && row.settlement_payment_method!.includes('预估')).length, 20);
-    assert.ok(rows.every(row => row.settlement_refresh_at! > new Date()));
-    assert.equal(await enqueueDueSettlements(db), 0);
+    assert.equal(rows.filter(row => row.settlement_refresh_at! <= new Date()).length, 20);
+    assert.equal(await enqueueDueSettlements(db), 1);
+    const queued = await db.selectFrom('fetch_runs').selectAll().where('status', '=', 'queued').executeTakeFirstOrThrow();
+    assert.equal((queued.settlement_payload as any).products.length, 20);
   });
 
   test('concurrent schedulers create one task per shop and queued lists do not prevent expiry admission', async () => {
@@ -189,15 +265,19 @@ describe('independent settlement expiry scheduling', () => {
     const handler = createCrawlerHandler(db, new ProductsRepository(db), { fetchFactory: () => async () => Response.json({ code: 1, data: { list: [] } }) });
     await handler((await new JobsRepository(db).claimNext('fetch_run', 'expiry', 120000))!);
     const run = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
-    assert.equal(run.status, 'succeeded');
-    assert.equal((run.settlement_report as any).reasons.estimated, 1);
+    assert.equal(run.status, 'failed');
+    assert.equal((run.settlement_report as any).failed, 1);
+    assert.equal((run.settlement_report as any).estimated, 1);
+    assert.equal((run.settlement_report as any).verified, 0);
+    assert.equal((run.settlement_report as any).reasons.no_payment_channel, 1);
+    assert.equal((await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow()).settlement_price, '10.30');
     assert.equal(await enqueueDueSettlements(db, 32, now, ttlMs), 0);
   });
 
   test('newly published missing quotes are scheduled without waiting for another list', async () => {
     const shop = await fixture();
     await db.updateTable('standard_product_members').set({ publication_state: 'provisional' }).execute();
-    await db.updateTable('offers').set({ settlement_price: null, settlement_verified_at: null, settlement_payment_method: null,
+    await db.updateTable('offers').set({ settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_verified_at: null, settlement_payment_method: null,
       settlement_refresh_at: null }).execute();
     await db.insertInto('fetch_runs').values({ shop_id: shop.id, task_type: 'list', status: 'queued', started_at: now }).execute();
     await createCrawlerHandler(db, new ProductsRepository(db), { fetchFactory: () => async url => {
@@ -252,25 +332,131 @@ describe('independent settlement expiry scheduling', () => {
     assert.equal(await enqueueDueSettlements(db, 32, now, ttlMs), 0);
   });
 
-  for (const losePublication of [false, true]) test(`network failures estimate once and respect publication (lost: ${losePublication})`, async () => {
+  for (const losePublication of [false, true]) test(`network fallbacks retain runtime retries and respect publication (lost: ${losePublication})`, async () => {
     await fixture();
     await enqueueDueSettlements(db, 32, now, ttlMs);
-    const jobs = new JobsRepository(db);
     const original = await db.selectFrom('fetch_runs').select('id').executeTakeFirstOrThrow();
     let requests = 0;
     const handler = createCrawlerHandler(db, new ProductsRepository(db), {
       fetchFactory: () => async () => { requests++; throw new Error('network unavailable'); },
     });
     if (losePublication) await db.updateTable('standard_product_members').set({ publication_state: 'provisional' }).execute();
-    await handler((await jobs.claimNext('fetch_run', 'network-estimate', 120000))!);
+    await runAttempt(handler);
     const row = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
     assert.equal(row.id, original.id);
     assert.equal(row.attempts, 1n);
-    assert.equal(row.status, 'succeeded');
+    assert.equal(row.status, losePublication ? 'succeeded' : 'queued');
+    if (!losePublication) {
+      assert.equal((row.settlement_report as any).retryable, 1);
+      assert.equal((row.settlement_report as any).estimated, 1);
+      assert.equal((row.settlement_report as any).reasons.request_failed, 1);
+    }
     assert.equal(requests, losePublication ? 0 : 1);
     assert.equal(await enqueueDueSettlements(db, 32, new Date(), ttlMs), 0);
     if (losePublication) await db.updateTable('standard_product_members').set({ publication_state: 'published' }).execute();
     assert.equal(await enqueueDueSettlements(db, 32, new Date(), ttlMs), losePublication ? 1 : 0);
+  });
+
+  for (const baseline of ['actual', 'estimated', 'missing']) test(`transient fallback preserves ${baseline} baseline and the next attempt persists a real quote`, async () => {
+    await fixture();
+    if (baseline === 'estimated') await db.updateTable('offers').set({
+      settlement_price: '10.00', settlement_total_amount: '10.00', settlement_payment_method: '支付价（预估：售价）', settlement_kind: 'estimated', settlement_verified_at: now,
+    }).execute();
+    if (baseline === 'missing') await db.updateTable('offers').set({
+      settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_payment_method: null, settlement_verified_at: null,
+    }).execute();
+    const original = await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow();
+    assert.equal(await enqueueDueSettlements(db), 1);
+    let fail = true, requests = 0;
+    const handler = createCrawlerHandler(db, new ProductsRepository(db), { fetchFactory: () => async url => {
+      assert.doesNotMatch(String(url), /goods\/list/);
+      requests++;
+      if (fail) throw new Error('network unavailable');
+      if (String(url).endsWith('/payment/list')) return Response.json({ code: 1, data: { list: [{ id: 1, show_name: 'Alipay' }] } });
+      return Response.json({ code: 1, data: { total_amount: '11.30' } });
+    } });
+    await runAttempt(handler);
+    const retry = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
+    assert.equal(retry.status, 'queued');
+    assert.equal((retry.settlement_report as any).estimated, 1);
+    assert.equal((retry.settlement_report as any).verified, 0);
+    assert.equal((retry.settlement_report as any).failed, 1);
+    const unchanged = await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow();
+    assert.deepEqual(unchanged.settlement_verified_at, original.settlement_verified_at);
+    assert.equal(unchanged.settlement_price, original.settlement_price);
+    assert.equal((retry.settlement_payload as any).products[0].verifiedAt, original.settlement_verified_at?.toISOString() ?? null);
+    assert.equal(await enqueueDueSettlements(db), 0);
+    fail = false;
+    await db.updateTable('fetch_runs').set({ available_at: new Date(0) }).where('id', '=', retry.id).execute();
+    await runAttempt(handler);
+    const final = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
+    assert.equal(final.status, 'succeeded');
+    assert.equal(final.attempts, 2n);
+    assert.equal((final.settlement_report as any).verified, 1);
+    assert.equal((final.settlement_report as any).estimated, 0);
+    assert.equal((final.settlement_report as any).failed, 0);
+    assert.equal((final.settlement_report as any).reasons.superseded, undefined);
+    const offer = await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow();
+    assert.equal(offer.settlement_price, '11.30');
+    assert.equal(offer.settlement_payment_method, 'Alipay');
+    assert.deepEqual(offer.captured_at, original.captured_at);
+    assert.equal(requests, 3);
+  });
+
+  test('retry aggregation retains terminal estimates and counts recovered products only once', async () => {
+    await fixture(4);
+    await enqueueDueSettlements(db);
+    let phase = 0;
+    const requested: string[][] = [[], [], []];
+    const handler = createCrawlerHandler(db, new ProductsRepository(db), { fetchFactory: () => async (url, init) => {
+      if (String(url).endsWith('/payment/list')) return Response.json({ code: 1, data: { list: [{ id: 1, show_name: 'Alipay' }] } });
+      const id = JSON.parse(init.body).goods_no;
+      requested[phase]!.push(id);
+      if (id === '1') return Response.json({ code: 0 });
+      if (id === '2' && phase < 1 || id === '3' && phase < 2) throw new Error('network unavailable');
+      return Response.json({ code: 1, data: { total_amount: '11.30' } });
+    } });
+    for (phase = 0; phase < 3; phase++) {
+      await db.updateTable('fetch_runs').set({ available_at: new Date(0) }).execute();
+      await runAttempt(handler);
+      const run = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
+      const report = run.settlement_report as any;
+      assert.equal(report.verified, phase + 1);
+      assert.equal(report.estimated, 3 - phase);
+      assert.equal(report.failed, 3 - phase);
+      assert.equal(report.retryable, 2 - phase);
+      assert.equal(report.reasons.invalid_quote, 1);
+      assert.equal(report.terminalEstimated, 1);
+      assert.equal(run.status, phase < 2 ? 'queued' : 'failed');
+    }
+    assert.deepEqual(requested, [['0', '1', '2', '3'], ['2', '3'], ['3']]);
+    assert.equal(await enqueueDueSettlements(db), 0);
+  });
+
+  test('native estimated results finish once without scheduling another supplement', async () => {
+    const shop = await fixture();
+    await enqueueDueSettlements(db);
+    await runAttempt(async (job, signal) => {
+      const failure = await runSettlementRetry(db, job, shop, {
+        ...platformForUrl(shop.url, shop.protocol),
+        async settle(_shop, products, _fetch, options) {
+          for (const product of products) {
+            product.settlement = { price: '10.00', totalAmount: '10.00', quantity: 1,
+              verifiedAt: new Date().toISOString(), paymentMethod: '店铺规则（预估）', kind: 'estimated' };
+            options?.onSettlementResult?.({ externalId: String(product.externalId), status: 'estimated', reason: 'estimated', retryable: false });
+          }
+          return products;
+        },
+      }, async () => { throw new Error('native estimate must not request network'); },
+      signal!, new CrawlRunMetrics(job.row.crawl_metrics), performance.now());
+      assert.equal(failure, null);
+    });
+    const run = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
+    assert.equal(run.status, 'succeeded');
+    assert.equal((run.settlement_report as any).estimated, 1);
+    assert.equal((run.settlement_report as any).verified, 0);
+    assert.equal((await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow()).settlement_refresh_at, null);
+    assert.equal(await enqueueDueSettlements(db), 0);
   });
 
   test('legacy oversized supplement bounds real quotes and estimates the remaining prices', async () => {
@@ -293,7 +479,8 @@ describe('independent settlement expiry scheduling', () => {
     } })((await new JobsRepository(db).claimNext('fetch_run', 'legacy', 120000))!);
     assert.equal(quotes, 100);
     const due = await db.selectFrom('offers').select('id').where('settlement_refresh_at', '<=', new Date()).execute();
-    assert.equal(due.length, 0);
-    assert.equal((await db.selectFrom('offers').select('id').where('settlement_payment_method', 'like', '%预估%').execute()).length, 25);
+    assert.equal(due.length, 25);
+    assert.equal((await db.selectFrom('offers').select('id').where('settlement_price', '=', '10.30').execute()).length, 25);
+    assert.equal(await enqueueDueSettlements(db), 1);
   });
 });

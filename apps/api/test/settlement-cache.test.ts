@@ -9,6 +9,8 @@ const previous: SettlementBaseline = {
   name: 'Plus', spec: 'monthly', source_category: '', source_data: { category: 'AI' },
   price: '10.00', is_stale: false, settlement_price: '10.30',
   settlement_verified_at: new Date(now - 3_600_000), settlement_payment_method: 'Alipay',
+  settlement_kind: 'verified',
+  settlement_quantity: 1, settlement_total_amount: '10.30',
 };
 const refresh = (candidate = item, baseline: SettlementBaseline | undefined = previous) =>
   needsSettlementRefresh(candidate, baseline, now, ttl);
@@ -32,6 +34,15 @@ test('rechecks changed prices and missing quotes but not ordinary evidence chang
 test('invalid or future verification timestamps cannot suppress requests', () => {
   assert.equal(refresh(item, { ...previous, settlement_verified_at: new Date(NaN) }), true);
   assert.equal(refresh(item, { ...previous, settlement_verified_at: new Date(now + 1000) }), true);
+});
+
+test('a recent estimate never suppresses native verification', () => {
+  assert.equal(refresh(item, { ...previous, settlement_kind: 'estimated', settlement_verified_at: new Date(now) }), true);
+});
+
+test('incomplete single-unit metadata cannot reuse a verified quote', () => {
+  assert.equal(refresh(item, { ...previous, settlement_quantity: null, settlement_total_amount: null }), true);
+  assert.equal(refresh(item, { ...previous, settlement_total_amount: null }), true);
 });
 
 test('a changed purchase quantity invalidates the unit price even when the listed price is unchanged', () => {

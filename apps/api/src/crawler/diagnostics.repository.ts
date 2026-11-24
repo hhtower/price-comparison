@@ -69,6 +69,7 @@ export class DiagnosticsRepository {
         select count(*)::text as eligible,
           count(*) filter (where latest.settlement_price is not null and latest.settlement_price >= 0
             and latest.settlement_verified_at is not null and nullif(btrim(latest.settlement_payment_method), '') is not null
+            and latest.settlement_kind = 'verified'
             and least(latest.captured_at, latest.settlement_verified_at) + ${quoteTtlMs} * interval '1 millisecond' > ${now})::text as verified
         from catalog_read_offer_prices latest
         join shops sh on sh.id = latest.shop_id and sh.enabled and sh.deleted_at is null

@@ -417,10 +417,10 @@ test('public product without a valid price keeps its page and never emits a fals
   assert.ok(schemaNode(emptyDocument, 'FAQPage'));
 });
 
-test('payment-method estimates and unavailable prices never become structured offers', async t => {
+test('estimated prices and unavailable prices never become structured offers', async t => {
   const single = page.items[0]!.offers[0]!;
   for (const change of [
-    { paymentMethod: '支付价（预估：售价）' }, { stale: true }, { inStock: false }, { inStock: undefined },
+    { priceStatus: 'estimated' }, { stale: true }, { inStock: false }, { inStock: undefined },
     { price: '' }, { price: ' ' }, { price: '-1' }, { price: 'NaN' }, { productUrl: 'javascript:alert(1)' },
     { priceExpiresAt: '2000-01-01T00:00:00Z' },
     { inventoryExpiresAt: '2000-01-01T00:00:00Z' },

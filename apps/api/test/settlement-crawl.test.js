@@ -4,6 +4,35 @@ import { crawl as liandong } from '../src/platforms/liandong.js';
 import { crawl as platform16688 } from '../src/platforms/16688.js';
 import { platformForUrl } from '../src/platforms/index.js';
 import { collectSettlements } from '../src/platforms/settlement.js';
+import * as settlement from '../src/platforms/settlement.js';
+
+test('estimated settlement detection requires an explicit kind', () => {
+  assert.equal(typeof settlement.isEstimatedSettlement, 'function');
+  for (const paymentMethod of ['店铺规则（预估）', 'USDT 汇率折算（预估）', '支付宝（游客价预估）']) {
+    assert.equal(settlement.isEstimatedSettlement({ paymentMethod }), false);
+  }
+  assert.equal(settlement.isEstimatedSettlement({ kind: 'estimated' }), true);
+  for (const quote of [undefined, null, {}, { kind: 'verified', paymentMethod: '店铺规则（预估）' },
+    { paymentMethod: null }, { paymentMethod: 1 },
+    { paymentMethod: 'Alipay', price: '0.01' }]) {
+    assert.equal(settlement.isEstimatedSettlement(quote), false);
+  }
+});
+
+test('native collectors report explicitly estimated quotes without altering their amounts', async () => {
+  for (const paymentMethod of ['店铺规则（预估）', 'USDT 汇率折算（预估）', '支付宝（游客价预估）']) {
+    const products = [{ externalId: 'one', inStock: true }], outcomes = [];
+    await collectSettlements(products, {
+      quantity: () => 2,
+      channel: async () => ({ show_name: paymentMethod, kind: 'estimated' }),
+      quote: async () => ({ code: 1, data: { total_amount: '10.60', quantity: 2 } }),
+    }, { onSettlementResult: outcome => outcomes.push(outcome) });
+    assert.equal(products[0].settlement.price, '5.30');
+    assert.equal(products[0].settlement.totalAmount, '10.60');
+    assert.equal(products[0].settlement.paymentMethod, paymentMethod);
+    assert.deepEqual(outcomes, [{ externalId: 'one', status: 'estimated', reason: 'estimated', retryable: false }]);
+  }
+});
 
 test('per-product settlement channels retain the channel whose fees were quoted', async () => {
   const products = [{ externalId: 'one', inStock: true }, { externalId: 'two', inStock: true }];
@@ -86,6 +115,37 @@ for (const url of ['https://wzyp.cn/shop/test', 'https://catfk.com/shop/test', '
     assert.equal(result[0].settlement.price, '10.30');
   });
 }
+
+for (const phase of ['list', 'channel', 'quote']) test(`liandong forwards cancellation to its in-flight ${phase} request`, async () => {
+  const controller = new AbortController(), calls = [], signals = [], outcomes = [];
+  const reason = new Error('lease lost');
+  let listComplete = false;
+  await assert.rejects(liandong(null, { url: 'https://wzyp.cn/shop/test' }, async (url, init) => {
+    const current = String(url).includes('goodsList') ? 'list' : String(url).includes('getUserChannel') ? 'channel' : 'quote';
+    calls.push(current);
+    signals.push(init.signal);
+    const response = () => Response.json({ code: 1, data: current === 'list'
+      ? { total: 1, list: [{ goods_key: 'one', link: 'https://wzyp.cn/item/one', name: 'Plus', price: 10, extend: { stock_count: 1 } }] }
+      : current === 'channel' ? [{ id: 1, show_name: 'Alipay', status: 1, custom_status: 1 }]
+        : { total_amount: '10.30' } });
+    if (current !== phase) return response();
+    return new Promise((resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+      queueMicrotask(() => {
+        controller.abort(reason);
+        if (!init.signal) resolve(response());
+      });
+    });
+  }, {
+    signal: controller.signal,
+    onListComplete: () => { listComplete = true; },
+    onSettlementResult: result => outcomes.push(result),
+  }), error => error === reason);
+  assert.deepEqual(calls, phase === 'list' ? ['list'] : phase === 'channel' ? ['list', 'channel'] : ['list', 'channel', 'quote']);
+  assert.ok(signals.every(signal => signal === controller.signal));
+  assert.equal(listComplete, phase !== 'list');
+  assert.deepEqual(outcomes, []);
+});
 
 for (const [name, crawl] of [['liandong', liandong], ['16688', platform16688]]) {
   function fixture({ limit = 1, stock = 10, quoteQuantity = limit || 1, total = '6.59', failure, channelFailure, signal } = {}) {

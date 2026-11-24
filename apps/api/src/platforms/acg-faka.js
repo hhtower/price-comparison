@@ -1,6 +1,6 @@
 import { buildSourceEvidence, captureRatingText, rawProductContent } from './source-evidence.js';
 import { isDeepStrictEqual } from 'node:util';
-import { collectSettlements, minimumPurchaseQuantity, settlementJson } from './settlement.js';
+import { collectSettlements, minimumPurchaseQuantity, settlementJson, settlementCents } from './settlement.js';
 import { normalizeProductEvidence } from '../standardization/fingerprint.js';
 import { specificationText } from '../products/product-spec.js';
 
@@ -245,6 +245,8 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
 
 export const purchaseQuantity = product => product.sourceData?.only_user === 1 && !estimatedGuestShop(product.url) ? undefined
   : minimumPurchaseQuantity({ minimum: product.sourceData?.minimum === 0 ? 1 : product.sourceData?.minimum }, 'minimum');
+export const estimatePurchaseQuantity = product => minimumPurchaseQuantity(
+  { minimum: product.sourceData?.minimum === 0 ? 1 : product.sourceData?.minimum }, 'minimum');
 
 function decimal(value) {
   const text = ['string', 'number'].includes(typeof value) ? String(value).trim() : '';
@@ -342,10 +344,26 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
         if (!best || total < best.total) best = { total, channel };
       }
       return best ? { code: 1, data: { total_amount: `${best.total / 100n}.${String(best.total % 100n).padStart(2, '0')}`, quantity },
-        paymentMethod: best.channel.name + (estimatedGuestShop(shop.url) ? '（游客价预估）' : '') } : undefined;
+        paymentMethod: best.channel.name + (estimatedGuestShop(shop.url) ? '（游客价预估）' : ''),
+        ...(estimatedGuestShop(shop.url) ? { kind: 'estimated' } : {}) } : undefined;
     },
   }, options);
 }
+
+export function readSettlementFees(payload, endpoint) {
+  const fees = payload?.code === 200 && Array.isArray(payload.data) ? payload.data.flatMap(channel => {
+    // An empty origin excludes remembered rules: this path only accepts live public declarations.
+    const fee = paymentFee(channel, '');
+    const min = channel?.min_amount == null ? 0n : settlementCents(channel.min_amount);
+    const max = channel?.max_amount == null ? 0n : settlementCents(channel.max_amount);
+    return fee && min !== undefined && max !== undefined && fee.value <= fee.scale * (fee.fixed ? 10000n : 1n)
+      ? [{ min, max, cost: base => fee.fixed ? fee.value * 100n / fee.scale : base * fee.value / fee.scale,
+        label: `网页渠道 ${channel.name} ${fee.fixed ? `${Number(fee.value) / Number(fee.scale)}元` : `${Number(fee.value) * 100 / Number(fee.scale)}%`}` }] : [];
+  }) : [];
+  return { key: endpoint.searchParams.get('itemId') ?? '', fees };
+}
+
+export const settlementFeeKey = product => String(product.externalId).split(':')[0];
 
 export default { id, name: '异次元发卡（acg-faka）', hosts: [
   'douyiner.cn', 'fk.ybkjs.top', 'shopcardai.click', 'faka.bbanai.site', 'aichongz.cc',
@@ -353,4 +371,5 @@ export default { id, name: '异次元发卡（acg-faka）', hosts: [
   'store.codesky.qzz.io', 'shop.sunnydolls.dpdns.org', 'gmailsol.com', 'shop.bmoplus.com',
   'shopgpt.plus', 'dimosky.com', 'yufenggpt.com', 'tehuio.com', 'shihuiai.cn',
   'accharbor.com', 'apiciyuan.top', 'aiaimallss.cn', 'www.aixiamo.com',
-], crawl, probe, settle, purchaseQuantity };
+], crawl, probe, settle, purchaseQuantity, estimatePurchaseQuantity,
+  settlementFeePath: '/user/api/index/pay', readSettlementFees, settlementFeeKey };

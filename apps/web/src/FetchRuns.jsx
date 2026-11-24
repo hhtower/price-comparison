@@ -20,12 +20,13 @@ function duration(ms) {
 function SettlementSummary({ run }) {
   const report = run.settlementReport;
   if (!report) return run.error ? <span>{run.error}</span> : null;
+  const { estimated, verified } = report;
   const isSupplement = run.taskType === 'settlement';
   const retryLabel = isSupplement
     ? ['failed', 'cancelled', 'succeeded'].includes(run.status) ? '已结束 · 未恢复' : '待重试'
     : '可补采';
   return <>
-    <span>{isSupplement ? '结算补采' : '列表已采集'} · 核验成功 {report.verified} · 失败 {report.failed} · 跳过 {report.skipped}{report.retryable > 0 ? ` · ${retryLabel} ${report.retryable}` : ''}</span>
+    <span>{isSupplement ? '结算补采' : '列表已采集'} · 核验成功 {verified} · 预估 {estimated} · 失败 {report.failed} · 跳过 {report.skipped}{report.retryable > 0 ? ` · ${retryLabel} ${report.retryable}` : ''}</span>
     <span>{Object.entries(report.reasons || {}).map(([reason, count]) => `${SETTLEMENT_REASONS[reason] || reason} ${count}`).join(' · ')}</span>
   </>;
 }

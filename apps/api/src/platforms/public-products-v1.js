@@ -1,5 +1,5 @@
 import { buildSourceEvidence, captureRatingText, rawProductContent } from './source-evidence.js';
-import { collectSettlements, minimumPurchaseQuantity, settlementJson } from './settlement.js';
+import { collectSettlements, minimumPurchaseQuantity, settlementJson, settlementCents } from './settlement.js';
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeProductEvidence } from '../standardization/fingerprint.js';
 import { specificationText } from '../products/product-spec.js';
@@ -272,7 +272,7 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
         const base = unit * BigInt(quantity);
         if (origin === 'https://morimm.com' && base < 100n) return undefined;
         const rate = origin === 'https://morimm.com' && base > 50000n ? 0n : estimatedFee;
-        return { code: 1, paymentMethod: '店铺规则（预估）',
+        return { code: 1, kind: 'estimated', paymentMethod: '店铺规则（预估）',
           data: { total_amount: amount(base + (base * rate + 5000n) / 10000n), quantity } };
       }
       const allowed = source.payment_channel_ids;
@@ -310,9 +310,28 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
   } });
 }
 
+export function readSettlementFees(payload) {
+  const config = payload?.status_code === 0 ? payload.data : undefined;
+  if (config?.currency !== 'CNY' || !Array.isArray(config.payment_channels)) return { key: '', fees: [] };
+  const fees = config.payment_channels.flatMap(channel => {
+    if (!['alipay', 'wechat'].includes(channel?.channel_type) || typeof channel.name !== 'string'
+      || ['status', 'custom_status'].some(field => channel[field] !== undefined && ![1, '1', true].includes(channel[field]))
+      || channel.currency !== undefined && channel.currency !== 'CNY'
+      || channel.fee_policy !== undefined && !['customer_surcharge', 'none'].includes(channel.fee_policy)) return [];
+    const rate = channel.fee_policy === 'none' ? 0n : settlementCents(channel.fee_rate);
+    const fixed = channel.fee_policy === 'none' ? 0n : settlementCents(channel.fixed_fee ?? '0');
+    const min = settlementCents(channel.min_amount ?? '0'), max = settlementCents(channel.max_amount ?? '0');
+    return rate !== undefined && rate <= 10000n && fixed !== undefined && fixed < 1000000n && min !== undefined && max !== undefined
+      ? [{ channelId: channel.id, min, max, cost: base => fixed + (base * rate + 5000n) / 10000n,
+        label: `网页渠道 ${channel.name} ${Number(rate) / 100}%${fixed ? ` + ${amount(fixed)}元` : ''}` }] : [];
+  });
+  return { key: '', fees };
+}
+
 export default { id, name: 'Dujiao-Next（独角数卡）', hosts: [
   'suqiai.cc', 'cccrad.uk', 'ultra.makelove.cloud', 'shop.txyxt.dpdns.org', 'zhang520.store',
   'kapay.shop', 'burstpro-ai.online', 'morimm.com', 'shop.aictk.shop', 'faka.getmodel.net',
   'gpthub.ciyuanapi.ai', 'pay.gogo77.top', 'shop.huashengg.com', 'buy.aixou.top', 'sim.pst1.top',
   'kkfaka.xyz', 'lu-box.me', 'blog.esfine.chat', 'xxxyan.cc',
-], crawl, probe, settle, purchaseQuantity };
+], crawl, probe, settle, purchaseQuantity, settlementFeePath: '/api/v1/public/config',
+  readSettlementFees, preferPublicSettlementFees: true, settlementPaymentChannelIds: paymentChannelIds };

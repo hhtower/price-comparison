@@ -10,12 +10,12 @@ export async function enqueueDueSettlements(
 ): Promise<number> {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('settlement scheduling limit must be positive');
   const freshAfter = new Date(now.getTime() - ttlMs);
-  const adapters = platforms.filter(adapter => adapter.settle);
+  const adapters = platforms.filter(adapter => adapter.settle && adapter.canVerifySettlement !== false);
   const protocols = adapters.map(adapter => adapter.id);
   const hosts = adapters.flatMap(adapter => adapter.hosts);
   const due = sql`o.settlement_refresh_at <= ${now} and not o.is_stale and o.stock_available
     and o.captured_at > ${freshAfter} and p.deleted_at is null
-    and (o.settlement_price is null or o.settlement_verified_at <= ${freshAfter})
+    and (o.settlement_price is null or o.settlement_kind = 'estimated' or o.settlement_verified_at <= ${freshAfter})
     and exists (select 1 from standard_product_members m join standard_products sp on sp.id = m.standard_product_id
       where m.product_id = p.id and m.publication_state = 'published'
         and sp.verification_state = 'verified' and not sp.hidden and sp.merged_into_id is null)

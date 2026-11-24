@@ -171,6 +171,7 @@ export interface CatalogReadOfferTable {
   settlement_price: string | null;
   settlement_verified_at: NullableTimestamp;
   settlement_payment_method: string | null;
+  settlement_kind: 'verified' | 'estimated';
   settlement_quantity: number | null;
 }
 
@@ -200,6 +201,7 @@ export interface OfferTable {
   settlement_price: string | null;
   settlement_verified_at: NullableTimestamp;
   settlement_payment_method: string | null;
+  settlement_kind: 'verified' | 'estimated';
   settlement_quantity: number | null;
   settlement_total_amount: string | null;
   settlement_refresh_at: NullableTimestamp;
@@ -216,6 +218,7 @@ export interface OfferPriceHistoryTable {
   currency: string;
   quantity: number;
   payment_method: string;
+  settlement_kind: Generated<'verified' | 'estimated'>;
   verified_at: Timestamp;
   recorded_at: GeneratedTimestamp;
 }

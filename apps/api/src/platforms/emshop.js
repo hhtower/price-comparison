@@ -1,8 +1,10 @@
 import { parse, serialize } from 'parse5';
 import { buildSourceEvidence, captureRatingText, rawProductContent } from './source-evidence.js';
 import { normalizeSpec } from '../products/product-spec.js';
+import { minimumPurchaseQuantity } from './settlement.js';
 
 export const id = 'emshop';
+export const purchaseQuantity = product => minimumPurchaseQuantity(product.sourceData, 'min_buy');
 const fail = message => { throw new Error(`${id} goods HTML: ${message}`); };
 const attr = (node, name) => node?.attrs?.find(item => item.name === name)?.value;
 const hasClass = (node, name) => (attr(node, 'class') ?? '').split(/\s+/).includes(name);
@@ -130,4 +132,4 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
   return products;
 }
 
-export default { id, name: 'EMShop', hosts: ['geminipro.vip'], responseFormat: 'html', crawl, probe };
+export default { id, name: 'EMShop', hosts: ['geminipro.vip'], responseFormat: 'html', crawl, probe, purchaseQuantity };

@@ -5,11 +5,13 @@ import { collectSettlements, settlementJson, minimumPurchaseQuantity, usablePaym
 export const id = 'liandong';
 export const purchaseQuantity = product => minimumPurchaseQuantity(product.sourceData, 'limit_count');
 
-async function readPage(shop, current, fetchImpl) {
+async function readPage(shop, current, fetchImpl, signal) {
+  signal?.throwIfAborted();
   const token = new URL(shop.url).pathname.split('/').filter(Boolean).pop();
-  const response = await fetchImpl(new URL('/shopApi/Shop/goodsList', shop.url).href, { method: 'POST', headers: { accept: 'application/json, text/plain, */*', 'content-type': 'application/json', referer: shop.url }, body: JSON.stringify({ token, keywords: '', category_id: 0, goods_type: 'card', current, pageSize: 100 }) });
+  const response = await fetchImpl(new URL('/shopApi/Shop/goodsList', shop.url).href, { method: 'POST', headers: { accept: 'application/json, text/plain, */*', 'content-type': 'application/json', referer: shop.url }, body: JSON.stringify({ token, keywords: '', category_id: 0, goods_type: 'card', current, pageSize: 100 }), ...(signal ? { signal } : {}) });
   if (!response.ok) throw new Error(`liandong goods API HTTP ${response.status}`);
   const payload = await response.json();
+  signal?.throwIfAborted();
   if (payload?.code !== 1 || !Array.isArray(payload.data?.list)) throw new Error(`liandong goods API: ${payload?.msg || 'invalid response'}`);
   let total;
   if (Object.hasOwn(payload.data, 'total')) {
@@ -41,7 +43,7 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
   let complete = false, expectedTotal;
   // Count all validated IDs, including free items; short pages do not prove completion.
   for (let current = 1; current <= 1000; current++) {
-    const { list, total } = await readPage(shop, current, fetchImpl);
+    const { list, total } = await readPage(shop, current, fetchImpl, options.signal);
     if (current === 1) expectedTotal = total;
     if (total !== expectedTotal) throw new Error('liandong goods API: total changed during crawl');
     appendItems(list, items, seen);
@@ -69,7 +71,7 @@ async function readSettlements(shop, items, fetchImpl, options) {
 export async function settle(shop, products, fetchImpl = globalThis.fetch, options = {}, quantity = purchaseQuantity) {
   const post = async (path, body) => settlementJson(await fetchImpl(new URL(path, shop.url).href, {
     method: 'POST', headers: { accept: 'application/json, text/plain, */*', 'content-type': 'application/json', referer: shop.url },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body), ...(options.signal ? { signal: options.signal } : {}),
   }));
   return collectSettlements(products, {
     quantity,

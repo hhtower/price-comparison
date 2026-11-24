@@ -30,16 +30,40 @@ test('Dujiaoka rating evidence preserves escaped text and paragraph boundaries',
   assert.equal(projected.description, '交付<code>兑换码</code>\n30天质保');
 });
 
-test('Ma men uses the user-confirmed zero-fee SKU price as its payment amount', async () => {
+test('Ma men reports the user-confirmed zero-fee SKU price as an estimate, never a verified checkout', async () => {
   const { crawl, settle } = await import('../src/platforms/dujiaoka.js');
-  const products = await crawl(null, shop, fetcher());
+  const outcomes = [], options = { onSettlementResult: result => outcomes.push(result) };
+  const products = await crawl(null, shop, fetcher(), options);
   assert.equal(products[0].settlement?.totalAmount, '130.00');
   assert.equal(products[0].settlement?.price, '130.00');
   assert.equal(products[0].settlement?.quantity, 1);
+  assert.match(products[0].settlement.paymentMethod, /预估/);
+  assert.deepEqual(outcomes.find(result => result.externalId === '252:9'), {
+    externalId: '252:9', status: 'estimated', reason: 'estimated', retryable: false,
+  });
   assert.equal(products[1].settlement, undefined);
   const baseline = { ...products[0] }; delete baseline.settlement;
-  await settle(shop, [baseline], fetcher());
+  outcomes.length = 0;
+  await settle(shop, [baseline], fetcher(), options);
   assert.equal(baseline.settlement?.price, '130.00');
+  assert.match(baseline.settlement.paymentMethod, /预估/);
+  assert.deepEqual(outcomes, [{ externalId: '252:9', status: 'estimated', reason: 'estimated', retryable: false }]);
+});
+
+test('Dujiaoka disables independent verification while keeping list estimates and settle compatibility', async () => {
+  const { default: native } = await import('../src/platforms/dujiaoka.js');
+  const { platformForUrl } = await import('../src/platforms/index.js');
+  const adapter = platformForUrl(shop.url);
+  assert.equal(native.canVerifySettlement, false);
+  assert.equal(adapter.canVerifySettlement, false);
+  assert.equal(typeof adapter.settle, 'function');
+  const outcomes = [];
+  const [product] = await adapter.crawl(null, shop, fetcher(), { onSettlementResult: result => outcomes.push(result) });
+  assert.equal(product.settlement.totalAmount, '130.00');
+  assert.match(product.settlement.paymentMethod, /预估/);
+  assert.deepEqual(outcomes.find(result => result.externalId === '252:9'), {
+    externalId: '252:9', status: 'estimated', reason: 'estimated', retryable: false, estimated: true,
+  });
 });
 
 test('Ma men settlement rejects changed details, prices, purchase minimums and unrelated hosts', async () => {

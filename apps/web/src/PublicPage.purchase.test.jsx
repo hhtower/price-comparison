@@ -54,6 +54,14 @@ test('estimated payment prices visibly identify their assumption while remaining
   expect(within(screen.getByRole('dialog', { name: '报价对比' })).getByText('预估')).toBeInTheDocument();
 });
 
+test('verified prices ignore estimate words in payment labels', async () => {
+  mockApi({ priceStatus: 'verified', paymentMethod: '支付宝（预估手续费已核实）' });
+  await renderWithOffers();
+  const price = screen.getAllByLabelText(/结算价.*预估手续费已核实/)[0];
+  expect(price.closest('.offer-price').querySelector('.price-estimate')).toBeNull();
+  expect(screen.queryByLabelText('预估价')).not.toBeInTheDocument();
+});
+
 test.each(['/', '/products/42'])('observed quotes with no expiry remain visible and comparable on %s', async path => {
   window.history.replaceState({}, '', path);
   mockApi({ inventoryExpiresAt: null }); await renderWithOffers();

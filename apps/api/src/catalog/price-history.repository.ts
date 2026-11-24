@@ -55,6 +55,7 @@ export class PriceHistoryRepository {
       join standard_products sp on sp.id = m.standard_product_id and not sp.hidden
         and sp.verification_state = 'verified' and sp.merged_into_id is null
       where h.standard_product_id = ${standardProductId}::bigint and h.currency = ${currency}
+        and h.settlement_kind = 'verified'
         ${membershipScope}
         ${productId ? sql`and h.product_id = ${productId}::bigint` : sql``}
         and h.verified_at >= (${startDate}::date::timestamp at time zone 'Asia/Shanghai')

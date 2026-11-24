@@ -54,9 +54,10 @@ async function addProduct(name: string) {
   await db.insertInto('standard_product_members').values({ standard_product_id: standard, product_id: row.id, publication_state: 'published' }).execute();
   return row.id;
 }
-async function quote(id = product, price = '10.30', at = '2026-10-13T12:00:00Z', currency = 'CNY') {
+async function quote(id = product, price = '10.30', at = '2026-10-13T12:00:00Z', currency = 'CNY', quantity = 1, totalAmount = price) {
   return db.insertInto('offers').values({ product_id: id, idempotency_key: `history:${id}`, price: '12.00', currency,
     captured_at: new Date(at), settlement_price: price, settlement_verified_at: new Date(at), settlement_payment_method: 'Alipay',
+    settlement_quantity: quantity, settlement_total_amount: totalAmount,
   }).returning('id').executeTakeFirstOrThrow();
 }
 async function points(productId?: string, currency = 'CNY') { return (await history.get(String(standard), productId, currency)).points; }
@@ -65,10 +66,10 @@ test('records inserts and re-verifications atomically without treating cached re
   const offer = await quote();
   await db.updateTable('offers').set({ captured_at: new Date('2026-10-14T10:00:00Z') }).where('id', '=', offer.id).execute();
   assert.equal((await db.selectFrom('offer_price_history').selectAll().execute()).length, 1);
-  await db.updateTable('offers').set({ settlement_price: '9.50', settlement_verified_at: new Date('2026-10-14T10:00:00Z') }).where('id', '=', offer.id).execute();
+  await db.updateTable('offers').set({ settlement_price: '9.50', settlement_total_amount: '9.50', settlement_verified_at: new Date('2026-10-14T10:00:00Z') }).where('id', '=', offer.id).execute();
   assert.deepEqual((await points()).map(p => [p.date, p.price, p.quantity]), [['2026-10-13', '10.30', 1], ['2026-10-14', '9.50', 1]]);
   await assert.rejects(db.transaction().execute(async tx => {
-    await tx.updateTable('offers').set({ settlement_price: '1.00', settlement_verified_at: new Date('2026-10-14T11:00:00Z') }).where('id', '=', offer.id).execute();
+    await tx.updateTable('offers').set({ settlement_price: '1.00', settlement_total_amount: '1.00', settlement_verified_at: new Date('2026-10-14T11:00:00Z') }).where('id', '=', offer.id).execute();
     throw new Error('rollback history');
   }), /rollback history/);
   assert.equal((await db.selectFrom('offer_price_history').selectAll().execute()).length, 2);
@@ -76,14 +77,14 @@ test('records inserts and re-verifications atomically without treating cached re
 
 test('returns observed daily minima in Shanghai time and keeps quantities, versions and currencies separate', async () => {
   const offer = await quote(product, '10.30', '2026-10-12T15:59:59Z');
-  await db.updateTable('offers').set({ settlement_price: '9.00', settlement_verified_at: new Date('2026-10-12T16:00:00Z') }).where('id', '=', offer.id).execute();
+  await db.updateTable('offers').set({ settlement_price: '9.00', settlement_total_amount: '9.00', settlement_verified_at: new Date('2026-10-12T16:00:00Z') }).where('id', '=', offer.id).execute();
   const second = await addProduct('5件会员');
-  await quote(second, '2.002', '2026-10-13T12:00:00Z');
+  await quote(second, '2.002', '2026-10-13T12:00:00Z', 'CNY', 5, '10.01');
   await db.updateTable('offers').set({ settlement_quantity: 5, settlement_total_amount: '10.01', settlement_verified_at: new Date('2026-10-13T12:01:00Z') }).where('product_id', '=', second).execute();
   const dollars = await addProduct('美元会员');
   await quote(dollars, '0.50', '2026-10-14T10:00:00Z', 'USD');
   await db.updateTable('products').set({ content_version: 2n, name: '新版会员' }).where('id', '=', product).execute();
-  await db.updateTable('offers').set({ settlement_price: '8.00', settlement_verified_at: new Date('2026-10-14T10:00:00Z') }).where('id', '=', offer.id).execute();
+  await db.updateTable('offers').set({ settlement_price: '8.00', settlement_total_amount: '8.00', settlement_verified_at: new Date('2026-10-14T10:00:00Z') }).where('id', '=', offer.id).execute();
   const daily = await points();
   const window = await history.get(String(standard));
   assert.equal(window.startDate, '2026-09-15');
@@ -99,10 +100,31 @@ test('returns observed daily minima in Shanghai time and keeps quantities, versi
   assert.deepEqual((await points(undefined, 'USD')).map(p => p.price), ['0.50']);
 });
 
+test('estimates neither create verified history nor appear as historical verified minima', async () => {
+  await db.insertInto('offers').values({
+    product_id: product, idempotency_key: 'estimate', price: '12.00', currency: 'CNY',
+    captured_at: new Date('2026-10-14T10:00:00Z'), settlement_price: '12.48',
+    settlement_quantity: 1, settlement_total_amount: '12.48',
+    settlement_verified_at: new Date('2026-10-14T10:00:00Z'),
+    settlement_kind: 'estimated',
+    settlement_payment_method: '支付价（预估：售价加4%）',
+  }).execute();
+  assert.equal((await db.selectFrom('offer_price_history').selectAll().execute()).length, 0);
+  await quote(await addProduct('actual'), '13.00');
+  // Keep legacy estimates for audit without treating them as verified observations.
+  await db.insertInto('offer_price_history').values({
+    product_id: product, standard_product_id: standard, content_version: 0n,
+    name: 'legacy estimate', spec: '', price: '1.00', currency: 'CNY', quantity: 1,
+    payment_method: '支付价（预估：售价）', settlement_kind: 'estimated', verified_at: new Date('2026-10-13T11:00:00Z'),
+  }).execute();
+  assert.deepEqual((await points()).map(point => point.price), ['13.00']);
+  assert.equal((await db.selectFrom('offer_price_history').selectAll().execute()).length, 2);
+});
+
 test('excludes invalid, missing, future and outside-window settlements but preserves zero', async () => {
   const offer = await quote(product, '0', '2026-10-14T09:00:00Z');
   assert.equal((await points())[0]!.price, '0');
-  await db.updateTable('offers').set({ settlement_price: null, settlement_verified_at: null, settlement_payment_method: null }).where('id', '=', offer.id).execute();
+  await db.updateTable('offers').set({ settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_verified_at: null, settlement_payment_method: null }).where('id', '=', offer.id).execute();
   assert.equal((await points()).length, 1);
   await quote(await addProduct('旧报价'), '1.00', '2026-09-14T15:59:59Z');
   await quote(await addProduct('未来报价'), '1.00', '2026-10-15T12:00:00Z');
@@ -110,7 +132,7 @@ test('excludes invalid, missing, future and outside-window settlements but prese
   assert.deepEqual((await points()).map(p => p.date), ['2026-09-15', '2026-10-14']);
   const invalidId = await addProduct('异常标价');
   const invalid = await quote(invalidId, '4.00', '2026-10-13T12:00:00Z');
-  await db.updateTable('offers').set({ price: 'NaN', settlement_price: '1.00', settlement_verified_at: new Date('2026-10-14T10:00:00Z') }).where('id', '=', invalid.id).execute();
+  await db.updateTable('offers').set({ price: 'NaN', settlement_price: '1.00', settlement_total_amount: '1.00', settlement_verified_at: new Date('2026-10-14T10:00:00Z') }).where('id', '=', invalid.id).execute();
   assert.equal((await db.selectFrom('offer_price_history').selectAll().where('product_id', '=', invalidId).execute()).length, 1);
 });
 
@@ -157,7 +179,7 @@ test('history scopes separate membership daily minima and include only failed AI
     await db.updateTable('products').set({ membership_features: jsonb(buildMembershipFeatures([], await withMembershipSource(db, current), [], kind) as unknown as JsonValue) })
       .where('id', '=', id).execute();
     const offer = await quote(id, price);
-    await db.updateTable('offers').set({ settlement_price: String(Number(price) - 1), settlement_verified_at: new Date('2026-10-14T10:00:00Z') })
+    await db.updateTable('offers').set({ settlement_price: String(Number(price) - 1), settlement_total_amount: String(Number(price) - 1), settlement_verified_at: new Date('2026-10-14T10:00:00Z') })
       .where('id', '=', offer.id).execute();
   }
   await quote(product, '2.00');
@@ -244,22 +266,93 @@ test('history rejects malformed membership and newcomer filters through the publ
   }
 });
 
-test('migration seeds genuine existing quotes and downgrades without modifying offers', async () => {
+test('migration seeds genuine existing quotes and downgrades without modifying offers', async t => {
   const migration = await import('../src/database/migrations/011_price_history_20261014.js');
+  t.after(async () => {
+    const contract = await import('../src/database/migrations/058_settlement_data_contract_20261124.js');
+    await contract.up(db as Kysely<unknown>);
+  });
+  const stored = async () => (await sql<{ verified_at: Date }>`select verified_at from offer_price_history`.execute(db)).rows;
   await migration.down(db as Kysely<unknown>);
   await quote();
   await db.insertInto('offers').values({ idempotency_key: 'new-unverified', product_id: product, price: '12', captured_at: new Date('2026-10-14T09:00:00Z') }).execute();
   await migration.up(db as Kysely<unknown>);
-  assert.equal((await points()).length, 0);
+  assert.equal((await stored()).length, 0);
   await db.deleteFrom('offers').where('idempotency_key', '=', 'new-unverified').execute();
   await db.updateTable('products').set({ name: '新版会员', content_version: 2n, content_changed_at: new Date('2026-10-14T09:00:00Z') }).where('id', '=', product).execute();
   await migration.down(db as Kysely<unknown>);
   await migration.up(db as Kysely<unknown>);
-  assert.equal((await points()).length, 0, 'older verification cannot be seeded as a newer product version');
+  assert.equal((await stored()).length, 0, 'older verification cannot be seeded as a newer product version');
   await db.updateTable('products').set({ name: '月付会员', content_version: 0n, content_changed_at: new Date('2026-09-01T00:00:00Z') }).where('id', '=', product).execute();
   await migration.down(db as Kysely<unknown>);
   await migration.up(db as Kysely<unknown>);
-  assert.equal((await points())[0]!.verifiedAt, '2026-10-13T12:00:00.000Z');
+  assert.equal((await stored())[0]!.verified_at.toISOString(), '2026-10-13T12:00:00.000Z');
   await db.updateTable('offers').set({ captured_at: new Date('2026-10-14T10:00:00Z') }).execute();
   assert.equal((await db.selectFrom('offer_price_history').selectAll().execute()).length, 1);
+});
+
+test('verified-history migration can roll back and reapply without rewriting quotes or history', async t => {
+  const migration = await import('../src/database/migrations/056_verified_price_history_20261124.js');
+  t.after(async () => {
+    const contract = await import('../src/database/migrations/058_settlement_data_contract_20261124.js');
+    await contract.up(db as Kysely<unknown>);
+  });
+  await quote();
+  await migration.down(db as Kysely<unknown>);
+  const offer = await db.insertInto('offers').values({
+    product_id: product, idempotency_key: 'legacy-estimate', price: '12.00', currency: 'CNY',
+    captured_at: new Date('2026-10-14T10:00:00Z'), settlement_price: '12.00',
+    settlement_quantity: 1, settlement_total_amount: '12.00',
+    settlement_verified_at: new Date('2026-10-14T10:00:00Z'), settlement_payment_method: '支付价（预估：售价）', settlement_kind: 'estimated',
+  }).returningAll().executeTakeFirstOrThrow();
+  const previous = await db.selectFrom('offer_price_history').selectAll().orderBy('id').execute();
+  assert.equal(previous.length, 2);
+  await migration.up(db as Kysely<unknown>);
+  assert.deepEqual(await db.selectFrom('offers').selectAll().where('id', '=', offer.id).executeTakeFirstOrThrow(), offer);
+  assert.deepEqual(await db.selectFrom('offer_price_history').selectAll().orderBy('id').execute(), previous);
+  await db.updateTable('offers').set({ settlement_verified_at: new Date('2026-10-14T11:00:00Z') }).where('id', '=', offer.id).execute();
+  assert.deepEqual(await db.selectFrom('offer_price_history').selectAll().orderBy('id').execute(), previous);
+});
+
+test('migration labels identifiable legacy classic-store estimates without changing amounts or other adapters', async t => {
+  const migration = await import('../src/database/migrations/056_verified_price_history_20261124.js');
+  t.after(async () => {
+    const contract = await import('../src/database/migrations/058_settlement_data_contract_20261124.js');
+    await contract.up(db as Kysely<unknown>);
+  });
+  await migration.down(db as Kysely<unknown>);
+  await db.updateTable('shops').set({ protocol: 'dujiaoka' }).where('id', '=', shop).execute();
+  const offer = await db.insertInto('offers').values({
+    product_id: product, idempotency_key: 'classic-estimate', price: '12.00', currency: 'CNY',
+    captured_at: new Date('2026-10-14T10:00:00Z'), settlement_price: '12.00',
+    settlement_quantity: 1, settlement_total_amount: '12.00',
+    settlement_verified_at: new Date('2026-10-14T10:00:00Z'), settlement_payment_method: '支付宝（无手续费）',
+  }).returningAll().executeTakeFirstOrThrow();
+  const historical = await db.selectFrom('offer_price_history').selectAll().executeTakeFirstOrThrow();
+  const otherShop = await db.insertInto('shops').values({
+    name: 'Other adapter', protocol: 'acg-faka', platform: 'test', url: 'https://other.invalid',
+  }).returning('id').executeTakeFirstOrThrow();
+  const other = await addProduct('same channel label');
+  await db.updateTable('products').set({ shop_id: otherShop.id }).where('id', '=', other).execute();
+  await db.insertInto('offers').values({
+    product_id: other, idempotency_key: 'actual-channel', price: '13.00', currency: 'CNY',
+    captured_at: offer.captured_at, settlement_price: '13.00',
+    settlement_quantity: 1, settlement_total_amount: '13.00',
+    settlement_verified_at: offer.settlement_verified_at, settlement_payment_method: '支付宝（无手续费）',
+  }).execute();
+  assert.deepEqual((await points()).map(point => point.price), ['12.00']);
+  await migration.up(db as Kysely<unknown>);
+  assert.deepEqual(await db.selectFrom('offers').selectAll().where('id', '=', offer.id).executeTakeFirstOrThrow(),
+    { ...offer, settlement_payment_method: '支付宝（无手续费，预估）' });
+  assert.deepEqual(await db.selectFrom('offer_price_history').selectAll().where('id', '=', historical.id).executeTakeFirstOrThrow(),
+    { ...historical, payment_method: '支付宝（无手续费，预估）' });
+  assert.equal((await db.selectFrom('offer_price_history').selectAll().execute()).length, 2);
+  await migration.down(db as Kysely<unknown>);
+  assert.deepEqual(await db.selectFrom('offers').selectAll().where('id', '=', offer.id).executeTakeFirstOrThrow(), offer);
+  assert.deepEqual(await db.selectFrom('offer_price_history').selectAll().where('id', '=', historical.id).executeTakeFirstOrThrow(), historical);
+  // Host-based legacy configuration uses the same classification when no explicit protocol is stored.
+  await db.updateTable('shops').set({ protocol: null, url: 'https://ouvg.top/' }).where('id', '=', shop).execute();
+  await migration.up(db as Kysely<unknown>);
+  assert.equal((await db.selectFrom('offers').select('settlement_payment_method')
+    .where('id', '=', offer.id).executeTakeFirstOrThrow()).settlement_payment_method, '支付宝（无手续费，预估）');
 });

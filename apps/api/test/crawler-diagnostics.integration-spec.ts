@@ -74,13 +74,13 @@ describe('crawler diagnostics over PostgreSQL', () => {
     const shop = await database.insertInto('shops').values({ platform: 'test', url: 'https://coverage.example', name: 'Coverage', last_error: null }).returning('id').executeTakeFirstOrThrow();
     const standard = await database.insertInto('standard_products').values({ name: 'Coverage', platform: 'test', standard_key: null, canonical_platform: null, canonical_vendor: null, canonical_family: null, canonical_product: null, canonical_tier: null, verification_run_id: null, verification_state: 'verified' }).returning('id').executeTakeFirstOrThrow();
     const now = Date.now();
-    for (const [index, ageMs, stock, published] of [[1, 10_000, true, true], [2, 9_000_000, true, true], [3, 10_000, false, true], [4, 10_000, true, false]] as const) {
+    for (const [index, ageMs, stock, published] of [[1, 10_000, true, true], [2, 9_000_000, true, true], [3, 10_000, false, true], [4, 10_000, true, false], [5, 10_000, true, true]] as const) {
       const product = await database.insertInto('products').values({ shop_id: shop.id, external_id: String(index), name: `Product ${index}`, normalized_key: String(index), url: 'https://coverage.example/item', image_url: null }).returning('id').executeTakeFirstOrThrow();
       await database.insertInto('standard_product_members').values({ standard_product_id: standard.id, product_id: product.id, publication_state: published ? 'published' : 'provisional' }).execute();
-      await database.insertInto('offers').values({ product_id: product.id, idempotency_key: `coverage-${index}`, price: '10', stock_available: stock, settlement_price: '9', settlement_verified_at: new Date(now - ageMs), settlement_payment_method: 'Alipay', captured_at: new Date(now - ageMs) }).execute();
+      await database.insertInto('offers').values({ product_id: product.id, idempotency_key: `coverage-${index}`, price: '10', stock_available: stock, settlement_price: '9', settlement_quantity: 1, settlement_total_amount: '9', settlement_kind: index === 5 ? 'estimated' : 'verified', settlement_verified_at: new Date(now - ageMs), settlement_payment_method: index === 5 ? '支付价（预估：售价）' : 'Alipay', captured_at: new Date(now - ageMs) }).execute();
     }
     const diagnostics = await new DiagnosticsRepository(database).snapshot();
-    assert.deepEqual(diagnostics.coverage, { eligible: 2, verified: 1 });
+    assert.deepEqual(diagnostics.coverage, { eligible: 3, verified: 1 });
   });
 
   test('host budget includes targeted retry requests and scales only matching shop hosts', async () => {

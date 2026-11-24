@@ -10,18 +10,18 @@ vi.mock('./api.js', () => ({
   requestJson: vi.fn(async () => ({
     items: [{
       id: '1', shopName: 'Example shop', status: 'succeeded', taskType: 'list', itemCount: '12',
-      settlementReport: { listStatus: 'succeeded', verified: 3, failed: 2, skipped: 7, retryable: 2, reasons: { request_failed: 2, not_selected: 7 } },
+      settlementReport: { listStatus: 'succeeded', estimated: 0, verified: 3, failed: 2, skipped: 7, retryable: 2, reasons: { request_failed: 2, not_selected: 7 } },
       error: 'settlement network incomplete',
     }, {
       id: '2', shopName: 'Quantity shop', status: 'succeeded', taskType: 'list', itemCount: '1',
-      settlementReport: { listStatus: 'succeeded', verified: 0, failed: 0, skipped: 2, retryable: 0, reasons: { quantity_not_supported: 1, deferred: 1 } },
+      settlementReport: { listStatus: 'succeeded', estimated: 0, verified: 0, failed: 0, skipped: 2, retryable: 0, reasons: { quantity_not_supported: 1, deferred: 1 } },
     }, {
       id: '3', shopName: 'Example shop', status: 'queued', taskType: 'settlement', sourceFetchRunId: '1', itemCount: '2',
-      settlementReport: { listStatus: 'not_requested', verified: 1, failed: 1, skipped: 1, retryable: 1, reasons: { request_failed: 1, superseded: 1 } },
+      settlementReport: { listStatus: 'not_requested', estimated: 0, verified: 1, failed: 1, skipped: 1, retryable: 1, reasons: { request_failed: 1, superseded: 1 } },
       crawlMetrics: { requests: 4, retries: 1, durations: { list: 0, settlement: 260, transaction: 20, rate_wait: 50, proxy_wait: 10, network: 180, total: 310 } },
     }, {
       id: '4', shopName: 'Exhausted shop', status: 'failed', taskType: 'settlement', sourceFetchRunId: '1', itemCount: '1',
-      settlementReport: { listStatus: 'not_requested', verified: 0, failed: 1, skipped: 0, retryable: 1, reasons: { request_failed: 1 } },
+      settlementReport: { listStatus: 'not_requested', estimated: 0, verified: 0, failed: 1, skipped: 0, retryable: 1, reasons: { request_failed: 1 } },
     }, {
       id: '5', shopName: 'Expiry shop', status: 'queued', taskType: 'settlement', sourceFetchRunId: null,
     }], total: 5,
@@ -47,6 +47,20 @@ test('fetch history distinguishes goods success from settlement failure and retr
   expect(screen.queryByText(/来源列表 #未知/)).not.toBeInTheDocument();
   expect(screen.getAllByText(/待重试/)).toHaveLength(1);
   expect(screen.getByText(/结算补采.*已结束.*未恢复 1/)).toBeInTheDocument();
+});
+
+test('estimates use explicit counts independently of diagnostic reasons', async () => {
+  requestJson.mockResolvedValueOnce({ total: 2, items: [{
+    id: 'new', shopName: 'New report', taskType: 'list', status: 'succeeded',
+    settlementReport: { verified: 5, estimated: 20, failed: 1, skipped: 19, retryable: 1,
+      reasons: { request_failed: 1, deferred: 19 } },
+  }, {
+    id: 'diagnostic', shopName: 'Diagnostic report', taskType: 'list', status: 'succeeded',
+    settlementReport: { verified: 5, estimated: 20, failed: 0, skipped: 0, retryable: 0, reasons: { estimated: 2 } },
+  }] });
+  render(<FetchRuns />);
+  expect(await screen.findAllByText(/核验成功 5 · 预估 20/)).toHaveLength(2);
+  expect(screen.getByText(/请求失败 1 · 待分批核验 19/)).toBeInTheDocument();
 });
 
 test('initial load and pagination show a spinner, retain records and commit the page only on success', async () => {

@@ -13,7 +13,20 @@ export function verifiedSettlement(totalAmount, paymentMethod, quantity = 1) {
   const scaled = (BigInt(integer + fraction.padEnd(2, '0')) * 10n ** 10n * 2n + units) / (2n * units);
   const decimals = (scaled % (10n ** 12n)).toString().padStart(12, '0').replace(/0+$/, '').padEnd(2, '0');
   return { price: `${scaled / (10n ** 12n)}.${decimals}`, totalAmount: total, quantity,
-    verifiedAt: new Date().toISOString(), paymentMethod: paymentMethod.trim() };
+    verifiedAt: new Date().toISOString(), paymentMethod: paymentMethod.trim(), kind: 'verified' };
+}
+
+export function isEstimatedSettlement(quote) {
+  return quote?.kind === 'estimated';
+}
+
+export function settlementCents(value) {
+  const parsed = verifiedSettlement(value, '费用');
+  return parsed ? BigInt(parsed.totalAmount.replace('.', '')) : undefined;
+}
+
+export function markEstimatedSettlement(quote) {
+  return quote ? { ...quote, kind: 'estimated' } : quote;
 }
 
 export function minimumPurchaseQuantity(item, field) {
@@ -113,9 +126,14 @@ export async function collectSettlements(products, transport, options = {}) {
       continue;
     }
     const method = quote && Object.hasOwn(quote, 'paymentMethod') ? quote.paymentMethod : paymentMethod(channel);
-    const settlement = quote?.code === 1 && quote.data && quoteMatchesQuantity(quote.data, quantity)
+    let settlement = quote?.code === 1 && quote.data && quoteMatchesQuantity(quote.data, quantity)
       ? verifiedSettlement(quote.data.total_amount, method, quantity) : undefined;
-    if (settlement) { product.settlement = settlement; report(product, 'verified'); }
+    if (settlement) {
+      const estimated = quote?.kind === 'estimated' || channel.kind === 'estimated';
+      if (estimated) settlement = markEstimatedSettlement(settlement);
+      product.settlement = settlement;
+      report(product, estimated ? 'estimated' : 'verified', estimated ? 'estimated' : undefined);
+    }
     else report(product, 'failed', 'invalid_quote');
   }
   return products;
