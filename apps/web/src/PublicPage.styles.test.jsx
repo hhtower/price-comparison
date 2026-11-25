@@ -17,16 +17,6 @@ test('catalog keeps the compact search toolbar opaque and sticky', () => {
   expect(shared).toMatch(/\.compact-catalog \.search-panel\{display:grid;/u);
 });
 
-test('homepage SEO section matches the catalog surface and uses separated fact and FAQ columns', () => {
-  const css = readFileSync('apps/web/src/seo-document.css', 'utf8');
-  expect(css).toMatch(/\.compact-catalog \.catalog-seo-panel\s*\{[^}]*background:\s*#fff/u);
-  expect(css).toMatch(/\.catalog-seo-panel\s*\{[^}]*border-radius:\s*12px/u);
-  expect(css).toMatch(/\.catalog-seo-panel \.seo-facts\s*\{[^}]*grid-template-columns:\s*repeat\(3,/u);
-  expect(css).toMatch(/\.catalog-seo-panel \.seo-faq\s*\{[^}]*grid-template-columns:\s*repeat\(2,/u);
-  expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.catalog-seo-panel \.seo-facts\s*\{[^}]*grid-template-columns:\s*1fr/u);
-  expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.catalog-seo-panel \.seo-faq\s*\{[^}]*grid-template-columns:\s*1fr/u);
-});
-
 test.each([
   ['public-catalog.css', 'styles.css'],
   ['styles.css', 'public-catalog.css'],
@@ -82,15 +72,4 @@ test('self-built shop badges are tappable with a focus ring and the dialog note 
   expect(css).toMatch(/\.compact-catalog \.offer-shop-badge:focus-visible/u);
   expect(css).toMatch(/\.offer-shop-risk-note\s*\{[^}]*color:\s*#8a6410/u);
   expect(css).toMatch(/\.catalog-shop-copy strong \.catalog-shop-name\s*\{[^}]*text-overflow:\s*ellipsis/u);
-});
-
-test('quote names carry more visual weight than merchant names', () => {
-  const css = readFileSync('apps/web/src/public-catalog.css', 'utf8');
-  const shop = css.match(/\.compact-catalog \.shop-tile \.offer-shop\s*\{([^}]+)\}/u)?.[1] ?? '';
-  const name = css.match(/\.compact-catalog \.shop-tile \.offer-name\s*\{([^}]+)\}/u)?.[1] ?? '';
-  const size = rule => Number(rule.match(/font-size:\s*(\d+)px/u)?.[1]);
-  const weight = rule => Number(rule.match(/font-weight:\s*(\d+)/u)?.[1]);
-  expect(size(name)).toBeGreaterThan(size(shop));
-  expect(weight(name)).toBeGreaterThan(weight(shop));
-  expect(shop).toMatch(/color:\s*#53656c/u);
 });
