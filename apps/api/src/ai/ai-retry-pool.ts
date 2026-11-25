@@ -5,7 +5,7 @@ import { hasActiveStandardizationWork, RETRYABLE_RESULT_REASONS } from './produc
 import { PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION, taskResultVersions } from './pipeline-versions.js';
 import { API_RELAY_EXCLUSION_CODE } from '../standardization/catalog-exclusion.js';
 import { hasUsableOffer } from './offer-eligibility.js';
-import { standardizationResultSource } from './standardization-result-source.js';
+import { lostStandardizationResults, standardizationResultSource } from './standardization-result-source.js';
 
 export const currentManualDecision = sql<boolean>`exists (
   select 1 from product_standardization_decisions d where d.product_id = p.id
@@ -22,12 +22,17 @@ export function currentUnclassifiedQuery(db: Kysely<DatabaseSchema>, jobId?: Raw
     join products product on product.id = scope_member.product_id
     where scope_member.job_id = ${jobId} offset 0
   )` : sql<ProductTable>`products`).as('p');
-  return db.selectFrom(products)
+  // Collect lost requests once instead of revisiting every product's unrelated task history.
+  const report = db.with(cte => cte('report_lost_results').materialized(), () => sql`(${lostStandardizationResults()})`);
+  return report.selectFrom(products)
     .innerJoinLateral(sql<Selectable<AiStandardizationResultTable>>`(
-      select result.* from ${standardizationResultSource(sql.ref('p.id'))} result
+      select result.* from ${standardizationResultSource(sql.ref('p.id'),
+        jobId ? lostStandardizationResults(sql.ref('p.id'))
+          : sql<Selectable<AiStandardizationResultTable>>`select * from report_lost_results where product_id=p.id`)} result
       join ai_job_input_members member on member.job_id = result.job_id and member.product_id = result.product_id
       join ai_jobs result_job on result_job.id = result.job_id
-      where result.content_version = p.content_version and result.fingerprint = p.content_fingerprint
+      where member.product_id = p.id
+        and result.content_version = p.content_version and result.fingerprint = p.content_fingerprint
         and member.content_version = p.content_version and member.fingerprint = p.content_fingerprint
         and member.standardization_revision = p.standardization_revision
         and (result.reason_code = 'request_outcome_unknown' or (
