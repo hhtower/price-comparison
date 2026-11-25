@@ -268,6 +268,54 @@ test('registered Next estimates filter live product channel restrictions before 
   assert.match(product.settlement.paymentMethod, /商品可用渠道 6%/);
 });
 
+test('Next estimates exclude crypto channels disguised as Alipay before choosing the cheapest fee', async () => {
+  const f = fixture({ url: 'https://tghaopifa.cc', version: 'v1.5.4',
+    detail: { payment_channel_ids: [1, 3, 6] }, channels: [
+      { id: 3, name: 'Wechat', provider_type: 'epay', channel_type: 'wechat', fee_rate: '6.00' },
+      { id: 1, name: 'Alipay', provider_type: 'epay', channel_type: 'alipay', fee_rate: '4.00' },
+      { id: 6, name: 'USDT-TRC20', provider_type: 'epay', channel_type: 'alipay', fee_rate: '0.00' },
+    ] });
+  const [product] = await withSettlementEstimates(platform).crawl(null, { url: 'https://tghaopifa.cc' }, f.fetchImpl);
+  assert.equal(product.settlement.totalAmount, '115.44');
+  assert.equal(product.settlement.kind, 'estimated');
+  assert.match(product.settlement.paymentMethod, /Alipay 4%/);
+});
+
+test('Next rejects explicit non-CNY and crypto-labelled native channels without a preview', async () => {
+  for (const changes of [{ currency: 'USD' }, { name: 'USDT-TRC20' }, { name: 'USDC_BEP20' }]) {
+    const f = fixture({ channels: [{ id: 3, name: 'Alipay', provider_type: 'official', channel_type: 'alipay',
+      fee_policy: 'customer_surcharge', fee_rate: '0.00', fixed_fee: '0.00',
+      min_amount: '0.00', max_amount: '0.00', ...changes }] });
+    await f.run();
+    assert.equal(f.products[0].settlement, undefined);
+    assert.equal(f.reports[0].reason, 'payment_channel_unsupported');
+    assert.equal(f.calls.some(call => call.init.method === 'POST'), false);
+  }
+});
+
+test('Next reports empty public channels and member-only products before an unknown build', async () => {
+  for (const [options, reason] of [
+    [{ version: 'v1.5.4-maimen.custom', channels: [] }, 'no_payment_channel'],
+    [{ version: 'production', detail: { purchase_type: 'member' } }, 'login_required'],
+  ]) {
+    const f = fixture(options);
+    await f.run();
+    assert.equal(f.products[0].settlement, undefined);
+    assert.deepEqual(f.reports, [{ externalId: '1:2', status: 'failed', reason, retryable: false }]);
+    assert.equal(f.calls.some(call => call.init.method === 'POST'), false);
+  }
+});
+
+test('Next ignores malformed public channel entries while retaining usable fees and native quotes', async () => {
+  const channel = { id: 3, name: 'Alipay', provider_type: 'official', channel_type: 'alipay',
+    fee_policy: 'customer_surcharge', fee_rate: '2.00', fixed_fee: '0.00', min_amount: '0.00', max_amount: '0.00' };
+  const f = fixture({ channels: [null, channel] });
+  assert.equal((await f.run())[0].settlement?.totalAmount, '113.22');
+  const { fees } = platform.readSettlementFees({ status_code: 0, data: { currency: 'CNY', payment_channels: [null, channel] } });
+  assert.equal(fees.length, 1);
+  assert.equal(fees[0].cost(11100n), 222n);
+});
+
 test('Next does not extrapolate a tiny zero-fee checkout to a site with no public fee rules', async () => {
   const f = fixture({ url: 'https://shop.huashengg.com', version: 'v1.0.0', total: '150.00',
     channels: [{ id: 1, name: '支付宝', provider_type: 'epay', channel_type: 'alipay', min_amount: '0.00', max_amount: '0.00' }],
@@ -298,6 +346,27 @@ test('Next retry compares fresh evidence with the canonical database representat
   delete persisted.settlement;
   await f.run();
   assert.equal(persisted.settlement, undefined);
+});
+
+test('Next retry accepts the repository full-body evidence projection and still rejects changed evidence', async () => {
+  const f = fixture({ version: 'v1.4.7', detail: { description: { 'zh-CN': ' Summary\n' },
+    content: { 'zh-CN': ' <p>Full body\nhttps://api.example/v1?api_key=private&tenant=one</p> ' } } });
+  const [fresh] = await platform.crawl(null, shop, f.fetchImpl);
+  const persisted = { ...fresh, ...normalizeProductEvidence({ ...fresh,
+    sourceData: { ...fresh.sourceData, evidence: fresh.description } }), price: '111.000000000000' };
+  delete persisted.description;
+  delete persisted.settlement;
+  f.products.splice(0, 1, persisted);
+  assert.equal((await f.run())[0].settlement?.totalAmount, '114.27');
+  for (const key of ['evidence', 'content']) {
+    const changed = { ...persisted, sourceData: { ...persisted.sourceData, [key]: 'Changed product terms' } };
+    delete changed.settlement;
+    f.products.splice(0, 1, changed);
+    const before = f.calls.length;
+    await f.run();
+    assert.equal(changed.settlement, undefined);
+    assert.equal(f.calls.slice(before).some(call => call.init.method === 'POST'), false);
+  }
 });
 
 for (const [total, rate, fixed, quantity, expected] of [

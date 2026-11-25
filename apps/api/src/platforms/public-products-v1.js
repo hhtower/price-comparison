@@ -196,6 +196,11 @@ function cents(value) {
   return BigInt(integer) * 100n + BigInt(fraction.padEnd(2, '0'));
 }
 const amount = value => `${value / 100n}.${String(value % 100n).padStart(2, '0')}`;
+// Some Epay gateways advertise USDT as channel_type=alipay.
+const cnyChannel = channel => ['alipay', 'wechat'].includes(channel?.channel_type)
+  && typeof channel.name === 'string' && channel.name.trim()
+  && (channel.currency === undefined || channel.currency === 'CNY')
+  && !/(?:^|[^a-z0-9])(?:USDT|USDC|BTC|ETH|TRX|BEP20|TRC20|ERC20)(?:$|[^a-z0-9])|加密货币|虚拟币|币安/i.test(channel.name);
 
 function paymentTotal(base, channel, version) {
   const legacy = LEGACY_VERSIONS.has(version);
@@ -237,8 +242,12 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
         || path[1] !== 'products' && `/${path[1]}/` !== productPathPrefix(shop)) fail('invalid settlement identity');
       const fresh = (await readDetail(shop, { id: ids[0], slug: decodeURIComponent(path[2]) }, fetchImpl, options.signal))
         .find(row => row.externalId === String(product.externalId));
-      if (!fresh || !fresh.inStock || Number(product.price) !== Number(fresh.price)
-        || !isDeepStrictEqual(normalizeProductEvidence({ ...fresh, ...product }), normalizeProductEvidence(fresh))) continue;
+      if (!fresh || !fresh.inStock || Number(product.price) !== Number(fresh.price)) continue;
+      const evidence = normalizeProductEvidence({ ...fresh, ...product });
+      // Product persistence replaces evidence with the complete raw description (summary + body).
+      if (!isDeepStrictEqual(evidence, normalizeProductEvidence(fresh))
+        && !isDeepStrictEqual(evidence, normalizeProductEvidence({ ...fresh,
+          sourceData: { ...fresh.sourceData, evidence: fresh.description } }))) continue;
       freshProducts.set(product, fresh);
       productRules.set(product, productRules.get(fresh));
     } catch (error) {
@@ -256,9 +265,6 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       // This exact native Alipay build returned CNY payable=2.50, fee=0.00 in one unpaid checkout on 2026-10-17.
       confirmedGogo = new URL(shop.url).origin === 'https://pay.gogo77.top' && config?.app_version === 'v1.4.8-open-alipay-1';
       if (!config || !Array.isArray(config.payment_channels)) throw new SettlementUnavailableError('invalid_payment_config');
-      if (!SUPPORTED_VERSIONS.has(config.app_version) && !confirmedGogo && estimatedFee === undefined) {
-        throw new SettlementUnavailableError('unsupported_version');
-      }
       if (config.currency !== 'CNY') throw new SettlementUnavailableError('unsupported_currency');
       if (config.wallet_only_payment) throw new SettlementUnavailableError('login_required');
       if (!config.payment_channels.length) return undefined;
@@ -269,6 +275,9 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       if (!freshProducts.has(product) || deferred.has(product)) return undefined;
       const source = productRules.get(freshProducts.get(product)), ids = String(product.externalId).split(':').map(Number);
       if (source?.purchase_type === 'member' && estimatedFee === undefined) throw new SettlementUnavailableError('login_required');
+      if (!SUPPORTED_VERSIONS.has(config.app_version) && !confirmedGogo && estimatedFee === undefined) {
+        throw new SettlementUnavailableError('unsupported_version');
+      }
       if (!(source?.purchase_type === 'guest' || estimatedFee !== undefined && source?.purchase_type === 'member')
         || ids.length !== 2 || ids.some(value => !Number.isSafeInteger(value) || value < 1)) return undefined;
       const maxQuantity = source.max_purchase_quantity;
@@ -284,8 +293,8 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       }
       const allowed = source.payment_channel_ids;
       if (allowed !== undefined && (!Array.isArray(allowed) || allowed.some(value => !Number.isSafeInteger(value) || value < 1))) return undefined;
-      const supportedChannels = config.payment_channels.filter(channel => Number.isSafeInteger(channel.id) && channel.id > 0
-        && typeof channel.name === 'string' && channel.name.trim()
+      const supportedChannels = config.payment_channels.filter(channel => cnyChannel(channel)
+        && Number.isSafeInteger(channel.id) && channel.id > 0
         && (!confirmedGogo || channel.id === 2 && channel.provider_type === 'official' && channel.channel_type === 'alipay'
           && ['fee_policy', 'fee_rate', 'fixed_fee'].every(field => channel[field] === undefined))
         // Only confirmed Epay configurations can supplement the native CNY channels.
@@ -324,9 +333,8 @@ export function readSettlementFees(payload) {
   const config = payload?.status_code === 0 ? payload.data : undefined;
   if (config?.currency !== 'CNY' || !Array.isArray(config.payment_channels)) return { key: '', fees: [] };
   const fees = config.payment_channels.flatMap(channel => {
-    if (!['alipay', 'wechat'].includes(channel?.channel_type) || typeof channel.name !== 'string'
+    if (!cnyChannel(channel)
       || ['status', 'custom_status'].some(field => channel[field] !== undefined && ![1, '1', true].includes(channel[field]))
-      || channel.currency !== undefined && channel.currency !== 'CNY'
       || channel.fee_policy !== undefined && !['customer_surcharge', 'none'].includes(channel.fee_policy)) return [];
     const rate = channel.fee_policy === 'none' ? 0n : settlementCents(channel.fee_rate);
     const fixed = channel.fee_policy === 'none' ? 0n : settlementCents(channel.fixed_fee ?? '0');

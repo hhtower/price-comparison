@@ -155,10 +155,12 @@ export async function runSettlementRetry(
       quantity: number; total: string; estimated: boolean }> = [];
     const deferred: bigint[] = [];
     const retired: bigint[] = [];
+    const soldOut: bigint[] = [];
     for (const row of current) {
       const outcome = outcomes.get(row.external_id);
       if (outcome) applicableOutcomes.push(outcome);
       if (outcome?.reason === 'product_unavailable') { retired.push(row.id); continue; }
+      if (outcome?.reason === 'out_of_stock') { soldOut.push(row.offer_id); continue; }
       const quote = byExternal.get(row.external_id)?.settlement;
       const estimated = isEstimatedSettlement(quote);
       // A retry's estimate must not invalidate its frozen verification baseline or replace a real quote.
@@ -175,6 +177,8 @@ export async function runSettlementRetry(
     if (retired.length) await softDeleteProductNames(tx, retired, 'crawler_missing');
     if (current.length) await tx.updateTable('offers').set({ settlement_refresh_at: null })
       .where('id', 'in', current.map(row => row.offer_id)).execute();
+    if (soldOut.length) await tx.updateTable('offers').set({ stock_available: false, stock_quantity: null })
+      .where('id', 'in', soldOut).execute();
     if (quotes.length) {
       await sql`update offers o set settlement_price = v.price::numeric, settlement_verified_at = v.at::timestamptz,
         settlement_payment_method = v.method, settlement_quantity = v.quantity,
@@ -185,7 +189,7 @@ export async function runSettlementRetry(
         from jsonb_to_recordset(${JSON.stringify(quotes)}::jsonb)
         as v(id text, price text, at text, method text, kind text, quantity integer, total text, estimated boolean) where o.id = v.id::bigint`.execute(tx);
     }
-    if (quotes.length || retired.length) await bumpCatalogVersion(tx);
+    if (quotes.length || retired.length || soldOut.length) await bumpCatalogVersion(tx);
     if (deferred.length && adapter.canVerifySettlement !== false) await tx.updateTable('offers').set({ settlement_refresh_at: new Date() })
       .where('id', 'in', deferred).execute();
     // Only a first claim can restore eligibility; later claims may have already spent a retry budget.

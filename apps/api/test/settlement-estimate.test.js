@@ -42,6 +42,32 @@ test('unknown payment costs fall back to the listed price with exact cent arithm
   }
 });
 
+test('an explicit empty live fee set cannot reuse remembered fees from an unavailable channel', () => {
+  const source = { url: 'https://kkfaka.xyz/' };
+  assert.equal(estimates.estimateSettlement(source, product(), 1).totalAmount, '105.00');
+  const quote = estimates.estimateSettlement(source, product(), 1, []);
+  assert.equal(quote.totalAmount, '100.00');
+  assert.equal(quote.kind, 'estimated');
+  assert.match(quote.paymentMethod, /手续费未知/);
+});
+
+test('live product channel restrictions invalidate an earlier remembered fee estimate', async () => {
+  const source = { url: 'https://kkfaka.xyz/' };
+  const adapter = estimates.withSettlementEstimates({
+    id: 'fixture', hosts: [], preferPublicSettlementFees: true, settlementFeePath: '/fees',
+    settlementPaymentChannelIds: () => [2],
+    readSettlementFees: () => ({ key: '', fees: [{ channelId: 1, min: 0n, max: 0n, cost: () => 500n, label: 'Alipay' }] }),
+    async crawl(_page, shop, fetchImpl) {
+      await fetchImpl(new URL('/fees', shop.url));
+      return [{ ...product(), settlement: estimates.estimateSettlement(shop, product(), 1) }];
+    },
+  });
+  const [row] = await adapter.crawl(null, source, async () => Response.json({}));
+  assert.equal(row.settlement.totalAmount, '100.00');
+  assert.equal(row.settlement.kind, 'estimated');
+  assert.match(row.settlement.paymentMethod, /手续费未知/);
+});
+
 test('confirmed and published rates override the default and morimm uses the order total boundary', () => {
   for (const [host, price, quantity, total] of [
     ['kapay.shop', '100', 1, '100.00'], ['shop.txyxt.dpdns.org', '100', 1, '100.00'],

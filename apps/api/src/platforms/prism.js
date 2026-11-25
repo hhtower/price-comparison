@@ -2,7 +2,7 @@ import { buildSourceEvidence, captureRatingText, rawProductContent } from './sou
 import { collectSettlements } from './settlement.js';
 
 export const id = 'prism';
-// shortcut: Official-reference FX feed; single-rate USDT≈USD→CNY estimate authorized by ops 2026-10-24, no on-site checkout exists.
+// shortcut: FX estimate only; the storefront confirms fiat totals after order creation, with no public quote preview.
 export const FX_URL = 'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/cny.json';
 const fail = message => { throw new Error(`${id} goods API: ${message}`); };
 

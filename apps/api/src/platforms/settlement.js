@@ -130,11 +130,12 @@ export async function collectSettlements(products, transport, options = {}) {
       quote = await transport.quote(product, channel, quantity);
       options.signal?.throwIfAborted();
     } catch (error) {
-      if (error?.name === 'ProductUnavailableError') {
+      if (error?.name === 'ProductUnavailableError' || error?.name === 'ProductOutOfStockError') {
         options.signal?.throwIfAborted();
         product.inStock = false;
         delete product.settlement;
-        report(product, 'failed', 'product_unavailable');
+        const soldOut = error.name === 'ProductOutOfStockError';
+        report(product, soldOut ? 'skipped' : 'failed', soldOut ? 'out_of_stock' : 'product_unavailable');
         continue;
       }
       const reason = requestFailure(error);

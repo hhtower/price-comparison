@@ -14,7 +14,8 @@ const SETTLEMENT_REASONS = {
   invalid_payment_config: '支付配置响应无效', login_required: '需要登录购买',
   payment_fee_unknown: '手续费无法确认', payment_channel_unsupported: '支付渠道暂不支持',
   payment_channel_restricted: '商品限制支付渠道', payment_amount_restricted: '不满足渠道金额限制',
-  not_selected: '未公开商品', out_of_stock: '无库存', recently_verified: '近期已核验', superseded: '商品或来源已变化',
+  not_selected: '未公开商品', out_of_stock: '无库存', product_unavailable: '商品已下架或不存在',
+  recently_verified: '近期已核验', superseded: '商品或来源已变化',
 };
 const RUN_STATUS = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', cancelled: '已取消' };
 

@@ -3,12 +3,13 @@ import { isDeepStrictEqual } from 'node:util';
 import { collectSettlements, minimumPurchaseQuantity, settlementJson, settlementCents, SettlementUnavailableError } from './settlement.js';
 import { normalizeProductEvidence } from '../standardization/fingerprint.js';
 import { specificationText } from '../products/product-spec.js';
+import { parse } from 'parse5';
 
 export const id = 'acg-faka';
 const PAGE_SIZE = 12, MAX_PAGES = 1000;
 const fail = message => { throw new Error(`${id} goods API: ${message}`); };
 const unavailable = () => { throw Object.assign(new Error(`${id} goods API: product unavailable`), { name: 'ProductUnavailableError' }); };
-const isUnavailable = payload => payload?.code === 0 && ['商品不存在', '商品已下架', '商品已经下架'].includes(payload.msg);
+const isUnavailable = payload => payload?.code === 0 && ['商品不存在', '商品已下架', '商品已经下架', '该商品暂未上架'].includes(payload.msg);
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const estimatedGuestShop = url => { try { return new URL(url).origin === 'https://shopcardai.click'; } catch { return false; } };
 const productId = value => Number.isSafeInteger(value) && value > 0;
@@ -270,6 +271,11 @@ export function paymentFee(channel, origin) {
     const amount = decimal(channel.cost);
     return amount && [0, 1, '0', '1'].includes(channel.cost_type) ? { ...amount, fixed: Number(channel.cost_type) === 0 } : undefined;
   }
+  if (origin === 'https://www.aixiamo.com' && Number(channel.id) === 5 && channel.handle === 'Zpay'
+    && channel.code === 'alipay' && name === '支付宝' && channel.fee_free === true
+    && !Object.hasOwn(channel, 'fee_bps') && !Object.hasOwn(channel, 'max_cents')) {
+    return { value: 0n, scale: 1n, fixed: false };
+  }
   // shortcut: User-confirmed rates require rechecking if private fees change without a channel identity change.
   const confirmed = {
     'https://yufenggpt.com': { id: 7, handle: 'Epay', rate: '0' },
@@ -295,6 +301,24 @@ export function paymentFee(channel, origin) {
 
 export async function settle(shop, products, fetchImpl = globalThis.fetch, options = {}, freshProducts = new Map()) {
   const origin = new URL(shop.url).origin;
+  let announcement;
+  const announcedFee = async () => {
+    const response = await fetchImpl(`${origin}/`, { headers: { accept: 'text/html' }, redirect: 'error',
+      ...(options.signal ? { signal: options.signal } : {}) });
+    if (!response.ok) await settlementJson(response);
+    const html = await response.text();
+    options.signal?.throwIfAborted();
+    if (!/<\/html>\s*$/i.test(html)) return undefined;
+    const declarations = node => {
+      if (['script', 'style', 'template'].includes(node.tagName)) return [];
+      const text = node.tagName === 'strong' && node.childNodes?.length === 1 && node.childNodes[0].value;
+      return [...(typeof text === 'string' && text.startsWith('▶▶支付声明：') ? [text] : []),
+        ...(node.childNodes ?? []).flatMap(declarations)];
+    };
+    const notices = declarations(parse(html));
+    const rate = notices.length === 1 && decimal(notices[0].match(/^▶▶支付声明：支付宝支付有(\d+(?:\.\d+)?)%的手续费$/)?.[1]);
+    return rate && rate.value <= rate.scale * 100n ? { value: rate.value, scale: rate.scale * 100n, fixed: false } : undefined;
+  };
   const request = async (path, form) => {
     options.signal?.throwIfAborted();
     const response = await fetchImpl(new URL(path, shop.url).href, {
@@ -313,8 +337,12 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
     if (!payload.data.length) throw new SettlementUnavailableError('no_payment_channel');
     const supported = payload.data.filter(cnyPaymentChannel);
     if (!supported.length) throw new SettlementUnavailableError('payment_channel_unsupported');
+    // This storefront declares its Alipay fee in the public home-page announcement.
+    const usesAnnouncement = channel => origin === 'https://shop.sunnydolls.dpdns.org' && Number(channel.id) === 2
+      && channel.handle === 'Epay' && channel.name === '支付宝' && !Object.hasOwn(channel, 'cost') && !Object.hasOwn(channel, 'cost_type');
+    const declared = supported.some(usesAnnouncement) ? await (announcement ??= announcedFee()) : undefined;
     const channels = supported.flatMap(channel => {
-      const fee = paymentFee(channel, origin);
+      const fee = paymentFee(channel, origin) ?? (usesAnnouncement(channel) ? declared : undefined);
       return fee ? [{ ...channel, fee }] : [];
     });
     if (!channels.length) throw new SettlementUnavailableError('payment_fee_unknown');
@@ -323,10 +351,12 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
   return collectSettlements(products, {
     quantity: product => freshProducts.get(product) === false ? undefined : purchaseQuantity(product),
     channel: async () => {
+      // Aixiamo exposes its Alipay channel only on the item-specific checkout.
+      if (origin === 'https://www.aixiamo.com') return { show_name: '支付宝' };
       const channels = await readChannels('/user/api/index/pay');
-      return { channels, show_name: channels[0].name };
+      return { show_name: channels[0].name };
     },
-    quote: async (product, { channels }, quantity) => {
+    quote: async (product, _channel, quantity) => {
       const [item, variant] = String(product.externalId).split(':');
       let selected;
       try { selected = variant ? JSON.parse(decodeURIComponent(variant)) : { race: '', sku: {} }; } catch { return undefined; }
@@ -345,10 +375,8 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       const quote = quantity === 1 ? { code: 200, data: { price: product.price } } : await request('/user/api/index/valuation', form);
       const amount = quote?.code === 200 ? cents(quote.data?.price) : undefined;
       if (amount === undefined) return undefined;
-      // Custom storefronts can restrict payment channels per item, as their checkout does.
-      const allowed = (await readChannels(`/user/api/index/pay?itemId=${item}`))
-        .filter(channel => channels.some(global => Number(global.id) === Number(channel.id)));
-      if (!allowed.length) throw new SettlementUnavailableError('payment_channel_restricted');
+      // Checkout can expose dedicated item channels that do not appear in the global list.
+      const allowed = await readChannels(`/user/api/index/pay?itemId=${item}`);
       let best;
       for (const channel of allowed) {
         const min = channel.min_amount == null ? 0n : cents(channel.min_amount), max = channel.max_amount == null ? undefined : cents(channel.max_amount);

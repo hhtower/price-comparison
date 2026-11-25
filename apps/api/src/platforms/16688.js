@@ -96,9 +96,18 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       return payload?.code === 1 && Array.isArray(payload.data?.list)
         ? payload.data.list.find(channel => usablePaymentChannel(channel)) : undefined;
     },
-    quote: (product, channel, quantity) => post('/shopApi/payment/quotePrice', {
-      shop_no: shopNo, goods_no: product.externalId, quantity, channel_id: channel.id, coupon_code: '',
-    }),
+    quote: async (product, channel, quantity) => {
+      const payload = await post('/shopApi/payment/quotePrice', {
+        shop_no: shopNo, goods_no: product.externalId, quantity, channel_id: channel.id, coupon_code: '',
+      });
+      if (payload?.code === 0 && payload.msg === '商品不存在或已下架') {
+        throw Object.assign(new Error('16688 product unavailable'), { name: 'ProductUnavailableError' });
+      }
+      if (payload?.code === 0 && payload.msg === '商品已售罄') {
+        throw Object.assign(new Error('16688 product out of stock'), { name: 'ProductOutOfStockError' });
+      }
+      return payload;
+    },
   }, options);
 }
 

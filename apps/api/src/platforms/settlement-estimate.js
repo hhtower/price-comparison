@@ -12,21 +12,23 @@ const FEES = new Map([
 
 const amount = value => `${value / 100n}.${String(value % 100n).padStart(2, '0')}`;
 
-export function estimateSettlement(shop, product, quantity, fees = []) {
+export function estimateSettlement(shop, product, quantity, fees) {
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) return undefined;
   const base = verifiedSettlement(product.price, '售价基准', quantity);
   if (!base) return undefined;
   const origin = new URL(shop.url).origin;
-  let rate = FEES.get(origin) ?? 0n;
+  const remembered = fees === undefined && FEES.has(origin);
+  let rate = remembered ? FEES.get(origin) : 0n;
   const total = BigInt(base.totalAmount.replace('.', '')) * BigInt(quantity);
   if (origin === 'https://morimm.com' && total > 50000n) rate = 0n;
   const payable = total + (total * rate + 5000n) / 10000n;
-  const available = fees.filter(fee => total >= fee.min && (fee.max === 0n || total <= fee.max))
+  const available = (fees ?? []).filter(fee => total >= fee.min && (fee.max === 0n || total <= fee.max))
     .map(fee => ({ total: total + fee.cost(total), label: fee.label })).sort((a, b) => a.total < b.total ? -1 : a.total > b.total ? 1 : 0);
   if (available.length) return markEstimatedSettlement(verifiedSettlement(amount(available[0].total), `支付价（预估：${available[0].label}）`, quantity));
   const percent = Number(rate) / 100;
   return markEstimatedSettlement(verifiedSettlement(`${payable / 100n}.${String(payable % 100n).padStart(2, '0')}`,
-    FEES.has(origin) ? `支付价（预估：售价加${percent}%）` : '支付价（预估：售价）', quantity));
+    remembered ? `支付价（预估：售价加${percent}%）`
+      : fees !== undefined ? '支付价（预估：售价，手续费未知）' : '支付价（预估：售价）', quantity));
 }
 
 export function withSettlementEstimates(adapter) {
@@ -69,7 +71,7 @@ export function withSettlementEstimates(adapter) {
       if (allowed !== undefined) fees = Array.isArray(allowed) && allowed.every(id => Number.isSafeInteger(id) && id > 0)
         ? allowed.length ? fees?.filter(fee => allowed.includes(fee.channelId)) : fees : [];
       if (!product.settlement || product.settlement.kind === 'estimated'
-        && adapter.preferPublicSettlementFees && fees?.length) {
+        && adapter.preferPublicSettlementFees && fees !== undefined) {
         const quote = estimateSettlement(shop, product, count, fees);
         if (quote) product.settlement = quote;
       }

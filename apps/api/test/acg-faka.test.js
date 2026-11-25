@@ -28,7 +28,7 @@ function api({ pages = [[listing()]], total = 1, product = detail(), stock = { s
 const run = fetchImpl => crawl(null, shop, fetchImpl);
 
 test('explicitly missing or delisted ACG details retire only that listing, while ambiguous errors reject the snapshot', async () => {
-  for (const response of [{ code: 0, msg: '商品不存在' }, { code: 200, data: detail({ status: 0 }) },
+  for (const response of [{ code: 0, msg: '商品不存在' }, { code: 0, msg: '该商品暂未上架' }, { code: 200, data: detail({ status: 0 }) },
     { code: 200, data: detail({ draft_status: 1 }) }]) {
     const products = await run(api({ pages: [[listing(), listing(18)]], total: 2, intercept: url =>
       url.pathname.endsWith('/commodityDetail') && url.searchParams.get('commodityId') === '17' ? Response.json(response) : undefined }));
@@ -39,6 +39,23 @@ test('explicitly missing or delisted ACG details retire only that listing, while
   assert.deepEqual(await run(api({ pages: [[{ ...listing(), status: 0 }]] })), []);
   assert.deepEqual(await run(api({ intercept: url => url.pathname.endsWith('/stock')
     ? Response.json({ code: 0, msg: '商品不存在' }) : undefined })), []);
+});
+
+test('ACG unpublished goods cannot regain an estimated price after a public detail, stock, valuation or item-channel response', async () => {
+  const { withSettlementEstimates } = await import('../src/platforms/settlement-estimate.js');
+  for (const endpoint of ['commodityDetail', 'stock', 'valuation', 'pay']) {
+    const [product] = await run(api());
+    const events = [];
+    await withSettlementEstimates(acg.default).settle(shop, [product], api({
+      channels: [{ id: 1, name: '支付宝 5% 手续费', handle: 'Epay' }],
+      intercept: url => url.pathname.endsWith(`/${endpoint}`) && (endpoint !== 'pay' || url.searchParams.has('itemId'))
+        ? Response.json({ code: 0, msg: '该商品暂未上架' }) : undefined,
+    }), { onSettlementResult: event => events.push(event) });
+    assert.equal(product.inStock, false, endpoint);
+    assert.equal(product.settlement, undefined, endpoint);
+    assert.equal(events[0]?.reason, 'product_unavailable', endpoint);
+    assert.equal(events[0]?.retryable, false, endpoint);
+  }
 });
 
 test('a missing ACG detail during supplemental quotes clears stock and cannot be estimated back into stock', async () => {
@@ -200,6 +217,84 @@ test('ACG respects the item-specific checkout channels instead of a cheaper glob
     } }));
     assert.equal(product.settlement?.totalAmount, expected);
   }
+});
+
+test('ACG accepts a dedicated item channel absent from the global list and retains its fee and amount limits', async () => {
+  const global = { id: 10, name: '支付宝(4%手续费)', handle: 'XqdEpay' };
+  const dedicated = { id: 12, name: '支付宝(4%)', handle: 'XqdEpay2' };
+  for (const [channel, total] of [
+    [dedicated, '42.64'],
+    [{ ...dedicated, cost: '0.025', cost_type: 1 }, '42.02'],
+    [{ ...dedicated, min_amount: '42' }, undefined],
+    [{ ...dedicated, max_amount: '40' }, undefined],
+    [{ ...dedicated, name: '支付宝' }, undefined],
+    [{ ...dedicated, status: 0 }, undefined],
+    [{ ...dedicated, currency: 'USD' }, undefined],
+  ]) {
+    const [product] = await run(api({ price: '41.00', channels: [global], intercept: url =>
+      url.pathname.endsWith('/pay') && url.searchParams.get('itemId') === '17' ? json([channel]) : undefined }));
+    assert.equal(product.settlement?.totalAmount, total, JSON.stringify(channel));
+  }
+});
+
+test('Sunnydolls reads its live payment announcement only for its exact undecorated Alipay channel', async () => {
+  const sunny = { url: 'https://shop.sunnydolls.dpdns.org/' };
+  const channel = { id: 2, name: '支付宝', handle: 'Epay' };
+  const announcement = rate => `<html><body><p><strong>▶▶支付声明：支付宝支付有${rate}%的手续费</strong></p></body></html>`;
+  for (const [html, changes, total] of [
+    [announcement('2'), {}, '0.51'],
+    [announcement('3'), {}, '0.51'],
+    [announcement('0'), {}, '0.50'],
+    [announcement('2'), { cost: '0.04', cost_type: 1 }, '0.52'],
+    [announcement('2'), { cost: '-1', cost_type: 1 }, undefined],
+    [announcement('2'), { id: 3 }, undefined],
+    [announcement('2'), { handle: 'Other' }, undefined],
+    [announcement('2'), { name: '支付宝（备用）' }, undefined],
+    [announcement('101'), {}, undefined],
+    [announcement('2').replace('2%', '最高2%'), {}, undefined],
+    [announcement('2').replace('</html>', ''), {}, undefined],
+    [`<html><script>${announcement('2')}</script></html>`, {}, undefined],
+    [`<html><!--${announcement('2')}--></html>`, {}, undefined],
+    [announcement('2') + announcement('4'), {}, undefined],
+    ['<html><body>支付宝</body></html>', {}, undefined],
+  ]) {
+    let reads = 0;
+    const [product] = await crawl(null, sunny, api({ price: '0.50', channels: [{ ...channel, ...changes }],
+      intercept: url => { if (url.pathname === '/') { reads++; return new Response(html); } } }));
+    assert.equal(product.settlement?.totalAmount, total, JSON.stringify({ html, changes }));
+    assert.ok(reads <= 1);
+  }
+  const [other] = await run(api({ channels: [channel], intercept: url => {
+    assert.notEqual(url.pathname, '/');
+  } }));
+  assert.equal(other.settlement, undefined);
+  for (const status of [403, 503]) {
+    const [product] = await crawl(null, sunny, api({ channels: [channel],
+      intercept: url => url.pathname === '/' ? new Response('', { status }) : undefined }));
+    assert.equal(product.settlement, undefined);
+  }
+  const controller = new AbortController();
+  await assert.rejects(crawl(null, sunny, api({ channels: [channel], intercept: url => {
+    if (url.pathname === '/') { controller.abort(); return new Response(announcement('2')); }
+  } }), { signal: controller.signal }), { name: 'AbortError' });
+});
+
+test('Aixiamo verifies its explicit fee-free item Alipay even when global payments only list USDT', async () => {
+  const aixiamo = { url: 'https://www.aixiamo.com/' };
+  const channel = { id: 5, name: '支付宝', handle: 'Zpay', code: 'alipay', fee_free: true };
+  for (const [changes, total] of [
+    [{}, '148.80'], [{ fee_free: false }, undefined], [{ fee_free: 'true' }, undefined],
+    [{ fee_bps: 300 }, undefined], [{ max_cents: 10000 }, undefined],
+    [{ id: 6 }, undefined], [{ handle: 'Other' }, undefined], [{ code: 'wxpay' }, undefined],
+    [{ cost: '-1', cost_type: 1 }, undefined], [{ status: 0 }, undefined], [{ currency: 'USD' }, undefined],
+  ]) {
+    const [product] = await crawl(null, aixiamo, api({ price: '148.80',
+      channels: [{ id: 7, name: 'USDT-BEP20', handle: 'BuiltPayExtend', fee_free: true }],
+      intercept: url => url.pathname.endsWith('/pay') && url.searchParams.has('itemId') ? json([{ ...channel, ...changes }]) : undefined,
+    }));
+    assert.equal(product.settlement?.totalAmount, total, JSON.stringify(changes));
+  }
+  assert.equal(acg.paymentFee(channel, 'https://fake.www.aixiamo.com'), undefined);
 });
 
 test('acg-faka settlement respects selection, cache, limits, failed quotes and cancellation', async () => {

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { settle } from '../src/platforms/16688.js';
+import platform from '../src/platforms/16688.js';
+import { withSettlementEstimates } from '../src/platforms/settlement-estimate.js';
 
 const shop = { url: 'https://www.16688.com.cn/shop/AIDP' };
 const products = () => [{ externalId: 'G35841576', price: '10.00', inStock: true }];
@@ -50,4 +52,30 @@ test('16688 cancels alias resolution before issuing another payment request', as
     return Response.json({ code: 1, data: { shop_no: 'S209643', shop_alias: 'AIDP' } });
   }, { signal: controller.signal }), /lease lost/);
   assert.deepEqual(calls, ['/shopApi/payment/list', '/shopApi/shop/detail']);
+});
+
+for (const [message, reason, status] of [
+  ['商品不存在或已下架', 'product_unavailable', 'failed'],
+  ['商品已售罄', 'out_of_stock', 'skipped'],
+]) test(`16688 quote evidence ${message} clears availability and prevents estimate fallback`, async () => {
+  const items = products(), reports = [];
+  items[0].settlement = { kind: 'estimated', price: '10.00', totalAmount: '10.00', quantity: 1,
+    verifiedAt: new Date().toISOString(), paymentMethod: 'estimated' };
+  await withSettlementEstimates(platform).settle(shop, items, async url => Response.json(
+    String(url).endsWith('/payment/list') ? { code: 1, data: { list: [{ id: 1, show_name: 'Alipay' }] } }
+      : { code: 0, msg: message, data: null }), { onSettlementResult: row => reports.push(row) });
+  assert.equal(items[0].inStock, false);
+  assert.equal(items[0].settlement, undefined);
+  assert.deepEqual(reports, [{ externalId: 'G35841576', status, reason, retryable: false }]);
+});
+
+test('16688 does not retire goods on transient or unrelated quote errors', async () => {
+  for (const msg of ['系统繁忙', '订单金额不满足支付渠道要求', '店铺不存在或已关闭']) {
+    const items = products(), reports = [];
+    await settle(shop, items, async url => Response.json(
+      String(url).endsWith('/payment/list') ? { code: 1, data: { list: [{ id: 1, show_name: 'Alipay' }] } }
+        : { code: 0, msg }), { onSettlementResult: row => reports.push(row) });
+    assert.equal(items[0].inStock, true);
+    assert.equal(reports[0].reason, 'invalid_quote');
+  }
 });

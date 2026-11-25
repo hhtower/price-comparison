@@ -294,6 +294,35 @@ describe('independent settlement expiry scheduling', () => {
     assert.equal(await enqueueDueSettlements(db, 32, now, ttlMs), 0);
   });
 
+  for (const [message, removed] of [['商品已售罄', false], ['商品不存在或已下架', true]] as const) {
+    test(`supplemental 16688 ${message} updates only the affected listing`, async () => {
+      await fixture(2);
+      await db.updateTable('offers').set({ settlement_kind: 'estimated', stock_quantity: 10n }).execute();
+      await enqueueDueSettlements(db, 32, now, ttlMs);
+      const handler = createCrawlerHandler(db, new ProductsRepository(db), { fetchFactory: () => async (url, init) => {
+        if (String(url).endsWith('/payment/list')) return Response.json({ code: 1, data: { list: [{ id: 1, show_name: 'Alipay' }] } });
+        return Response.json(JSON.parse(init.body).goods_no === '0'
+          ? { code: 0, msg: message } : { code: 1, data: { total_amount: '11.30' } });
+      } });
+      await handler((await new JobsRepository(db).claimNext('fetch_run', 'availability', 120000))!);
+      const products = await db.selectFrom('products').selectAll().orderBy('external_id').execute();
+      assert.equal(products[0]!.deleted_at !== null, removed);
+      assert.equal(products[1]!.deleted_at, null);
+      const offers = await db.selectFrom('offers').selectAll().orderBy('product_id').execute();
+      if (!removed) {
+        assert.equal(offers[0]!.stock_available, false);
+        assert.equal(offers[0]!.stock_quantity, null);
+      }
+      assert.equal(offers[1]!.settlement_price, '11.30');
+      assert.equal(offers[1]!.settlement_kind, 'verified');
+      assert.ok(offers.every(row => row.captured_at.getTime() === now.getTime()));
+      const report = (await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow()).settlement_report as any;
+      assert.equal(report.estimated, 0);
+      assert.equal(report.verified, 1);
+      assert.equal(report.reasons[removed ? 'product_unavailable' : 'out_of_stock'], 1);
+    });
+  }
+
   test('newly published missing quotes are scheduled without waiting for another list', async () => {
     const shop = await fixture();
     await db.updateTable('standard_product_members').set({ publication_state: 'provisional' }).execute();
