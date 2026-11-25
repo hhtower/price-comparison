@@ -33,6 +33,14 @@ const currentPending = (scopeShopId?: bigint) => sql<bigint>`(select count(disti
 
 /** Job history stays available; attention and pending counts project current product state. */
 export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQueueFilter) {
+  if (db.isTransaction) return readTaskQueue(db, input);
+  return db.transaction().setIsolationLevel('repeatable read').execute(async tx => {
+    await sql`set local jit = off`.execute(tx);
+    return readTaskQueue(tx, input);
+  });
+}
+
+async function readTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQueueFilter) {
   if (input.jobType !== undefined && !isAttributeJobType(input.jobType) && !['identity','incremental','manual_full','calibration'].includes(input.jobType)) throw new DomainValidationError('INVALID_TASK_TYPE','任务类型无效');
   if(input.scopeShopId!==undefined && input.scopeShopId<=0n) throw new DomainValidationError('INVALID_ID','店铺 ID 无效');
   if(input.jobType && isAttributeJobType(input.jobType)) return readAttributeTaskQueue(db,{...input,jobType:input.jobType});
@@ -42,9 +50,14 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
   const processed = sql<bigint>`greatest(j.processed, (select count(*) from ai_standardization_results r where r.job_id = j.id))`;
   const productScope = input.scopeShopId === undefined ? sql<boolean>`true` : sql<boolean>`p.shop_id = ${input.scopeShopId}`;
   const scopedPending = currentPending(input.scopeShopId);
-  const current = currentUnclassifiedQuery(db).where(productScope).where(sql<boolean>`r.job_id = j.id`);
-  const attention = sql<boolean>`exists (${current.select(sql<number>`1`.as('present'))})`;
-  const currentCount = current.select(sql<bigint>`count(*)`.as('count'));
+  const current = currentUnclassifiedQuery(db, sql<bigint>`j.id`).where(productScope)
+    .where(sql<boolean>`r.job_id = j.id`);
+  const attention = filter === 'attention'
+    ? sql<boolean>`exists (select 1 from report_unclassified r where r.job_id = j.id)`
+    : sql<boolean>`exists (${current.select(sql<number>`1`.as('present'))})`;
+  const currentCount = filter === 'attention'
+    ? sql<bigint>`(select count(*) from report_unclassified r where r.job_id = j.id)`
+    : current.select(sql<bigint>`count(*)`.as('count'));
   const reasonClass = sql<string>`case
     when r.reason_code = 'provider_policy_rejection' then 'provider_policy_rejection'
     when r.reason_code in ('evidence_invalid', 'attribute_conflict', 'identity_conflict', 'publication_blocked', 'input_too_large', 'review_rejected') then r.reason_code
@@ -67,9 +80,7 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
   if (filter === 'unfinished') query = query.where(unfinished);
   if (filter === 'attention') query = query.where(attention);
   if (page.afterId !== undefined) query = query.where('j.id', '<', page.afterId);
-  const [rows, totals, pending, reasons] = await Promise.all([
-    query.execute(),
-    sql<Record<string, string | number | bigint>>`
+  const totalQuery = sql<Record<string, string | number | bigint>>`
       select count(*) as total ${input.totalOnly ? sql`` : sql`, count(*) filter (where ${unfinished}) as unfinished,
         count(*) filter (where j.status = 'queued') as queued,
         count(*) filter (where j.status = 'running') as running,
@@ -77,15 +88,45 @@ export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQue
         count(*) filter (where ${attention}) as attention,
         coalesce(sum(${scopedPending}) filter (where ${unfinished}), 0) as pending_products`}
       from ai_jobs j where ${typeScope} and ${configCurrent} and ${statusScope}
-    `.execute(db),
-    input.totalOnly ? undefined : sql<{ count: bigint }>`select count(distinct o.product_id) as count from standardization_outbox o
+    `;
+  const pendingQuery = sql<{ count: bigint }>`select count(distinct o.product_id) as count from standardization_outbox o
       join product_change_events e on e.id = o.event_id join products p on p.id = o.product_id join shops s on s.id = p.shop_id
       where ${input.scopeShopId===undefined?sql`true`:sql`p.shop_id=${input.scopeShopId}`} and ${filter==='attention'?sql`false`:sql`true`} and o.status in ('queued', 'running') and e.content_version = p.content_version
-        and p.deleted_at is null and s.deleted_at is null and s.enabled = true and ${hasUsableOffer()}`.execute(db),
-    input.totalOnly ? [] : currentUnclassifiedQuery(db).where(productScope).innerJoin('ai_jobs as j','j.id','r.job_id').where(typeScope).where(configCurrent).where(statusScope).select([reasonClass.as('reason'), sql<number>`count(*)::int`.as('count')]).groupBy(reasonClass).execute(),
-  ]);
+        and p.deleted_at is null and s.deleted_at is null and s.enabled = true and ${hasUsableOffer()}`;
+  const report = async () => {
+    if (filter !== 'attention') {
+      const rows = await query.execute();
+      const totals = await totalQuery.execute(db);
+      const pending = input.totalOnly ? undefined : await pendingQuery.execute(db);
+      const reasons = input.totalOnly ? [] : await currentUnclassifiedQuery(db).where(productScope).innerJoin('ai_jobs as j','j.id','r.job_id')
+          .where(typeScope).where(configCurrent).where(statusScope)
+          .select([reasonClass.as('reason'), sql<number>`count(*)::int`.as('count')]).groupBy(reasonClass).execute();
+      return { rows, counts: totals.rows[0]!, pending, reasons };
+    }
+    type Task = Awaited<ReturnType<typeof query.execute>>[number];
+    const unresolved = currentUnclassifiedQuery(db).where(productScope).select(['r.job_id', 'r.reason_code']);
+    const results = await sql<Task & {
+      counts: Record<string, string | number | bigint>; reasons: Array<{ reason: string; count: number }>;
+    }>`with report_unclassified as materialized (${unresolved}),
+      totals as (${totalQuery}), page as (${query})
+      select page.*, to_jsonb(totals) as counts,
+        ${input.totalOnly ? sql`'[]'::jsonb` : sql`(
+          select coalesce(jsonb_agg(reasons), '[]'::jsonb) from (
+            select ${reasonClass} as reason, count(*)::int as count from report_unclassified r
+            join ai_jobs j on j.id = r.job_id where ${typeScope} and ${configCurrent}
+            group by ${reasonClass}
+          ) reasons
+        )`} as reasons
+      from totals left join page on true order by page.id desc nulls last`.execute(db);
+    const first = results.rows[0]!;
+    return {
+      rows: results.rows.filter(row => row.id !== null).map(({ counts: _counts, reasons: _reasons, ...row }) => row as Task),
+      counts: first.counts, reasons: first.reasons,
+      pending: input.totalOnly ? undefined : { rows: [{ count: 0n }] },
+    };
+  };
+  const { rows, counts, pending, reasons } = await report();
   const result = buildCursorPage(rows, page.limit);
-  const counts = totals.rows[0]!;
   const currentReasons: Record<string, number> = { technical_failure: 0, provider_policy_rejection: 0,
     evidence_invalid: 0, attribute_conflict: 0, identity_conflict: 0, publication_blocked: 0, review_rejected: 0, other_unclassified: 0 };
   for (const row of reasons) currentReasons[row.reason] = (currentReasons[row.reason] ?? 0) + Number(row.count);
@@ -149,16 +190,25 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
    and ${publication}`;
  const needsAttention=sql<boolean>`(status='failed' or current_attention>0 or (not configuration_current and status in ('queued','running','paused','ready')))`;
  const pageFirst = input.totalOnly && status !== 'attention';
+ const attentionMembers = input.totalOnly && status === 'attention';
  const pageWindow = sql`${page.afterId === undefined ? sql`` : sql`where id < ${page.afterId}`} order by id desc limit ${page.limit + 1}`;
  const jobScope = sql`j.job_type=${input.jobType}
    ${status==='unfinished'?sql`and ${unfinished} and ${currentExecutionPipeline()}`:sql``}
    ${input.scopeShopId===undefined?sql``:sql`and (j.scope_shop_id=${input.scopeShopId} or j.id in(select m.job_id from ai_job_input_members m join products p on p.id=m.product_id where p.shop_id=${input.scopeShopId}))`}`;
+ const memberNeedsReport = sql`(m.status in ('queued','processing') or m.output->>'outcome' in ('review','partial_success','failed')
+   ${input.jobType === 'text_review' ? sql`` : sql`or coalesce(m.output->>'reasonCode',m.reason_code)='request_outcome_unknown' or ${lostRequest}`}
+   or jsonb_array_length(coalesce(m.output->'rejectedTags','[]'::jsonb))>0)`;
  const result=await sql<{items: Array<Record<string,unknown>>;summary: Record<string,unknown>}>`
  with ${pageFirst ? sql`scoped_ids as not materialized (select j.id from ai_jobs j where ${jobScope}),
  page_ids as (select id from scoped_ids ${pageWindow}),
  page_members as materialized (
    select m.job_id,m.input_id,m.product_id,m.status,m.output,m.reason_code,m.content_version,m.standardization_revision,m.fingerprint,m.payload
    from page_ids j join ai_job_input_members m on m.job_id=j.id
+ ),` : sql``}
+ ${attentionMembers ? sql`attention_members as materialized (
+   select m.job_id,m.input_id,m.product_id,m.status,m.output,m.reason_code,m.content_version,m.standardization_revision,m.fingerprint,m.payload
+   from ai_job_input_members m join ai_jobs j on j.id=m.job_id
+   where ${jobScope} and ${memberNeedsReport}
  ),` : sql``}
  ${status==='unfinished'||input.totalOnly?sql``:sql`eligible_products as (
  select p.id,${currentFeatures} features_current from products p join shops s on s.id=p.shop_id
@@ -171,7 +221,7 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
       else coalesce(m.output->>'reasonCode',m.reason_code,'unrecorded') end reason,
     m.output is null output_missing,
     jsonb_array_length(coalesce(m.output->'rejectedTags','[]'::jsonb))>0 has_rejected
-  from ${pageFirst ? sql`page_members` : sql`ai_job_input_members`} m join ai_jobs j on j.id=m.job_id
+  from ${pageFirst ? sql`page_members` : attentionMembers ? sql`attention_members` : sql`ai_job_input_members`} m join ai_jobs j on j.id=m.job_id
  ${status==='unfinished'?sql`
   where j.job_type=${input.jobType} and ${unfinished}
     and ${currentExecutionPipeline()}
@@ -189,9 +239,7 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
    and ${currentHistory('m','j')}
    and ${eligible}
    and not exists(select 1 from ai_job_input_members newer join ai_jobs nj on nj.id=newer.job_id where newer.product_id=m.product_id and newer.job_id>m.job_id and nj.job_type=${input.jobType} and newer.content_version=p.content_version and newer.standardization_revision=p.standardization_revision and newer.fingerprint=p.content_fingerprint and ${currentSource('newer')} and ${currentHistory('newer','nj')})`}
- ${input.totalOnly ? sql`and (m.status in ('queued','processing') or m.output->>'outcome' in ('review','partial_success','failed')
-   ${input.jobType === 'text_review' ? sql`` : sql`or coalesce(m.output->>'reasonCode',m.reason_code)='request_outcome_unknown' or ${lostRequest}`}
-   or jsonb_array_length(coalesce(m.output->'rejectedTags','[]'::jsonb))>0)` : sql``}
+ ${input.totalOnly && !attentionMembers ? sql`and ${memberNeedsReport}` : sql``}
  ), current_counts as (
   select job_id,
     count(*) filter(where status in ('queued','processing') and execution_current

@@ -32,6 +32,44 @@ test('visitor analytics migration, atomic writes, deduplication and reports over
     const query = { days: 7, page: 1, limit: 20 };
     const payload: AnalyticsCollection = { visitId: randomUUID(), visitorId: randomUUID(), sessionId: randomUUID(), page: 'catalog', device: 'desktop', browser: 'chrome', source: 'direct', activeMs: 0, actions: [] };
 
+    await t.test('reports disable JIT only inside their transaction and restore the pooled session after success and SQL failure', async () => {
+      const reportPool = new Pool({ connectionString, options: '-c search_path=' + schema + ' -c jit=on', max: 1, connectionTimeoutMillis: 5000 });
+      try {
+        const client = await reportPool.connect();
+        const execute = client.query.bind(client);
+        const settings: string[] = [];
+        client.query = ((...args: Parameters<typeof client.query>) => {
+          const text = args[0];
+          if (typeof text === 'string' && (text.startsWith('with ') || text.startsWith('select distinct'))) {
+            return execute('show jit').then(result => {
+              settings.push(result.rows[0].jit);
+              return Reflect.apply(execute, client, args);
+            });
+          }
+          return Reflect.apply(execute, client, args);
+        }) as typeof client.query;
+        client.release();
+        const cache = createCache(analyticsCacheOptions({}));
+        try {
+          const network = new AnalyticsNetworkService({ environment: {}, cache });
+          const reports = new AnalyticsRepository(reportPool, network);
+          await reports.summary(query);
+          await reports.visits(query);
+          assert.deepEqual(settings, ['off', 'off', 'off']);
+          assert.equal((await reportPool.query('show jit')).rows[0].jit, 'on');
+          await assert.rejects(reports.visits({ ...query, limit: -1 }), /LIMIT must not be negative/);
+          assert.equal(settings.at(-1), 'off');
+          assert.equal((await reportPool.query('show jit')).rows[0].jit, 'on');
+          assert.equal((await reports.visits(query)).total, 0, 'failed transaction does not poison the pooled client');
+        } finally {
+          client.query = execute as typeof client.query;
+          await cache.disconnect();
+        }
+      } finally {
+        await reportPool.end();
+      }
+    });
+
     await t.test('assistant events persist and appear in reports after migration', async t => {
       t.after(async () => { await pool.query('truncate analytics_visits cascade'); });
       for (const page of ['catalog', 'tools_ai', 'tools_ip', 'guide', 'assistant'] as const) {
@@ -131,6 +169,37 @@ test('visitor analytics migration, atomic writes, deduplication and reports over
       assert.equal((await repository.visits(query)).total, 6);
       assert.equal((await pool.query('select count(*)::integer as count from analytics_visits')).rows[0].count, 6);
       await assert.rejects(pool.query("insert into analytics_excluded_ips (ip) values ('8.8.8.0/24')"), /check constraint/);
+    });
+
+    await t.test('expanded exclusions preserve nulls, IPv6 equality and duplicate mapped addresses in reports and cache lookups', async t => {
+      t.after(async () => {
+        await pool.query('truncate analytics_visits cascade');
+        await pool.query('truncate analytics_excluded_ips');
+        await pool.query("insert into analytics_excluded_ips (ip) values ('127.0.0.1'), ('192.0.2.6'), ('::1')");
+      });
+      await pool.query('truncate analytics_excluded_ips');
+      for (const ip of ['8.8.8.8', '::ffff:8.8.8.8', '2001:db8::1', '2001:db8::2', null]) {
+        await repository.collect({ ...payload, visitId: randomUUID(), actions: [{ id: randomUUID(), name: 'search' }] },
+          { ip, countryCode: null, country: null, region: null, city: null, isp: null, geoStatus: 'unknown' });
+      }
+      assert.equal((await repository.summary(query)).overview.pageViews, 5, 'empty exclusion list includes all visits');
+      await repository.addExcludedIp('::ffff:8.8.8.8');
+      assert.equal((await repository.visits(query)).total, 4, 'a mapped-only rule preserves the existing native IPv4 behavior');
+      await repository.addExcludedIp('8.8.8.8');
+      await repository.addExcludedIp('2001:0db8:0000:0000:0000:0000:0000:0001');
+      const cache = createCache(analyticsCacheOptions({}));
+      t.after(() => cache.disconnect());
+      const network = new AnalyticsNetworkService({ environment: {}, cache });
+      const cached = t.mock.method(network, 'cached');
+      const reports = new AnalyticsRepository(pool, network);
+      const summary = await reports.summary(query);
+      assert.equal(summary.overview.pageViews, 2);
+      assert.equal(summary.overview.actions, 2);
+      assert.deepEqual(cached.mock.calls[0]!.arguments[0], ['2001:db8::2']);
+      const visits = await reports.visits(query);
+      assert.equal(visits.total, 2);
+      assert.deepEqual(visits.items.map(row => row.ip).sort(), ['2001:db8::2', null]);
+      assert.equal((await pool.query('select count(*)::integer as count from analytics_visits')).rows[0].count, 5);
     });
 
     await t.test('Redis cache supplements missing geography without a database cache table or historical rewrites', async t => {

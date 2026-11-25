@@ -2,10 +2,13 @@ import { sql, type RawBuilder } from 'kysely';
 
 export function lostBatchRequest(batch: string, executionCurrent: RawBuilder<boolean>) {
   const field = (name: string) => sql.ref(`${batch}.${name}`);
-  return sql<boolean>`(${field('unknown_requests')} > 0 or (
+  // Keep the static counter predicate visible to the partial index before checking live leases.
+  return sql<boolean>`((${field('unknown_requests')} > 0
+    or ${field('request_budget_used')} > ${field('confirmed_requests')} + ${field('unknown_requests')})
+    and (${field('unknown_requests')} > 0 or (
     ${field('request_budget_used')} > ${field('confirmed_requests')} + ${field('unknown_requests')}
     and not coalesce(${field('status')}='running' and ${field('lease_until')}>clock_timestamp()
-      and (${executionCurrent}),false)))`;
+      and (${executionCurrent}),false))))`;
 }
 
 /** Batch counters survive crashes and cancellation before a member outcome can be saved. */

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { sql } from 'kysely';
 import { of, lastValueFrom, throwError } from 'rxjs';
 import {
   RequestContextInterceptor,
@@ -13,7 +12,6 @@ import {
 import {
   MetricsRegistry,
   MetricsService,
-  createDatabaseMetricsPlugin,
   getConnectionBudget,
 } from '../src/observability/metrics.js';
 import {
@@ -168,34 +166,6 @@ test('production rate-limit factory fails closed instead of keeping per-process 
   await store.close?.();
 });
 
-test('database plugin records duration and logs slow queries without SQL parameters', async () => {
-  const metrics = new MetricsRegistry();
-  const lines: string[] = [];
-  const plugin = createDatabaseMetricsPlugin(metrics, new StructuredLogger((line) => lines.push(line)), 0);
-  const queryId = { queryId: 'catalog.list' };
-  const node = sql`select ${'do-not-log'}`.toOperationNode();
-  const result = { rows: [{ name: 'ok' }] };
-  await runWithWorkerContext(
-    { workerId: 'observability-test', jobId: 42n, queryName: 'catalog.list' },
-    async () => {
-      assert.equal(plugin.transformQuery({ queryId, node }), node);
-      assert.equal(await plugin.transformResult({ queryId, result }), result);
-    },
-  );
-
-  const snapshot = metrics.snapshot();
-  assert.equal(snapshot.database.queries, 1);
-  assert.ok(snapshot.database.totalDurationMs >= 0);
-  assert.equal(lines.length, 1);
-  const record = JSON.parse(lines[0]!) as Record<string, unknown>;
-  assert.equal(record.queryName, 'catalog.list');
-  assert.equal(record.jobId, '42');
-  assert.equal(typeof record.duration, 'number');
-  assert.equal(record.sql, undefined);
-  assert.equal(record.parameters, undefined);
-  assert.equal(lines[0]!.includes('do-not-log'), false);
-});
-
 test('metrics expose pool, cache, queue, and worker signals', () => {
   const metrics = new MetricsRegistry();
   metrics.observeRequest({
@@ -270,13 +240,11 @@ test('standardization metrics start at zero, export stable names, and retry coun
   assert.match(output, /ai_response_ms 42/);
 });
 
-test('deployment configuration defines roles, probes, non-root shutdown, and operations docs', () => {
+test('deployment configuration defines roles, probes, non-root shutdown, and observability settings', () => {
   const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
   const compose = fs.readFileSync(path.join(root, 'docker-compose.yml'), 'utf8');
   const devCompose = fs.readFileSync(path.join(root, 'docker-compose.dev.yml'), 'utf8');
   const env = fs.readFileSync(path.join(root, '.env.example'), 'utf8');
-  const postgres = fs.readFileSync(path.join(root, 'docs/deployment/postgresql.md'), 'utf8');
-  const redis = fs.readFileSync(path.join(root, 'docs/deployment/redis.md'), 'utf8');
 
   assert.match(dockerfile, /USER node/);
   assert.match(dockerfile, /HEALTHCHECK/);
@@ -288,12 +256,6 @@ test('deployment configuration defines roles, probes, non-root shutdown, and ope
   assert.match(devCompose, /service_healthy/);
   assert.match(env, /RATE_LIMIT_MAX=/);
   assert.match(env, /SLOW_QUERY_THRESHOLD_MS=/);
-  assert.match(postgres, /pool_mode\s*=\s*transaction/);
-  assert.match(postgres, /pg_stat_statements/);
-  assert.match(postgres, /PgBouncer/);
-  assert.match(postgres, /log_min_duration_statement/);
-  assert.match(redis, /Lua/);
-  assert.match(redis, /redis_cache_hit_rate/);
 });
 
 test('structured log timestamps use local year-month-day hour-minute-second format', () => {

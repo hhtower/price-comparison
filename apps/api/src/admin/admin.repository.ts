@@ -277,7 +277,7 @@ export class AdminRepository {
 
   private async listProductPage(database: Kysely<DatabaseSchema>, filter: ProductListFilter): Promise<CursorPage<AdminProductRow>> {
     const page = normalizePageRequest(filter);
-    let query = database
+    const details = database
       .selectFrom('products')
       .innerJoin('shops as feature_shop', 'feature_shop.id', 'products.shop_id')
       .select([
@@ -296,7 +296,7 @@ export class AdminRepository {
       ])
       .orderBy('products.id', 'asc');
 
-    query = query.where('products.deleted_at', filter.deleted ? 'is not' : 'is', null);
+    let query = details.where('products.deleted_at', filter.deleted ? 'is not' : 'is', null);
 
     if (filter.shopId !== undefined) query = query.where('products.shop_id', '=', filter.shopId);
     if (filter.standardProductId !== undefined) {
@@ -328,8 +328,20 @@ export class AdminRepository {
     }
     if (page.afterId !== undefined) query = query.where('products.id', '>', page.afterId);
     if (page.page !== undefined) {
-      const rows = await query.select(sql<number>`count(*) over()`.as('_total')).offset((page.page - 1) * page.limit).limit(page.limit).execute();
-      return { items: rows, total: Number(rows[0]?._total ?? 0), page: page.page, pageSize: page.limit };
+      // Reuse eligibility once, keeping wide JSON and detail subqueries outside the full result scope.
+      const scoped = database
+        .with(cte => cte('product_scope').materialized(), () => query.clearSelect().clearOrderBy().select('products.id'))
+        .with('product_page', db => db.selectFrom('product_scope').select('id').orderBy('id', 'asc')
+          .limit(page.limit).offset((page.page! - 1) * page.limit));
+      const rows = await scoped
+        .selectFrom(db => db.selectFrom('product_scope').select(({ fn }) => fn.countAll<string>().as('_total')).as('totals'))
+        .leftJoin(details.innerJoin(sql<{ id: bigint }>`product_page`.as('product_page'), 'product_page.id', 'products.id')
+          .clearOrderBy().as('items'), join => join.onTrue())
+        .selectAll('items').select('totals._total').orderBy('items.id', 'asc').execute();
+      return {
+        items: rows.flatMap(({ _total, ...item }) => item.id === null ? [] : [item as AdminProductRow]),
+        total: Number(rows[0]?._total ?? 0), page: page.page, pageSize: page.limit,
+      };
     }
 
     return buildCursorPage(await query.limit(page.limit + 1).execute(), page.limit);
@@ -463,13 +475,19 @@ export class AdminRepository {
 
     if (page.page !== undefined) {
       const offset = (page.page - 1) * page.limit;
-      const count = runs.select(({ fn }) => fn.countAll<string>().as('total'));
-      const rows = await this.database.selectFrom(query.offset(offset).as('window'))
-        .selectAll().select(sql<string>`case when count(*) over () <= ${page.limit}
-          then ${offset}::bigint + count(*) over () else (${count}) end`.as('total'))
-        .orderBy('started_at', 'desc').orderBy('id', 'desc').limit(page.limit).execute();
-      const total = rows[0]?.total ?? (offset ? (await count.executeTakeFirstOrThrow()).total : 0);
-      return { items: rows.map(({ total, ...item }) => item), total: Number(total), page: page.page, pageSize: page.limit };
+      let count = this.database
+        .selectFrom(sql<{ shop_id: bigint; status: FetchRunStatus; run_count: bigint }>`fetch_run_counts`.as('counts'))
+        .select(sql<string>`coalesce(sum(counts.run_count), 0)`.as('total'));
+      if (filter.shopId !== undefined) count = count.where('counts.shop_id', '=', filter.shopId);
+      if (filter.status) count = count.where('counts.status', '=', filter.status);
+      const rows = await this.database.selectFrom(count.as('totals'))
+        .leftJoin(query.limit(page.limit).offset(offset).as('items'), join => join.onTrue())
+        .selectAll('items').select('totals.total')
+        .orderBy('items.started_at', 'desc').orderBy('items.id', 'desc').execute();
+      return {
+        items: rows.flatMap(({ total, ...item }) => item.id === null ? [] : [item as AdminRunHistoryRow]),
+        total: Number(rows[0]?.total ?? 0), page: page.page, pageSize: page.limit,
+      };
     }
     if (page.afterId !== undefined) query = query.where(sql<boolean>`
       (fetch_runs.started_at, fetch_runs.id) < (select started_at, id from fetch_runs where id = ${page.afterId})`);

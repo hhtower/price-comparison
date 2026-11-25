@@ -127,6 +127,9 @@ describe('global AI retry pool', () => {
     const second = await repository.listRetryPool({ limit: 2, cursor: first.nextCursor! });
     assert.deepEqual([...first.items, ...second.items].map(row => row.productId), ids.slice(1).map(String));
     assert.equal(second.nextCursor, null);
+    const empty = await repository.listRetryPool({ limit: 2, cursor: String(ids.at(-1)) });
+    assert.deepEqual(empty, { items: [], total: 3, nextCursor: null });
+    assert.ok(first.items[0]!.failedAt instanceof Date, 'report aggregation preserves timestamp values');
   });
 
   test('excludes existing queued, running and paused work, including legacy retries, and returns failures to the same pool', async () => {

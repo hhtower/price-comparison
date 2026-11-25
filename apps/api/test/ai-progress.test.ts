@@ -130,7 +130,7 @@ test('explicit progress reads retain aggregates and the version filter', async (
     assert.equal(result?.total, '12');
     assert.equal(f.queries.length, 1);
     assert.match(f.queries[0]!.sql, /left join lateral/);
-    assert.deepEqual(f.queries[0]!.parameters, [['account', 'top_up', 'rental', 'short_term'], 9n, 3n]);
+    assert.deepEqual(f.queries[0]!.parameters, [['account', 'top_up', 'top_up_half_price', 'rental', 'short_term'], 9n, 3n]);
   } finally { await f.database.destroy(); }
 });
 

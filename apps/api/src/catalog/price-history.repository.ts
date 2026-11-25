@@ -41,27 +41,43 @@ export class PriceHistoryRepository {
       ? sql`and ${ai} and coalesce(${kind}, 'unclassified') = any(${scope.membershipKinds}::text[])
         ${scope.membershipKinds.includes('unclassified') ? sql`and (${kind} is not null or ${failedMembershipFeatures()})` : sql``}`
       : scope.newcomer ? sql`and (not ${ai} or ${kind} = any(${newcomerMembershipKinds()}::text[]))` : sql``;
+    // Evaluate current visibility once; sort only daily price ties before loading snapshots.
     const result = await sql<Omit<PriceHistoryPoint, 'verifiedAt'> & { verifiedAt: Date }>`
-      select distinct on ((h.verified_at at time zone 'Asia/Shanghai')::date)
+      with eligible_products as materialized (
+        select p.id
+        from products p
+        join shops sh on sh.id = p.shop_id and sh.enabled and sh.deleted_at is null
+        join standard_product_members m on m.product_id = p.id and m.publication_state = 'published'
+        join standard_products sp on sp.id = m.standard_product_id and not sp.hidden
+          and sp.verification_state = 'verified' and sp.merged_into_id is null
+        where m.standard_product_id = ${standardProductId}::bigint and p.deleted_at is null
+          ${membershipScope}
+          ${productId ? sql`and p.id = ${productId}::bigint` : sql``}
+      ), candidates as materialized (
+        select h.id, h.product_id, h.price, h.verified_at,
+          (h.verified_at at time zone 'Asia/Shanghai')::date as day
+        from offer_price_history h join eligible_products p on p.id = h.product_id
+        where h.standard_product_id = ${standardProductId}::bigint and h.currency = ${currency}
+          and h.settlement_kind = 'verified'
+          and h.verified_at >= (${startDate}::date::timestamp at time zone 'Asia/Shanghai')
+          and h.verified_at <= ${now}::timestamptz
+      ), minima as (
+        select day, min(price) as price from candidates group by day
+      ), winners as (
+        select distinct on (h.day) h.day, h.id
+        from candidates h join minima m on m.day = h.day and m.price = h.price
+        order by h.day, h.price, h.verified_at desc, h.product_id, h.id desc
+      )
+      select
         to_char(h.verified_at at time zone 'Asia/Shanghai', 'YYYY-MM-DD') as date,
         h.price::text as price, h.verified_at as "verifiedAt", h.product_id::text as "productId",
         sh.name as shop, h.name, h.spec, h.quantity, h.content_version::text as "contentVersion",
         h.payment_method as "paymentMethod"
-      from offer_price_history h
-      join products p on p.id = h.product_id and p.deleted_at is null
-      join shops sh on sh.id = p.shop_id and sh.enabled and sh.deleted_at is null
-      join standard_product_members m on m.product_id = p.id and m.publication_state = 'published'
-        and m.standard_product_id = h.standard_product_id
-      join standard_products sp on sp.id = m.standard_product_id and not sp.hidden
-        and sp.verification_state = 'verified' and sp.merged_into_id is null
-      where h.standard_product_id = ${standardProductId}::bigint and h.currency = ${currency}
-        and h.settlement_kind = 'verified'
-        ${membershipScope}
-        ${productId ? sql`and h.product_id = ${productId}::bigint` : sql``}
-        and h.verified_at >= (${startDate}::date::timestamp at time zone 'Asia/Shanghai')
-        and h.verified_at <= ${now}::timestamptz
-      order by (h.verified_at at time zone 'Asia/Shanghai')::date, h.price,
-        h.verified_at desc, h.product_id, h.id desc`.execute(this.database);
+      from winners w
+      join offer_price_history h on h.id = w.id
+      join products p on p.id = h.product_id
+      join shops sh on sh.id = p.shop_id
+      order by w.day`.execute(this.database);
     return { currency, days: 30, startDate, endDate, points: result.rows.map(row => ({ ...row, verifiedAt: row.verifiedAt.toISOString() })) };
   }
 }

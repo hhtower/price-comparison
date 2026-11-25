@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Pool } from 'pg';
+import type { Pool, QueryResultRow } from 'pg';
 import { PG_POOL } from '../database/database.providers.js';
 import { analyticsPeriod } from './analytics-input.js';
 import type { AnalyticsCollection, AnalyticsQuery } from './analytics-contract.js';
@@ -15,8 +15,11 @@ type AnalyticsVisit = AnalyticsNetwork & {
 
 // Filter reports, not stored events, so historical data follows the same rule.
 const reportableIp = `not exists (
-  select 1 from analytics_excluded_ips e
-  where v.ip = e.ip or v.ip = case when family(e.ip) = 4 then ('::ffff:' || host(e.ip))::inet else e.ip end
+  select 1 from (
+    select ip from analytics_excluded_ips
+    union all
+    select ('::ffff:' || host(ip))::inet from analytics_excluded_ips where family(ip) = 4
+  ) e where v.ip = e.ip
 )`;
 
 // Preserve original snapshots; annotate the current cache supplement separately.
@@ -46,6 +49,25 @@ function geographicDistribution(expression: string): string {
 export class AnalyticsRepository {
   constructor(@Inject(PG_POOL) private readonly pool: Pool, @Inject(AnalyticsNetworkService) private readonly network?: AnalyticsNetworkService) {}
 
+  private async reportQuery<T extends QueryResultRow = QueryResultRow>(text: string, values: unknown[]) {
+    const client = await this.pool.connect();
+    let discard = false;
+    try {
+      await client.query('begin read only');
+      // Report JIT compilation costs more than execution; never change the pooled session default.
+      await client.query('set local jit = off');
+      const result = await client.query<T>(text, values);
+      await client.query('commit');
+      return result;
+    } catch (error) {
+      try { await client.query('rollback'); }
+      catch { discard = true; }
+      throw error;
+    } finally {
+      client.release(discard);
+    }
+  }
+
   async excludedIps(): Promise<string[]> {
     const result = await this.pool.query('select host(ip) as ip from analytics_excluded_ips order by ip');
     return result.rows.map(row => row.ip);
@@ -61,7 +83,7 @@ export class AnalyticsRepository {
 
   private async cachedNetworks(start: string, end: string): Promise<AnalyticsNetwork[]> {
     if (!this.network) return [];
-    const result = await this.pool.query(`select distinct host(ip) as ip from analytics_visits v
+    const result = await this.reportQuery(`select distinct host(ip) as ip from analytics_visits v
       where started_at >= $1::timestamptz and started_at < $2::timestamptz
         and ip is not null and geo_status in ('unknown', 'unavailable') and ${reportableIp}`, [start, end]);
     return this.network.cached(result.rows.map(row => row.ip));
@@ -98,7 +120,7 @@ export class AnalyticsRepository {
 
   async summary(query: AnalyticsQuery) {
     const period = analyticsPeriod(query.days);
-    const result = await this.pool.query(`with visits as materialized (${enrichedVisits}), actions as materialized (
+    const result = await this.reportQuery(`with visits as materialized (${enrichedVisits}), actions as materialized (
         select a.*, v.visitor_id from analytics_actions a join analytics_visits v on v.id = a.visit_id
         where a.created_at >= $1::timestamptz and a.created_at < $2::timestamptz and ${reportableIp}
       ), visit_usage as (
@@ -147,7 +169,7 @@ export class AnalyticsRepository {
 
   async visits(query: AnalyticsQuery) {
     const period = analyticsPeriod(query.days);
-    const result = await this.pool.query<{ data: { total: number; items: AnalyticsVisit[] } }>(`with page as materialized (
+    const result = await this.reportQuery<{ data: { total: number; items: AnalyticsVisit[] } }>(`with page as materialized (
         select v.* from analytics_visits v
         where v.started_at >= $1::timestamptz and v.started_at < $2::timestamptz and ${reportableIp}
         order by v.started_at desc, v.id desc limit $3 offset $4

@@ -136,6 +136,54 @@ test('excludes invalid, missing, future and outside-window settlements but prese
   assert.equal((await db.selectFrom('offer_price_history').selectAll().where('product_id', '=', invalidId).execute()).length, 1);
 });
 
+test('daily winners order by numeric price, latest verification, then lowest product id and keep the winning snapshot', async () => {
+  const second = await addProduct('second tie');
+  const third = await addProduct('later verification');
+  await quote(product, '9.00', '2026-10-13T10:00:00Z');
+  await quote(second, '9.00', '2026-10-13T10:00:00Z');
+  const offer = await quote(third, '10.00', '2026-10-13T11:00:00Z');
+  assert.equal((await points())[0]!.productId, String(product), 'numeric price precedes verification time and product id breaks exact ties');
+  await db.updateTable('products').set({ name: 'winning snapshot', spec: 'historical spec', content_version: 3n })
+    .where('id', '=', third).execute();
+  await db.updateTable('offers').set({ settlement_price: '9.00', settlement_total_amount: '18.00',
+    settlement_quantity: 2, settlement_payment_method: 'Card', settlement_verified_at: new Date('2026-10-13T12:00:00Z') })
+    .where('id', '=', offer.id).execute();
+  await db.updateTable('products').set({ name: 'current name', spec: 'current spec', content_version: 4n })
+    .where('id', '=', third).execute();
+  await db.updateTable('shops').set({ name: 'current shop' }).where('id', '=', shop).execute();
+  assert.deepEqual(await points(), [{
+    date: '2026-10-13', price: '9.00', verifiedAt: '2026-10-13T12:00:00.000Z',
+    productId: String(third), shop: 'current shop', name: 'winning snapshot', spec: 'historical spec',
+    quantity: 2, contentVersion: '3', paymentMethod: 'Card',
+  }]);
+  assert.equal((await points(String(second)))[0]!.productId, String(second));
+});
+
+test('filters same-day future minima before choosing a winner and includes the exact current instant', async () => {
+  await quote(product, '9.00', '2026-10-14T12:00:00Z');
+  await quote(await addProduct('future minimum'), '0.00', '2026-10-14T12:00:01Z');
+  await quote(await addProduct('previous instant'), '10.00', '2026-10-14T11:59:59Z');
+  assert.deepEqual((await points()).map(point => [point.price, point.verifiedAt]), [['9.00', '2026-10-14T12:00:00.000Z']]);
+});
+
+test('reselects the daily minimum from currently visible products before fetching its details', async () => {
+  const second = await addProduct('visible fallback');
+  await quote(product, '1.00');
+  await quote(second, '20.00');
+  await db.updateTable('products').set({ deleted_at: new Date(now) }).where('id', '=', product).execute();
+  assert.deepEqual((await points()).map(point => point.productId), [String(second)]);
+  assert.deepEqual(await points(String(product)), []);
+  await db.updateTable('shops').set({ deleted_at: new Date(now) }).where('id', '=', shop).execute();
+  assert.deepEqual(await points(), []);
+  await db.updateTable('shops').set({ deleted_at: null }).where('id', '=', shop).execute();
+  await db.updateTable('standard_products').set({ verification_state: 'provisional' }).where('id', '=', standard).execute();
+  assert.deepEqual(await points(), []);
+  const target = (await db.insertInto('standard_products').values({ name: 'merge target', verification_state: 'verified' })
+    .returning('id').executeTakeFirstOrThrow()).id;
+  await db.updateTable('standard_products').set({ verification_state: 'verified', merged_into_id: target }).where('id', '=', standard).execute();
+  assert.deepEqual(await points(), []);
+});
+
 test('retains unavailable price history but respects public membership, hidden products, disabled shops and reassignment', async () => {
   await quote();
   await db.updateTable('offers').set({ is_stale: true, stock_available: false }).execute();

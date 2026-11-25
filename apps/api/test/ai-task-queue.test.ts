@@ -10,7 +10,12 @@ for (const status of ['all', 'unfinished', 'attention']) {
     class Driver extends DummyDriver {
       async acquireConnection(): Promise<any> {
         return { executeQuery: async (query: CompiledQuery) => {
+          if (query.sql === 'set local jit = off') return { rows: [] };
           queries.push(query);
+          if (query.sql.startsWith('with report_unclassified')) return { rows: [{
+            id: null, counts: { total: 0, unfinished: 0, queued: 0, running: 0, paused: 0, attention: 0, pending_products: 0 },
+            reasons: [{ reason: 'technical_failure', count: 2 }],
+          }] };
           if (query.sql.includes('select count(*) as total')) return { rows: [{
             total: 0n, unfinished: 0n, queued: 0n, running: 0n, paused: 0n, attention: 0n, pending_products: 0n,
           }] };
@@ -27,10 +32,10 @@ for (const status of ['all', 'unfinished', 'attention']) {
     } });
     try {
       const result = await readAiTaskQueue(database, { status, limit: 50 });
-      assert.equal(queries.length, 4, 'no separate global product isolation query');
+      assert.equal(queries.length, status === 'attention' ? 1 : 4, 'attention candidates are shared by the list and totals');
       assert.equal('manual_isolation' in result.summary.currentReasons, false);
       assert.equal(result.summary.currentReasons.technical_failure, 2);
-      assert.equal(result.summary.pendingEvents, 1);
+      assert.equal(result.summary.pendingEvents, status === 'attention' ? 0 : 1);
       assert.match(queries[0]!.sql, /product_standardization_decisions/u);
       assert.match(queries[0]!.sql, /content_fingerprint/u);
       assert.match(queries[0]!.sql, /assignment\.publication_state = 'published'/u);
@@ -46,6 +51,7 @@ test(`active ${jobType} summaries count unfinished members with the applicable e
   class Driver extends DummyDriver {
     async acquireConnection(): Promise<any> {
       return { executeQuery: async (query: CompiledQuery) => {
+        if (query.sql === 'set local jit = off') return { rows: [] };
         queries.push(query);
         return { rows: [{ items: [], summary: { total: 0, pendingProducts: 0 } }] };
       } };
@@ -74,3 +80,22 @@ test(`active ${jobType} summaries count unfinished members with the applicable e
   } finally { await database.destroy(); }
 });
 }
+
+test('interactive task queries disable JIT on their transaction connection', async () => {
+  let jitDisabled = false;
+  class Driver extends DummyDriver {
+    async acquireConnection(): Promise<any> {
+      return { executeQuery: async (query: CompiledQuery) => {
+        if (query.sql === 'set local jit = off') { jitDisabled = true; return { rows: [] }; }
+        assert.ok(jitDisabled, 'task reports must not compile their expensive expression trees');
+        return { rows: [{ items: [], summary: { total: 0 } }] };
+      } };
+    }
+  }
+  const db = new Kysely<DatabaseSchema>({ dialect: {
+    createAdapter: () => new PostgresAdapter(), createDriver: () => new Driver(),
+    createIntrospector: db => new PostgresIntrospector(db), createQueryCompiler: () => new PostgresQueryCompiler(),
+  } });
+  try { await readAiTaskQueue(db, { jobType: 'tag_extraction', totalOnly: true }); }
+  finally { await db.destroy(); }
+});

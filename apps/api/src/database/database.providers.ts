@@ -2,7 +2,7 @@ import { Inject, Injectable, type OnApplicationShutdown, type Provider } from '@
 import { Kysely, PostgresDialect } from 'kysely';
 import { Pool, types as pgTypes, type PoolConfig } from 'pg';
 import {
-  createDatabaseMetricsPlugin,
+  instrumentPostgresPool,
   getConnectionBudget,
   MetricsRegistry,
 } from '../observability/metrics.js';
@@ -106,19 +106,19 @@ export function createPostgresPool(
 export const databaseProviders: Provider[] = [
   {
     provide: PG_POOL,
-    useFactory: (): Pool => createPostgresPool(),
+    inject: [MetricsRegistry, StructuredLogger],
+    useFactory: (metrics: MetricsRegistry, logger: StructuredLogger): Pool => {
+      const pool = createPostgresPool(process.env, logger);
+      instrumentPostgresPool(pool, metrics, logger);
+      return pool;
+    },
   },
   {
     provide: DATABASE,
-    inject: [PG_POOL, MetricsRegistry, StructuredLogger],
-    useFactory: (
-      pool: Pool,
-      metrics: MetricsRegistry,
-      logger: StructuredLogger,
-    ): Kysely<DatabaseSchema> =>
+    inject: [PG_POOL],
+    useFactory: (pool: Pool): Kysely<DatabaseSchema> =>
       new Kysely<DatabaseSchema>({
         dialect: new PostgresDialect({ pool }),
-        plugins: [createDatabaseMetricsPlugin(metrics, logger)],
       }),
   },
 ];

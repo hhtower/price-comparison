@@ -1,11 +1,9 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHmac, randomBytes } from 'node:crypto';
+import { EventEmitter, errorMonitor } from 'node:events';
 import { Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import type { KyselyPlugin, QueryId, QueryResult, RootOperationNode, UnknownRow } from 'kysely';
-import type { Pool } from 'pg';
-import {
-  getRequestContext,
-  updateRequestContext,
-  type StructuredLogger,
-} from './request-context.js';
+import type { Pool, PoolClient } from 'pg';
+import { getRequestContext, type StructuredLogger } from './request-context.js';
 
 export interface RequestMetric {
   readonly route: string;
@@ -332,41 +330,115 @@ export class MetricsRegistry implements RequestMetricsRecorder {
   }
 }
 
-export function createDatabaseMetricsPlugin(
+type QueryCallback = (this: unknown, ...args: unknown[]) => unknown;
+type ObservedQuery = {
+  text?: unknown;
+  name?: unknown;
+  submit?: unknown;
+  callback?: QueryCallback;
+};
+
+const instrumentedClients = new WeakSet<PoolClient>();
+// A process-local key prevents guessing SQL literals from the logged fingerprint.
+const queryFingerprintKey = randomBytes(32);
+
+export function instrumentPostgresPool(
+  pool: Pool,
   metrics: MetricsRegistry,
   logger?: StructuredLogger,
   slowQueryMs = readSlowQueryThreshold(),
-): KyselyPlugin {
-  const startedAt = new WeakMap<QueryId, number[]>();
-  return {
-    transformQuery({ queryId, node }): RootOperationNode {
-      const samples = startedAt.get(queryId) ?? [];
-      samples.push(performance.now());
-      startedAt.set(queryId, samples);
-      return node;
-    },
-    async transformResult({
-      queryId,
-      result,
-    }): Promise<QueryResult<UnknownRow>> {
-      const samples = startedAt.get(queryId);
-      const queryStartedAt = samples?.shift();
-      if (queryStartedAt !== undefined) {
-        const durationMs = performance.now() - queryStartedAt;
-        metrics.observeDatabaseQuery(durationMs);
-        const queryName = getRequestContext()?.queryName ?? 'database.query';
-        if (logger && durationMs >= slowQueryMs) {
-          updateRequestContext({ durationMs });
-          logger.warn('database.query.slow', {
-            queryName,
-            duration: durationMs,
-            slowQueryMs,
+): void {
+  pool.on('connect', (client) => {
+    if (instrumentedClients.has(client)) return;
+    instrumentedClients.add(client);
+    const query = client.query;
+    client.query = function (this: PoolClient, ...args: unknown[]): unknown {
+      const startedAt = performance.now();
+      const queryName = getRequestContext()?.queryName ?? 'database.query';
+      const config = args[0] as ObservedQuery | null | undefined;
+      const identity = typeof args[0] === 'string' ? args[0] : config?.text ?? config?.name;
+      let completed = false;
+      let cleanup = (): void => {};
+      const finish = AsyncLocalStorage.bind((error?: unknown): void => {
+        if (completed) return;
+        completed = true;
+        cleanup();
+        const durationMs = performance.now() - startedAt;
+        try {
+          metrics.observeDatabaseQuery(durationMs);
+          if (!logger || (!error && durationMs < slowQueryMs)) return;
+          const fingerprint = createHmac('sha256', queryFingerprintKey)
+            .update(typeof identity === 'string' ? identity : '')
+            .digest('hex').slice(0, 16);
+          const fields = { queryName, queryFingerprint: fingerprint, duration: durationMs };
+          if (error) {
+            logger.error('database.query.failed', { ...fields, code: databaseErrorCode(error) });
+          } else {
+            logger.warn('database.query.slow', { ...fields, slowQueryMs });
+          }
+        } catch {
+          // A metrics/log sink failure must never alter query completion or pool release.
+        }
+      });
+      const submittable = typeof config?.submit === 'function';
+      const callbackIndex = submittable && config?.callback ? -1
+        : typeof args[2] === 'function' ? 2 : typeof args[1] === 'function' ? 1 : -1;
+      const callback = callbackIndex >= 0 ? args[callbackIndex] : config?.callback;
+      if (typeof callback === 'function') {
+        const wrapped: QueryCallback = function (...values) {
+          finish(values[0]);
+          return callback.apply(this, values);
+        };
+        if (callbackIndex >= 0) {
+          args[callbackIndex] = wrapped;
+        } else if (submittable) {
+          config!.callback = wrapped;
+          cleanup = () => {
+            if (config!.callback === wrapped) config!.callback = callback as QueryCallback;
+          };
+        } else {
+          args[0] = Object.create(Object.getPrototypeOf(config), {
+            ...Object.getOwnPropertyDescriptors(config),
+            callback: { value: wrapped, writable: true, configurable: true, enumerable: true },
           });
         }
+      } else if (submittable && config instanceof EventEmitter) {
+        const end = (): void => finish();
+        config.once('end', end);
+        // Observe errors without suppressing pg's unhandled-error behavior.
+        config.once(errorMonitor, finish);
+        cleanup = () => {
+          config.removeListener('end', end);
+          config.removeListener(errorMonitor, finish);
+        };
       }
-      return result;
-    },
-  };
+      try {
+        const result: unknown = Reflect.apply(query, this, args);
+        if (!submittable && result && typeof (result as Promise<unknown>).then === 'function') {
+          return (result as Promise<unknown>).then(
+            (value) => { finish(); return value; },
+            (error: unknown) => { finish(error); throw error; },
+          );
+        }
+        return result;
+      } catch (error) {
+        finish(error);
+        throw error;
+      }
+    } as PoolClient['query'];
+  });
+}
+
+function databaseErrorCode(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = error.code;
+    if (typeof code === 'string' && (
+      /^[0-9A-Z]{5}$/.test(code) ||
+      /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN)$/.test(code)
+    )) return code;
+  }
+  return error instanceof Error && error.message === 'Query read timeout'
+    ? 'QUERY_TIMEOUT' : 'QUERY_FAILED';
 }
 
 export function readSlowQueryThreshold(

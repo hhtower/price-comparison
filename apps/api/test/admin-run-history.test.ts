@@ -19,8 +19,9 @@ function fixture(rows: AdminRunHistoryRow[] = [], total = rows.length) {
     async acquireConnection(): Promise<any> {
       return { executeQuery: async (query: CompiledQuery) => {
         queries.push(query);
-        if (query.sql.startsWith('select count(*)')) return { rows: [{ total: String(total) }] };
-        return { rows: query.sql.includes('over ()') ? rows.map(item => ({ ...item, total: String(total) })) : rows };
+        return { rows: query.sql.includes('fetch_run_counts')
+          ? (rows.length ? rows : [{ id: null }]).map(item => ({ ...item, total: String(total) }))
+          : rows };
       } };
     }
   }
@@ -42,7 +43,7 @@ test('run history orders by start time descending with ID as a stable tiebreaker
   } finally { await f.database.destroy(); }
 });
 
-test('short first page already proves the run history total', async () => {
+test('short first page reads its exact total in the same statement', async () => {
   const f = fixture([row(2n)]);
   try {
     const page = await new AdminRepository(f.database).listRunHistory({ page: 1, limit: 10 });
@@ -62,11 +63,12 @@ test('run history page numbers include the filtered total and use the same start
     const dataQuery = f.queries.find(query => query.sql.includes('limit'))!;
     assert.match(dataQuery.sql, /order by "fetch_runs"\."started_at" desc, "fetch_runs"\."id" desc/u);
     assert.equal(f.queries.length, 1);
-    assert.deepEqual(dataQuery.parameters, [2, 2, 7n, 'failed', 7n, 'failed', 3, 2, 2]);
+    assert.deepEqual(dataQuery.parameters, [7n, 'failed', 7n, 'failed', 2, 2]);
+    assert.match(dataQuery.sql, /"counts"\."shop_id" = \$1 and "counts"\."status" = \$2/u);
   } finally { await f.database.destroy(); }
 });
 
-test('unfiltered run history counts only fetch runs so PostgreSQL can use an index-only scan', async () => {
+test('unfiltered run history sums transactionally maintained counts without scanning the history', async () => {
   const f = fixture([row(2n)], 1_280_000);
   try {
     const page = await new AdminRepository(f.database).listRunHistory({ page: 1, limit: 10 });
@@ -74,7 +76,8 @@ test('unfiltered run history counts only fetch runs so PostgreSQL can use an ind
     assert.equal(page.items[0]!.shop_name, 'History');
     const dataQuery = f.queries.find(query => query.sql.includes('limit'))!;
     assert.match(dataQuery.sql, /left join "shops"/u);
-    assert.match(dataQuery.sql, /else \(\(select count\(\*\) as "total" from "fetch_runs"\)\) end/u);
+    assert.match(dataQuery.sql, /coalesce\(sum\(counts\.run_count\), 0\) as "total" from fetch_run_counts as "counts"/u);
+    assert.ok(!dataQuery.sql.includes('count(*)'));
     assert.equal(f.queries.length, 1);
   } finally { await f.database.destroy(); }
 });
@@ -85,6 +88,7 @@ for (const total of [0, 5]) {
     try {
       const page = await new AdminRepository(f.database).listRunHistory({ page: 4, limit: 2 });
       assert.deepEqual(page, { items: [], total, page: 4, pageSize: 2 });
+      assert.equal(f.queries.length, 1, 'empty pages keep totals and rows in one snapshot');
     } finally { await f.database.destroy(); }
   });
 }

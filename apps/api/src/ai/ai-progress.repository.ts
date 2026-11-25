@@ -58,29 +58,39 @@ export async function getJobProgress(db: ProgressDb, jobId: bigint, since?: bigi
       results.classified,results.unclassified,results.reason_counts,results.standard_products
     from ai_job_progress p join ai_jobs j on j.id=p.job_id
     left join lateral (
+      with member_outputs as materialized (
+        select m.status, o.outcome,
+          o."classificationReviewed" = 'true'::jsonb and o.classification->>'reason' = 'llm_reviewed'
+            and o.classification->>'kind' = any(${[...MEMBERSHIP_KINDS]}::text[]) as feature_accepted,
+          o."classificationReviewed" = 'false'::jsonb as feature_rejected,
+          -- Record conversion makes JSON null SQL NULL; retain invalid-array errors for explicit nulls.
+          case when j.job_type in ('tag_extraction','membership_features') and m.status not in ('queued','processing')
+            then jsonb_array_length(coalesce(o."acceptedTags", m.output->'acceptedTags', '[]'::jsonb)) else 0 end as accepted_count,
+          case when j.job_type in ('tag_extraction','membership_features') and m.status not in ('queued','processing')
+            then jsonb_array_length(coalesce(o."rejectedTags", m.output->'rejectedTags', '[]'::jsonb)) else 0 end as rejected_count
+        from ai_job_input_members m
+        cross join lateral jsonb_to_record(case when m.status not in ('queued','processing') and jsonb_typeof(m.output) = 'object'
+          then m.output else '{}'::jsonb end)
+          as o(outcome text, "classificationReviewed" jsonb, classification jsonb, "acceptedTags" jsonb, "rejectedTags" jsonb)
+        where m.job_id=j.id
+      )
       select count(*)::int member_total,
         count(*) filter(where status='queued')::int member_queued,
         count(*) filter(where status='processing')::int member_running,
         count(*) filter(where j.job_type='membership_features' and status not in ('queued','processing')
-          and output->>'outcome' in ('updated','unchanged','empty','review','partial_success')
-          and output->'classificationReviewed' = 'true'::jsonb
-          and output #>> '{classification,reason}' = 'llm_reviewed'
-          and output #>> '{classification,kind}' = any(${[...MEMBERSHIP_KINDS]}::text[]))::int feature_accepted,
+          and outcome in ('updated','unchanged','empty','review','partial_success') and feature_accepted)::int feature_accepted,
         count(*) filter(where j.job_type='membership_features' and status not in ('queued','processing')
-          and output->'classificationReviewed' = 'false'::jsonb)::int feature_rejected,
-        coalesce(sum(jsonb_array_length(coalesce(output->'acceptedTags','[]'::jsonb)))
-          filter(where j.job_type in ('tag_extraction','membership_features') and status not in ('queued','processing')),0)::int tag_accepted,
-        coalesce(sum(jsonb_array_length(coalesce(output->'rejectedTags','[]'::jsonb)))
-          filter(where j.job_type in ('tag_extraction','membership_features') and status not in ('queued','processing')),0)::int tag_rejected,
+          and feature_rejected)::int feature_rejected,
+        coalesce(sum(accepted_count),0)::int tag_accepted,
+        coalesce(sum(rejected_count),0)::int tag_rejected,
         count(*) filter(where j.job_type in ('tag_extraction','membership_features') and status not in ('queued','processing')
-          and (output->>'outcome' = 'partial_success' or (output->>'outcome' in ('updated','review')
-          and jsonb_array_length(coalesce(output->'acceptedTags','[]'::jsonb))>0
-          and jsonb_array_length(coalesce(output->'rejectedTags','[]'::jsonb))>0)))::int tag_partial,
+          and (outcome = 'partial_success' or (outcome in ('updated','review')
+          and accepted_count>0 and rejected_count>0)))::int tag_partial,
         (select coalesce(jsonb_object_agg(outcome,n),'{}'::jsonb) from (
-          select case when output->>'outcome' in ('updated','unchanged','empty','review','partial_success','skipped','failed','cancelled') then output->>'outcome' else 'unrecorded' end outcome,count(*)::int n
-          from ai_job_input_members where job_id=j.id and status not in ('queued','processing') group by 1
+          select case when outcome in ('updated','unchanged','empty','review','partial_success','skipped','failed','cancelled') then outcome else 'unrecorded' end outcome,count(*)::int n
+          from member_outputs where status not in ('queued','processing') group by 1
         ) outcomes) tag_counts
-      from ai_job_input_members where job_id=j.id
+      from member_outputs
     ) members on true
     left join lateral (
       select count(*)::int unique_input_count from ai_job_inputs where job_id=j.id

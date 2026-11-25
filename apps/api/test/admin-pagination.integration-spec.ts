@@ -5,9 +5,10 @@ import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants.js';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
-import { AdminRepository } from '../src/admin/admin.repository.js';
+import { AdminRepository, type ProductListFilter } from '../src/admin/admin.repository.js';
 import { AdminController } from '../src/admin/admin.controller.js';
 import { ListAiJobsQueryDto, ListPlatformsQueryDto } from '../src/admin/dto/admin-query.dto.js';
+import { encodeIdCursor } from '../src/common/pagination.js';
 import type { DatabaseSchema } from '../src/database/types.js';
 
 describe('admin pagination bounds database reads and response payloads', () => {
@@ -143,5 +144,94 @@ describe('admin pagination bounds database reads and response payloads', () => {
     assert.equal(first.total, 200);
     assert.equal(second.total, 200);
     assert.equal(new Set([...first.items, ...second.items].map(row => row.id)).size, 200);
+  });
+
+  test('product pages preserve filtered totals, complete details and cursor results as membership and visibility change', async () => {
+    const repository = new AdminRepository(db);
+    const shop = await db.insertInto('shops').values({
+      name: 'Product page filters', platform: 'audit', url: 'https://product-pages.invalid', enabled: true,
+    }).returning('id').executeTakeFirstOrThrow();
+    const standard = await db.insertInto('standard_products').values({
+      name: 'Verified page target', verification_state: 'verified',
+    }).returning('id').executeTakeFirstOrThrow();
+    const products = await db.insertInto('products').values([0, 1, 2, 3].map(i => ({
+      shop_id: shop.id, external_id: `external-special-${i}`, name: i === 0 ? 'Literal_% product' : `Product ${i}`,
+      normalized_key: `page-${i}`, url: `https://product-pages.invalid/${i}`,
+      deleted_at: i === 3 ? new Date() : null,
+      source_data: sql`jsonb_build_object('description', repeat('wide product details ', 400))`,
+    }))).returning('id').execute();
+    const ids = products.map(product => product.id);
+    await db.insertInto('standard_product_members').values([
+      { product_id: ids[1]!, standard_product_id: standard.id, publication_state: 'published', assignment_source: 'ai' },
+      { product_id: ids[2]!, standard_product_id: standard.id, publication_state: 'provisional', assignment_source: 'ai' },
+    ]).execute();
+    await sql`insert into product_tags(product_id, name, value) values (${ids[0]}, 'region', '"us"'::jsonb)`.execute(db);
+    await db.insertInto('offers').values([1, 2].map(i => ({
+      product_id: ids[0]!, idempotency_key: `admin-page-offer-${i}`, price: `${i}.00`, currency: 'USD',
+      captured_at: new Date('2026-11-01T00:00:00Z'),
+    }))).execute();
+
+    const cases: Array<[ProductListFilter, bigint[]]> = [
+      [{}, ids.slice(0, 3)],
+      [{ standardized: true }, [ids[1]!, ids[2]!]],
+      [{ standardized: false }, [ids[0]!]],
+      [{ pending: true }, [ids[0]!, ids[2]!]],
+      [{ pending: false }, [ids[1]!]],
+      [{ deleted: true, pending: true }, [ids[3]!]],
+      [{ standardProductId: standard.id }, [ids[1]!, ids[2]!]],
+      [{ standardProductId: standard.id, standardized: false }, []],
+      [{ keyword: 'Literal_%' }, [ids[0]!]],
+      [{ keyword: 'external-special-2' }, [ids[2]!]],
+      [{ cursor: encodeIdCursor(ids[0]!) }, [ids[1]!, ids[2]!]],
+    ];
+    for (const [filter, expected] of cases) {
+      const request = { ...filter, shopId: shop.id };
+      const cursor = await repository.listProducts({ ...request, limit: 100 });
+      assert.deepEqual(cursor.items.map(row => row.id), expected);
+      const first = await repository.listProducts({ ...request, page: 1, limit: 2 });
+      const second = await repository.listProducts({ ...request, page: 2, limit: 2 });
+      assert.equal(first.total, expected.length);
+      assert.equal(second.total, expected.length);
+      assert.deepEqual([...first.items, ...second.items], cursor.items);
+      const empty = await repository.listProducts({ ...request, page: 100, limit: 2 });
+      assert.deepEqual(empty, { items: [], total: expected.length, page: 100, pageSize: 2 });
+    }
+    const first = await repository.listProducts({ shopId: shop.id, page: 1, limit: 1 });
+    assert.equal(first.items[0]!.latest_price, '2.00');
+    assert.equal(first.items[0]!.latest_currency, 'USD');
+    assert.deepEqual(first.items[0]!.tags, [{ name: 'region', value: 'us' }]);
+    assert.equal(first.items[0]!.shop_name, 'Product page filters');
+    assert.ok(JSON.stringify(first.items[0]!.source_data).length > 8000);
+
+    await db.updateTable('standard_product_members').set({ publication_state: 'published' })
+      .where('product_id', '=', ids[2]!).execute();
+    assert.equal((await repository.listProducts({ shopId: shop.id, pending: true, page: 1 })).total, 1);
+    assert.equal((await repository.listProducts({ shopId: shop.id, pending: false, page: 1 })).total, 2);
+    await db.updateTable('products').set({ deleted_at: new Date() }).where('id', '=', ids[0]!).execute();
+    assert.equal((await repository.listProducts({ shopId: shop.id, page: 1 })).total, 2);
+    assert.equal((await repository.listProducts({ shopId: shop.id, deleted: true, page: 1 })).total, 2);
+    await db.updateTable('products').set({ deleted_at: null }).where('id', '=', ids[0]!).execute();
+    assert.equal((await repository.listProducts({ shopId: shop.id, page: 1 })).total, 3);
+  });
+
+  test('run history totals remain exact for filters, partial and empty pages, and subsequent writes', async () => {
+    const repository = new AdminRepository(db);
+    const runs = await db.insertInto('fetch_runs').values([0, 1, 2, 3, 4].map(i => ({
+      shop_id: shopId, started_at: new Date('2026-11-01T00:00:00Z'),
+      status: i === 0 ? 'succeeded' as const : 'failed' as const,
+    }))).returning('id').execute();
+    const filter = { shopId, status: 'failed' as const, limit: 2 };
+    for (const [page, expected] of [[1, [runs[4]!.id, runs[3]!.id]], [2, [runs[2]!.id, runs[1]!.id]], [3, []]] as const) {
+      const result = await repository.listRunHistory({ ...filter, page });
+      assert.equal(result.total, 4);
+      assert.deepEqual(result.items.map(row => row.id), expected);
+    }
+    assert.equal((await repository.listRunHistory({ ...filter, status: 'succeeded', page: 1 })).total, 1);
+    await db.updateTable('fetch_runs').set({ status: 'succeeded' }).where('id', '=', runs[4]!.id).execute();
+    const partial = await repository.listRunHistory({ ...filter, page: 2 });
+    assert.equal(partial.total, 3);
+    assert.deepEqual(partial.items.map(row => row.id), [runs[1]!.id]);
+    await db.deleteFrom('fetch_runs').where('shop_id', '=', shopId).execute();
+    assert.equal((await repository.listRunHistory({ ...filter, page: 1 })).total, 0);
   });
 });
