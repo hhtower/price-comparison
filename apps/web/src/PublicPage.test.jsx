@@ -1098,7 +1098,7 @@ test('requests newest-offer sorting and preserves the server product order', asy
   expect(calls.at(-1).searchParams.get('sort')).toBe('updated');
 });
 
-test('keeps platform tabs available while a platform switch request is loading', async () => {
+test('keeps the previous list inert while a platform switch request is loading', async () => {
   const user = userEvent.setup();
   let releaseSwitched;
   const switched = new Promise(resolve => { releaseSwitched = resolve; });
@@ -1114,15 +1114,20 @@ test('keeps platform tabs available while a platform switch request is loading',
   }));
   render(<PublicPage />);
   await screen.findByRole('heading', { name: /全部商品/ });
+  const previousCard = screen.getByRole('heading', { name: /全部商品/ }).closest('article');
   const toolbar = within(screen.getByRole('group', { name: '平台与排序' }));
   expect(toolbar.getByRole('button', { name: 'Gemini / Google' })).toBeInTheDocument();
   await user.click(toolbar.getByRole('button', { name: 'ChatGPT / Codex' }));
-  // While the switched response is pending, the tabs stay and the list blanks behind the skeleton.
   expect(toolbar.getByRole('button', { name: 'Gemini / Google' })).toBeInTheDocument();
-  expect(screen.getByRole('status', { name: '正在加载商品' })).toBeInTheDocument();
-  expect(screen.queryByRole('heading', { name: /全部商品/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('status', { name: '正在加载商品' })).not.toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: /全部商品/ }).closest('article')).toBe(previousCard);
+  expect(screen.getByRole('region', { name: '商品列表' })).toHaveAttribute('inert');
+  expect(screen.getByRole('region', { name: '商品列表' })).toHaveAttribute('aria-busy', 'true');
   releaseSwitched();
   await screen.findByRole('heading', { name: /OpenAI 商品/ });
   expect(toolbar.getByRole('button', { name: 'Gemini / Google' })).toBeInTheDocument();
   expect(screen.queryByRole('status', { name: '正在加载商品' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: /全部商品/ })).not.toBeInTheDocument();
+  expect(screen.getByRole('region', { name: '商品列表' })).not.toHaveAttribute('inert');
+  expect(screen.getByRole('region', { name: '商品列表' })).toHaveAttribute('aria-busy', 'false');
 });

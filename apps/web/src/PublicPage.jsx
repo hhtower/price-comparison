@@ -1047,15 +1047,14 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
       : normalizeMembershipSelection(current, selected?.identity));
   };
   const draftRequest = catalogParams(searchMembership.text, platform, draftTags, draftProduct, newcomer, draftKinds).toString();
-  // Platform switches return the same `platformFacets`, so only the list blanks behind the skeleton.
-  const visibleItems = useMemo(() => catalogQuery.isPlaceholderData || !membershipReady ? EMPTY_LIST
-    : data.items.flatMap(item => {
+  const replacingCatalog = catalogQuery.isPlaceholderData || !membershipReady;
+  const visibleItems = useMemo(() => data.items.flatMap(item => {
       if (!item.isAiMembership && item.offers?.length && !item.offers.some(currentInventory)) return [];
       if (!item.isAiMembership) return [{ item, group: null, key: `${item.id}:standard` }];
       const groups = (item.membershipGroups || EMPTY_LIST).filter(group => (group.offers || EMPTY_LIST).some(currentInventory));
       return groups.filter(group => group.kind !== 'unclassified').map(group => ({ item, group, key: `${item.id}:${group.kind}` }));
     }),
-  [catalogQuery.isPlaceholderData, data.items, priceRevision, membershipReady]);
+  [data.items, priceRevision]);
   const clearFilters = () => { if (selectedCount) { setSelectedTags(new Set()); setSelectedProduct(''); setMembershipKinds([]); if (searchMembership.kinds.length) changeSearch(searchMembership.text); trackUsage('filter'); } setDraftTags(new Set()); setDraftProduct(''); setDraftMembershipKinds([]); };
   const applyFilters = () => {
     if (!equalTags(selectedTags, draftTags) || selectedProduct !== draftProduct || membershipKinds.join() !== draftKinds.join()) {
@@ -1073,8 +1072,8 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
     trackUsage('filter');
   };
   const loadNextPage = useCallback(() => {
-    if (!catalogQuery.isFetching && catalogQuery.hasNextPage && !catalogQuery.isError) void catalogQuery.fetchNextPage({ cancelRefetch: false });
-  }, [catalogQuery.isFetching, catalogQuery.hasNextPage, catalogQuery.isError, catalogQuery.fetchNextPage]);
+    if (!replacingCatalog && !catalogQuery.isFetching && catalogQuery.hasNextPage && !catalogQuery.isError) void catalogQuery.fetchNextPage({ cancelRefetch: false });
+  }, [replacingCatalog, catalogQuery.isFetching, catalogQuery.hasNextPage, catalogQuery.isError, catalogQuery.fetchNextPage]);
   const lastPageHasVisibleItems = useMemo(() => {
     const page = catalogQuery.data?.pages.at(-1);
     return Boolean(page?.items?.some(item => !item.isAiMembership
@@ -1246,7 +1245,7 @@ function PublicCatalog({ productId, membershipKind, invalidProductRoute, onPlatf
           {selectedTagList.map((tag) => <button type="button" key={tagKey(tag)} onClick={() => { const next = new Set(selectedTags); next.delete(tagKey(tag)); setSelectedTags(next); setDraftTags(next); trackUsage('filter'); }}>{minimumDaysDimension(tag.name) ? `${TAG_LABELS[minimumDaysDimension(tag.name)]}至少 ${tag.value} 天` : displayPurchaseTagText(tag, displayPurchaseValue(tag))} ×</button>)}<button type="button" className="clear-filter-button" onClick={clearFilters}>清除全部</button></div> : null}
         {error ? <div className="catalog-error" role="alert"><span>{error}</span><button type="button" onClick={() => catalogQuery.refetch()}>重新加载</button></div> : null}
         {loading && !visibleItems.length ? <CatalogSkeleton /> : null}
-        <section id="catalog-quotes" className="catalog" aria-label="商品列表"><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={effectiveNewcomer} factLimit={desktopFilters ? 2 : 1} /></section>
+        <section id="catalog-quotes" className="catalog" aria-label="商品列表" aria-busy={loading} inert={replacingCatalog || undefined}><CatalogList items={visibleItems} priceRevision={priceRevision} onHeightChanged={onHeightChanged} activeTagLabels={activeTagLabels} onOpenDetail={openDetail} onOfferDetails={openOfferDetails} onEndReached={loadNextPage} comparison={comparison} onCompare={toggleComparison} newcomer={effectiveNewcomer} factLimit={desktopFilters ? 2 : 1} /></section>
         {catalogQuery.isFetchingNextPage ? <p className="catalog-infinite-end catalog-loading-more" role="status" aria-label="正在加载更多商品"><span className="catalog-loading-spinner" aria-hidden="true" />正在为你加载更多商品…</p> : null}
         {catalogQuery.isFetchNextPageError ? <div className="catalog-error" role="alert"><span>更多商品暂时没能加载出来</span><button type="button" onClick={() => catalogQuery.fetchNextPage()}>重试加载</button></div> : null}
         {!catalogQuery.hasNextPage && !catalogQuery.isFetching && visibleItems.length ? <p className="catalog-infinite-end">已经到底啦，当前符合条件的商品都在这里了。</p> : null}

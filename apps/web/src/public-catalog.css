@@ -15,6 +15,9 @@
   padding: 0 0 12px;
 }
 .catalog-loading-more { display: flex; align-items: center; justify-content: center; gap: 9px; }
+/* Reserve layout immediately, but avoid flashing placeholders for fast responses. */
+.catalog-skeleton { animation: catalog-skeleton-reveal 0s .18s both; }
+@keyframes catalog-skeleton-reveal { from { opacity: 0; } to { opacity: 1; } }
 .catalog-loading-spinner { width: 14px; height: 14px; border: 2px solid var(--catalog-line); border-top-color: var(--catalog-accent); border-radius: 50%; animation: catalog-spin .7s linear infinite; }
 @keyframes catalog-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .catalog-loading-spinner { animation: none; } }
