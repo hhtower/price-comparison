@@ -30,6 +30,7 @@ export function estimateSettlement(shop, product, quantity, fees = []) {
 }
 
 export function withSettlementEstimates(adapter) {
+  const canVerifySettlement = adapter.canVerifySettlement ?? Boolean(adapter.settle);
   const quantity = adapter.estimatePurchaseQuantity ?? adapter.purchaseQuantity ?? (() => 1);
   const eligible = (product, options) => product.inStock && quantity(product) !== undefined
     && (!options.settlementProductIds || options.settlementProductIds.has(String(product.externalId)))
@@ -76,7 +77,8 @@ export function withSettlementEstimates(adapter) {
       if (isEstimatedSettlement(product.settlement)) {
         outcomes.set(externalId, outcome && ['failed', 'skipped'].includes(outcome.status)
           ? { ...outcome, estimated: true }
-          : { ...outcome, externalId, status: 'estimated', reason: 'estimated', retryable: false, estimated: true });
+          : { ...outcome, externalId, status: 'estimated',
+            reason: canVerifySettlement ? 'estimated' : 'verification_unsupported', retryable: false, estimated: true });
       }
     }
     for (const outcome of outcomes.values()) options.onSettlementResult?.(outcome);
@@ -84,7 +86,7 @@ export function withSettlementEstimates(adapter) {
   }
   return {
     ...adapter,
-    canVerifySettlement: adapter.canVerifySettlement ?? Boolean(adapter.settle),
+    canVerifySettlement,
     purchaseQuantity: quantity,
     async crawl(page, shop, fetchImpl, options = {}) {
       const outcomes = new Map(), reader = feeReader(shop, fetchImpl);

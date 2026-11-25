@@ -155,6 +155,36 @@ test('Next reconstructs a payment from live preview plus explicit source fees', 
   assert.equal(f.reports[0].status, 'verified');
 });
 
+test('Next v1.4.7 supports audited native CNY fees and merchant-absorbed fees', async () => {
+  for (const quantity of [1, 3]) {
+    const surcharge = fixture({ version: 'v1.4.7', total: '10.00', rate: '2.95', fixed: '0.20', quantity });
+    assert.equal((await surcharge.run())[0].settlement?.totalAmount, '10.50');
+    assert.equal(surcharge.products[0].settlement.quantity, quantity);
+    const absorbed = fixture({ version: 'v1.4.7', quantity, channels: [
+      { id: 3, name: 'Alipay', provider_type: 'official', channel_type: 'alipay', min_amount: '0.00', max_amount: '0.00' },
+    ] });
+    assert.equal((await absorbed.run())[0].settlement?.totalAmount, '111.00');
+  }
+});
+
+for (const [options, reason] of [
+  [{ version: 'v1.4.7-custom' }, 'unsupported_version'],
+  [{ currency: 'USD' }, 'unsupported_currency'],
+  [{ channels: [] }, 'no_payment_channel'],
+  [{ detail: { purchase_type: 'member' } }, 'login_required'],
+  [{ detail: { payment_channel_ids: [99] } }, 'payment_channel_restricted'],
+  [{ channels: [{ id: 3, name: 'Alipay', provider_type: 'epay', channel_type: 'alipay',
+    min_amount: '0', max_amount: '0' }] }, 'payment_channel_unsupported'],
+  [{ rate: '-1' }, 'payment_fee_unknown'],
+  [{ channels: [{ id: 3, name: 'Alipay', provider_type: 'official', channel_type: 'alipay',
+    min_amount: '200', max_amount: '0' }] }, 'payment_amount_restricted'],
+]) test(`Next reports ${reason} without retrying a business restriction`, async () => {
+  const f = fixture(options);
+  await f.run();
+  assert.equal(f.products[0].settlement, undefined);
+  assert.deepEqual(f.reports, [{ externalId: '1:2', status: 'failed', reason, retryable: false }]);
+});
+
 test('Next accepts only exact Epay configurations whose unpaid checkouts confirmed final CNY amounts', async () => {
   for (const [url, version, channel, total, expected] of [
     ['https://kkfaka.xyz', 'v1.5.0', { id: 4, name: '支付宝', provider_type: 'epay', channel_type: 'alipay', fee_policy: 'customer_surcharge', fee_rate: '5.00', fixed_fee: '0.00', min_amount: '0.00', max_amount: '0.00' }, '4.00', '4.20'],

@@ -82,6 +82,33 @@ test('a channel business failure applies to every candidate instead of deferring
   assert.equal(outcomes.filter(row => row.reason === 'no_payment_channel').length, 25);
 });
 
+for (const phase of ['channel', 'quote']) test(`typed settlement restrictions during ${phase} are terminal and preserve their reason`, async () => {
+  assert.equal(typeof settlement.SettlementUnavailableError, 'function');
+  const outcomes = [], products = ['one', 'two'].map(externalId => ({ externalId, inStock: true }));
+  const unavailable = () => { throw new settlement.SettlementUnavailableError('payment_fee_unknown'); };
+  await collectSettlements(products, {
+    quantity: () => 1, channel: phase === 'channel' ? unavailable : async () => ({ show_name: 'Alipay' }),
+    quote: unavailable,
+  }, { onSettlementResult: row => outcomes.push(row) });
+  assert.deepEqual(outcomes, products.map(({ externalId }) => ({
+    externalId, status: 'failed', reason: 'payment_fee_unknown', retryable: false,
+  })));
+  assert.ok(products.every(product => !product.settlement));
+});
+
+for (const [code, reason] of [
+  ['ENOTFOUND', 'request_dns_failed'], ['ERR_TLS_CERT_ALTNAME_INVALID', 'request_tls_failed'],
+  ['UND_ERR_CONNECT_TIMEOUT', 'request_timeout'], ['ETIMEDOUT', 'request_timeout'], ['ECONNRESET', 'request_failed'],
+]) test(`settlement reports retain safe ${code} diagnostics and network retry eligibility`, async () => {
+  const outcomes = [];
+  const error = new Error('transport wrapper', { cause: Object.assign(new Error('private proxy credentials'), { code }) });
+  await collectSettlements([{ externalId: 'one', inStock: true }], {
+    quantity: () => 1, channel: async () => { throw error; }, quote: async () => assert.fail('no channel'),
+  }, { onSettlementResult: row => outcomes.push(row) });
+  assert.deepEqual(outcomes, [{ externalId: 'one', status: 'failed', reason, retryable: true }]);
+  assert.doesNotMatch(JSON.stringify(outcomes), /private|credentials/);
+});
+
 for (const phase of ['channel', 'quote']) test(`proxy authentication failure during ${phase} stops all further settlement requests`, async () => {
   const outcomes = [];
   let quotes = 0;

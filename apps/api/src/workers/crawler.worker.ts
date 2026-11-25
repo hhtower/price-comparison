@@ -106,7 +106,7 @@ export function createCrawlerHandler(database: Kysely<DatabaseSchema>, products:
           // The shared transport bounds the actual network/body operation after admission.
           if (deps.fetchFactory) return client.fetch(url, { ...options, signal: options.signal ? AbortSignal.any([signal, options.signal]) : signal });
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(new Error('crawler request timed out')), 30_000);
+          const timeout = setTimeout(() => controller.abort(Object.assign(new Error('crawler request timed out'), { code: 'ETIMEDOUT' })), 30_000);
           const combined = AbortSignal.any([signal, controller.signal]);
           try { return await boundedResponse(await client.fetch(url, { ...options, signal: combined }), combined); }
           finally { clearTimeout(timeout); }

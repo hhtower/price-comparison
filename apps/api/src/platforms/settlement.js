@@ -1,3 +1,5 @@
+import { transportDetails } from '../common/transport-error.js';
+
 export function verifiedSettlement(totalAmount, paymentMethod, quantity = 1) {
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) return undefined;
   if ((typeof totalAmount !== 'string' && typeof totalAmount !== 'number') || !String(totalAmount).trim()) return undefined;
@@ -63,6 +65,13 @@ export function paymentMethod(channel) {
   return undefined;
 }
 
+export class SettlementUnavailableError extends Error {
+  constructor(reason) {
+    super(reason);
+    this.reason = reason;
+  }
+}
+
 export async function collectSettlements(products, transport, options = {}) {
   const maxProducts = options.maxSettlementProducts ?? Infinity;
   if (maxProducts !== Infinity && (!Number.isSafeInteger(maxProducts) || maxProducts < 1)) {
@@ -84,8 +93,15 @@ export async function collectSettlements(products, transport, options = {}) {
   function requestFailure(error) {
     options.signal?.throwIfAborted();
     if (error?.name === 'AbortError') throw error;
+    if (error instanceof SettlementUnavailableError) return error.reason;
     if (error?.name === 'ProxyAuthenticationError') return 'proxy_authentication';
-    return error?.name === 'CrawlerBlockedError' ? 'blocked' : 'request_failed';
+    if (error?.name === 'CrawlerBlockedError') return 'blocked';
+    const details = transportDetails(error);
+    if (details.transportStage === 'dns') return 'request_dns_failed';
+    if (details.transportStage === 'tls') return 'request_tls_failed';
+    if (details.proxyStatus !== undefined) return 'proxy_connection_failed';
+    if (details.code && /TIMEOUT|TIMEDOUT/.test(details.code)) return 'request_timeout';
+    return 'request_failed';
   }
   let channel;
   try {
@@ -93,7 +109,8 @@ export async function collectSettlements(products, transport, options = {}) {
     options.signal?.throwIfAborted();
   } catch (error) {
     const reason = requestFailure(error);
-    for (const product of candidates) report(product, 'failed', reason, reason !== 'proxy_authentication');
+    for (const product of candidates) report(product, 'failed', reason,
+      !(error instanceof SettlementUnavailableError) && reason !== 'proxy_authentication');
     return products;
   }
   if (!channel) {
@@ -122,7 +139,7 @@ export async function collectSettlements(products, transport, options = {}) {
       }
       const reason = requestFailure(error);
       if (reason === 'blocked' || reason === 'proxy_authentication') stoppedReason = reason;
-      report(product, 'failed', reason, reason !== 'proxy_authentication');
+      report(product, 'failed', reason, !(error instanceof SettlementUnavailableError) && reason !== 'proxy_authentication');
       continue;
     }
     const method = quote && Object.hasOwn(quote, 'paymentMethod') ? quote.paymentMethod : paymentMethod(channel);

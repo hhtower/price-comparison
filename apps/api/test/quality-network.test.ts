@@ -4,6 +4,79 @@ import { createServer, type AddressInfo, type Socket } from 'node:net';
 import { createQualityFetch, isPublicAddress, resolvePublicHost } from '../src/quality/quality-network.js';
 import { parseIpTarget } from '../src/quality/quality-input.js';
 
+for (const [code, stage] of [
+  ['ENOTFOUND', 'dns'], ['ECONNREFUSED', 'connect'], ['ECONNRESET', 'connect'],
+  ['UND_ERR_CONNECT_TIMEOUT', 'connect'], ['CERT_HAS_EXPIRED', 'tls'],
+  ['UND_ERR_HEADERS_TIMEOUT', 'headers'], ['UND_ERR_BODY_TIMEOUT', 'body'],
+]) test(`network diagnostics retain nested ${code} without exposing upstream secrets`, async t => {
+  let failure: Error = Object.assign(new Error('https://user:password@private.example/?token=secret'), { code });
+  for (let depth = 0; depth < 6; depth++) failure = new TypeError('wrapper secret', { cause: failure });
+  const client = await createQualityFetch(undefined, {
+    lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+    fetchImpl: async () => { throw failure; },
+  });
+  t.after(() => client.close());
+  await assert.rejects(client.fetch('https://shop.example/?token=request-secret'), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, new RegExp(`stage=${stage}`));
+    assert.match(error.message, new RegExp(`code=${code}`));
+    assert.doesNotMatch(String(error), /secret|password|private|https?:/);
+    assert.equal(error.cause, failure);
+    return true;
+  });
+});
+
+test('DNS failures preserve safe diagnostics and their cause without starting a request', async t => {
+  const failure = Object.assign(new Error('getaddrinfo private.example secret'), { code: 'EAI_AGAIN' });
+  let sent = false;
+  const client = await createQualityFetch(undefined, {
+    lookup: async () => { throw new Error('resolver secret', { cause: failure }); },
+    fetchImpl: async () => { sent = true; return new Response(); },
+  });
+  t.after(() => client.close());
+  await assert.rejects(client.fetch('https://shop.example/'), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /stage=dns.*code=EAI_AGAIN/);
+    assert.doesNotMatch(String(error), /private|secret/);
+    assert.ok(error.cause instanceof Error);
+    return true;
+  });
+  assert.equal(sent, false);
+});
+
+test('aggregate and cyclic causes retain known codes and reject token-shaped names and codes', async t => {
+  const cyclic = Object.assign(new Error('secret'), { name: 'PRIVATE_TOKEN', code: 'PRIVATE_TOKEN', cause: undefined as unknown });
+  cyclic.cause = cyclic;
+  const failure = new AggregateError([
+    cyclic,
+    Object.assign(new Error('password', { cause: new Error('unknown leaf') }), { code: 'ECONNRESET' }),
+  ], 'https://user:secret@private.example');
+  const client = await createQualityFetch(undefined, {
+    lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+    fetchImpl: async () => { throw failure; },
+  });
+  t.after(() => client.close());
+  await assert.rejects(client.fetch('https://shop.example/'), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /code=ECONNRESET/);
+    assert.doesNotMatch(String(error), /PRIVATE_TOKEN|secret|password|https?:/);
+    return true;
+  });
+});
+
+test('network diagnostics never treat arbitrary uppercase tokens as error codes', async t => {
+  const client = await createQualityFetch(undefined, {
+    lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+    fetchImpl: async () => { throw Object.assign(new Error('secret'), { code: 'PRIVATE_TOKEN', name: 'PRIVATE_TOKEN' }); },
+  });
+  t.after(() => client.close());
+  await assert.rejects(client.fetch('https://shop.example/'), error => {
+    assert.ok(error instanceof Error);
+    assert.doesNotMatch(String(error), /PRIVATE_TOKEN|secret/);
+    return true;
+  });
+});
+
 test('blocks private loopback reserved multicast and mapped addresses before any network call', async () => {
   for (const address of ['127.0.0.1', '0.0.0.0', '10.1.2.3', '100.64.0.1', '169.254.169.254', '172.16.0.1', '192.168.1.1', '198.18.0.1', '224.0.0.1', '255.255.255.255', '::', '::1', 'fc00::1', 'fe80::1', '::ffff:127.0.0.1', '2001:db8::1']) assert.equal(isPublicAddress(address), false, address);
   assert.equal(isPublicAddress('8.8.8.8'), true);

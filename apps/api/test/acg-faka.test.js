@@ -88,6 +88,18 @@ test('acg-faka adds public payment fees to the server total without placing an o
   assert.equal(typeof acg.settle, 'function');
 });
 
+for (const [channels, reason] of [
+  [[], 'no_payment_channel'],
+  [[{ id: 2, name: '支付宝', handle: 'Epay' }], 'payment_fee_unknown'],
+  [[{ id: 2, name: 'USDT', handle: 'OxaPay' }], 'payment_channel_unsupported'],
+]) test(`ACG distinguishes ${reason} from network failures`, async () => {
+  const outcomes = [];
+  const [product] = await crawl(null, shop, api({ channels }), { onSettlementResult: row => outcomes.push(row) });
+  assert.equal(product.settlement, undefined);
+  assert.equal(outcomes[0].reason, reason);
+  assert.equal(outcomes[0].retryable, false);
+});
+
 test('ACG user-confirmed fees are limited to the exact origin and observed payment channel', async () => {
   for (const [host, channel, listed, total] of [
     ['yufenggpt.com', { id: 7, name: '支付宝', handle: 'Epay' }, '5.00', '5.00'],
@@ -155,11 +167,15 @@ test('acg-faka accepts explicit zero fees and structured rates, refusing unknown
     { id: 2, name: '支付宝', handle: 'Epay', cost_type: 1, cost: '0.000' },
   ]) assert.equal((await run(api({ channels: [channel] })))[0].settlement?.totalAmount, '5.00');
   assert.equal((await run(api({ channels: [{ id: 2, name: '支付宝2%', handle: 'Epay', cost_type: 1, cost: '0.020' }] })))[0].settlement?.totalAmount, '5.10');
-  for (const name of ['支付宝', '支付宝 6%返现', '支付宝手续费最高6%', '支付宝 手续费6%+1元', 'BEP-U(+0.01)推荐']) {
+  for (const [name, reason] of [
+    ['支付宝', 'payment_fee_unknown'], ['支付宝 6%返现', 'payment_fee_unknown'],
+    ['支付宝手续费最高6%', 'payment_channel_unsupported'], ['支付宝 手续费6%+1元', 'payment_fee_unknown'],
+    ['BEP-U(+0.01)推荐', 'payment_channel_unsupported'],
+  ]) {
     const events = [];
     const [result] = await crawl(null, shop, api({ channels: [{ id: 2, name, handle: 'Epay' }] }), { onSettlementResult: event => events.push(event) });
     assert.equal(result.settlement, undefined, name);
-    assert.equal(events[0].reason, 'no_payment_channel');
+    assert.equal(events[0].reason, reason);
   }
 });
 

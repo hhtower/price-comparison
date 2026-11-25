@@ -100,12 +100,28 @@ test('list-only protocols get estimates in both full crawls and independent retr
   const [retried] = await adapter.settle(shop, [product()], undefined, options);
   assert.equal(retried.settlement.price, '100.00');
   assert.deepEqual(outcomes, [
-    { externalId: '1', status: 'estimated', reason: 'estimated', retryable: false, estimated: true },
-    { externalId: '1', status: 'estimated', reason: 'estimated', retryable: false, estimated: true },
+    { externalId: '1', status: 'estimated', reason: 'verification_unsupported', retryable: false, estimated: true },
+    { externalId: '1', status: 'estimated', reason: 'verification_unsupported', retryable: false, estimated: true },
   ]);
   for (const protocol of ['catcard', 'acg-faka-v5', 'orion-key', 'dujiaoka', 'emshop']) {
     assert.equal(typeof platformForUrl(shop.url, protocol).settle, 'function', protocol);
   }
+});
+
+test('estimated fallback preserves terminal fee diagnostics without scheduling retries', async () => {
+  const { SettlementUnavailableError, collectSettlements } = await import('../src/platforms/settlement.js');
+  const adapter = estimates.withSettlementEstimates({ id: 'fixture', hosts: [], settle(_shop, products, _fetch, options) {
+    return collectSettlements(products, { quantity: () => 1,
+      channel: async () => { throw new SettlementUnavailableError('payment_fee_unknown'); },
+      quote: async () => assert.fail('missing fees must not request a quote'),
+    }, options);
+  } });
+  const outcomes = [], products = [product()];
+  await adapter.settle(shop, products, () => assert.fail('no fallback network requests'), {
+    onSettlementResult: row => outcomes.push(row),
+  });
+  assert.equal(products[0].settlement.kind, 'estimated');
+  assert.deepEqual(outcomes, [{ externalId: '1', status: 'failed', reason: 'payment_fee_unknown', retryable: false, estimated: true }]);
 });
 
 test('verification capability reflects the native adapter and preserves an explicit opt-out', () => {
@@ -172,7 +188,7 @@ test('Prism has no verification capability but still computes estimates during l
   assert.equal(item.settlement.price, '4.86');
   assert.equal(item.settlement.paymentMethod, 'USDT 汇率折算（预估）');
   assert.deepEqual(outcomes, [
-    { externalId: '3', status: 'estimated', reason: 'estimated', retryable: false, estimated: true },
+    { externalId: '3', status: 'estimated', reason: 'verification_unsupported', retryable: false, estimated: true },
   ]);
 });
 

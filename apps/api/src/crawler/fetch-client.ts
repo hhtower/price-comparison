@@ -4,6 +4,7 @@ import { HostRateLimiter } from './rate-limiter.js';
 import { ProxyAuthenticationError, type ProxyLease, type ProxyPool } from './proxy-pool.js';
 import { classifyResponse } from './response-guard.js';
 import { boundedResponse } from './response-body.js';
+import { transportDetails, transportError } from '../common/transport-error.js';
 
 export type CrawlerFetch = (url: string | URL, init?: RequestInit) => Promise<Response>;
 export type CrawlerRequestEvent =
@@ -78,7 +79,8 @@ export function createRunFetchFactory(options: RunFetchFactoryOptions): (signal:
           }
           requestSignal.throwIfAborted();
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(new Error('crawler request timed out')), options.requestTimeoutMs ?? 30_000);
+          const timeout = setTimeout(() => controller.abort(Object.assign(new Error('crawler request timed out'),
+            { code: 'ETIMEDOUT' })), options.requestTimeoutMs ?? 30_000);
           const networkSignal = AbortSignal.any([requestSignal, controller.signal]);
           const started = Date.now();
           let phase: 'connect' | 'body' = 'connect';
@@ -111,7 +113,7 @@ export function createRunFetchFactory(options: RunFetchFactoryOptions): (signal:
             if (error instanceof ProxyAuthenticationError) throw error;
             if (current?.proxyUrl && details.proxyStatus === 407) {
               current.reportFailure('authentication');
-              throw new ProxyAuthenticationError();
+              throw Object.assign(new ProxyAuthenticationError(), { cause: error });
             }
             if (phase === 'connect') {
               current?.reportFailure('connection');
@@ -119,9 +121,10 @@ export function createRunFetchFactory(options: RunFetchFactoryOptions): (signal:
               options.metrics?.incrementCrawlerCounter(viaProxy ? 'proxy_connection_failure' : 'direct_connection_failure');
               preferredProxy = undefined;
               if (attempt === 0) continue;
-              throw new Error(`crawler transport connection error (${details.causes.at(-1)?.code ?? 'unknown'})`);
+              throw transportError('crawler transport connection error', error, 'connect');
             }
-            throw error;
+            if (error instanceof Error && error.message === '接口响应超过大小限制') throw new Error(error.message);
+            throw transportError('crawler transport body error', error, 'body');
           } finally {
             clearTimeout(timeout);
             observe?.({ type: 'duration', host, phase: 'network', ms: Date.now() - started });
@@ -158,24 +161,6 @@ export function createRunFetchFactory(options: RunFetchFactoryOptions): (signal:
     return response;
   }
   };
-}
-
-function transportDetails(error: unknown): { causes: Array<{ name: string; code?: string }>; proxyStatus?: number } {
-  const causes: Array<{ name: string; code?: string }> = [];
-  let proxyStatus: number | undefined;
-  let cause = error;
-  // Never log provider error messages: they can contain URLs, passwords or response bodies.
-  for (let depth = 0; depth < 4 && cause instanceof Error; depth++) {
-    const code = Reflect.get(cause, 'code');
-    causes.push({
-      name: /^[\w]{1,64}$/.test(cause.name) ? cause.name : 'Error',
-      ...(typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? { code } : {}),
-    });
-    const status = /^Proxy response \((\d{3})\) !== 200 when HTTP Tunneling$/.exec(cause.message);
-    if (status) proxyStatus = Number(status[1]);
-    cause = cause.cause;
-  }
-  return { causes, ...(proxyStatus === undefined ? {} : { proxyStatus }) };
 }
 
 function retryAfterMs(header: string | null | undefined): number {

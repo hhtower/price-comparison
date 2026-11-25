@@ -231,14 +231,20 @@ for (const secureProxy of [false, true]) test('SOCKS chaining preserves destinat
   assert.equal(host, 'user-endpoint.example'); assert.equal(servername, 'user-endpoint.example');
   assert.equal(proxy.tunnels[0]?.url, '9.9.9.9:1080');
   assert.equal(proxy.socksRequests[0]?.address, '8.8.8.8'); assert.equal(proxy.socksRequests[0]?.port, 443);
-  await assert.rejects(client.fetch('https://wrong-host.example/'), { message: '检测网络请求失败' });
+  await assert.rejects(client.fetch('https://wrong-host.example/'), /stage=tls.*code=ERR_TLS_CERT_ALTNAME_INVALID/);
 });
 
 for (const failure of ['CONNECT', 'SOCKS']) test(failure + ' authentication failure never bypasses either proxy or exposes credentials', { timeout: 3000 }, async t => {
   const proxy = await localProxy(t, () => assert.fail('rejected chain must not reach the origin'), failure === 'CONNECT' ? 407 : 200, { socks: true, rejectSocks: true });
   const client = await createQualityFetch(socksTarget, { serverProxyUrl: proxy.url });
   t.after(() => client.close());
-  await assert.rejects(client.fetch('http://8.8.8.8/'), { message: '检测网络请求失败' });
+  await assert.rejects(client.fetch('http://8.8.8.8/'), error => {
+    assert.ok(error instanceof Error);
+    assert.doesNotMatch(String(error), /secret|password|https?:/);
+    if (failure === 'CONNECT') assert.match(error.message, /stage=proxy.*CONNECT=407/);
+    else assert.match(error.message, /检测网络请求失败/);
+    return true;
+  });
   assert.equal(proxy.tunnels.length, 1); assert.equal(proxy.socksRequests.length, 0);
 });
 
@@ -312,7 +318,7 @@ test('an untrusted upstream TLS certificate prevents the SOCKS handshake', { tim
   const proxy = await localProxy(t, () => assert.fail('untrusted upstream must not reach the origin'), 200, { socks: true, secureProxy: true, trustCertificate: false });
   const client = await createQualityFetch(socksTarget, { serverProxyUrl: proxy.url });
   t.after(() => client.close());
-  await assert.rejects(client.fetch('http://8.8.8.8/'), { message: '检测网络请求失败' });
+  await assert.rejects(client.fetch('http://8.8.8.8/'), /stage=tls.*code=DEPTH_ZERO_SELF_SIGNED_CERT/);
   assert.equal(proxy.tunnels.length, 0); assert.equal(proxy.socksRequests.length, 0);
 });
 
@@ -381,7 +387,12 @@ test('proxy authentication failure is sanitized and never falls back to a direct
   const proxy = await localProxy(t, () => assert.fail('failed CONNECT must not send an upstream request'), 407);
   const client = await createQualityFetch(undefined, { serverProxyUrl: proxy.url.replace('http://', 'http://user:proxy-secret@') });
   t.after(() => client.close());
-  await assert.rejects(client.fetch('http://8.8.8.8/'), { message: '检测网络请求失败' });
+  await assert.rejects(client.fetch('http://8.8.8.8/'), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /stage=proxy.*CONNECT=407/);
+    assert.doesNotMatch(String(error), /proxy-secret|http:|user:/);
+    return true;
+  });
   assert.equal(proxy.tunnels.length, 1);
 });
 
@@ -405,14 +416,14 @@ for (const secureProxy of [false, true]) test('HTTPS targets preserve TLS identi
   assert.equal(host, 'user-endpoint.example');
   assert.equal(servername, 'user-endpoint.example');
   assert.equal(proxy.tunnels[0]?.url, '8.8.8.8:443');
-  await assert.rejects(client.fetch('https://wrong-host.example/'), { message: '检测网络请求失败' });
+  await assert.rejects(client.fetch('https://wrong-host.example/'), /stage=tls.*code=ERR_TLS_CERT_ALTNAME_INVALID/);
 });
 
 test('an untrusted HTTPS proxy certificate is rejected before tunneling', { timeout: 3000 }, async t => {
   const proxy = await localProxy(t, () => assert.fail('untrusted proxy must not receive a target request'), 200, { secureProxy: true, trustCertificate: false });
   const client = await createQualityFetch(undefined, { serverProxyUrl: proxy.url });
   t.after(() => client.close());
-  await assert.rejects(client.fetch('http://8.8.8.8/'), { message: '检测网络请求失败' });
+  await assert.rejects(client.fetch('http://8.8.8.8/'), /stage=tls.*code=DEPTH_ZERO_SELF_SIGNED_CERT/);
   assert.equal(proxy.tunnels.length, 0);
 });
 

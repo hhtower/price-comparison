@@ -5,9 +5,15 @@ import { EmptyState, Pagination } from './components/AdminControls.jsx';
 const PAGE_SIZE = 10;
 const SETTLEMENT_REASONS = {
   request_failed: '请求失败', blocked: '源站拦截', no_payment_channel: '无可用支付渠道',
+  request_dns_failed: '域名解析失败', request_tls_failed: 'TLS 连接失败',
+  request_timeout: '请求超时', proxy_connection_failed: '代理隧道连接失败',
   proxy_authentication: '代理认证失败',
-  estimated: '支付价预估',
+  estimated: '支付价预估', verification_unsupported: '当前平台仅支持预估价',
   invalid_quote: '结算响应无效', quantity_not_supported: '起购数量无效', deferred: '待分批核验',
+  unsupported_version: '站点版本暂不支持', unsupported_currency: '结算币种暂不支持',
+  invalid_payment_config: '支付配置响应无效', login_required: '需要登录购买',
+  payment_fee_unknown: '手续费无法确认', payment_channel_unsupported: '支付渠道暂不支持',
+  payment_channel_restricted: '商品限制支付渠道', payment_amount_restricted: '不满足渠道金额限制',
   not_selected: '未公开商品', out_of_stock: '无库存', recently_verified: '近期已核验', superseded: '商品或来源已变化',
 };
 const RUN_STATUS = { queued: '排队中', running: '进行中', succeeded: '已完成', failed: '失败', cancelled: '已取消' };

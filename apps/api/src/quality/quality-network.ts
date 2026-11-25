@@ -2,6 +2,7 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { BlockList, connect as netConnect, isIP, type Socket } from 'node:net';
 import { Agent, Client, ProxyAgent, buildConnector, fetch as undiciFetch, type Dispatcher } from 'undici';
 import { socksConnector } from 'fetch-socks';
+import { transportError } from '../common/transport-error.js';
 import type { ParsedIpTarget } from './quality-input.js';
 
 export type QualityLookup = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
@@ -26,7 +27,7 @@ export async function resolvePublicHost(hostname: string, resolve: QualityLookup
     const interrupted = new Promise<never>((_resolve, reject) => { onAbort = () => reject(combined.reason); combined.addEventListener('abort', onAbort, { once: true }); });
     addresses = isIP(host) ? [{ address: host, family: isIP(host) }] : await Promise.race([resolve(host), interrupted]);
     combined.throwIfAborted();
-  } catch { if (combined.aborted) throw combined.reason; throw new Error('无法解析检测地址'); }
+  } catch (error) { if (combined.aborted) throw combined.reason; throw transportError('无法解析检测地址', error, 'dns'); }
   finally { clearTimeout(timeout); combined.removeEventListener('abort', onAbort); }
   if (!addresses.length || addresses.some(item => !isPublicAddress(item.address) || isIP(item.address) !== item.family)) throw new Error('检测地址必须指向公网');
   return addresses[0];
@@ -107,7 +108,7 @@ export async function createQualityFetch(proxy?: ParsedIpTarget, options: { look
           const trackedSocket = socket;
           socket.once('close', () => tunnelSockets.delete(trackedSocket));
           signal.throwIfAborted();
-          if (tunnel.statusCode !== 200) throw new Error('上游代理连接失败');
+          if (tunnel.statusCode !== 200) throw new Error(`Proxy response (${tunnel.statusCode}) !== 200 when HTTP Tunneling`);
           // The upstream CONNECT reaches SOCKS, and SOCKS reaches the validated destination.
           const connected = await new Promise<Socket>((resolve, reject) => {
             connect({ ...connection, hostname: resolved!.address, host: resolved!.address, servername: url.hostname.replace(/^\[|\]$/g, ''), httpSocket: socket }, (error, value) => error ? reject(error) : resolve(value!));
@@ -118,10 +119,10 @@ export async function createQualityFetch(proxy?: ParsedIpTarget, options: { look
         void establish().then(value => {
           signal.removeEventListener('abort', abort);
           callback(null, value);
-        }, () => {
+        }, error => {
           signal.removeEventListener('abort', abort);
           socket?.destroy();
-          callback(new Error('检测网络请求失败'), null);
+          callback(transportError('检测网络请求失败', error), null);
         });
       } });
       chainedDispatchers.add(dispatcher);
@@ -177,8 +178,8 @@ export async function createQualityFetch(proxy?: ParsedIpTarget, options: { look
     } catch (error) {
       if (init?.signal?.aborted) throw init.signal.reason;
       if (error instanceof Error && error.message === '检测请求不允许重定向') throw error;
-      // Upstream errors can contain keys and proxy passwords. Never propagate them.
-      throw new Error('检测网络请求失败', { cause: error });
+      // Keep raw causes in memory; only allowlisted diagnostics reach the persisted message.
+      throw transportError('检测网络请求失败', error);
     }
   };
   /** Raw TCP handshake through the same exit path (user SOCKS tunnel or direct); for SMTP/port probes. */

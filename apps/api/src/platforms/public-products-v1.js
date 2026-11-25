@@ -1,5 +1,5 @@
 import { buildSourceEvidence, captureRatingText, rawProductContent } from './source-evidence.js';
-import { collectSettlements, minimumPurchaseQuantity, settlementJson, settlementCents } from './settlement.js';
+import { collectSettlements, minimumPurchaseQuantity, settlementJson, settlementCents, SettlementUnavailableError } from './settlement.js';
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeProductEvidence } from '../standardization/fingerprint.js';
 import { specificationText } from '../products/product-spec.js';
@@ -177,7 +177,7 @@ export const purchaseQuantity = product => {
 };
 export const paymentChannelIds = product => (productRules.get(product) ?? product.sourceData)?.payment_channel_ids;
 const LEGACY_VERSIONS = new Set(['v1.0.0', 'v1.0.5', 'v1.2.2', 'v1.3.1']);
-const SUPPORTED_VERSIONS = new Set([...LEGACY_VERSIONS, 'v1.4.6', 'v1.4.8', 'v1.4.9', 'v1.5.0']);
+const SUPPORTED_VERSIONS = new Set([...LEGACY_VERSIONS, 'v1.4.6', 'v1.4.7', 'v1.4.8', 'v1.4.9', 'v1.5.0']);
 // shortcut: Exact configurations calibrated by unpaid checkouts; recheck if private conversion changes.
 const VERIFIED_EPAY_CHECKOUTS = {
   'https://kkfaka.xyz': { version: 'v1.5.0', id: 4, policy: 'customer_surcharge', rate: '5.00', fixed: '0.00' },
@@ -255,13 +255,20 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       ({ data: config } = await readJson(new URL('/api/v1/public/config', shop.url).href, fetchImpl, options.signal));
       // This exact native Alipay build returned CNY payable=2.50, fee=0.00 in one unpaid checkout on 2026-10-17.
       confirmedGogo = new URL(shop.url).origin === 'https://pay.gogo77.top' && config?.app_version === 'v1.4.8-open-alipay-1';
-      return config && (SUPPORTED_VERSIONS.has(config.app_version) || confirmedGogo || estimatedFee !== undefined) && config.currency === 'CNY' && !config.wallet_only_payment
-        && Array.isArray(config.payment_channels) ? { show_name: '公开支付渠道' } : undefined;
+      if (!config || !Array.isArray(config.payment_channels)) throw new SettlementUnavailableError('invalid_payment_config');
+      if (!SUPPORTED_VERSIONS.has(config.app_version) && !confirmedGogo && estimatedFee === undefined) {
+        throw new SettlementUnavailableError('unsupported_version');
+      }
+      if (config.currency !== 'CNY') throw new SettlementUnavailableError('unsupported_currency');
+      if (config.wallet_only_payment) throw new SettlementUnavailableError('login_required');
+      if (!config.payment_channels.length) return undefined;
+      return { show_name: '公开支付渠道' };
     },
     quote: async (product, _channel, quantity) => {
       if (errors.has(product)) throw errors.get(product);
       if (!freshProducts.has(product) || deferred.has(product)) return undefined;
       const source = productRules.get(freshProducts.get(product)), ids = String(product.externalId).split(':').map(Number);
+      if (source?.purchase_type === 'member' && estimatedFee === undefined) throw new SettlementUnavailableError('login_required');
       if (!(source?.purchase_type === 'guest' || estimatedFee !== undefined && source?.purchase_type === 'member')
         || ids.length !== 2 || ids.some(value => !Number.isSafeInteger(value) || value < 1)) return undefined;
       const maxQuantity = source.max_purchase_quantity;
@@ -277,7 +284,7 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       }
       const allowed = source.payment_channel_ids;
       if (allowed !== undefined && (!Array.isArray(allowed) || allowed.some(value => !Number.isSafeInteger(value) || value < 1))) return undefined;
-      const channels = config.payment_channels.filter(channel => Number.isSafeInteger(channel.id) && channel.id > 0
+      const supportedChannels = config.payment_channels.filter(channel => Number.isSafeInteger(channel.id) && channel.id > 0
         && typeof channel.name === 'string' && channel.name.trim()
         && (!confirmedGogo || channel.id === 2 && channel.provider_type === 'official' && channel.channel_type === 'alipay'
           && ['fee_policy', 'fee_rate', 'fixed_fee'].every(field => channel[field] === undefined))
@@ -285,9 +292,10 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
         && (channel.provider_type === 'official' && ['alipay', 'wechat'].includes(channel.channel_type)
           || confirmedCC && channel.provider_type === 'epay' && channel.channel_type === 'alipay'
             && channel.fee_policy === 'customer_surcharge' && cents(channel.fee_rate) === 295n && cents(channel.fixed_fee) === 0n
-          || matchesCheckout(channel))
-        && (!allowed?.length || allowed.includes(channel.id)));
-      if (!channels.length) return undefined;
+          || matchesCheckout(channel)));
+      if (!supportedChannels.length) throw new SettlementUnavailableError('payment_channel_unsupported');
+      const channels = supportedChannels.filter(channel => !allowed?.length || allowed.includes(channel.id));
+      if (!channels.length) throw new SettlementUnavailableError('payment_channel_restricted');
       const payload = await settlementJson(await fetchImpl(new URL('/api/v1/guest/orders/preview', shop.url).href, {
         method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' }, redirect: 'error',
         ...(options.signal ? { signal: options.signal } : {}),
@@ -296,12 +304,14 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       const data = payload?.data, item = data?.items?.[0], base = cents(data?.total_amount);
       if (payload?.status_code !== 0 || data?.currency !== 'CNY' || base === undefined || !Array.isArray(data.items) || data.items.length !== 1
         || item.product_id !== ids[0] || item.sku_id !== ids[1] || item.quantity !== quantity) return undefined;
+      let feeUnknown = false;
       for (const channel of channels) {
         const min = cents(channel.min_amount), max = cents(channel.max_amount), total = paymentTotal(base, channel, config.app_version);
+        if (total === undefined) feeUnknown = true;
         if (min === undefined || max === undefined || total === undefined || min > base || max > 0n && max < base) continue;
         return { code: 1, paymentMethod: channel.name, data: { total_amount: amount(total), quantity } };
       }
-      return undefined;
+      throw new SettlementUnavailableError(feeUnknown ? 'payment_fee_unknown' : 'payment_amount_restricted');
     },
   }, { ...options, needsSettlement: product => !cached.has(product), onSettlementResult: result => {
     const product = products.find(row => String(row.externalId) === result.externalId);

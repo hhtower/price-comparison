@@ -63,6 +63,17 @@ test('estimates use explicit counts independently of diagnostic reasons', async 
   expect(screen.getByText(/请求失败 1 · 待分批核验 19/)).toBeInTheDocument();
 });
 
+test('settlement restrictions explain the missing evidence instead of reporting missing channels', async () => {
+  requestJson.mockResolvedValueOnce({ total: 1, items: [{
+    id: 'restricted', shopName: 'Restricted shop', taskType: 'list', status: 'succeeded',
+    settlementReport: { verified: 0, estimated: 4, failed: 4, skipped: 0, retryable: 0,
+      reasons: { unsupported_version: 1, payment_fee_unknown: 1, payment_channel_unsupported: 1, login_required: 1 } },
+  }] });
+  render(<FetchRuns />);
+  expect(await screen.findByText(/站点版本暂不支持 1/)).toHaveTextContent(
+    '站点版本暂不支持 1 · 手续费无法确认 1 · 支付渠道暂不支持 1 · 需要登录购买 1');
+});
+
 test('initial load and pagination show a spinner, retain records and commit the page only on success', async () => {
   let complete;
   requestJson.mockImplementation(() => new Promise(resolve => { complete = resolve; }));

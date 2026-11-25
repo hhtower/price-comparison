@@ -4,6 +4,7 @@ import { CrawlerBlockedError, createRunFetchFactory, DEFAULT_CRAWLER_UA, mergeDe
 import { platformForUrl } from '../src/platforms/index.js';
 import { ProxyPool, type ProxyLease } from '../src/crawler/proxy-pool.js';
 import { HostRateLimiter } from '../src/crawler/rate-limiter.js';
+import { createQualityFetch } from '../src/quality/quality-network.js';
 
 function fakeLease(url: string | null) {
   const events: string[] = [];
@@ -40,6 +41,85 @@ function harness(responses: Array<() => Response | Error>) {
 }
 
 const jsonOk = () => new Response('{"code":1}', { headers: { 'content-type': 'application/json' } });
+
+for (const phase of ['connect', 'body'] as const) test(`${phase} errors expose safe diagnostics without changing retries`, async () => {
+  const logs: unknown[] = [];
+  let sent = 0;
+  const failure = Object.assign(new Error('https://user:password@private.example/?token=secret'), { code: 'ECONNRESET' });
+  const wrapped = Object.assign(new Error('wrapper secret', { cause: failure }), { code: 'PRIVATE_TOKEN', name: 'PRIVATE_TOKEN' });
+  const proxy = fakeLease('http://proxy');
+  const factory = createRunFetchFactory({
+    limiter: { acquire: async () => {} } as never,
+    pool: { acquire: async () => proxy.lease } as never,
+    logger: { warn: (...args) => { logs.push(args); } },
+    fetchImpl: (async () => {
+      sent++;
+      if (phase === 'connect') throw wrapped;
+      return new Response(new ReadableStream({ start(controller) { controller.error(wrapped); } }));
+    }) as never,
+  });
+  await assert.rejects(factory(new AbortController().signal)('https://shop.example/quotePrice?token=request-secret'), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /ECONNRESET/);
+    assert.match(error.message, new RegExp(phase));
+    assert.doesNotMatch(String(error), /secret|password|private|PRIVATE_TOKEN|https?:/);
+    assert.equal(error.cause, wrapped);
+    return true;
+  });
+  assert.equal(sent, phase === 'connect' ? 2 : 1);
+  assert.deepEqual(proxy.events, phase === 'connect' ? ['failure:connection', 'failure:connection'] : []);
+  assert.match(JSON.stringify(logs), /ECONNRESET/);
+  assert.doesNotMatch(JSON.stringify(logs), /secret|password|private|PRIVATE_TOKEN|https?:/);
+  for (const [, details] of logs as Array<[string, { stage: string; phase: string }]>) {
+    assert.equal(details.stage, 'settlement');
+    assert.equal(details.phase, phase);
+  }
+});
+
+test('deeply wrapped CONNECT authentication failures remain terminal and report only safe status', async () => {
+  let failure: Error = new Error('Proxy response (407) !== 200 when HTTP Tunneling');
+  for (let depth = 0; depth < 6; depth++) failure = new Error('secret', { cause: failure });
+  const proxy = fakeLease('http://proxy');
+  const logs: unknown[] = [];
+  let sent = 0;
+  const factory = createRunFetchFactory({
+    limiter: { acquire: async () => {} } as never,
+    pool: { acquire: async () => proxy.lease } as never,
+    logger: { warn: (...args) => { logs.push(args); } },
+    fetchImpl: (async () => { sent++; throw failure; }) as never,
+  });
+  await assert.rejects(factory(new AbortController().signal)('https://shop.example/'), { name: 'ProxyAuthenticationError' });
+  assert.equal(sent, 1);
+  assert.deepEqual(proxy.events, ['failure:authentication']);
+  assert.match(JSON.stringify(logs), /407/);
+  assert.doesNotMatch(JSON.stringify(logs), /secret/);
+});
+
+test('quality wrapping preserves the crawler body failure stage and code', async t => {
+  let sent = 0;
+  const factory = createRunFetchFactory({
+    limiter: { acquire: async () => {} } as never,
+    pool: {} as never,
+    fetchImpl: (async () => {
+      sent++;
+      return new Response(new ReadableStream({
+        start(controller) { controller.error(Object.assign(new Error('response secret'), { code: 'UND_ERR_SOCKET' })); },
+      }));
+    }) as never,
+  });
+  const client = await createQualityFetch(undefined, {
+    lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+    fetchImpl: factory(new AbortController().signal) as typeof fetch,
+  });
+  t.after(() => client.close());
+  await assert.rejects(client.fetch('https://shop.example/'), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /stage=body.*code=UND_ERR_SOCKET/);
+    assert.doesNotMatch(String(error), /secret/);
+    return true;
+  });
+  assert.equal(sent, 1);
+});
 
 test('preserves a validated public-address dispatcher instead of replacing it with a proxy', async () => {
   const pinned = {} as any;
@@ -452,7 +532,8 @@ for (const phase of ['connection', 'body']) test(`request timeout cancels a hang
       }, { once: true }));
     }) as never,
   });
-  await assert.rejects(factory(new AbortController().signal)('https://wzyp.cn/shopApi/Shop/getGoodsPrice'), /timed out/);
+  await assert.rejects(factory(new AbortController().signal)('https://wzyp.cn/shopApi/Shop/getGoodsPrice'),
+    error => error instanceof Error && /timed out/.test(error.message) && Reflect.get(error, 'code') === 'ETIMEDOUT');
   assert.equal(requests, 1);
   assert.equal(cancelled, true);
   assert.deepEqual(proxy.events, []);

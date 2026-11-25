@@ -62,7 +62,7 @@ test('Dujiaoka disables independent verification while keeping list estimates an
   assert.equal(product.settlement.totalAmount, '130.00');
   assert.match(product.settlement.paymentMethod, /预估/);
   assert.deepEqual(outcomes.find(result => result.externalId === '252:9'), {
-    externalId: '252:9', status: 'estimated', reason: 'estimated', retryable: false, estimated: true,
+    externalId: '252:9', status: 'estimated', reason: 'verification_unsupported', retryable: false, estimated: true,
   });
 });
 

@@ -1,6 +1,6 @@
 import { buildSourceEvidence, captureRatingText, rawProductContent } from './source-evidence.js';
 import { isDeepStrictEqual } from 'node:util';
-import { collectSettlements, minimumPurchaseQuantity, settlementJson, settlementCents } from './settlement.js';
+import { collectSettlements, minimumPurchaseQuantity, settlementJson, settlementCents, SettlementUnavailableError } from './settlement.js';
 import { normalizeProductEvidence } from '../standardization/fingerprint.js';
 import { specificationText } from '../products/product-spec.js';
 
@@ -256,12 +256,16 @@ function decimal(value) {
 }
 const cents = value => { const amount = decimal(value); return amount && amount.value * 100n / amount.scale; };
 
-export function paymentFee(channel, origin) {
+function cnyPaymentChannel(channel) {
   if (!productId(Number(channel?.id)) || typeof channel.name !== 'string' || channel.handle === '#system'
     || (channel.currency !== undefined && channel.currency !== 'CNY')
-    || ['status', 'custom_status'].some(field => channel[field] !== undefined && ![1, '1'].includes(channel[field]))) return undefined;
+    || ['status', 'custom_status'].some(field => channel[field] !== undefined && ![1, '1'].includes(channel[field]))) return false;
+  return /^(?:支付宝|微信(?:支付)?|Alipay|WeChat(?: Pay)?)(?:\s|[-:(【\d]|$)/i.test(channel.name.normalize('NFKC').trim());
+}
+
+export function paymentFee(channel, origin) {
+  if (!cnyPaymentChannel(channel)) return undefined;
   const name = channel.name.normalize('NFKC').trim();
-  if (!/^(?:支付宝|微信(?:支付)?|Alipay|WeChat(?: Pay)?)(?:\s|[-:(【\d]|$)/i.test(name)) return undefined;
   if (Object.hasOwn(channel, 'cost') || Object.hasOwn(channel, 'cost_type')) {
     const amount = decimal(channel.cost);
     return amount && [0, 1, '0', '1'].includes(channel.cost_type) ? { ...amount, fixed: Number(channel.cost_type) === 0 } : undefined;
@@ -303,13 +307,24 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
     if ((form || path.startsWith('/user/api/index/pay?itemId=')) && isUnavailable(payload)) unavailable();
     return payload;
   };
+  const readChannels = async path => {
+    const payload = await request(path);
+    if (payload?.code !== 200 || !Array.isArray(payload.data)) throw new SettlementUnavailableError('invalid_payment_config');
+    if (!payload.data.length) throw new SettlementUnavailableError('no_payment_channel');
+    const supported = payload.data.filter(cnyPaymentChannel);
+    if (!supported.length) throw new SettlementUnavailableError('payment_channel_unsupported');
+    const channels = supported.flatMap(channel => {
+      const fee = paymentFee(channel, origin);
+      return fee ? [{ ...channel, fee }] : [];
+    });
+    if (!channels.length) throw new SettlementUnavailableError('payment_fee_unknown');
+    return channels;
+  };
   return collectSettlements(products, {
     quantity: product => freshProducts.get(product) === false ? undefined : purchaseQuantity(product),
     channel: async () => {
-      const payload = await request('/user/api/index/pay');
-      const channels = payload?.code === 200 && Array.isArray(payload.data)
-        ? payload.data.flatMap(channel => { const fee = paymentFee(channel, origin); return fee ? [{ ...channel, fee }] : []; }) : [];
-      return channels.length ? { channels, show_name: channels[0].name } : undefined;
+      const channels = await readChannels('/user/api/index/pay');
+      return { channels, show_name: channels[0].name };
     },
     quote: async (product, { channels }, quantity) => {
       const [item, variant] = String(product.externalId).split(':');
@@ -331,11 +346,11 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       const amount = quote?.code === 200 ? cents(quote.data?.price) : undefined;
       if (amount === undefined) return undefined;
       // Custom storefronts can restrict payment channels per item, as their checkout does.
-      const payload = await request(`/user/api/index/pay?itemId=${item}`);
-      const allowed = payload?.code === 200 && Array.isArray(payload.data)
-        ? payload.data.flatMap(channel => { const fee = paymentFee(channel, origin); return fee ? [{ ...channel, fee }] : []; }) : [];
+      const allowed = (await readChannels(`/user/api/index/pay?itemId=${item}`))
+        .filter(channel => channels.some(global => Number(global.id) === Number(channel.id)));
+      if (!allowed.length) throw new SettlementUnavailableError('payment_channel_restricted');
       let best;
-      for (const channel of allowed.filter(channel => channels.some(global => Number(global.id) === Number(channel.id)))) {
+      for (const channel of allowed) {
         const min = channel.min_amount == null ? 0n : cents(channel.min_amount), max = channel.max_amount == null ? undefined : cents(channel.max_amount);
         if (min === undefined || amount < min || (channel.max_amount != null && (max === undefined || (max > 0n && amount > max)))) continue;
         // ACG Order::trade uses BCMath scale 2: truncate the fee to cents before adding it.
@@ -343,9 +358,10 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
         const total = amount + fee;
         if (!best || total < best.total) best = { total, channel };
       }
-      return best ? { code: 1, data: { total_amount: `${best.total / 100n}.${String(best.total % 100n).padStart(2, '0')}`, quantity },
+      if (!best) throw new SettlementUnavailableError('payment_amount_restricted');
+      return { code: 1, data: { total_amount: `${best.total / 100n}.${String(best.total % 100n).padStart(2, '0')}`, quantity },
         paymentMethod: best.channel.name + (estimatedGuestShop(shop.url) ? '（游客价预估）' : ''),
-        ...(estimatedGuestShop(shop.url) ? { kind: 'estimated' } : {}) } : undefined;
+        ...(estimatedGuestShop(shop.url) ? { kind: 'estimated' } : {}) };
     },
   }, options);
 }
