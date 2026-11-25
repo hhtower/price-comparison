@@ -118,6 +118,26 @@ describe('independent settlement expiry scheduling', () => {
     assert.equal((run.settlement_payload as any).products.length, 10);
   });
 
+  test('missing and estimated prices precede older expired verifications in a bounded batch', async () => {
+    await fixture(125);
+    const offers = await db.selectFrom('offers').select(['id', 'product_id']).orderBy('id').execute();
+    const missing = offers.slice(100, 110), estimated = offers.slice(110);
+    await db.updateTable('offers').set({ settlement_refresh_at: new Date(now.getTime() - 60_000) }).execute();
+    await db.updateTable('offers').set({
+      settlement_price: null, settlement_verified_at: null, settlement_payment_method: null,
+      settlement_quantity: null, settlement_total_amount: null, settlement_refresh_at: now,
+    }).where('id', 'in', missing.map(row => row.id)).execute();
+    await db.updateTable('offers').set({ settlement_kind: 'estimated', settlement_refresh_at: now })
+      .where('id', 'in', estimated.map(row => row.id)).execute();
+
+    assert.equal(await enqueueDueSettlements(db, 32, now, ttlMs), 1);
+    const run = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
+    const ids = (run.settlement_payload as any).products.map((row: { productId: string }) => row.productId);
+    assert.equal(ids.length, 100);
+    assert.deepEqual(ids.slice(0, 25), [...missing, ...estimated].map(row => String(row.product_id)));
+    assert.equal((await db.selectFrom('offers').select('id').where('settlement_refresh_at', 'is not', null).execute()).length, 25);
+  });
+
   for (const [protocol, url] of [
     ['public-products-v1', 'https://suqiai.cc/'],
     ['acg-faka', 'https://douyiner.cn/'],

@@ -46,7 +46,8 @@ export async function enqueueDueSettlements(
       }>`select p.id, p.content_version, p.content_fingerprint, o.id as offer_id, o.price, o.captured_at, o.settlement_verified_at
         from products p join offers o on o.product_id = p.id
         where p.shop_id = ${shop.id} and ${due}
-        order by o.settlement_refresh_at, p.id limit ${settlementBatchSize(platformForUrl(shop.url, shop.protocol).id)}`.execute(tx)).rows;
+        order by case when o.settlement_price is null then 0 when o.settlement_kind = 'estimated' then 1 else 2 end,
+          o.settlement_refresh_at, p.id limit ${settlementBatchSize(platformForUrl(shop.url, shop.protocol).id)}`.execute(tx)).rows;
       if (!rows.length) continue;
       await tx.insertInto('fetch_runs').values({
         shop_id: shop.id, task_type: 'settlement', started_at: now, available_at: now,
