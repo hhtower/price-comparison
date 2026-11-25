@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { seedUsableOffers } from './standardization-review-fixture.js';
 import { randomUUID } from 'node:crypto';
 import { after, afterEach, before, describe, test } from 'node:test';
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import { CompiledQuery, Kysely, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
@@ -19,13 +19,18 @@ describe('global AI retry pool', () => {
   let admin: Pool;
   let schema: string;
   let repository: AiRepository;
+  let captureReport = false;
+  let reportQuery: CompiledQuery | undefined;
   before(async () => {
     if (!process.env.TEST_DATABASE_URL) throw new Error('TEST_DATABASE_URL is required');
     schema = `retry_pool_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
     admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     await admin.query(`create schema "${schema}"`);
     process.env.PG_SCHEMA = schema;
-    db = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path="${schema}",public` }) }) });
+    db = new Kysely<DatabaseSchema>({
+      dialect: new PostgresDialect({ pool: new Pool({ connectionString: process.env.TEST_DATABASE_URL, options: `-c search_path="${schema}",public` }) }),
+      log: event => { if (captureReport && event.query.sql.includes('"productId"')) reportQuery = event.query; },
+    });
     await migrateToLatest(db);
     repository = new AiRepository(db);
   });
@@ -130,6 +135,28 @@ describe('global AI retry pool', () => {
     const empty = await repository.listRetryPool({ limit: 2, cursor: String(ids.at(-1)) });
     assert.deepEqual(empty, { items: [], total: 3, nextCursor: null });
     assert.ok(first.items[0]!.failedAt instanceof Date, 'report aggregation preserves timestamp values');
+  });
+
+  test('retry reports check offers only after identifying unresolved current results', async t => {
+    const ids = await products(300);
+    t.after(async () => { await db.updateTable('products').set({ deleted_at: new Date() }).where('id', 'in', ids).execute(); });
+    await failed([ids[0]!]);
+    await sql`analyze products`.execute(db);
+    await sql`analyze offers`.execute(db);
+    captureReport = true;
+    let page;
+    try { page = await repository.listRetryPool({ limit: 20 }); }
+    finally { captureReport = false; }
+    assert.equal(page.total, 1);
+    assert.equal(page.items[0]?.productId, String(ids[0]));
+    assert.ok(reportQuery);
+    const plan = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Record<string, any> }> }>(
+      CompiledQuery.raw(`explain (analyze, buffers, format json) ${reportQuery.sql}`, reportQuery.parameters),
+    );
+    const nodes = (node: Record<string, any>): Array<Record<string, any>> => [node, ...(node.Plans ?? []).flatMap(nodes)];
+    assert.ok(nodes(plan.rows[0]!['QUERY PLAN'][0]!.Plan).filter(node => node['Relation Name'] === 'offers')
+      .every(node => node['Actual Loops'] <= 10),
+    'products without an unresolved result must not incur per-product quote lookups');
   });
 
   test('excludes existing queued, running and paused work, including legacy retries, and returns failures to the same pool', async () => {

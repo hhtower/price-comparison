@@ -2,7 +2,7 @@ import { withMembershipSource } from './membership-fixture.js';
 import { MEMBERSHIP_GROUPS } from '@price-comparison/catalog/membership-policy';
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import { Kysely, PostgresDialect, sql, type CompiledQuery } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
@@ -10,7 +10,7 @@ import { createPostgresPool } from '../src/database/database.providers.js';
 import { jsonb, type DatabaseSchema, type JsonValue } from '../src/database/types.js';
 import { buildMembershipFeatures } from '../src/standardization/membership-classification.js';
 import type { MembershipKind } from '@price-comparison/catalog/membership-policy';
-import { PriceHistoryRepository } from '../src/catalog/price-history.repository.js';
+import { PriceHistoryRepository, type PriceHistoryScope } from '../src/catalog/price-history.repository.js';
 import { CatalogService } from '../src/catalog/catalog.service.js';
 import { CatalogRepository } from '../src/catalog/catalog.repository.js';
 import { CatalogController } from '../src/catalog/catalog.controller.js';
@@ -23,6 +23,7 @@ let history: PriceHistoryRepository;
 let standard: bigint;
 let product: bigint;
 let shop: bigint;
+let lastQuery: CompiledQuery | undefined;
 
 before(async () => {
   const connectionString = process.env.TEST_DATABASE_URL;
@@ -31,7 +32,7 @@ before(async () => {
   await admin.query(`create schema ${schema}`);
   db = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({ pool: createPostgresPool({
     ...process.env, DATABASE_URL: connectionString, PG_SCHEMA: schema,
-  }) }) });
+  }) }), log: event => { if (event.level === 'query') lastQuery = event.query; } });
   const { error } = await new Migrator({ db, provider: migrationProvider, migrationTableSchema: schema }).migrateToLatest();
   if (error) throw error;
   history = new PriceHistoryRepository(db, { now: () => now, ttlMs: 8100000 });
@@ -160,10 +161,14 @@ test('daily winners order by numeric price, latest verification, then lowest pro
 });
 
 test('filters same-day future minima before choosing a winner and includes the exact current instant', async () => {
-  await quote(product, '9.00', '2026-10-14T12:00:00Z');
+  const offer = await quote(product, '9.00', '2026-10-14T12:00:00Z');
   await quote(await addProduct('future minimum'), '0.00', '2026-10-14T12:00:01Z');
   await quote(await addProduct('previous instant'), '10.00', '2026-10-14T11:59:59Z');
+  await db.updateTable('offers').set({
+    settlement_price: '0.00', settlement_total_amount: '0.00', settlement_verified_at: new Date('2026-10-14T12:00:01Z'),
+  }).where('id', '=', offer.id).execute();
   assert.deepEqual((await points()).map(point => [point.price, point.verifiedAt]), [['9.00', '2026-10-14T12:00:00.000Z']]);
+  assert.deepEqual(await points(String(product)), await points());
 });
 
 test('reselects the daily minimum from currently visible products before fetching its details', async () => {
@@ -313,6 +318,109 @@ test('history rejects malformed membership and newcomer filters through the publ
     await assert.rejects(() => controller.getPriceHistory(String(standard), scope), { name: 'DomainValidationError' });
   }
 });
+
+test('daily index migration preserves history and can roll back and reapply', async () => {
+  const migration = await import('../src/database/migrations/063_price_history_20261125.js');
+  await quote();
+  const previous = await points();
+  const records = await db.selectFrom('offer_price_history').selectAll().execute();
+  await migration.down(db as Kysely<unknown>);
+  assert.deepEqual(await points(), previous);
+  await migration.up(db as Kysely<unknown>);
+  assert.deepEqual(await points(), previous);
+  assert.deepEqual(await db.selectFrom('offer_price_history').selectAll().execute(), records);
+});
+
+for (const [productCount, observations] of [[200, 2000], [8000, 50]] as const) {
+test(`daily history uses bounded index candidates with ${productCount} products and ${observations} observations each`, async t => {
+  const excluded = productCount === 8000 ? 100 : 20;
+  const highPriceStart = productCount * 0.9;
+  await sql`insert into products (shop_id, external_id, name, normalized_key, url, deleted_at)
+    select ${shop}, 'scale-' || n, 'scale-' || n, 'scale-' || n, 'https://history.invalid',
+      case when n < ${excluded / 2} then now() end
+    from generate_series(0, ${productCount - 1}) n`.execute(db);
+  await sql`insert into standard_product_members (standard_product_id, product_id, publication_state)
+    select ${standard}, id, case when external_id::text in
+      (select 'scale-' || n from generate_series(${excluded / 2}::int, ${excluded - 1}::int) n) then 'quarantined' else 'published' end
+    from products where external_id like 'scale-%'`.execute(db);
+  await sql`insert into offer_price_history (product_id, standard_product_id, content_version, name, spec,
+    price, currency, quantity, payment_method, settlement_kind, verified_at)
+    select p.id, ${standard}, 0, p.name, '', substring(p.external_id from 7)::int + 1,
+      'CNY', 1, 'Card', 'verified',
+      '2026-09-14T16:00:00Z'::timestamptz + (n % 30) * interval '1 day' + n * interval '1 second'
+        + substring(p.external_id from 7)::int * interval '1 millisecond'
+    from products p cross join generate_series(0, ${observations - 1}) n where p.external_id like 'scale-%'`.execute(db);
+  await db.updateTable('standard_products').set({
+    canonical_family: 'openai', canonical_product: 'chatgpt', canonical_tier: 'plus',
+  }).where('id', '=', standard).execute();
+  const selected = await db.selectFrom('products').selectAll().where('external_id', '=', `scale-${productCount - 1}`).executeTakeFirstOrThrow();
+  const features = buildMembershipFeatures([], await withMembershipSource(db, selected), [], 'account');
+  if (productCount === 8000) {
+    await sql`insert into standard_products (name, verification_state)
+      select 'unrelated-' || n, 'verified' from generate_series(0, 99) n`.execute(db);
+    await sql`insert into products (shop_id, external_id, name, normalized_key, url)
+      select ${shop}, 'unrelated-' || n, 'unrelated-' || n, 'unrelated-' || n, 'https://history.invalid'
+      from generate_series(0, 31999) n`.execute(db);
+    await sql`insert into standard_product_members (standard_product_id, product_id, publication_state)
+      select sp.id, p.id, 'published' from products p
+      join standard_products sp on sp.name = 'unrelated-' || (substring(p.external_id from 11)::int % 100)
+      where p.external_id like 'unrelated-%'`.execute(db);
+    await sql`insert into offer_price_history (product_id, standard_product_id, content_version, name, spec,
+      price, currency, quantity, payment_method, settlement_kind, verified_at)
+      select p.id, m.standard_product_id, 0, p.name, '', 1, 'CNY', 1, 'Card', 'verified',
+        '2026-09-14T16:00:00Z'::timestamptz + n * interval '1 day'
+      from products p join standard_product_members m on m.product_id = p.id
+      cross join generate_series(0, 4) n where p.external_id like 'unrelated-%'`.execute(db);
+  }
+  await sql`update products p set membership_features = ${jsonb(features as unknown as JsonValue)} ||
+    jsonb_build_object('contentVersion', p.content_version::text, 'fingerprint', p.content_fingerprint,
+      'revision', p.standardization_revision::text, 'decision', jsonb_build_object('reason', 'llm_reviewed',
+        'kind', case when substring(p.external_id from 7)::int >= ${highPriceStart} then 'short_term' else 'account' end))
+    where p.external_id like 'scale-%'`.execute(db);
+  for (const table of ['products', 'standard_product_members', 'standard_products', 'offer_price_history']) {
+    await sql`analyze ${sql.table(table)}`.execute(db);
+  }
+  type Plan = { [key: string]: any; Plans?: Plan[] };
+  const nodes = (node: Plan): Plan[] => [node, ...(node.Plans ?? []).flatMap(nodes)];
+  const cases: { name: string; productId?: string; scope?: PriceHistoryScope; price?: string }[] = [
+    { name: 'all', price: String(excluded + 1) },
+    { name: 'group', scope: { membershipKinds: ['account'] }, price: String(excluded + 1) },
+    { name: 'single', productId: String(selected.id), price: String(productCount) },
+    { name: 'high-price subset', scope: { membershipKinds: ['short_term'] }, price: String(highPriceStart + 1) },
+    { name: 'empty membership', scope: { membershipKinds: ['rental'] } },
+  ];
+  const catalog = new CatalogRepository(db, { now: () => now, ttlMs: 8100000 });
+  for (const scenario of cases) {
+    const daily = (await history.get(String(standard), scenario.productId, 'CNY', scenario.scope)).points;
+    assert.equal(daily.length, scenario.price ? 30 : 0);
+    assert.ok(daily.every(point => point.price === scenario.price));
+    const query = lastQuery!;
+    const result = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Plan; 'Execution Time': number }> }>({
+      ...query, sql: `explain (analyze, buffers, format json) ${query.sql}`,
+    });
+    const explain = result.rows[0]!['QUERY PLAN'][0]!;
+    const scans = nodes(explain.Plan).filter(node => node['Relation Name'] === 'offer_price_history');
+    const rejected = scans.reduce((sum, node) => sum + node['Actual Loops'] *
+      ((node['Rows Removed by Filter'] ?? 0) + (node['Rows Removed by Index Recheck'] ?? 0)), 0);
+    const visited = rejected + scans.reduce((sum, node) => sum + node['Actual Loops'] * node['Actual Rows'], 0);
+    t.diagnostic(`${scenario.name}: ${explain['Execution Time']} ms; ${visited} history candidates (${rejected} rejected); ` +
+      `${explain.Plan['Shared Hit Blocks']} total buffer hits, ${explain.Plan['Shared Read Blocks']} reads; indexes ` +
+      scans.map(node => `${node['Index Name']} (${node['Shared Hit Blocks']} hits, ${node['Shared Read Blocks']} reads)`).join(', '));
+    if (scenario.productId) {
+      const buffers = scans.reduce((sum, node) => sum + node['Shared Hit Blocks'] + node['Shared Read Blocks'], 0);
+      assert.ok(buffers <= observations + 500, `single-product history must not walk other products' index pages: ${buffers}`);
+      assert.ok(visited <= observations + 60, `single-product scans must stay within its own daily observations: ${visited}`);
+    } else {
+      assert.ok(visited <= 90, `history scans must stop at daily winners, visited ${visited}`);
+      assert.ok(scans.some(node => node['Index Name'] === 'offer_price_history_verified_daily'));
+    }
+    const started = performance.now();
+    const wrapped = await catalog.priceHistory(String(standard), scenario.productId, 'CNY', scenario.scope);
+    t.diagnostic(`${scenario.name}: CatalogRepository.priceHistory ${(performance.now() - started).toFixed(3)} ms`);
+    assert.deepEqual(wrapped.points, daily);
+  }
+});
+}
 
 test('migration seeds genuine existing quotes and downgrades without modifying offers', async t => {
   const migration = await import('../src/database/migrations/011_price_history_20261014.js');

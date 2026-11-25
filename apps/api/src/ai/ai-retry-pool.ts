@@ -61,19 +61,31 @@ export function retryPoolQuery(db: Kysely<DatabaseSchema>) {
 export async function readRetryPool(db: Kysely<DatabaseSchema>, input: { limit: number; afterId?: bigint }) {
   return db.transaction().setIsolationLevel('repeatable read').execute(async tx => {
     await sql`set local jit = off`.execute(tx);
-    const candidates = retryPoolQuery(tx).select([
+    const unresolved = currentUnclassifiedQuery(tx).where('r.reason_code', 'in', RETRYABLE_RESULT_REASONS)
+      .select(['p.id as productId', 'r.job_id as sourceJobId']);
+    const details = tx.selectFrom('products as p')
+      .innerJoin(sql<{ productId: bigint; sourceJobId: bigint }>`page`.as('page'), 'page.productId', 'p.id')
+      .innerJoin('shops as s', 's.id', 'p.shop_id')
+      .innerJoinLateral(standardizationResultSource(sql.ref('p.id')).as('r'),
+        join => join.onRef('r.job_id', '=', 'page.sourceJobId'))
+      .leftJoin('ai_job_batches as b', 'b.id', 'r.batch_id')
+      .select([
       'p.id as productId', 'p.name', 'p.spec', 's.name as shopName', 'r.job_id as sourceJobId',
       'r.reason_code as reasonCode', 'r.reason', 'r.evidence', 'r.published_at as failedAt', 'b.error as requestError',
     ]);
-    type Candidate = Awaited<ReturnType<typeof candidates.execute>>[number];
+    type Candidate = Awaited<ReturnType<typeof details.execute>>[number];
     const result = await sql<Candidate & { total: number }>`
-      with candidates as materialized (${candidates}),
+      with unresolved as materialized (${unresolved}),
+      candidates as materialized (
+        select u.* from unresolved u join products p on p.id=u."productId"
+        where ${hasUsableOffer()} and not ${hasActiveStandardizationWork}
+      ),
       totals as (select count(*)::int as total from candidates),
       page as (
         select * from candidates ${input.afterId === undefined ? sql`` : sql`where "productId" > ${input.afterId}`}
         order by "productId" limit ${input.limit + 1}
       )
-      select page.*, totals.total from totals left join page on true order by page."productId"
+      select details.*, totals.total from totals left join (${details}) details on true order by details."productId"
     `.execute(tx);
     const total = result.rows[0]!.total;
     const rows = result.rows.filter(row => row.productId !== null).map(({ total: _total, ...row }) => row);

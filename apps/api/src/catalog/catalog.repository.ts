@@ -252,7 +252,7 @@ export class CatalogRepository {
   }
 
   priceHistory(id: string, productId?: string, currency = 'CNY', scope: Pick<CatalogQuery, 'membershipKinds' | 'newcomer'> = {}) {
-    return new PriceHistoryRepository(this.database, this.policy).get(id, productId, currency, scope);
+    return this.runRead(database => new PriceHistoryRepository(database, this.policy).get(id, productId, currency, scope));
   }
 
   async publicProducts(): Promise<PublicCatalogProducts> {
