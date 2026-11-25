@@ -323,7 +323,7 @@ describe('independent settlement expiry scheduling', () => {
     });
   }
 
-  test('newly published missing quotes are scheduled without waiting for another list', async () => {
+  test('newly published estimates are scheduled for real quotes without waiting for another list', async () => {
     const shop = await fixture();
     await db.updateTable('standard_product_members').set({ publication_state: 'provisional' }).execute();
     await db.updateTable('offers').set({ settlement_price: null, settlement_quantity: null, settlement_total_amount: null, settlement_verified_at: null, settlement_payment_method: null,
@@ -333,12 +333,15 @@ describe('independent settlement expiry scheduling', () => {
       assert.ok(String(url).endsWith('/goods/list'));
       return Response.json({ code: 1, data: { list: [{ goods_no: '0', name: 'Plus', price: 10, stock_available_quantity: 5 }] } });
     } })((await new JobsRepository(db).claimNext('fetch_run', 'list', 120000))!);
+    const offer = await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow();
+    assert.equal(offer.settlement_price, '10.60');
+    assert.equal(offer.settlement_kind, 'estimated');
     assert.equal(await enqueueDueSettlements(db), 0, 'unpublished products stay gated');
     await db.updateTable('standard_product_members').set({ publication_state: 'published' }).execute();
-    assert.equal(await enqueueDueSettlements(db), 1, 'publishing makes missing quotes eligible immediately');
+    assert.equal(await enqueueDueSettlements(db), 1, 'publishing makes real verification eligible immediately');
   });
 
-  test('changed minimum on an unpublished product schedules missing price now, not at its old expiry', async () => {
+  test('changed unpublished minimum immediately gets an estimate and schedules verification on publication', async () => {
     const shop = await fixture();
     await db.updateTable('standard_product_members').set({ publication_state: 'provisional' }).execute();
     await db.updateTable('offers').set({ settlement_verified_at: now }).execute();
@@ -348,7 +351,11 @@ describe('independent settlement expiry scheduling', () => {
       assert.ok(String(url).endsWith('/goods/list'));
       return Response.json({ code: 1, data: { list: [{ goods_no: '0', name: 'Plus', price: 10, stock_available_quantity: 5, limit_quantity: 5 }] } });
     } })((await new JobsRepository(db).claimNext('fetch_run', 'list', 120000))!);
-    assert.equal((await db.selectFrom('offers').select('settlement_price').executeTakeFirstOrThrow()).settlement_price, null);
+    const offer = await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow();
+    assert.equal(offer.settlement_price, '10.60');
+    assert.equal(offer.settlement_quantity, 5);
+    assert.equal(offer.settlement_total_amount, '53.00');
+    assert.equal(offer.settlement_kind, 'estimated');
     await db.insertInto('standard_product_members').values({
       product_id: member.product_id, standard_product_id: member.standard_product_id, publication_state: 'published',
     }).onConflict(c => c.column('product_id').doUpdateSet({ publication_state: 'published' })).execute();

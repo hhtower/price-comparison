@@ -103,6 +103,37 @@ describe('complete shop snapshot synchronization', () => {
     return (await new CatalogRepository(database).search({ tags: [], limit: 100 })).items.flatMap(item => item.offers.map(offer => offer.productId));
   };
 
+  test('new and unpublished listings persist estimates across price changes without checkout requests', async () => {
+    const s = await shop();
+    const requests: string[] = [];
+    let price = 10;
+    const handler = createCrawlerHandler(database, new ProductsRepository(database), {
+      fetchFactory: () => async url => {
+        const path = new URL(String(url)).pathname;
+        requests.push(path);
+        if (path.endsWith('/goods/list')) return Response.json({ code: 1, data: { list: [
+          { ...listing('unpublished', 'ChatGPT Plus', price), limit_quantity: 5, stock_available_quantity: 10 },
+        ] } });
+        if (path.endsWith('/shop/detail')) return Response.json({ code: 0 });
+        throw new Error(`unexpected checkout request: ${path}`);
+      },
+    });
+    for (const [listed, total] of [[10, '53.00'], [12, '63.60']] as const) {
+      price = listed;
+      await handler(await claim(s.id));
+      const offer = await database.selectFrom('offers').selectAll().where('product_id', 'in',
+        database.selectFrom('products').select('id').where('shop_id', '=', s.id)).executeTakeFirstOrThrow();
+      assert.equal(offer.settlement_total_amount, total);
+      assert.equal(offer.settlement_quantity, 5);
+      assert.equal(offer.settlement_kind, 'estimated');
+      assert.match(offer.settlement_payment_method!, /6%/);
+      assert.ok(offer.settlement_verified_at);
+    }
+    assert.ok(requests.every(path => /\/(goods\/list|shop\/detail)$/.test(path)));
+    assert.deepEqual(await database.selectFrom('standard_product_members').select('product_id').where('product_id', 'in',
+      database.selectFrom('products').select('id').where('shop_id', '=', s.id)).execute(), []);
+  });
+
   test('stock counts update without reclassifying products and reset when the source hides quantities', async () => {
     const s = await shop();
     await refresh(s.id, [{ ...listing('counted'), stock_available_quantity: 16 }]);
@@ -398,7 +429,7 @@ describe('complete shop snapshot synchronization', () => {
     await refresh(s.id, [listing('bulk-failure')]);
     const product = await publish(s.id, 'bulk-failure');
     await database.updateTable('offers').set({
-      settlement_price: '10.30', settlement_verified_at: new Date(), settlement_payment_method: 'Alipay',
+      settlement_price: '10.30', settlement_kind: 'verified', settlement_verified_at: new Date(), settlement_payment_method: 'Alipay',
       settlement_quantity: 1, settlement_total_amount: '10.30',
     }).where('product_id', '=', product.id).execute();
     const handler = createCrawlerHandler(database, new ProductsRepository(database), {
@@ -452,7 +483,7 @@ describe('complete shop snapshot synchronization', () => {
     assert.equal(report.listStatus, 'succeeded');
     assert.equal(report.failed, 1);
     assert.equal(report.retryable, 1);
-    assert.equal(report.estimated, 1);
+    assert.equal(report.estimated, 2);
     assert.equal(report.verified, 0);
     assert.equal(report.reasons.request_failed, 1);
     assert.equal(report.skipped, 1);
@@ -498,7 +529,7 @@ describe('complete shop snapshot synchronization', () => {
     await refresh(s.id, [listing('fresh-failure')]);
     const product = await publish(s.id, 'fresh-failure');
     const verifiedAt = new Date(Date.now() - 2000);
-    await database.updateTable('offers').set({ settlement_price: '10.30', settlement_quantity: 1, settlement_total_amount: '10.30', settlement_verified_at: verifiedAt, settlement_payment_method: 'Alipay' })
+    await database.updateTable('offers').set({ settlement_price: '10.30', settlement_kind: 'verified', settlement_quantity: 1, settlement_total_amount: '10.30', settlement_verified_at: verifiedAt, settlement_payment_method: 'Alipay' })
       .where('product_id', '=', product.id).execute();
     await createCrawlerHandler(database, new ProductsRepository(database), {
       fetchFactory: () => async url => {
@@ -741,7 +772,7 @@ describe('complete shop snapshot synchronization', () => {
       const queue = await database.selectFrom('fetch_runs').selectAll().where('source_fetch_run_id', '=', listJob.id).executeTakeFirstOrThrow();
       if (change === 'source') await database.updateTable('shops').set({ url: 'https://www.16688.com.cn/shop/changed' }).where('id', '=', s.id).execute();
       if (change === 'product') await database.updateTable('products').set({ content_version: sql`content_version + 1` }).where('id', '=', product.id).execute();
-      if (change === 'newer-quote') await database.updateTable('offers').set({ settlement_price: '9.99', settlement_total_amount: '9.99', settlement_verified_at: new Date(), settlement_payment_method: 'Alipay' }).where('product_id', '=', product.id).execute();
+      if (change === 'newer-quote') await database.updateTable('offers').set({ settlement_price: '9.99', settlement_kind: 'verified', settlement_total_amount: '9.99', settlement_verified_at: new Date(), settlement_payment_method: 'Alipay' }).where('product_id', '=', product.id).execute();
       phase = 'retry';
       await database.updateTable('fetch_runs').set({ available_at: new Date(0) }).where('id', '=', queue.id).execute();
       const retry = (await new JobsRepository(database).claimNext('fetch_run', 'retry-test', 120000))!;
@@ -860,7 +891,8 @@ describe('complete shop snapshot synchronization', () => {
         settlement_price: price, settlement_quantity: 1, settlement_total_amount: price, settlement_verified_at: new Date(), settlement_payment_method: 'Alipay',
       }).where('product_id', '=', product.id).execute(), error => ['23514', '22003'].includes((error as { code: string }).code));
     }
-    await assert.rejects(database.updateTable('offers').set({ settlement_price: '98.00', settlement_quantity: 1, settlement_total_amount: '98.00' })
+    await assert.rejects(database.updateTable('offers').set({ settlement_price: '98.00', settlement_quantity: 1,
+      settlement_total_amount: '98.00', settlement_verified_at: null, settlement_payment_method: null })
       .where('product_id', '=', product.id).execute(), error => (error as { code: string }).code === '23514');
     await database.updateTable('offers').set({ settlement_price: '999999999999.99', settlement_quantity: 1, settlement_total_amount: '999999999999.99', settlement_verified_at: new Date(), settlement_payment_method: 'Alipay' })
       .where('product_id', '=', product.id).execute();
@@ -1211,7 +1243,7 @@ describe('complete shop snapshot synchronization', () => {
     const s = await shop();
     await refresh(s.id, [listing('cached-failure')]);
     const product = await publish(s.id, 'cached-failure');
-    await database.updateTable('offers').set({ settlement_price: '10.00', settlement_quantity: 1, settlement_total_amount: '10.00', settlement_verified_at: new Date(), settlement_payment_method: 'alipay' }).where('product_id', '=', product.id).execute();
+    await database.updateTable('offers').set({ settlement_price: '10.00', settlement_kind: 'verified', settlement_quantity: 1, settlement_total_amount: '10.00', settlement_verified_at: new Date(), settlement_payment_method: 'alipay' }).where('product_id', '=', product.id).execute();
     const values = new Map<string, unknown>();
     const service = new CatalogService(new CatalogRepository(database), createCache({ stores: [new Keyv({ store: values })], ttl: 30_000 }));
     const query = { search: `standard-${sequence}`, limit: 100 };

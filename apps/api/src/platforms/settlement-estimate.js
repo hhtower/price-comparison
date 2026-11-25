@@ -17,9 +17,8 @@ export function estimateSettlement(_shop, product, quantity, fees) {
 export function withSettlementEstimates(adapter) {
   const canVerifySettlement = adapter.canVerifySettlement ?? Boolean(adapter.settle);
   const quantity = adapter.estimatePurchaseQuantity ?? adapter.purchaseQuantity ?? (() => 1);
-  const eligible = (product, options) => product.inStock && quantity(product) !== undefined
-    && (!options.settlementProductIds || options.settlementProductIds.has(String(product.externalId)))
-    && (!options.needsSettlement || options.needsSettlement(product, quantity(product)));
+  // Checkout selection and freshness must not leave a listing without an estimate.
+  const eligible = product => product.inStock && quantity(product) !== undefined;
   function feeReader(shop, fetchImpl = globalThis.fetch) {
     const origin = new URL(shop.url).origin, fees = new Map();
     let attempted = false;
@@ -36,7 +35,7 @@ export function withSettlementEstimates(adapter) {
       }
       return response;
     }, async readMissing(products, options) {
-      if (path && !attempted && products.some(product => !product.settlement && eligible(product, options))) {
+      if (path && !attempted && products.some(product => !product.settlement && eligible(product))) {
         await this.fetch(new URL(path, shop.url).href, { headers: { accept: 'application/json' }, redirect: 'error', signal: options.signal }).catch(() => {});
         options.signal?.throwIfAborted();
       }
@@ -44,9 +43,10 @@ export function withSettlementEstimates(adapter) {
   }
   async function finish(shop, products, options, outcomes, reader) {
     options.signal?.throwIfAborted();
-    const candidates = products.filter(product => eligible(product, options)
+    const candidates = products.filter(product => eligible(product)
       && !['out_of_stock', 'product_unavailable'].includes(outcomes.get(String(product.externalId))?.reason));
-    await reader.readMissing(candidates.filter(product => outcomes.get(String(product.externalId))?.status !== 'failed'), options);
+    const blocked = [...outcomes.values()].some(result => ['blocked', 'proxy_authentication'].includes(result.reason));
+    if (!blocked) await reader.readMissing(candidates.filter(product => outcomes.get(String(product.externalId))?.status !== 'failed'), options);
     for (const product of candidates) {
       const externalId = String(product.externalId), count = quantity(product);
       let fees = reader.fees.get(adapter.settlementFeeKey?.(product) ?? '') ?? reader.fees.get('');

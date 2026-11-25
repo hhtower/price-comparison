@@ -118,7 +118,9 @@ test('runtime retries prefer real quotes and estimate failed or deferred prices 
   assert.equal(items[0].settlement.price, '109.00');
   assert.equal(items[1].settlement.price, '106.00');
   assert.equal(items[2].settlement.price, '106.00');
-  assert.ok(items.slice(3).every(p => !p.settlement));
+  assert.equal(items[3].settlement?.price, '106.00');
+  assert.equal(items[4].settlement, undefined);
+  assert.equal(items[5].settlement?.price, '106.00');
   assert.equal(outcomes.filter(r => r.status === 'verified').length, 1);
   assert.deepEqual(outcomes.find(r => r.externalId === 'failed'), {
     externalId: 'failed', status: 'failed', reason: 'request_failed', retryable: true, estimated: true,
@@ -126,6 +128,59 @@ test('runtime retries prefer real quotes and estimate failed or deferred prices 
   assert.deepEqual(outcomes.find(r => r.externalId === 'deferred'), {
     externalId: 'deferred', status: 'skipped', reason: 'deferred', retryable: false, estimated: true,
   });
+});
+
+for (const entry of ['crawl', 'settle']) test(`${entry} estimates unselected and recently verified items without expanding checkout requests`, async () => {
+  const items = ['selected', 'new', 'cached', 'sold'].map(externalId =>
+    product({ externalId, inStock: externalId !== 'sold' }));
+  const requested = [], outcomes = [];
+  const settle = (_shop, products, _fetch, options) => collectSettlements(products, {
+    quantity: () => 1,
+    channel: async () => ({ show_name: 'Alipay' }),
+    quote: async item => {
+      requested.push(item.externalId);
+      return { code: 1, data: { total_amount: '101.00' } };
+    },
+  }, options);
+  const adapter = estimates.withSettlementEstimates({ id: 'fixture', settle,
+    crawl: (_page, shop, fetchImpl, options) => settle(shop, items, fetchImpl, options) });
+  const options = {
+    settlementProductIds: new Set(['selected', 'cached']),
+    needsSettlement: item => item.externalId !== 'cached',
+    onSettlementResult: result => outcomes.push(result),
+  };
+  const fetchImpl = () => assert.fail('fallback must not make checkout requests');
+  if (entry === 'crawl') await adapter.crawl(null, shop, fetchImpl, options);
+  else await adapter.settle(shop, items, fetchImpl, options);
+  assert.deepEqual(requested, ['selected']);
+  assert.equal(items[0].settlement.price, '101.00');
+  for (const item of items.slice(1, 3)) {
+    assert.equal(item.settlement?.price, '106.00');
+    assert.equal(item.settlement.kind, 'estimated');
+  }
+  assert.equal(items[3].settlement, undefined);
+  for (const [externalId, reason] of [['new', 'not_selected'], ['cached', 'recently_verified']]) {
+    assert.deepEqual(outcomes.find(row => row.externalId === externalId),
+      { externalId, status: 'skipped', reason, retryable: false, estimated: true });
+  }
+});
+
+test('unselected estimates still use public fees and purchase quantities', async () => {
+  const items = [product(), product({ externalId: '2' })], requests = [];
+  const adapter = estimates.withSettlementEstimates({ ...publicFeeConfig, id: 'fixture',
+    purchaseQuantity: () => 5, crawl: async () => items });
+  await adapter.crawl(null, shop, async url => {
+    requests.push(new URL(url).pathname);
+    return Response.json({ status_code: 0, data: { currency: 'CNY', payment_channels: [
+      { name: 'Alipay', channel_type: 'alipay', fee_rate: '0' },
+    ] } });
+  }, { settlementProductIds: new Set(), needsSettlement: () => false });
+  assert.deepEqual(requests, ['/api/v1/public/config']);
+  for (const item of items) {
+    assert.equal(item.settlement?.totalAmount, '500.00');
+    assert.equal(item.settlement.quantity, 5);
+    assert.equal(item.settlement.kind, 'estimated');
+  }
 });
 
 test('list-only protocols get estimates in both full crawls and independent retries', async () => {
@@ -282,18 +337,19 @@ for (const phase of ['channel', 'quote']) test(`fallback preserves native ${phas
 
 for (const reason of ['blocked', 'proxy_authentication']) test(`Next detail ${reason} stops fallback configuration requests`, async () => {
   const shop = { url: 'https://morimm.com' }, calls = [], outcomes = [];
-  const items = ['1', '2'].map(id => product({ externalId: `${id}:1`, url: `${shop.url}/products/plus-${id}` }));
+  const items = ['1', '2', 'new'].map(id => product({ externalId: `${id}:1`, url: `${shop.url}/products/plus-${id}` }));
   await platformForUrl(shop.url, 'public-products-v1').settle(shop, items, async url => {
     calls.push(new URL(url).pathname);
     if (reason === 'blocked') return new Response('', { status: 403 });
     throw Object.assign(new Error('proxy credentials rejected'), { name: 'ProxyAuthenticationError' });
-  }, { onSettlementResult: result => outcomes.push(result) });
+  }, { settlementProductIds: new Set(['1:1', '2:1']), onSettlementResult: result => outcomes.push(result) });
   assert.deepEqual(calls, ['/api/v1/public/products/plus-1']);
   assert.ok(items.every(item => item.settlement?.totalAmount === '106.00'));
-  assert.deepEqual(outcomes, items.map(item => ({
+  assert.deepEqual(outcomes, [{ externalId: 'new:1', status: 'skipped', reason: 'not_selected', retryable: false, estimated: true },
+    ...items.slice(0, 2).map(item => ({
     externalId: item.externalId, status: 'failed', reason,
     retryable: reason === 'blocked', estimated: true,
-  })));
+  }))]);
 });
 
 test('failed attempts do not trigger fallback fee reads, while deferred attempts may still read public fees', async () => {
