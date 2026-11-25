@@ -28,12 +28,15 @@ test('an adapter owns fee parsing and product keys for an unrelated protocol', a
   assert.deepEqual(items.map(item => item.settlement.price), ['101.00', '102.50']);
 });
 
-test('unknown payment costs fall back to the listed price with exact cent arithmetic', () => {
+test('unknown payment costs add six percent once to the order total with exact cent arithmetic', () => {
   const quote = estimates.estimateSettlement(shop, product({ price: '0.05' }), 10);
-  assert.equal(quote.totalAmount, '0.50');
-  assert.equal(quote.price, '0.05');
+  assert.equal(quote.totalAmount, '0.53');
+  assert.equal(quote.price, '0.053');
   assert.equal(quote.quantity, 10);
-  assert.match(quote.paymentMethod, /预估.*售价/);
+  assert.match(quote.paymentMethod, /预估.*6%/);
+  assert.equal(quote.kind, 'estimated');
+  assert.equal(estimates.estimateSettlement(shop, product({ price: '0.25' }), 1).totalAmount, '0.27');
+  assert.equal(estimates.estimateSettlement(shop, product({ price: '999999999999.99' }), 1), undefined);
   for (const price of ['-1', 'NaN', '1e3', '1.001', '1000000000000.00']) {
     assert.equal(estimates.estimateSettlement(shop, product({ price }), 1), undefined, price);
   }
@@ -44,11 +47,11 @@ test('unknown payment costs fall back to the listed price with exact cent arithm
 
 test('an explicit empty live fee set cannot reuse remembered fees from an unavailable channel', () => {
   const source = { url: 'https://kkfaka.xyz/' };
-  assert.equal(estimates.estimateSettlement(source, product(), 1).totalAmount, '105.00');
+  assert.equal(estimates.estimateSettlement(source, product(), 1).totalAmount, '106.00');
   const quote = estimates.estimateSettlement(source, product(), 1, []);
-  assert.equal(quote.totalAmount, '100.00');
+  assert.equal(quote.totalAmount, '106.00');
   assert.equal(quote.kind, 'estimated');
-  assert.match(quote.paymentMethod, /手续费未知/);
+  assert.match(quote.paymentMethod, /6%/);
 });
 
 test('live product channel restrictions invalidate an earlier remembered fee estimate', async () => {
@@ -59,29 +62,41 @@ test('live product channel restrictions invalidate an earlier remembered fee est
     readSettlementFees: () => ({ key: '', fees: [{ channelId: 1, min: 0n, max: 0n, cost: () => 500n, label: 'Alipay' }] }),
     async crawl(_page, shop, fetchImpl) {
       await fetchImpl(new URL('/fees', shop.url));
-      return [{ ...product(), settlement: estimates.estimateSettlement(shop, product(), 1) }];
+      return [{ ...product(), settlement: { ...estimates.estimateSettlement(shop, product(), 1),
+        price: '105.00', totalAmount: '105.00', paymentMethod: '旧规则 5%' } }];
     },
   });
   const [row] = await adapter.crawl(null, source, async () => Response.json({}));
-  assert.equal(row.settlement.totalAmount, '100.00');
+  assert.equal(row.settlement.totalAmount, '106.00');
   assert.equal(row.settlement.kind, 'estimated');
-  assert.match(row.settlement.paymentMethod, /手续费未知/);
+  assert.match(row.settlement.paymentMethod, /6%/);
 });
 
-test('confirmed and published rates override the default and morimm uses the order total boundary', () => {
+test('unpublished fees use six percent regardless of historical shop rules or order thresholds', () => {
   for (const [host, price, quantity, total] of [
-    ['kapay.shop', '100', 1, '100.00'], ['shop.txyxt.dpdns.org', '100', 1, '100.00'],
-    ['gpthub.ciyuanapi.ai', '100', 1, '100.00'], ['shop.aictk.shop', '100', 1, '100.00'],
-    ['shop.callai.one', '100', 1, '101.60'], ['tehuio.com', '100', 1, '105.00'],
-    ['fk.10886.xyz', '100', 1, '106.00'], ['cccrad.uk', '100', 1, '102.95'],
-    ['morimm.com', '250', 2, '520.00'], ['morimm.com', '250.01', 2, '500.02'],
-    ['ultra.makelove.cloud', '100', 1, '101.50'], ['shopcardai.click', '110', 1, '116.60'],
+    ['kapay.shop', '100', 1, '106.00'], ['shop.txyxt.dpdns.org', '100', 1, '106.00'],
+    ['gpthub.ciyuanapi.ai', '100', 1, '106.00'], ['shop.aictk.shop', '100', 1, '106.00'],
+    ['shop.callai.one', '100', 1, '106.00'], ['tehuio.com', '100', 1, '106.00'],
+    ['fk.10886.xyz', '100', 1, '106.00'], ['cccrad.uk', '100', 1, '106.00'],
+    ['morimm.com', '250', 2, '530.00'], ['morimm.com', '250.01', 2, '530.02'],
+    ['ultra.makelove.cloud', '100', 1, '106.00'], ['shopcardai.click', '110', 1, '116.60'],
   ]) {
     const quote = estimates.estimateSettlement({ url: `https://${host}/` }, product({ price }), quantity);
     assert.equal(quote?.totalAmount, total, host);
     assert.match(quote.paymentMethod, /预估/);
   }
-  assert.equal(estimates.estimateSettlement({ url: 'https://kapay.shop.evil/' }, product(), 1).price, '100.00');
+  assert.equal(estimates.estimateSettlement({ url: 'https://kapay.shop.evil/' }, product(), 1).price, '106.00');
+});
+
+test('public fees including zero override the default six percent', () => {
+  for (const [fee, expected] of [[0n, '100.00'], [400n, '104.00']]) {
+    const quote = estimates.estimateSettlement(shop, product(), 1, [{
+      min: 0n, max: 0n, cost: () => fee, label: 'Published fee',
+    }]);
+    assert.equal(quote.totalAmount, expected);
+    assert.equal(quote.kind, 'estimated');
+    assert.match(quote.paymentMethod, /Published fee/);
+  }
 });
 
 test('runtime retries prefer real quotes and estimate failed or deferred prices without extra requests', async () => {
@@ -101,8 +116,8 @@ test('runtime retries prefer real quotes and estimate failed or deferred prices 
     needsSettlement: p => p.externalId !== 'cached', onSettlementResult: r => outcomes.push(r),
   });
   assert.equal(items[0].settlement.price, '109.00');
-  assert.equal(items[1].settlement.price, '100.00');
-  assert.equal(items[2].settlement.price, '100.00');
+  assert.equal(items[1].settlement.price, '106.00');
+  assert.equal(items[2].settlement.price, '106.00');
   assert.ok(items.slice(3).every(p => !p.settlement));
   assert.equal(outcomes.filter(r => r.status === 'verified').length, 1);
   assert.deepEqual(outcomes.find(r => r.externalId === 'failed'), {
@@ -121,10 +136,10 @@ test('list-only protocols get estimates in both full crawls and independent retr
   assert.equal(adapter.canVerifySettlement, false);
   const outcomes = [], options = { onSettlementResult: result => outcomes.push(result) };
   const [listed] = await adapter.crawl(null, shop, undefined, options);
-  assert.equal(listed.settlement.totalAmount, '500.00');
+  assert.equal(listed.settlement.totalAmount, '530.00');
   assert.equal(listed.settlement.quantity, 5);
   const [retried] = await adapter.settle(shop, [product()], undefined, options);
-  assert.equal(retried.settlement.price, '100.00');
+  assert.equal(retried.settlement.price, '106.00');
   assert.deepEqual(outcomes, [
     { externalId: '1', status: 'estimated', reason: 'verification_unsupported', retryable: false, estimated: true },
     { externalId: '1', status: 'estimated', reason: 'verification_unsupported', retryable: false, estimated: true },
@@ -211,8 +226,8 @@ test('Prism has no verification capability but still computes estimates during l
     return Response.json({ products: [{ id: 3, name: 'Plus', price: 680000, stock: 25 }] });
   }, { cnyPerUsd: '0.1400', onSettlementResult: result => outcomes.push(result) });
   assert.deepEqual(calls, ['https://shop.558686.xyz/api/catalog']);
-  assert.equal(item.settlement.price, '4.86');
-  assert.equal(item.settlement.paymentMethod, 'USDT 汇率折算（预估）');
+  assert.equal(item.settlement.price, '5.15');
+  assert.equal(item.settlement.paymentMethod, 'USDT 汇率折算（预估：含6%手续费）');
   assert.deepEqual(outcomes, [
     { externalId: '3', status: 'estimated', reason: 'verification_unsupported', retryable: false, estimated: true },
   ]);
@@ -243,7 +258,7 @@ for (const entry of ['crawl', 'settle']) test(`${entry} preserves deferred outco
     { externalId: '5', status: 'skipped', reason: 'deferred', retryable: false, estimated: true },
     { externalId: '6', status: 'skipped', reason: 'deferred', retryable: false, estimated: true },
   ]);
-  assert.ok(result.slice(5).every(item => item.settlement.price === '100.00'));
+  assert.ok(result.slice(5).every(item => item.settlement.price === '106.00'));
 });
 
 for (const phase of ['channel', 'quote']) test(`fallback preserves native ${phase} request failures and their retry policy`, async () => {
@@ -260,7 +275,7 @@ for (const phase of ['channel', 'quote']) test(`fallback preserves native ${phas
       }
       throw Object.assign(new Error('request failure'), { name });
     }, { onSettlementResult: result => outcomes.push(result) });
-    assert.equal(items[0].settlement.price, '100.00');
+    assert.equal(items[0].settlement.price, '106.00');
     assert.deepEqual(outcomes, [{ externalId: '1', status: 'failed', reason, retryable, estimated: true }]);
   }
 });
@@ -274,7 +289,7 @@ for (const reason of ['blocked', 'proxy_authentication']) test(`Next detail ${re
     throw Object.assign(new Error('proxy credentials rejected'), { name: 'ProxyAuthenticationError' });
   }, { onSettlementResult: result => outcomes.push(result) });
   assert.deepEqual(calls, ['/api/v1/public/products/plus-1']);
-  assert.ok(items.every(item => item.settlement?.totalAmount === '104.00'));
+  assert.ok(items.every(item => item.settlement?.totalAmount === '106.00'));
   assert.deepEqual(outcomes, items.map(item => ({
     externalId: item.externalId, status: 'failed', reason,
     retryable: reason === 'blocked', estimated: true,
@@ -283,7 +298,7 @@ for (const reason of ['blocked', 'proxy_authentication']) test(`Next detail ${re
 
 test('failed attempts do not trigger fallback fee reads, while deferred attempts may still read public fees', async () => {
   for (const [status, reason, expectedCalls, expectedPrice] of [
-    ['failed', 'request_failed', 0, '100.00'],
+    ['failed', 'request_failed', 0, '106.00'],
     ['skipped', 'deferred', 1, '102.50'],
   ]) {
     const item = product(), calls = [], outcomes = [];
@@ -384,7 +399,7 @@ test('EMShop minimums and Orion purchase steps are retained in estimated totals'
     const item = product({ sourceData });
     await platformForUrl(url, id).settle({ url }, [item]);
     assert.equal(item.settlement.quantity, 5);
-    assert.equal(item.settlement.totalAmount, '500.00');
+    assert.equal(item.settlement.totalAmount, '530.00');
   }
 });
 
@@ -435,7 +450,7 @@ test('public ACG item-specific fee labels override global channels and unknown n
   ]}));
   assert.equal(items[0].settlement.price,'3.38');
   assert.match(items[0].settlement.paymentMethod,/网页/);
-  assert.equal(items[1].settlement.price,'3.19');
+  assert.equal(items[1].settlement.price,'3.38');
   assert.match(items[1].settlement.paymentMethod,/预估.*售价/);
 });
 
@@ -460,7 +475,7 @@ test('public fee estimates reject disabled, invalid, foreign-currency and out-of
   ].map(fields => ({ name: '支付宝', channel_type: 'alipay', fee_rate: '0', ...fields }));
   const item = product();
   await adapter.settle(shop, [item], async () => Response.json({ status_code: 0, data: { currency: 'CNY', payment_channels: channels } }));
-  assert.equal(item.settlement.price, '100.00');
+  assert.equal(item.settlement.price, '106.00');
   assert.match(item.settlement.paymentMethod, /预估.*售价/);
   const controller = new AbortController();
   await assert.rejects(adapter.settle(shop, [product()], async () => {
@@ -470,7 +485,7 @@ test('public fee estimates reject disabled, invalid, foreign-currency and out-of
 
 test('Next public fee estimates honor the product allowed-channel list', async () => {
   const adapter = estimates.withSettlementEstimates({ ...publicFeeConfig, id: 'public-products-v1', hosts: [] });
-  for (const [allowed, expected] of [[[2], '106.00'], [[], '100.00'], [['2'], '100.00']]) {
+  for (const [allowed, expected] of [[[2], '106.00'], [[], '100.00'], [['2'], '106.00']]) {
     const item = product({ sourceData: { payment_channel_ids: allowed } });
     await adapter.settle(shop, [item], async () => Response.json({ status_code: 0, data: { currency: 'CNY', payment_channels: [
       { id: 1, name: '支付宝零费率', channel_type: 'alipay', fee_rate: '0' },

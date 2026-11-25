@@ -201,13 +201,14 @@ test('Next accepts only exact Epay configurations whose unpaid checkouts confirm
   }
 });
 
-test('Next estimates the user-authorized shops from fresh public prices without login or delivery fields', async () => {
+test('Next estimates eligible shops at the shared default without historical rates or large-order waivers', async () => {
   for (const [host, listed, quantity, expected] of [
-    ['morimm.com', '1.00', 1, '1.04'], ['morimm.com', '499.99', 1, '519.99'],
-    ['morimm.com', '500.00', 1, '520.00'], ['morimm.com', '500.01', 1, '500.01'],
-    ['morimm.com', '250.00', 2, '520.00'], ['morimm.com', '250.01', 2, '500.02'],
-    ['blog.esfine.chat', '111.00', 1, '112.78'], ['tghaopifa.cc', '111.00', 1, '115.44'],
-    ['ultra.makelove.cloud', '111.00', 1, '112.67'], ['kapay.shop', '111.00', 1, '111.00'],
+    ['morimm.com', '1.00', 1, '1.06'], ['morimm.com', '499.99', 1, '529.99'],
+    ['morimm.com', '500.00', 1, '530.00'], ['morimm.com', '500.01', 1, '530.01'],
+    ['morimm.com', '250.00', 2, '530.00'], ['morimm.com', '250.01', 2, '530.02'],
+    ['blog.esfine.chat', '111.00', 1, '117.66'], ['tghaopifa.cc', '111.00', 1, '117.66'],
+    ['ultra.makelove.cloud', '111.00', 1, '117.66'], ['kapay.shop', '111.00', 1, '117.66'],
+    ['kapay.shop', '0.05', 3, '0.16'],
   ]) {
     const f = fixture({ url: `https://${host}`, quantity,
       version: host === 'ultra.makelove.cloud' ? 'v1.4.3-fastguard-defense-mailgw-gateway-20261017' : 'v1.5.0',
@@ -217,6 +218,8 @@ test('Next estimates the user-authorized shops from fresh public prices without 
     const [product] = await f.run();
     assert.equal(product.settlement?.totalAmount, expected, `${host} ${listed} x ${quantity}`);
     assert.equal(product.settlement?.quantity, quantity);
+    assert.equal(product.settlement?.kind, 'estimated');
+    assert.equal(f.reports[0].status, 'estimated');
     assert.match(product.settlement?.paymentMethod ?? '', /预估/);
     assert.equal(f.calls.some(call => call.init.method === 'POST'), false);
   }
@@ -243,7 +246,7 @@ test('Next shop estimates retain origin, CNY, identity, quantity and stock fence
 test('Next shop estimates work in full crawls and honor cache, selection, batches and aborts', async () => {
   const f = fixture({ url: 'https://kapay.shop', detail: { purchase_type: 'member' } });
   const [product] = await platform.crawl(null, { url: 'https://kapay.shop' }, f.fetchImpl);
-  assert.equal(product.settlement?.totalAmount, '111.00');
+  assert.equal(product.settlement?.totalAmount, '117.66');
   for (const options of [{ settlementProductIds: new Set() }, { needsSettlement: () => false }]) {
     const cached = fixture({ url: 'https://kapay.shop' });
     await cached.run(options);
@@ -266,6 +269,17 @@ test('registered Next estimates filter live product channel restrictions before 
   const [product] = await withSettlementEstimates(platform).crawl(null, { url: 'https://morimm.com' }, f.fetchImpl);
   assert.equal(product.settlement.totalAmount, '117.66');
   assert.match(product.settlement.paymentMethod, /商品可用渠道 6%/);
+});
+
+test('registered Next estimates prefer public fees including explicit zero over the shared default', async () => {
+  for (const [rate, expected] of [['0', '111.00'], ['2', '113.22']]) {
+    const f = fixture({ url: 'https://kapay.shop', detail: { purchase_type: 'member' }, rate });
+    const [product] = await withSettlementEstimates(platform).crawl(null, { url: 'https://kapay.shop' }, f.fetchImpl);
+    assert.equal(product.settlement.totalAmount, expected);
+    assert.equal(product.settlement.kind, 'estimated');
+    assert.match(product.settlement.paymentMethod, /网页渠道/);
+    assert.ok(f.calls.every(call => call.init.method !== 'POST'));
+  }
 });
 
 test('Next estimates exclude crypto channels disguised as Alipay before choosing the cheapest fee', async () => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { crawl, probe } from '../src/platforms/acg-faka.js';
 import * as acg from '../src/platforms/acg-faka.js';
 import { normalizeProductEvidence } from '../src/standardization/fingerprint.js';
+import { withSettlementEstimates } from '../src/platforms/settlement-estimate.js';
 
 const shop = { url: 'https://douyiner.cn/' };
 const listing = (id = 17) => ({ id, name: 'GPT成品账号免费版', cover: '/cover.png', status: 1,
@@ -117,15 +118,23 @@ for (const [channels, reason] of [
   assert.equal(outcomes[0].retryable, false);
 });
 
-test('ACG user-confirmed fees are limited to the exact origin and observed payment channel', async () => {
+test('ACG historical fees cannot verify a quote and registered shops use the shared estimate', async () => {
   for (const [host, channel, listed, total] of [
-    ['yufenggpt.com', { id: 7, name: '支付宝', handle: 'Epay' }, '5.00', '5.00'],
+    ['yufenggpt.com', { id: 7, name: '支付宝', handle: 'Epay' }, '5.00', '5.30'],
     ['shopcardai.click', { id: 2, name: '支付宝', handle: 'Epay' }, '110.00', '116.60'],
-    ['nikoers.com', { id: 2, name: '支付宝', handle: 'Epay' }, '3.00', '3.12'],
-    ['fk.gptcz.cc', { id: 10, name: '支付宝', handle: 'Alipay' }, '50.00', '51.80'],
+    ['nikoers.com', { id: 2, name: '支付宝', handle: 'Epay' }, '3.00', '3.18'],
+    ['fk.gptcz.cc', { id: 10, name: '支付宝', handle: 'Alipay' }, '50.00', '53.00'],
   ]) {
-    const [product] = await crawl(null, { url: `https://${host}/` }, api({ price: listed, channels: [channel] }));
+    const source = { url: `https://${host}/` }, reports = [];
+    const [native] = await crawl(null, source, api({ price: listed, channels: [channel] }),
+      { onSettlementResult: row => reports.push(row) });
+    assert.equal(native.settlement, undefined, host);
+    assert.equal(reports[0].reason, 'payment_fee_unknown');
+    const [product] = await withSettlementEstimates(acg.default).crawl(null, source, api({ price: listed, channels: [channel] }),
+      { onSettlementResult: row => reports.push(row) });
     assert.equal(product.settlement?.totalAmount, total, host);
+    assert.equal(product.settlement.kind, 'estimated');
+    assert.ok(reports.every(row => row.status !== 'verified'));
     for (const changes of [{ id: 99 }, { name: '微信支付' }, { handle: 'Other' }, { currency: 'USD' }, { status: 0 }, { cost: '-1', cost_type: 1 }]) {
       const [rejected] = await crawl(null, { url: `https://${host}/` }, api({ channels: [{ ...channel, ...changes }] }));
       assert.equal(rejected.settlement, undefined, `${host} ${JSON.stringify(changes)}`);
@@ -135,16 +144,22 @@ test('ACG user-confirmed fees are limited to the exact origin and observed payme
   }
 });
 
-test('confirmed ACG percentages follow source cent truncation and yield to fresh explicit public fees', async () => {
-  const confirmedShop = { url: 'https://nikoers.com/' }, channel = { id: 2, name: '支付宝', handle: 'Epay' };
-  const [fraction] = await crawl(null, confirmedShop, api({ price: '3.13', channels: [channel] }));
+test('ACG public fees retain source cent truncation and explicit zero remains verified', async () => {
+  const source = { url: 'https://nikoers.com/' }, channel = { id: 2, name: '支付宝', handle: 'Epay' };
+  const [fraction] = await withSettlementEstimates(acg.default).crawl(null, source,
+    api({ price: '3.13', channels: [{ ...channel, cost_type: 1, cost: '0.04' }] }));
   assert.equal(fraction.settlement?.totalAmount, '3.25');
-  const [updated] = await crawl(null, confirmedShop, api({ price: '3.00', channels: [{ ...channel, cost_type: 1, cost: '0.05' }] }));
-  assert.equal(updated.settlement?.totalAmount, '3.15');
+  assert.equal(fraction.settlement.kind, 'verified');
+  for (const [cost, expected] of [['0.05', '3.15'], ['0', '3.00']]) {
+    const [updated] = await withSettlementEstimates(acg.default).crawl(null, source,
+      api({ price: '3.00', channels: [{ ...channel, cost_type: 1, cost }] }));
+    assert.equal(updated.settlement?.totalAmount, expected);
+    assert.equal(updated.settlement.kind, 'verified');
+  }
 });
 
 test('shopcardai estimates member goods from guest valuation while other ACG shops still require eligibility', async () => {
-  const channels = [{ id: 2, name: '支付宝', handle: 'Epay' }];
+  const channels = [{ id: 2, name: '支付宝', handle: 'Epay', cost_type: 1, cost: '0.06' }];
   const fetchImpl = api({ product: detail({ only_user: 1 }), price: '110.00', channels });
   const [product] = await crawl(null, { url: 'https://shopcardai.click/' }, fetchImpl);
   assert.equal(product.settlement?.totalAmount, '116.60');
@@ -157,6 +172,21 @@ test('shopcardai estimates member goods from guest valuation while other ACG sho
     const [other] = await crawl(null, { url }, fetchImpl);
     assert.equal(other.settlement, undefined);
   }
+});
+
+test('shopcardai member goods without public fees use registered estimates for crawl and supplemental quotes', async () => {
+  const source = { url: 'https://shopcardai.click/' }, wrapped = withSettlementEstimates(acg.default);
+  const fetchImpl = api({ product: detail({ only_user: 1, minimum: 3 }), price: '0.05',
+    channels: [{ id: 2, name: '支付宝', handle: 'Epay' }] });
+  const [product] = await wrapped.crawl(null, source, fetchImpl);
+  assert.equal(product.settlement?.totalAmount, '0.16');
+  assert.equal(product.settlement?.quantity, 3);
+  assert.equal(product.settlement?.kind, 'estimated');
+  const persisted = { ...product, ...normalizeProductEvidence(product) };
+  delete persisted.settlement;
+  await wrapped.settle(source, [persisted], fetchImpl);
+  assert.equal(persisted.settlement?.totalAmount, '0.16');
+  assert.equal(persisted.settlement?.kind, 'estimated');
 });
 
 test('acg-faka uses the minimum quantity and selected SKU, choosing the lowest supported channel total', async () => {

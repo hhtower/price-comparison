@@ -3,6 +3,7 @@ import { collectSettlements, minimumPurchaseQuantity, settlementJson, settlement
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeProductEvidence } from '../standardization/fingerprint.js';
 import { specificationText } from '../products/product-spec.js';
+import { estimateSettlement } from './settlement-estimate.js';
 
 export const id = 'public-products-v1';
 const PAGE_SIZE = 12;
@@ -182,14 +183,10 @@ const SUPPORTED_VERSIONS = new Set([...LEGACY_VERSIONS, 'v1.4.6', 'v1.4.7', 'v1.
 const VERIFIED_EPAY_CHECKOUTS = {
   'https://kkfaka.xyz': { version: 'v1.5.0', id: 4, policy: 'customer_surcharge', rate: '5.00', fixed: '0.00' },
 };
-// shortcut: Authorized public-price estimates exclude discounts and FX; replace with final checkout evidence when available.
-const ESTIMATED_FEES = {
-  'https://morimm.com': 400n,
-  'https://blog.esfine.chat': 160n,
-  'https://tghaopifa.cc': 400n,
-  'https://ultra.makelove.cloud': 150n,
-  'https://kapay.shop': 0n,
-};
+const ESTIMATE_ENABLED_SHOPS = new Set([
+  'https://morimm.com', 'https://blog.esfine.chat', 'https://tghaopifa.cc',
+  'https://ultra.makelove.cloud', 'https://kapay.shop',
+]);
 function cents(value) {
   if (!['number', 'string'].includes(typeof value) || !/^\d{1,12}(?:\.\d{1,2})?$/.test(String(value))) return undefined;
   const [integer, fraction = ''] = String(value).split('.');
@@ -218,7 +215,7 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
   options.signal?.throwIfAborted();
   const origin = new URL(shop.url).origin, confirmedCC = origin === 'https://cccrad.uk';
   const verifiedCheckout = VERIFIED_EPAY_CHECKOUTS[origin];
-  const estimatedFee = ESTIMATED_FEES[origin];
+  const estimateEnabled = ESTIMATE_ENABLED_SHOPS.has(origin);
   const matchesCheckout = channel => verifiedCheckout && config?.app_version === verifiedCheckout.version
     && channel.id === verifiedCheckout.id && channel.provider_type === 'epay' && channel.channel_type === 'alipay'
     && channel.fee_policy === verifiedCheckout.policy && channel.fee_rate === verifiedCheckout.rate && channel.fixed_fee === verifiedCheckout.fixed;
@@ -274,22 +271,22 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       if (errors.has(product)) throw errors.get(product);
       if (!freshProducts.has(product) || deferred.has(product)) return undefined;
       const source = productRules.get(freshProducts.get(product)), ids = String(product.externalId).split(':').map(Number);
-      if (source?.purchase_type === 'member' && estimatedFee === undefined) throw new SettlementUnavailableError('login_required');
-      if (!SUPPORTED_VERSIONS.has(config.app_version) && !confirmedGogo && estimatedFee === undefined) {
+      if (source?.purchase_type === 'member' && !estimateEnabled) throw new SettlementUnavailableError('login_required');
+      if (!SUPPORTED_VERSIONS.has(config.app_version) && !confirmedGogo && !estimateEnabled) {
         throw new SettlementUnavailableError('unsupported_version');
       }
-      if (!(source?.purchase_type === 'guest' || estimatedFee !== undefined && source?.purchase_type === 'member')
+      if (!(source?.purchase_type === 'guest' || estimateEnabled && source?.purchase_type === 'member')
         || ids.length !== 2 || ids.some(value => !Number.isSafeInteger(value) || value < 1)) return undefined;
       const maxQuantity = source.max_purchase_quantity;
       if (maxQuantity !== undefined && (!Number.isSafeInteger(maxQuantity) || maxQuantity < 0 || maxQuantity > 0 && maxQuantity < quantity)) return undefined;
-      if (estimatedFee !== undefined) {
+      if (estimateEnabled) {
         const unit = cents(freshProducts.get(product).price);
         if (unit === undefined) return undefined;
         const base = unit * BigInt(quantity);
         if (origin === 'https://morimm.com' && base < 100n) return undefined;
-        const rate = origin === 'https://morimm.com' && base > 50000n ? 0n : estimatedFee;
-        return { code: 1, kind: 'estimated', paymentMethod: '店铺规则（预估）',
-          data: { total_amount: amount(base + (base * rate + 5000n) / 10000n), quantity } };
+        const estimate = estimateSettlement(shop, freshProducts.get(product), quantity);
+        return estimate && { code: 1, kind: 'estimated', paymentMethod: estimate.paymentMethod,
+          data: { total_amount: estimate.totalAmount, quantity } };
       }
       const allowed = source.payment_channel_ids;
       if (allowed !== undefined && (!Array.isArray(allowed) || allowed.some(value => !Number.isSafeInteger(value) || value < 1))) return undefined;

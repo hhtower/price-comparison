@@ -181,7 +181,7 @@ describe('independent settlement expiry scheduling', () => {
       publicFetchFactory: async () => ({ fetch: fetchImpl, close: async () => {} }),
     })((await new JobsRepository(db).claimNext('fetch_run', 'downgraded', 120000))!);
     const offer = await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow();
-    assert.equal(offer.settlement_price, '10.00');
+    assert.equal(offer.settlement_price, '10.60');
     assert.match(offer.settlement_payment_method!, /预估/);
     assert.equal(offer.settlement_refresh_at, null);
     const run = await db.selectFrom('fetch_runs').selectAll().executeTakeFirstOrThrow();
@@ -264,7 +264,7 @@ describe('independent settlement expiry scheduling', () => {
     assert.equal((run.settlement_report as any).failed, 0);
     const rows = await db.selectFrom('offers').selectAll().execute();
     assert.equal(rows.filter(row => row.settlement_price === '11.30').length, 5);
-    assert.equal(rows.filter(row => row.settlement_price === '10.00' && row.settlement_payment_method!.includes('预估')).length, 20);
+    assert.equal(rows.filter(row => row.settlement_price === '10.60' && row.settlement_payment_method!.includes('预估')).length, 20);
     assert.equal(rows.filter(row => row.settlement_refresh_at! <= new Date()).length, 20);
     assert.equal(await enqueueDueSettlements(db), 1);
     const queued = await db.selectFrom('fetch_runs').selectAll().where('status', '=', 'queued').executeTakeFirstOrThrow();

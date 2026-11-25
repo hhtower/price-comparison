@@ -1,34 +1,17 @@
 import { isEstimatedSettlement, markEstimatedSettlement, verifiedSettlement } from './settlement.js';
 
-// shortcut: Store estimates exclude discounts, private FX and wallet costs; replace with live quotes when available.
-const FEES = new Map([
-  ['https://ouvg.top', 0n], ['https://yufenggpt.com', 0n], ['https://kapay.shop', 0n],
-  ['https://shop.txyxt.dpdns.org', 0n], ['https://gpthub.ciyuanapi.ai', 0n], ['https://shop.aictk.shop', 0n],
-  ['https://cccrad.uk', 295n], ['https://nikoers.com', 400n], ['https://fk.gptcz.cc', 360n],
-  ['https://shopcardai.click', 600n], ['https://morimm.com', 400n], ['https://blog.esfine.chat', 160n],
-  ['https://tghaopifa.cc', 400n], ['https://ultra.makelove.cloud', 150n], ['https://shop.callai.one', 160n],
-  ['https://tehuio.com', 500n], ['https://fk.10886.xyz', 600n], ['https://kkfaka.xyz', 500n],
-]);
-
 const amount = value => `${value / 100n}.${String(value % 100n).padStart(2, '0')}`;
 
-export function estimateSettlement(shop, product, quantity, fees) {
+export function estimateSettlement(_shop, product, quantity, fees) {
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) return undefined;
   const base = verifiedSettlement(product.price, '售价基准', quantity);
   if (!base) return undefined;
-  const origin = new URL(shop.url).origin;
-  const remembered = fees === undefined && FEES.has(origin);
-  let rate = remembered ? FEES.get(origin) : 0n;
   const total = BigInt(base.totalAmount.replace('.', '')) * BigInt(quantity);
-  if (origin === 'https://morimm.com' && total > 50000n) rate = 0n;
-  const payable = total + (total * rate + 5000n) / 10000n;
   const available = (fees ?? []).filter(fee => total >= fee.min && (fee.max === 0n || total <= fee.max))
     .map(fee => ({ total: total + fee.cost(total), label: fee.label })).sort((a, b) => a.total < b.total ? -1 : a.total > b.total ? 1 : 0);
   if (available.length) return markEstimatedSettlement(verifiedSettlement(amount(available[0].total), `支付价（预估：${available[0].label}）`, quantity));
-  const percent = Number(rate) / 100;
-  return markEstimatedSettlement(verifiedSettlement(`${payable / 100n}.${String(payable % 100n).padStart(2, '0')}`,
-    remembered ? `支付价（预估：售价加${percent}%）`
-      : fees !== undefined ? '支付价（预估：售价，手续费未知）' : '支付价（预估：售价）', quantity));
+  const payable = total + (total * 6n + 50n) / 100n;
+  return markEstimatedSettlement(verifiedSettlement(amount(payable), '支付价（预估：售价加6%手续费）', quantity));
 }
 
 export function withSettlementEstimates(adapter) {

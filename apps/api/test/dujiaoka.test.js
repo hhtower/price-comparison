@@ -30,12 +30,12 @@ test('Dujiaoka rating evidence preserves escaped text and paragraph boundaries',
   assert.equal(projected.description, '交付<code>兑换码</code>\n30天质保');
 });
 
-test('Ma men reports the user-confirmed zero-fee SKU price as an estimate, never a verified checkout', async () => {
+test('Ma men estimates the SKU price with the default six-percent fee, never as verified', async () => {
   const { crawl, settle } = await import('../src/platforms/dujiaoka.js');
   const outcomes = [], options = { onSettlementResult: result => outcomes.push(result) };
   const products = await crawl(null, shop, fetcher(), options);
-  assert.equal(products[0].settlement?.totalAmount, '130.00');
-  assert.equal(products[0].settlement?.price, '130.00');
+  assert.equal(products[0].settlement?.totalAmount, '137.80');
+  assert.equal(products[0].settlement?.price, '137.80');
   assert.equal(products[0].settlement?.quantity, 1);
   assert.match(products[0].settlement.paymentMethod, /预估/);
   assert.deepEqual(outcomes.find(result => result.externalId === '252:9'), {
@@ -45,7 +45,7 @@ test('Ma men reports the user-confirmed zero-fee SKU price as an estimate, never
   const baseline = { ...products[0] }; delete baseline.settlement;
   outcomes.length = 0;
   await settle(shop, [baseline], fetcher(), options);
-  assert.equal(baseline.settlement?.price, '130.00');
+  assert.equal(baseline.settlement?.price, '137.80');
   assert.match(baseline.settlement.paymentMethod, /预估/);
   assert.deepEqual(outcomes, [{ externalId: '252:9', status: 'estimated', reason: 'estimated', retryable: false }]);
 });
@@ -59,7 +59,7 @@ test('Dujiaoka disables independent verification while keeping list estimates an
   assert.equal(typeof adapter.settle, 'function');
   const outcomes = [];
   const [product] = await adapter.crawl(null, shop, fetcher(), { onSettlementResult: result => outcomes.push(result) });
-  assert.equal(product.settlement.totalAmount, '130.00');
+  assert.equal(product.settlement.totalAmount, '137.80');
   assert.match(product.settlement.paymentMethod, /预估/);
   assert.deepEqual(outcomes.find(result => result.externalId === '252:9'), {
     externalId: '252:9', status: 'estimated', reason: 'verification_unsupported', retryable: false, estimated: true,
@@ -90,7 +90,7 @@ test('classic storefront estimates retain the HTML minimum and reject insufficie
   const [item] = await adapter.crawl(null, shop, fetcher(undefined, html));
   assert.equal(item.sourceData.minimum, 5);
   assert.equal(item.settlement.quantity, 5);
-  assert.equal(item.settlement.totalAmount, '650.00');
+  assert.equal(item.settlement.totalAmount, '689.00');
   assert.match(item.settlement.paymentMethod, /预估/);
   const [insufficient] = await adapter.crawl(null, shop, fetcher(undefined, html.replace('data-sku-stock="16"', 'data-sku-stock="4"')));
   assert.equal(insufficient.inStock, false);
@@ -106,7 +106,7 @@ test('Ma men settlement refresh compares the normalized evidence persisted by th
   const persisted = { ...fresh, ...normalizeProductEvidence(fresh) };
   assert.notDeepEqual(persisted.sourceData, fresh.sourceData);
   await settle(shop, [persisted], fetcher(undefined, html));
-  assert.equal(persisted.settlement?.totalAmount, '130.00');
+  assert.equal(persisted.settlement?.totalAmount, '137.80');
   const changed = { ...fresh, ...normalizeProductEvidence(fresh) };
   await settle(shop, [changed], fetcher(undefined, html.replace('首登质保', '不提供质保')));
   assert.equal(changed.settlement, undefined);
@@ -120,7 +120,7 @@ test('Ma men settlement respects selection, cached prices, batch bounds and canc
   }
   const products = [{ ...sample }, { ...sample, externalId: '253:9', url: 'https://ouvg.top/buy/253' }], outcomes = [];
   await settle(shop, products, fetcher(), { maxSettlementProducts: 1, onSettlementResult: row => outcomes.push(row) });
-  assert.equal(products[0].settlement?.price, '130.00');
+  assert.equal(products[0].settlement?.price, '137.80');
   assert.equal(outcomes[1].reason, 'deferred');
   const controller = new AbortController();
   await assert.rejects(settle(shop, [{ ...sample }], async (_url, init) => {

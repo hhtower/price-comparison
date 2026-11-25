@@ -1,5 +1,6 @@
 import { buildSourceEvidence, captureRatingText, rawProductContent } from './source-evidence.js';
 import { collectSettlements } from './settlement.js';
+import { estimateSettlement } from './settlement-estimate.js';
 
 export const id = 'prism';
 // shortcut: FX estimate only; the storefront confirms fiat totals after order creation, with no public quote preview.
@@ -81,17 +82,18 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
   return settle(shop, products, fetchImpl, options);
 }
 
-export async function settle(_shop, products, fetchImpl = globalThis.fetch, options = {}) {
+export async function settle(shop, products, fetchImpl = globalThis.fetch, options = {}) {
   options.signal?.throwIfAborted();
   let rate;
   return collectSettlements(products, {
     quantity: () => 1,
-    channel: async () => { rate = await usdtCnyRate(fetchImpl, options.signal, options.cnyPerUsd); return { show_name: 'USDT 汇率折算（预估）' }; },
+    channel: async () => { rate = await usdtCnyRate(fetchImpl, options.signal, options.cnyPerUsd); return { show_name: 'USDT 汇率折算（预估：含6%手续费）' }; },
     quote: product => {
       const micro = product.sourceData?.microPrice;
       if (!Number.isSafeInteger(micro) || micro < 0) return undefined;
-      return { code: 1, kind: 'estimated', paymentMethod: 'USDT 汇率折算（预估）',
-        data: { total_amount: centsText(cnyCents(BigInt(micro), rate)), quantity: 1 } };
+      const quote = estimateSettlement(shop, { price: centsText(cnyCents(BigInt(micro), rate)) }, 1);
+      return quote ? { code: 1, kind: 'estimated', paymentMethod: 'USDT 汇率折算（预估：含6%手续费）',
+        data: { total_amount: quote.totalAmount, quantity: 1 } } : undefined;
     },
   }, options);
 }

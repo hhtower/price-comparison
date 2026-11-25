@@ -412,9 +412,9 @@ describe('complete shop snapshot synchronization', () => {
     });
     await handler(await claim(s.id));
     const offer = await database.selectFrom('offers').selectAll().where('product_id', '=', product.id).executeTakeFirstOrThrow();
-    assert.equal(offer.settlement_price, '10.00');
+    assert.equal(offer.settlement_price, '10.60');
     assert.equal(offer.settlement_quantity, 5);
-    assert.equal(offer.settlement_total_amount, '50.00');
+    assert.equal(offer.settlement_total_amount, '53.00');
     assert.match(offer.settlement_payment_method!, /预估/);
   });
 
@@ -471,7 +471,7 @@ describe('complete shop snapshot synchronization', () => {
     price = 12;
     const changed = await claim(s.id);
     await handler(changed);
-    assert.equal((await database.selectFrom('offers').select('settlement_price').where('product_id', '=', published.id).executeTakeFirstOrThrow()).settlement_price, '12.00');
+    assert.equal((await database.selectFrom('offers').select('settlement_price').where('product_id', '=', published.id).executeTakeFirstOrThrow()).settlement_price, '12.72');
   });
 
   test('business settlement failures keep listing success without enqueuing a retry', async () => {
@@ -600,7 +600,7 @@ describe('complete shop snapshot synchronization', () => {
     await handler(initial);
     const estimate = await database.selectFrom('offers').selectAll().where('product_id', '=', product.id).executeTakeFirstOrThrow();
     assert.equal(estimate.settlement_quantity, 5);
-    assert.equal(estimate.settlement_total_amount, '50.00');
+    assert.equal(estimate.settlement_total_amount, '53.00');
     const queued = await database.selectFrom('fetch_runs').selectAll().where('source_fetch_run_id', '=', initial.id).executeTakeFirstOrThrow();
     failing = false;
     await database.updateTable('fetch_runs').set({ available_at: new Date(0) }).where('id', '=', queued.id).execute();
@@ -1231,7 +1231,7 @@ describe('complete shop snapshot synchronization', () => {
     values.clear();
     const recovered = await service.getCatalog(query);
     assert.equal(recovered.items[0]?.offers[0]?.productId, String(product.id));
-    assert.equal(recovered.items[0]?.offers[0]?.price, '12.00');
+    assert.equal(recovered.items[0]?.offers[0]?.price, '12.72');
     assert.equal(recovered.items[0]?.offers[0]?.listedPrice, '12.00');
     assert.equal(recovered.items[0]?.offers[0]?.priceStatus, 'estimated');
     assert.match(recovered.items[0]?.offers[0]?.paymentMethod!, /预估/);

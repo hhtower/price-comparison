@@ -276,16 +276,6 @@ export function paymentFee(channel, origin) {
     && !Object.hasOwn(channel, 'fee_bps') && !Object.hasOwn(channel, 'max_cents')) {
     return { value: 0n, scale: 1n, fixed: false };
   }
-  // shortcut: User-confirmed rates require rechecking if private fees change without a channel identity change.
-  const confirmed = {
-    'https://yufenggpt.com': { id: 7, handle: 'Epay', rate: '0' },
-    'https://shopcardai.click': { id: 2, handle: 'Epay', rate: '0.06' },
-    'https://nikoers.com': { id: 2, handle: 'Epay', rate: '0.04' },
-    'https://fk.gptcz.cc': { id: 10, handle: 'Alipay', rate: '0.036' },
-  }[origin];
-  if (confirmed && Number(channel.id) === confirmed.id && channel.handle === confirmed.handle && name === '支付宝') {
-    return { ...decimal(confirmed.rate), fixed: false };
-  }
   const bracketed = name.match(/^(?:支付宝|微信(?:支付)?|Alipay|WeChat(?: Pay)?)(?:\((\d+(?:\.\d+)?)%\)|【(\d+(?:\.\d+)?)%】)$/i);
   const bracketedFee = decimal(bracketed?.[1] ?? bracketed?.[2]);
   if (bracketedFee) return { value: bracketedFee.value, scale: bracketedFee.scale * 100n, fixed: false };
@@ -396,7 +386,7 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
 
 export function readSettlementFees(payload, endpoint) {
   const fees = payload?.code === 200 && Array.isArray(payload.data) ? payload.data.flatMap(channel => {
-    // An empty origin excludes remembered rules: this path only accepts live public declarations.
+    // Generic fee capture accepts channel fields and labels without origin-specific contracts.
     const fee = paymentFee(channel, '');
     const min = channel?.min_amount == null ? 0n : settlementCents(channel.min_amount);
     const max = channel?.max_amount == null ? 0n : settlementCents(channel.max_amount);

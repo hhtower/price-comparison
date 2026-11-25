@@ -2,6 +2,7 @@ import { parse, serialize } from 'parse5';
 import { buildSourceEvidence, captureRatingText, rawProductContent } from './source-evidence.js';
 import { normalizeSpec } from '../products/product-spec.js';
 import { collectSettlements, minimumPurchaseQuantity } from './settlement.js';
+import { estimateSettlement } from './settlement-estimate.js';
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeProductEvidence } from '../standardization/fingerprint.js';
 
@@ -107,9 +108,8 @@ export async function crawl(_page, shop, fetchImpl = globalThis.fetch, options =
 export async function settle(shop, products, fetchImpl = globalThis.fetch, options = {}) {
   return collectSettlements(products, {
     quantity: product => freshProducts.get(product) === false ? undefined : 1,
-    // User confirmed ouvg.top has no purchase surcharge; this does not apply to other classic storefronts.
     channel: async () => new URL(shop.url).origin === 'https://ouvg.top'
-      ? { show_name: '支付宝（无手续费，预估）', kind: 'estimated' } : undefined,
+      ? { show_name: '支付价（预估：售价加6%手续费）', kind: 'estimated' } : undefined,
     quote: async product => {
       let current = product;
       if (!freshProducts.has(product)) {
@@ -123,7 +123,8 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
           || !isDeepStrictEqual(normalizeProductEvidence({ ...current, sourceCategory: '' }),
             normalizeProductEvidence({ ...product, sourceCategory: '' }))) return undefined;
       }
-      return { code: 1, data: { total_amount: current.price, quantity: 1 } };
+      const quote = estimateSettlement(shop, current, 1);
+      return quote ? { code: 1, data: { total_amount: quote.totalAmount, quantity: 1 } } : undefined;
     },
   }, options);
 }

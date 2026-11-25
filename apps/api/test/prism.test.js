@@ -25,13 +25,13 @@ test('prism converts micro-USDT to CNY estimates and attaches rate-based settlem
   const products = await crawl(null, shop, net.fetch, { onListComplete: () => completed++ });
   assert.equal(completed, 1);
   assert.deepEqual(products.map(p => [p.externalId, p.price, p.inStock]), [['3', '4.86', true], ['2', '10.71', false]]);
-  assert.equal(products[0].settlement.totalAmount, '4.86');
-  assert.equal(products[0].settlement.paymentMethod, 'USDT 汇率折算（预估）');
+  assert.equal(products[0].settlement.totalAmount, '5.15');
+  assert.equal(products[0].settlement.paymentMethod, 'USDT 汇率折算（预估：含6%手续费）');
   assert.equal(products[1].settlement, undefined);
   assert.ok(net.calls.every(c => c.init.redirect === 'error'));
   // settlement refresh re-quotes from the stored micro price
   const [fresh] = await settle(shop, [{ externalId: '3', price: '4.85', inStock: true, sourceData: { microPrice: 680000 } }], network().fetch);
-  assert.equal(fresh.settlement.totalAmount, '4.86');
+  assert.equal(fresh.settlement.totalAmount, '5.15');
 });
 
 test('prism probe previews raw USDT prices without the cross-origin FX fetch', async () => {
@@ -63,7 +63,7 @@ test('prism uses the injected official-reference rate without touching the FX fe
     return net.fetch(url, init);
   }, { cnyPerUsd: '0.1400' });
   assert.deepEqual(products.map(p => p.price), ['4.86', '10.71']);
-  assert.equal(products[0].settlement.totalAmount, '4.86');
+  assert.equal(products[0].settlement.totalAmount, '5.15');
   const { latestCnyPerUsd } = await import('../src/platforms/prism.js');
   const fxDb = usd => ({
     selectFrom: () => ({
