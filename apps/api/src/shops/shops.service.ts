@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { DomainNotFoundError, DomainValidationError } from '../common/errors.js';
 import { ProtocolDetectionService } from '../platforms/protocol-detection.service.js';
+import { normalizeHttpUrl, requiredText } from './shop-input.js';
 import {
   ShopsRepository,
   type QueuedFetchRun,
@@ -76,23 +77,5 @@ export class ShopsService {
       throw new DomainValidationError('DUPLICATE_SHOP_IDS', '商铺 ID 不能重复');
     }
     return this.shops.enqueueRefresh(shopIds);
-  }
-}
-
-function requiredText(value: string, field: string): string {
-  const normalized = value.trim();
-  if (!normalized) {
-    throw new DomainValidationError('REQUIRED_FIELD', `${field} 不能为空`, { field });
-  }
-  return normalized;
-}
-
-function normalizeHttpUrl(value: string): string {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('unsupported protocol');
-    return url.toString();
-  } catch {
-    throw new DomainValidationError('INVALID_URL', '商铺 URL 必须是有效的 HTTP(S) 地址');
   }
 }

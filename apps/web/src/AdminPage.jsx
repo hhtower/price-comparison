@@ -368,6 +368,8 @@ function ProductManagement({ setMessage }) {
   const [tagQuery, setTagQuery] = useState('');
   const [tagReload, setTagReload] = useState(0);
   const [tagProductView, setTagProductView] = useState(null);
+  const tagProductRequest = useRef(null);
+  useEffect(() => () => tagProductRequest.current?.abort(), [managementTab]);
   const [selectedTagKeys, setSelectedTagKeys] = useState([]);
   const [selectedTagItems, setSelectedTagItems] = useState({});
   const [tagMergeOpen, setTagMergeOpen] = useState(null);
@@ -802,12 +804,15 @@ function ProductManagement({ setMessage }) {
     } catch (error) { setTagMergeOpen(current => ({ ...current, error: error.message })); }
   };
 
-  const openTagProducts = async (tag) => {
+  const openTagProducts = async (tag, page = 1) => {
+    tagProductRequest.current?.abort();
+    const controller = new AbortController();
+    tagProductRequest.current = controller;
     try {
-      const params = new URLSearchParams({ name: tag.name, value: tagQueryValue(tag), limit: String(PAGE_SIZE), page: '1' });
-      const data = await requestJson(`/api/admin/tags/products?${params}`);
-      setTagProductView({ tag, data: normalizePage(data) });
-    } catch (error) { setMessage(error.message); }
+      const params = new URLSearchParams({ name: tag.name, value: tagQueryValue(tag), limit: String(PAGE_SIZE), page: String(page) });
+      const data = await requestJson(`/api/admin/tags/products?${params}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setTagProductView({ tag, data: normalizePage(data) });
+    } catch (error) { if (!controller.signal.aborted) setMessage(error.message); }
   };
 
   const bindSelectedTags = async (event) => {
@@ -925,12 +930,12 @@ function ProductManagement({ setMessage }) {
       {managementTab === 'tags' ? <div className="management-panel">
         {tagProductView ? (
           <>
-            <div className="dialog-header"><h2>{tagProductView.tag.name}：{purchaseTagLabel(tagProductView.tag)}</h2><button type="button" onClick={() => setTagProductView(null)}>返回标签</button></div>
+            <div className="dialog-header"><h2>{tagProductView.tag.name}：{purchaseTagLabel(tagProductView.tag)}</h2><button type="button" onClick={() => { tagProductRequest.current?.abort(); setTagProductView(null); }}>返回标签</button></div>
             <div className="data-table-wrap">
               <table><thead><tr><th>商品</th><th>商铺</th><th>规格</th><th>更新时间</th></tr></thead><tbody>{tagProductView.data.items.map(product => <tr key={product.id}><td><strong>{product.name}</strong><small>#{product.id}</small></td><td>{product.shopName}</td><td>{product.spec || '-'}</td><td>{formatTime(product.updatedAt)}</td></tr>)}</tbody></table>
               {!tagProductView.data.items.length ? <EmptyState>暂无绑定商品</EmptyState> : null}
             </div>
-            <Pagination total={tagProductView.data.total} page={tagProductView.data.page} pageSize={PAGE_SIZE} onChange={async page => { try { const params = new URLSearchParams({ name: tagProductView.tag.name, value: tagQueryValue(tagProductView.tag), limit: String(PAGE_SIZE), page: String(page) }); const data = await requestJson(`/api/admin/tags/products?${params}`); setTagProductView(current => ({ ...current, data: normalizePage(data) })); } catch (error) { setMessage(error.message); } }} label="商品" />
+            <Pagination total={tagProductView.data.total} page={tagProductView.data.page} pageSize={PAGE_SIZE} onChange={page => openTagProducts(tagProductView.tag, page)} label="商品" />
           </>
         ) : (
           <>

@@ -21,6 +21,9 @@ test('controller stringifies every bigint in create and state transition respons
   const controller = new AiController(service as never, repository as never); const created = await controller.createJob({ model: 'x' }); assert.doesNotThrow(() => JSON.stringify(created));
   assert.deepEqual(await controller.pause('1'), { id: '1', processed: '2' }); assert.deepEqual(await controller.resume('1'), { id: '1' }); assert.deepEqual(await controller.cancel('1'), { id: '1' }); assert.deepEqual(await controller.retry('1'), { id: '1', retried: '1' });
   assert.deepEqual(await controller.reapply('1'), { id: '1', applied: '2' });
+  for (const value of ['0x10', '0', '-1', '01']) {
+    await assert.rejects(controller.pause(value), { code: 'INVALID_ID' });
+  }
 });
 
 test('runtime DTO rejects empty models and invalid scope IDs', async () => {

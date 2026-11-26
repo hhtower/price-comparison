@@ -2,6 +2,7 @@ import { Body, Controller, Inject, Param, Post, UseGuards, ValidationPipe } from
 import { AuthGuard } from '../auth/auth.guard.js';
 import { ArrayMaxSize, ArrayNotEmpty, ArrayUnique, Equals, IsArray, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { DomainValidationError } from '../common/errors.js';
+import { parsePositiveBigint as id } from '../common/pagination.js';
 import { AiService } from './ai.service.js';
 import { AiRepository } from './ai.repository.js';
 const ID = /^[1-9]\d*$/u;
@@ -25,8 +26,7 @@ export class TagJobCreateDto extends TagJobScopeDto {
   @ValidateIf((object,value)=>object.allPending!==true||value!==undefined)
   @Matches(/^[a-f0-9]{64}$/u) previewDigest?:string;
 }
-function tagScope(body:TagJobScopeDto) { return {allPending:body.allPending,productIds:body.productIds?.map(id),scopeShopId:body.scopeShopId===undefined?undefined:id(body.scopeShopId),retryOfJobId:body.retryOfJobId===undefined?undefined:id(body.retryOfJobId)}; }
-function id(value: string): bigint { try { return BigInt(value); } catch { throw new DomainValidationError('INVALID_ID', 'ID 无效'); } }
+function tagScope(body:TagJobScopeDto) { return {allPending:body.allPending,productIds:body.productIds?.map(value => id(value, 'productIds')),scopeShopId:body.scopeShopId===undefined?undefined:id(body.scopeShopId),retryOfJobId:body.retryOfJobId===undefined?undefined:id(body.retryOfJobId)}; }
 function jsonSafe<T>(value: T): T { return JSON.parse(JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? item.toString() : item)) as T; }
 @Controller({ path: 'ai', version: '1' })
 @UseGuards(AuthGuard)
@@ -58,7 +58,7 @@ export class AiController {
   @Post('jobs/:id/retry') async retry(@Param('id') value: string) { return jsonSafe(await this.repository.retryJob(id(value))); }
   @Post('retry-pool') async retryPool(@Body() body: RetryPoolDto) {
     if (body?.acknowledgePossibleCharge !== true) throw new DomainValidationError('AI_RETRY_ACK_REQUIRED', '请确认重试可能再次计费');
-    return jsonSafe(await this.service.retryPool({ requestId: body.requestId, productIds: body.productIds?.map(id) }));
+    return jsonSafe(await this.service.retryPool({ requestId: body.requestId, productIds: body.productIds?.map(value => id(value, 'productIds')) }));
   }
   @Post('jobs/:id/reapply') async reapply(@Param('id') value: string) { return jsonSafe(await this.repository.reapplySavedResults(id(value))); }
 }

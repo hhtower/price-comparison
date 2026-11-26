@@ -1,5 +1,5 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AdminPage from './AdminPage.jsx';
 
@@ -1129,14 +1129,18 @@ describe('AdminPage', () => {
     });
   });
 
-  test('opens tag members as a product list', async () => {
+  test('opens tag members and ignores a late page after returning to tags', async () => {
     const user = userEvent.setup();
+    const secondPage = Promise.withResolvers();
     vi.stubGlobal('fetch', vi.fn(async input => {
       const url = new URL(input, 'http://localhost');
       if (url.pathname === '/api/auth/me') return jsonResponse({ ok: true });
       if (url.pathname === '/api/admin/shops') return jsonResponse(paged([]));
       if (url.pathname === '/api/admin/tags') return jsonResponse(paged([{ id: '1', name: 'region', value: 'US', productCount: '1' }]));
-      if (url.pathname === '/api/admin/tags/products') return jsonResponse(paged([{ id: '9', name: '商品九', spec: '月付', shopId: '2', shopName: '商铺二' }]));
+      if (url.pathname === '/api/admin/tags/products') {
+        if (url.searchParams.get('page') === '2') return secondPage.promise;
+        return jsonResponse(paged([{ id: '9', name: '商品九', spec: '月付', shopId: '2', shopName: '商铺二' }], 11));
+      }
       return jsonResponse({ error: 'Unhandled' }, 404);
     }));
     render(<AdminPage initialAuthenticated />);
@@ -1145,6 +1149,11 @@ describe('AdminPage', () => {
     await user.click(await screen.findByRole('button', { name: '查看商品' }));
     expect(await screen.findByText('商品九')).toBeInTheDocument();
     expect(screen.getByText('月付')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '下一页' }));
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/tags/products?') && String(url).includes('page=2'))).toBe(true);
+    await user.click(screen.getByRole('button', { name: '返回标签' }));
+    await act(async () => secondPage.resolve(jsonResponse(paged([], 11, 2))));
+    expect(screen.getByRole('button', { name: '查看商品' })).toBeInTheDocument();
   });
 
   test('merges a tag value through an explicit target form', async () => {

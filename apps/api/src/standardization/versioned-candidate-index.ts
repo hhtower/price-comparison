@@ -79,15 +79,12 @@ interface AliasTrieNode {
 }
 
 interface IndexSegment {
-  readonly documents: ReadonlyMap<string, PreparedDocument>;
   readonly canonical: ReadonlyMap<string, string>;
   readonly aliasRoot: AliasTrieNode;
   readonly maxAliasLength: number;
   readonly tokens: PostingIndex;
   readonly ngrams: PostingIndex;
   readonly indexBytes: number;
-  readonly indexedCanonicalKeys: number;
-  readonly indexedAliases: number;
   readonly budgetTruncated: boolean;
 }
 
@@ -164,7 +161,6 @@ function buildSegment(
   maxIndexBytes = options.maxIndexBytes,
 ): IndexSegment {
   const ordered = [...preparedDocuments].sort((left, right) => compareIds(left.document.id, right.document.id));
-  const documents = new Map(ordered.map(document => [document.document.id, document]));
   const canonical = new Map<string, string>();
   const aliasRoot: AliasTrieNode = { children: new Map() };
   const tokenPostings = new Map<string, string[]>();
@@ -174,7 +170,6 @@ function buildSegment(
   let indexBytes = 0;
   let budgetTruncated = false;
   let maxAliasLength = 0;
-  let indexedAliases = 0;
   const reserve = (bytes: number): boolean => {
     if (indexBytes + bytes > maxIndexBytes) {
       budgetTruncated = true;
@@ -215,7 +210,6 @@ function buildSegment(
       }
       node.documentId = prepared.document.id;
       maxAliasLength = Math.max(maxAliasLength, characters.length);
-      indexedAliases++;
     }
   }
 
@@ -250,15 +244,12 @@ function buildSegment(
 
   if (retainedTokens.size !== ordered.length || retainedNgrams.size !== ordered.length) budgetTruncated = true;
   return {
-    documents,
     canonical,
     aliasRoot,
     maxAliasLength,
     tokens: { postings: tokenPostings, truncatedFeatures: truncatedTokens },
     ngrams: { postings: ngramPostings, truncatedFeatures: truncatedNgrams },
     indexBytes,
-    indexedCanonicalKeys: canonical.size,
-    indexedAliases,
     budgetTruncated,
   };
 }

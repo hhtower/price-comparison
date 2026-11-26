@@ -1,10 +1,9 @@
 import { Controller, Get, Inject, Param, Query, Res, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { DomainValidationError } from '../common/errors.js';
+import { parsePositiveBigint as parseId } from '../common/pagination.js';
 import { AiRepository } from './ai.repository.js';
 
-const ID = /^[1-9]\d*$/u;
-function parseId(value: string, field = 'id'): bigint { if (!ID.test(value)) throw new DomainValidationError('INVALID_ID', `${field} 必须是正整数`, { field }); return BigInt(value); }
 function limit(value: string | undefined): number { const result = value == null ? 20 : Number(value); if (!Number.isInteger(result) || result < 1 || result > 100) throw new DomainValidationError('INVALID_PAGE_SIZE', '每页数量必须是 1 到 100 之间的整数'); return result; }
 function jsonSafe<T>(value: T): T { return JSON.parse(JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? item.toString() : item)) as T; }
 

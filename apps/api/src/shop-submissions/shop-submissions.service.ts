@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { DomainConflictError, DomainNotFoundError, DomainValidationError } from '../common/errors.js';
+import { DomainConflictError, DomainNotFoundError } from '../common/errors.js';
 import { ShopsRepository } from '../shops/shops.repository.js';
+import { normalizeHttpUrl, requiredText } from '../shops/shop-input.js';
 import { ProtocolDetectionService, type ProtocolDetection } from '../platforms/protocol-detection.service.js';
 import { ShopSubmissionsRepository, type ShopSubmission } from './shop-submissions.repository.js';
 
@@ -44,21 +45,5 @@ export class ShopSubmissionsService {
     });
     try { await this.shops.enqueueRefresh([approved.shop_id!]); } catch { /* queueing is best effort; approval remains durable */ }
     return approved;
-  }
-}
-
-function requiredText(value: string, field: string): string {
-  const normalized = value.trim();
-  if (!normalized) throw new DomainValidationError('REQUIRED_FIELD', `${field} 不能为空`, { field });
-  return normalized;
-}
-
-function normalizeHttpUrl(value: string): string {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('unsupported protocol');
-    return url.toString();
-  } catch {
-    throw new DomainValidationError('INVALID_URL', '商铺 URL 必须是有效的 HTTP(S) 地址');
   }
 }
