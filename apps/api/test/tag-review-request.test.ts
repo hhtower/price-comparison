@@ -47,8 +47,8 @@ test('repair feedback belongs to generation while review judges only current can
 
 test('review examples parse and align mixed votes and completeness without text review', () => {
   const prompt = buildTagReviewRequest([], { items: [] }, 'mock').messages[0]!.content;
-  const blocks = [...prompt.matchAll(/```json\n([\s\S]*?)\n```/gu)];
-  const output = parseTagReviewResponse(blocks[1]![1]!);
+  const blocks = [...prompt.matchAll(/<(input|output)>\n([\s\S]*?)\n<\/\1>/gu)];
+  const output = parseTagReviewResponse(blocks[1]![2]!);
   assert.deepEqual(output.items[0]!.accepted, [true, false]);
   assert.equal(blocks.length, 2, 'one focused example covers mixed votes and missing general facts');
   assert.equal(output.items[0]!.complete, true);
@@ -56,11 +56,11 @@ test('review examples parse and align mixed votes and completeness without text 
   assert.doesNotMatch(prompt, /subscription_warranty|usage_warranty|warranty_terms|warrantyEvidence/u);
   const vocabulary = JSON.parse(prompt.match(/<tag_vocabulary>\n([\s\S]*?)\n<\/tag_vocabulary>/u)![1]!);
   assert.deepEqual(vocabulary, TAG_SCHEMA);
-  const instructions = prompt.replace(/```json\n[\s\S]*?\n```/gu, '').replace(/<tag_vocabulary>[\s\S]*?<\/tag_vocabulary>/u, '');
+  const instructions = prompt.replace(/<review_example>[\s\S]*?<\/review_example>/gu, '').replace(/<tag_vocabulary>[\s\S]*?<\/tag_vocabulary>/u, '');
   assert.doesNotMatch(instructions.replaceAll('无', ''), /[\u3400-\u9fff]/u, 'review instructions are English apart from canonical values');
   for (let index = 0; index < blocks.length; index += 2) {
-    const source = JSON.parse(blocks[index]![1]!);
-    const response = parseTagReviewResponse(blocks[index + 1]![1]!);
+    const source = JSON.parse(blocks[index]![2]!);
+    const response = parseTagReviewResponse(blocks[index + 1]![2]!);
     assert.deepEqual(response.items.map(item => item.id), source.inputs.map((item: { id: string }) => item.id));
     for (const row of response.items) {
       const proposal = source.proposals.items.find((p: { id: string }) => p.id === row.id);

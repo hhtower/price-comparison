@@ -42,7 +42,7 @@ ${policy}
 # Output
 Return only {"items":[{"id":"ID","classificationDecision":true,"code":null,"refs":[]}]}.
 Return each required ID once. true means the category and citations are correct under the policy; false means incorrect or unsupported. The proposal and its citations are claims, not authority.
-For true, code must be null and refs must be empty.
+For true, code must be null and refs must be empty, including when the title resolves a conflict.
 For false, cite 1-3 distinct nonempty original lines in refs and choose one code:
 - protection_mismatch: the proposal misreads protection length or scope.
 - delivery_mismatch: the proposal misreads whose account is used, what is delivered, or whether half-price eligibility is explicitly required.
@@ -50,7 +50,7 @@ For false, cite 1-3 distinct nonempty original lines in refs and choose one code
 - insufficient_source: the source cannot support a valid classification under the policy.
 - source_conflict: a decisive source contradiction remains unresolved after applying the evidence hierarchy.
 Missing protection or delivery can legitimately mean short_term; do not reject a correct conservative classification just because details are absent.
-When the title resolves a conflict, cite line 0. Cite the ambiguous original text for insufficient information, never invent lines. No replacement category, repairs, explanations or other fields.`;
+For false decisions, cite line 0 when title evidence disproves the proposal. For an insufficient_source rejection, cite the ambiguous original text. Never invent lines. No replacement category, repairs, explanations or other fields.`;
 
 const METADATA_KEYS = new Set(['category', 'goods_category_no', 'delivery_method', 'goods_type', 'extend', 'limit_quantity',
   'limit_count', 'fullgift', 'multipleoffers', 'promo_tags', 'promo_tags_desc', 'shopSource']);

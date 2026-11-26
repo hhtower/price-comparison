@@ -35,14 +35,10 @@ Return only {"items":[{"id":"input ID","feedback":"specific error or missing fac
 # Examples
 <review_example>
 <input>
-\`\`\`json
 {"inputs":[{"id":"201","name":"账号","evidence":"已接码。建议使用美区IP。"},{"id":"202","name":"月卡","spec":"1个月，不可覆盖订阅"},{"id":"203","name":"月卡1个月","spec":"12个月"}],"proposals":{"items":[{"id":"201","candidateCount":2,"tags":[{"name":"sms_verification","value":"verified"},{"name":"region","value":"us"}]},{"id":"202","candidateCount":1,"tags":[{"name":"duration","value":30}]},{"id":"203","candidateCount":2,"tags":[{"name":"duration","value":30},{"name":"duration","value":360}]}]}}
-\`\`\`
 </input>
 <output>
-\`\`\`json
 {"items":[{"id":"201","feedback":"The recommended IP region is not the sold account's region.","accepted":[true,false],"complete":true},{"id":"202","feedback":"The explicit inability to cover an existing subscription is missing.","accepted":[true],"complete":false},{"id":"203","feedback":"The explicit one-month title overrides the conflicting specification.","accepted":[true,false],"complete":true}]}
-\`\`\`
 </output>
 </review_example>
 # Context
