@@ -1,4 +1,4 @@
-import { assertStandardizationCheckpoint, parseStandardizationReviewFeedback, standardizationProposal,
+import { assertStandardizationCheckpoint, parseStandardizationReviewFeedback, standardizationProposal, StandardizationValidationError,
   STANDARDIZATION_REVIEW_REASONS, type StandardizationReviewFeedback,
   type ParsedStandardizationResponse, type StandardizationDecision } from './ai.schemas.js';
 import { aliasStandardizationContent, estimateStandardizationRequest, type StandardizationRequest, type StandardizationRequestLimits } from './standardization-request.js';
@@ -142,18 +142,42 @@ export function parseStandardizationReviewResponse(
   const closed = (value: unknown, keys: string[]): value is Record<string, unknown> =>
     !!value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
-  if (!closed(parsed, ['items']) || !Array.isArray(parsed.items) || parsed.items.length !== expected.size) {
-    throw new Error('Standardization review response has invalid items or extra fields');
+  const invalidItems = 'Standardization review response has invalid items or extra fields';
+  if (!closed(parsed, ['items'])) {
+    throw new StandardizationValidationError(invalidItems, 'invalid_response',
+      { stage: 'schema', code: 'invalid_review_envelope', fieldPath: '$' });
+  }
+  if (!Array.isArray(parsed.items)) {
+    throw new StandardizationValidationError(invalidItems, 'invalid_response', {
+      stage: 'schema', code: 'items_type_invalid', fieldPath: 'items',
+      expectedType: 'array', actualType: parsed.items === null ? 'null' : typeof parsed.items,
+    });
+  }
+  if (parsed.items.length !== expected.size) {
+    throw new StandardizationValidationError(invalidItems, 'invalid_response', {
+      stage: 'schema', code: parsed.items.length < expected.size ? 'missing_item_id' : 'items_limit_exceeded',
+      fieldPath: 'items', actualCount: parsed.items.length, maxCount: expected.size,
+    });
   }
   const approvals = new Map<string, StandardizationReviewFeedback>();
-  for (const item of parsed.items) {
-    if (!closed(item, ['id', 'approved', 'code', 'evidence']) || typeof item.id !== 'string' || !expected.has(item.id)
-      || approvals.has(item.id)) {
-      throw new Error('Standardization review response has invalid, duplicate or unknown IDs or approvals');
+  const invalidApproval = 'Standardization review response has invalid, duplicate or unknown IDs or approvals';
+  for (const [index, item] of parsed.items.entries()) {
+    const fieldPath = `items[${index}]`;
+    if (!closed(item, ['id', 'approved', 'code', 'evidence']) || typeof item.id !== 'string') {
+      throw new StandardizationValidationError(invalidApproval, 'invalid_response',
+        { stage: 'schema', code: 'invalid_review_item', fieldPath });
+    }
+    if (!expected.has(item.id)) {
+      throw new StandardizationValidationError(invalidApproval, 'invalid_response',
+        { stage: 'schema', code: 'item_id_unknown', fieldPath: `${fieldPath}.id` });
+    }
+    if (approvals.has(item.id)) {
+      throw new StandardizationValidationError(invalidApproval, 'invalid_response',
+        { stage: 'schema', code: 'duplicate_item_id', fieldPath: `${fieldPath}.id`, itemId: item.id });
     }
     approvals.set(item.id, parseStandardizationReviewFeedback({
       approved: item.approved, code: item.code, evidence: item.evidence,
-    }, `items[${approvals.size}].review`));
+    }, `${fieldPath}.review`));
   }
   const items = proposals.items.map((item): StandardizationDecision => {
     if (!isReviewableStandardizationDecision(item)) return item;

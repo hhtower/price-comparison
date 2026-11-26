@@ -59,6 +59,45 @@ test('review streaming returns an exact original identity or a fixed rejection w
   }
 });
 
+test('review failures distinguish response shape, count and IDs without retaining model text', async () => {
+  const cases = [
+    { value: null, code: 'invalid_review_envelope', fieldPath: '$' },
+    { value: { items: [vote(true)], 'private-model-field': 'private-model-text' },
+      code: 'invalid_review_envelope', fieldPath: '$' },
+    ...[true, null, vote(true)].map(items => ({
+      value: { items }, code: 'items_type_invalid', fieldPath: 'items',
+      constraint: { expectedType: 'array', actualType: items === null ? 'null' : typeof items },
+    })),
+    { value: { items: [] }, code: 'missing_item_id', fieldPath: 'items',
+      constraint: { actualCount: 0, maxCount: 1 } },
+    { value: { items: [vote(true), vote(true)] }, code: 'items_limit_exceeded', fieldPath: 'items',
+      constraint: { actualCount: 2, maxCount: 1 } },
+    { value: { items: [{ ...vote(true), extra: 'private-model-text' }] },
+      code: 'invalid_review_item', fieldPath: 'items[0]' },
+    { value: { items: [{ ...vote(true), id: 11 }] },
+      code: 'invalid_review_item', fieldPath: 'items[0]' },
+    { value: { items: [{ ...vote(true), id: 'private-model-id' }] },
+      code: 'item_id_unknown', fieldPath: 'items[0].id' },
+  ];
+  for (const scenario of cases) {
+    const call = model(async () => streamed(JSON.stringify(scenario.value)));
+    await assert.rejects(call(claimed, new AbortController().signal), (error: any) => {
+      assert.equal(error.retryClass, 'invalid_response');
+      assert.equal(error.retryable, false);
+      assert.equal(error.requestOutcome, 'confirmed');
+      const diagnostic = error.responseMetadata.responseDiagnostic;
+      assert.equal(diagnostic.phase, 'schema');
+      assert.equal(diagnostic.code, scenario.code);
+      assert.equal(diagnostic.fieldPath, scenario.fieldPath);
+      assert.deepEqual(diagnostic.constraint, scenario.constraint ?? {});
+      assert.equal(diagnostic.returnedItemCount,
+        scenario.constraint && 'actualCount' in scenario.constraint ? scenario.constraint.actualCount : null);
+      assert.doesNotMatch(JSON.stringify(error.responseMetadata), /private-model/);
+      return true;
+    });
+  }
+});
+
 test('review failures use one shared reservation and never checkpoint or publish incomplete decisions', async () => {
   for (const scenario of ['invalid-json', 'wrong-bool', 'extra-field', 'missing-id', 'duplicate-id', 'unknown-id',
     'bogus-citation', 'approved-feedback', 'legacy-vote', 'truncated', 'no-finish', 'timeout', 'cancel'] as const) {

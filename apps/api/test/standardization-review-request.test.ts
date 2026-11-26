@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseStandardizationProtocolResponse, standardizationProposal, STANDARDIZATION_REVIEW_REASONS, type ParsedStandardizationResponse } from '../src/ai/ai.schemas.js';
+import { parseStandardizationProtocolResponse, standardizationProposal, STANDARDIZATION_REVIEW_REASONS,
+  StandardizationValidationError, type ParsedStandardizationResponse } from '../src/ai/ai.schemas.js';
 import { buildStandardizationReviewRequest, parseStandardizationReviewResponse, planStandardizationReviewRequests,
   isReviewableStandardizationDecision } from '../src/ai/standardization-review-request.js';
 import { estimateStandardizationRequest } from '../src/ai/standardization-request.js';
@@ -80,6 +81,16 @@ test('binary parser rejects malformed, omitted, duplicate, corrected and coerced
   for (const content of ['', '{"items":', '```json\n{"items":[]}\n```', '{"items":[]} extra']) {
     assert.throws(() => parseStandardizationReviewResponse(content, proposals(), request));
   }
+});
+
+test('review identifies a duplicate ID even when the response count matches the proposals', () => {
+  assert.throws(() => parse({ items: [votes().items[0], votes().items[0]] }), (error: unknown) => {
+    assert.ok(error instanceof StandardizationValidationError);
+    assert.deepEqual(error.diagnostic, {
+      stage: 'schema', code: 'duplicate_item_id', fieldPath: 'items[1].id', itemId: '11',
+    });
+    return true;
+  });
 });
 
 test('review rejects missing proposal IDs and wrong or absent item-local frozen candidates', () => {
