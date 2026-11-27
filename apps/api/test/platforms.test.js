@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { crawl as crawl16688 } from '../src/platforms/16688.js';
+import { crawl as crawl16688, settle as settle16688 } from '../src/platforms/16688.js';
 import { crawl as crawlLiandong, probe as probeLiandong } from '../src/platforms/liandong.js';
 
 test('16688 crawl reads products from the goods API', async () => {
@@ -57,6 +57,59 @@ test('16688 keeps a product unverified when its quote is unavailable', async () 
   const [product] = await crawl16688(null, { url: 'https://www.16688.com.cn/shop/S620172' }, fetchImpl);
   assert.equal(product.price, 90);
   assert.equal(product.settlement, undefined);
+});
+
+test('16688 verifies the quoted amount breakdown without rejecting genuine discounts or free items', async () => {
+  const valid = { unit_price: '1369.50', goods_amount: '1369.50',
+    promotion_discount: '0.00', coupon_discount: '0.00', fee: '0.00', total_amount: '1369.50' };
+  for (const [data, expected] of [
+    [valid, '1369.50'],
+    [{ ...valid, total_amount: '1.00' }, undefined],
+    [{ ...valid, goods_amount: '1.00', total_amount: '1.00' }, undefined],
+    [{ ...valid, promotion_discount: '1368.50', total_amount: '1.00' }, '1.00'],
+    [{ ...valid, coupon_discount: '1369.50', total_amount: '0.00' }, '0.00'],
+    [{ ...valid, fee: '3.50', total_amount: '1373.00' }, '1373.00'],
+    [{ ...valid, fee: '0.0154', total_amount: '1369.52' }, '1369.52'],
+    [{ ...valid, fee: '0.0154', fee_payer: 0 }, '1369.50'],
+    [{ ...valid, fee: 'NaN' }, undefined],
+    [{ ...valid, coupon_discount: null }, undefined],
+    [{ ...valid, unit_price: '1,369.50' }, undefined],
+    [{ total_amount: '1.00' }, '1.00'],
+    [{ ...valid, goods_total_amount: '1.00' }, undefined],
+    [{ ...valid, promotion_discount: '1370.00', total_amount: '0.00' }, undefined],
+  ]) {
+    const outcomes = [];
+    const [product] = await crawl16688(null, { url: 'https://www.16688.com.cn/shop/test' }, async url => {
+      if (String(url).endsWith('/shopApi/goods/list')) return Response.json({
+        code: 1, data: { list: [{ goods_no: 'G1', name: 'Annual membership', price: '1369.50', stock_available_quantity: 1 }] },
+      });
+      if (String(url).endsWith('/shopApi/payment/list')) return Response.json({
+        code: 1, data: { list: [{ id: 1, show_name: 'Alipay' }] },
+      });
+      return Response.json({ code: 1, data });
+    }, { onSettlementResult: outcome => outcomes.push(outcome) });
+    assert.equal(product.settlement?.price, expected, JSON.stringify(data));
+    assert.equal(outcomes.at(-1).status, expected === undefined ? 'failed' : 'verified');
+  }
+});
+
+test('16688 checks bulk totals in decimal precision and rounds fractional fees only once', async () => {
+  for (const [data, quantity, expected] of [
+    [{ unit_price: '0.55', goods_amount: '1.65', promotion_discount: '0', coupon_discount: '0',
+      fee: '0.0462', fee_payer: 1, goods_total_amount: '1.65', total_amount: '1.70' }, 3, '0.566666666667'],
+    [{ unit_price: '0.55', goods_amount: '1.65', promotion_discount: '0', coupon_discount: '0',
+      fee: '0.0462', fee_payer: '0', goods_total_amount: '1.65', total_amount: '1.65' }, 3, '0.55'],
+    [{ unit_price: '0.55', goods_amount: '0.55', promotion_discount: '0', coupon_discount: '0',
+      fee: '0', total_amount: '0.55' }, 3, undefined],
+    [{ unit_price: '999999999999.99', goods_amount: '999999999999.99', promotion_discount: '0',
+      coupon_discount: '0', fee: '0', goods_total_amount: '999999999999.99', total_amount: '999999999999.99' }, 1, '999999999999.99'],
+  ]) {
+    const products = [{ externalId: 'bulk', inStock: true, sourceData: { limit_quantity: quantity } }];
+    await settle16688({ url: 'https://www.16688.com.cn/shop/test' }, products, async url => Response.json({
+      code: 1, data: String(url).endsWith('/list') ? { list: [{ id: 1, show_name: 'Alipay' }] } : data,
+    }));
+    assert.equal(products[0].settlement?.price, expected, JSON.stringify(data));
+  }
 });
 
 for (const [name, crawl, listPath, channelPath, quotePath, item] of [

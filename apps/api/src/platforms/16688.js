@@ -5,6 +5,27 @@ import { collectSettlements, settlementJson, minimumPurchaseQuantity, usablePaym
 export const id = '16688';
 export const purchaseQuantity = product => minimumPurchaseQuantity(product.sourceData, 'limit_quantity');
 
+function consistentQuote(data, quantity) {
+  const fields = ['unit_price', 'goods_amount', 'promotion_discount', 'coupon_discount', 'fee'];
+  if (!data || !fields.some(field => Object.hasOwn(data, field))) return true;
+  const hasGoodsTotal = Object.hasOwn(data, 'goods_total_amount');
+  const amounts = [...fields, 'total_amount', ...(hasGoodsTotal ? ['goods_total_amount'] : [])].map(field => {
+    const value = data[field];
+    if (!['string', 'number'].includes(typeof value) || !/^\d{1,12}(?:\.\d{1,12})?$/.test(String(value))) return undefined;
+    const [integer, fraction = ''] = String(value).split('.');
+    return BigInt(integer + fraction.padEnd(12, '0'));
+  });
+  if (amounts.some(value => value === undefined)) return false;
+  const [unit, goods, promotion, coupon, fee, total, goodsTotal] = amounts;
+  const payable = goods - promotion - coupon;
+  if (unit * BigInt(quantity) !== goods || payable < 0n) return false;
+  if (hasGoodsTotal && goodsTotal !== payable) return false;
+  if (data.fee_payer !== undefined && ![0, 1, '0', '1'].includes(data.fee_payer)) return false;
+  // Fees may contain fractions of a cent; round only the final payable amount.
+  const expected = payable + (data.fee_payer === 0 || data.fee_payer === '0' ? 0n : fee);
+  return (expected + 5000000000n) / 10000000000n * 10000000000n === total;
+}
+
 async function readListings(shop, fetchImpl) {
   const shopNo = new URL(shop.url).pathname.split('/').filter(Boolean).pop();
   const response = await fetchImpl(new URL('/shopApi/goods/list', shop.url).href, {
@@ -106,6 +127,7 @@ export async function settle(shop, products, fetchImpl = globalThis.fetch, optio
       if (payload?.code === 0 && payload.msg === '商品已售罄') {
         throw Object.assign(new Error('16688 product out of stock'), { name: 'ProductOutOfStockError' });
       }
+      if (payload?.code === 1 && !consistentQuote(payload.data, quantity)) return undefined;
       return payload;
     },
   }, options);
