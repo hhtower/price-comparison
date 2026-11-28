@@ -1,3 +1,4 @@
+import { jsonb } from '../src/database/types.js';
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { Kysely, PostgresDialect, sql } from 'kysely';
@@ -52,7 +53,7 @@ describe('crawler diagnostics over PostgreSQL', () => {
     const later = new Date(now.getTime() + 10 * 60_000);
     await database.insertInto('fetch_runs').values([
       { shop_id: shop.id, started_at: old, finished_at: old, status: 'failed', error: null, task_type: 'list' },
-      { shop_id: shop.id, started_at: fresh, finished_at: fresh, status: 'succeeded', error: null, task_type: 'list', crawl_metrics: JSON.stringify({ version: 1, attempts: 1, listSucceeded: 1, listFailed: 0, leaseFailures: 1, requests: 3, retries: 1, durations: { list: 100, settlement: 80, transaction: 50, rate_wait: 20, proxy_wait: 10, network: 60, total: 300 }, hosts: { 'example.com': { requests: 3, retries: 1, list: 1, channel: 1, settlement: 1, connection: 0, rate_limited: 0, blocked: 0, timeout: 0, networkMs: 60 } } }) },
+      { shop_id: shop.id, started_at: fresh, finished_at: fresh, status: 'succeeded', error: null, task_type: 'list', crawl_metrics: jsonb({ version: 1, attempts: 1, listSucceeded: 1, listFailed: 0, leaseFailures: 1, requests: 3, retries: 1, durations: { list: 100, settlement: 80, transaction: 50, rate_wait: 20, proxy_wait: 10, network: 60, total: 300 }, hosts: { 'example.com': { requests: 3, retries: 1, list: 1, channel: 1, settlement: 1, connection: 0, rate_limited: 0, blocked: 0, timeout: 0, networkMs: 60 } } }) },
       { shop_id: shop.id, started_at: fresh, finished_at: fresh, status: 'failed', error: null, task_type: 'list' },
       { shop_id: shop.id, started_at: fresh, finished_at: fresh, status: 'failed', error: null, task_type: 'settlement' },
       { shop_id: shop.id, started_at: fresh, status: 'queued', error: null, task_type: 'list', available_at: fresh },
@@ -90,11 +91,11 @@ describe('crawler diagnostics over PostgreSQL', () => {
     ]).returning('id').execute();
     const list = await database.insertInto('fetch_runs').values({
       shop_id: shops[0]!.id, started_at: new Date(), finished_at: new Date(), status: 'succeeded', error: null, task_type: 'list',
-      crawl_metrics: JSON.stringify({ version: 1, attempts: 1, listSucceeded: 1, listFailed: 0, leaseFailures: 0, requests: 4, retries: 1, durations: {}, hosts: { 'budget.example': { requests: 4, retries: 1, list: 2, channel: 1, settlement: 1, networkMs: 100 } } }),
+      crawl_metrics: jsonb({ version: 1, attempts: 1, listSucceeded: 1, listFailed: 0, leaseFailures: 0, requests: 4, retries: 1, durations: {}, hosts: { 'budget.example': { requests: 4, retries: 1, list: 2, channel: 1, settlement: 1, networkMs: 100 } } }),
     }).returning('id').executeTakeFirstOrThrow();
     await database.insertInto('fetch_runs').values({
       shop_id: shops[0]!.id, started_at: new Date(), finished_at: new Date(), status: 'failed', error: null, task_type: 'settlement', source_fetch_run_id: list.id,
-      crawl_metrics: JSON.stringify({ version: 1, attempts: 1, listSucceeded: 0, listFailed: 0, leaseFailures: 0, requests: 2, retries: 1, durations: {}, hosts: { 'budget.example': { requests: 2, retries: 1, list: 0, channel: 1, settlement: 1, networkMs: 50 } } }),
+      crawl_metrics: jsonb({ version: 1, attempts: 1, listSucceeded: 0, listFailed: 0, leaseFailures: 0, requests: 2, retries: 1, durations: {}, hosts: { 'budget.example': { requests: 2, retries: 1, list: 0, channel: 1, settlement: 1, networkMs: 50 } } }),
     }).execute();
     const diagnostics = await new DiagnosticsRepository(database).snapshot();
     assert.deepEqual(diagnostics.budgets.find(budget => budget.host === 'budget.example'), {

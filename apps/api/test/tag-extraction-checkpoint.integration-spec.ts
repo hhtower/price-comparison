@@ -56,7 +56,8 @@ const noWarranty: WarrantyLabels = {
 async function fixture(count = 1, evidence?: string, stage: 'warranty' | 'generate' | 'review' = 'generate',
   warrantyEligible = stage === 'warranty') {
   const shop = await db.insertInto('shops').values({ platform: 'test', name: 'test', url: `https://test.invalid/${Math.random()}`, enabled: true }).returningAll().executeTakeFirstOrThrow();
-  const payload = { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData: evidence === undefined ? {} : { evidence }, warrantyEligible,
+  const sourceData: JsonValue = evidence === undefined ? {} : { evidence };
+  const payload = { name: 'ChatGPT Plus', spec: '1\u4e2a\u6708', sourceData, warrantyEligible,
     shopSource: { url: shop.url, protocol: shop.protocol, platform: shop.platform } };
   const fingerprint = productContentFingerprint({ ...payload, sourceCategory: '' });
   const products = await db.insertInto('products').values(Array.from({ length: count }, (_, index) => ({
@@ -461,7 +462,7 @@ test('queued warranty skips its free alias before reservation while its paid ded
 
 test('warranty sources reject foreign, missing, incomplete and malformed checkpoints and retain labels for unavailable inputs', async () => {
   const f = await fixture(1, '首登包换', 'warranty');
-  const item = { productId: String(f.inputId), tags: [], rejectedTags: [], warrantyLabels };
+  const item = { productId: String(f.inputId), tags: [], rejectedTags: [], warrantyLabels: { ...warrantyLabels } };
   await f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id,
     [{ ...item, productId: f.inputId }], {}, claim, 'warranty');
   const child = await db.selectFrom('ai_job_batches').selectAll().where('job_id', '=', f.job.id).where('id', '!=', f.batch.id).executeTakeFirstOrThrow();
@@ -610,7 +611,7 @@ test('frozen stages drive checkpoints and reject obsolete snapshots or conflicti
   f.decision.rejectedTags = [];
   f.decision.reviewDecisions = [true];
   const frozen = (await batchRow(f.batch.id)).reference_snapshot;
-  for (const reference of [null, {}, { tagStage: 'generate' }, { standardizationStage: 'generate' }, { reviewStage: 'extract' }]) {
+  for (const reference of Array.of<JsonValue>(null, {}, { tagStage: 'generate' }, { standardizationStage: 'generate' }, { reviewStage: 'extract' })) {
     await db.updateTable('ai_job_batches').set({ reference_snapshot: reference === null ? null : jsonb(reference) })
       .where('id', '=', f.batch.id).execute();
     await assert.rejects(f.repo.checkpointTagExtractionBatchDecision(f.job.id, f.batch.id, [f.decision], metadata, claim), /stage|frozen/i);
@@ -1574,7 +1575,7 @@ test('audit exposes saved votes and never reconstructs corrupted vectors from ta
   for (const vector of [[true, 'false'], null, [], [false, true]]) {
     await db.updateTable('ai_job_batches').set({ validated_decision: jsonb({ items: [
       { ...reviewed, productId: String(f.inputId), reviewDecisions: vector },
-    ] }) }).where('id', '=', f.batch.id).execute();
+    ] } as unknown as JsonValue) }).where('id', '=', f.batch.id).execute();
     const audit = await f.repo.tagProductAudit(f.job.id, f.inputId);
     assert.deepEqual(audit.batches[0].review_decisions, Array.isArray(vector) && vector.every(value => typeof value === 'boolean') ? vector : null);
   }
@@ -1585,7 +1586,7 @@ async function textPublicationFixture(count = 1) {
   const product = f.products[0]!;
   const source = await db.selectFrom('shops').select(['url', 'protocol', 'platform']).where('id', '=', product.shop_id).executeTakeFirstOrThrow();
   const text = { unitId: 'shared-listing', name: product.name, description: '交付账号。服务有效期1个月。', hash: 'a'.repeat(64) };
-  const sourceData = { ratingText: text };
+  const sourceData: JsonValue = { ratingText: text };
   const payload = { ...buildExtractionPayload({ id: String(f.inputId), name: product.name, spec: product.spec, sourceData }), shopSource: source };
   const fingerprint = productContentFingerprint({ name: product.name, spec: product.spec, sourceCategory: '', sourceData });
   await db.updateTable('products').set({ source_data: jsonb(sourceData), content_fingerprint: fingerprint })

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DummyDriver, Kysely, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler, type CompiledQuery } from 'kysely';
+import { DummyDriver, Kysely, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler, InsertQueryNode, ValuesNode, ValueNode, type CompiledQuery } from 'kysely';
 import { AiRepository, productFingerprint } from '../src/ai/ai.repository.js';
 import { createMembershipFeatureJob, createTagJob, previewTagJob } from '../src/ai/tag-extraction-jobs.js';
 import { recordManualDecisions } from '../src/standardization/decision-history.js';
@@ -34,11 +34,11 @@ function fixture(products = [product(1n)], manual: unknown[] = [], consensus: un
       return { executeQuery: async (query: CompiledQuery) => {
         queries.push(query);
         const node = query.query;
-        if (node.kind === 'InsertQueryNode' && node.values?.kind === 'ValuesNode') {
+        if (InsertQueryNode.is(node) && node.values && ValuesNode.is(node.values)) {
           const table = query.sql.match(/^insert into "([^"]+)"/)![1]!;
           const rows = node.values.values.map(row => Object.fromEntries(node.columns!.map((column, index) => [
             column.column.name, row.kind === 'PrimitiveValueListNode' ? row.values[index]
-              : row.values[index]?.kind === 'ValueNode' ? row.values[index].value : undefined,
+              : row.values[index] && ValueNode.is(row.values[index]) ? row.values[index].value : undefined,
           ])));
           inserts.set(table, [...inserts.get(table) ?? [], ...rows]);
           if (table === 'ai_jobs') return { rows: [job] };
@@ -156,7 +156,7 @@ for (const kind of ['identity', 'membership_features', 'tag_extraction'] as cons
     assert.deepEqual(f.inserts.get('ai_job_inputs')!.map(row => row.fingerprint), products.map(p => p.content_fingerprint));
   });
 
-  test(`${kind} adds shop text review context only for tag grouping`, async () => {
+  test(`${kind} groups by captured evidence without keying by shop unit`, async () => {
     const products = [taskProduct(1n),
       taskProduct(2n, { source_data: { ratingText: captureRatingText('parent-a', 'Original shop title', 'Shop description')! } }),
       taskProduct(3n, { source_data: { ratingText: captureRatingText('parent-b', 'Original shop title', 'Shop description')! } }),
@@ -164,8 +164,9 @@ for (const kind of ['identity', 'membership_features', 'tag_extraction'] as cons
     assert.equal(new Set(products.map(p => p.content_fingerprint)).size, 1);
     const f = fixture(products);
     await create(f.db, products);
-    assert.deepEqual(f.inserts.get('ai_job_input_members')!.map(row => row.input_id),
-      kind === 'tag_extraction' ? [1n, 2n, 2n] : [1n, 1n, 1n]);
+    assert.deepEqual(f.inserts.get('ai_job_input_members')!.map(row => row.input_id), [1n, 2n, 2n]);
+    const captured = JSON.parse(f.inserts.get('ai_job_inputs')![1]!.payload as string);
+    assert.deepEqual(captured.originalText, { name: 'Original shop title', description: 'Shop description' });
     assert.ok(f.inserts.get('ai_job_inputs')!.every(row => row.fingerprint === products[0]!.content_fingerprint));
   });
 }

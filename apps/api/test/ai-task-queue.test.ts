@@ -33,8 +33,8 @@ for (const status of ['all', 'unfinished', 'attention']) {
     try {
       const result = await readAiTaskQueue(database, { status, limit: 50 });
       assert.equal(queries.length, status === 'attention' ? 1 : 4, 'attention candidates are shared by the list and totals');
-      assert.equal('manual_isolation' in result.summary.currentReasons, false);
-      assert.equal(result.summary.currentReasons.technical_failure, 2);
+      assert.equal('manual_isolation' in result.summary.currentReasons!, false);
+      assert.equal(result.summary.currentReasons!.technical_failure, 2);
       assert.equal(result.summary.pendingEvents, status === 'attention' ? 0 : 1);
       assert.match(queries[0]!.sql, /product_standardization_decisions/u);
       assert.match(queries[0]!.sql, /content_fingerprint/u);

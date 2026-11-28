@@ -18,11 +18,11 @@ export interface WorkerRuntimeService {
   waitForWork?(channel: string, signal: AbortSignal): Promise<void>;
   queueDepth?(kind: QueueKind): Promise<number>;
   heartbeat(kind: QueueKind, id: bigint, workerId: string, leaseMs?: number, claimToken?: string): Promise<void>;
-  complete(kind: QueueKind, id: bigint, workerId: string): Promise<void>;
+  complete(kind: QueueKind, id: bigint, workerId: string, claimToken?: string): Promise<void>;
   fail(kind: QueueKind, id: bigint, workerId: string, error: string, options?: { retry?: boolean; backoffMs?: number; retryClass?: string | null; claimToken?: string }): Promise<void>;
   requeue(kind: QueueKind, id: bigint, workerId: string, backoffMs?: number, claimToken?: string): Promise<void>;
   /** Synchronous local cleanup after all execution/state-transition attempts have ended. */
-  onSettled?(kind: QueueKind, id: bigint, workerId: string): void;
+  onSettled?(kind: QueueKind, id: bigint, workerId: string, claimToken?: string): void;
 }
 
 export interface WorkerRuntimeOptions {
@@ -51,7 +51,7 @@ export interface WorkerRuntimeOptions {
 export class WorkerRuntime {
   private readonly options: Required<Omit<WorkerRuntimeOptions, 'logger' | 'metrics' | 'usesAiLease' | 'beforeExecute'>>
     & Pick<WorkerRuntimeOptions, 'logger' | 'metrics' | 'usesAiLease' | 'beforeExecute'>;
-  private readonly active = new Map<bigint, { controller: AbortController; heartbeat: ReturnType<typeof setInterval> }>();
+  private readonly active = new Set<{ id: bigint; controller: AbortController; heartbeat: ReturnType<typeof setInterval> }>();
   private readonly inFlightRuns = new Set<Promise<number>>();
   private stopping = false;
   private started = false;
@@ -88,7 +88,9 @@ export class WorkerRuntime {
 
   /** Cancel this job's execution or pending shared-resource acquisition. */
   cancel(id: bigint, reason: Error = new Error('worker task cancelled')): void {
-    this.active.get(id)?.controller.abort(reason);
+    for (const task of this.active) {
+      if (task.id === id) task.controller.abort(reason);
+    }
   }
 
   start(): void {
@@ -190,7 +192,7 @@ export class WorkerRuntime {
   }
 
   private settle(job: ClaimedJob): void {
-    try { this.options.service.onSettled?.(this.options.kind, job.id, this.options.workerId); }
+    try { this.options.service.onSettled?.(this.options.kind, job.id, this.options.workerId, job.row.claim_token as string | undefined); }
     catch (error) { this.options.logger?.warn?.('worker.local_cleanup_failed', error); }
   }
 
@@ -207,10 +209,12 @@ export class WorkerRuntime {
         controller.abort(error);
       });
     }, this.options.heartbeatMs);
-    this.active.set(job.id, { controller, heartbeat });
+    // A checkpoint may queue the same ID while its previous handler is still settling.
+    const task = { id: job.id, controller, heartbeat };
+    this.active.add(task);
     void this.execute(job, controller).finally(() => {
       clearInterval(heartbeat);
-      this.active.delete(job.id);
+      this.active.delete(task);
       this.settle(job);
     });
   }
@@ -243,7 +247,7 @@ export class WorkerRuntime {
             this.recordWorker('requeued', startedAt);
             this.logWorker('worker.requeued', startedAt);
           } else {
-            await this.options.service.complete(this.options.kind, job.id, this.options.workerId);
+            await this.options.service.complete(this.options.kind, job.id, this.options.workerId, job.row.claim_token as string | undefined);
             this.recordWorker('succeeded', startedAt);
             this.logWorker('worker.completed', startedAt);
           }
@@ -280,7 +284,7 @@ export class WorkerRuntime {
               retry,
               backoffMs: retry ? delay : 0,
               retryClass,
-              ...(this.options.kind === 'assistant_turn' && typeof job.row.claim_token === 'string'
+              ...(typeof job.row.claim_token === 'string'
                 ? { claimToken: job.row.claim_token } : {}),
             });
             this.recordWorker(retry ? 'requeued' : 'failed', startedAt);

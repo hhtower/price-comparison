@@ -50,10 +50,10 @@ for (const upgrade of [false, true]) test(`split warranty storage and filters: $
         expected: [{ name: 'subscription_warranty', value: '质保 7 天' }, { name: 'usage_warranty', value: '质保 7 天' }],
       },
     ];
-    const products = [];
+    const products: bigint[] = [];
     for (const [index, fixture] of cases.entries()) {
       const key = `upgrade-${index}`;
-      const id = (await pool.query(`insert into products (shop_id,external_id,name,normalized_key,url)
+      const id: bigint = (await pool.query(`insert into products (shop_id,external_id,name,normalized_key,url)
         values ($1,$2,'upgrade plan',$2,'https://test.invalid/upgrade') returning id`, [shop, key])).rows[0].id;
       products.push(id);
       for (const tag of fixture.tags) await pool.query(`insert into product_tags (product_id,name,value) values ($1,$2,$3::jsonb)`,
@@ -63,7 +63,7 @@ for (const upgrade of [false, true]) test(`split warranty storage and filters: $
     assert.equal((await pool.query('select * from product_tags where product_id=$1', [product])).rowCount, 0);
     assert.deepEqual((await pool.query('select tags from catalog_product_facts where product_id=$1', [product])).rows[0].tags, []);
     for (const [index, fixture] of cases.entries()) {
-      const id = products[index];
+      const id: bigint = products[index];
       assert.deepEqual((await pool.query('select name,value from product_tags where product_id=$1 order by name,value', [id])).rows,
         fixture.expected, `upgrade case ${index}: remove only ambiguous warranty groups after invalid values`);
       assert.deepEqual((await pool.query('select tags from catalog_product_facts where product_id=$1', [id])).rows[0].tags,

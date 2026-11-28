@@ -14,6 +14,7 @@ test('assistant thinking and timeout are independent of background task settings
   assert.equal(config.environment.AI_MAX_OUTPUT_BYTES, String(ASSISTANT_LIMITS.outputMaxBytes));
   assert.deepEqual(readModelRequestOptions(config.environment), { thinking: 'enabled' });
   const request = buildModelRequestOptions(config.model!, readModelRequestOptions(config.environment), ASSISTANT_LIMITS.outputMaxTokens);
+  assert.ok('max_completion_tokens' in request);
   assert.equal(request.max_completion_tokens, 8192);
   assert.equal(request.reasoning_effort, 'medium');
   assert.equal(buildModelRequestOptions('glm-5.3-flash', readModelRequestOptions(config.environment)).reasoning_effort, 'low');

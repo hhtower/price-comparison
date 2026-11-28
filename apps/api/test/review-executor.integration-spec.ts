@@ -1,3 +1,4 @@
+import { jsonObject } from './json-object.js';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { Kysely, PostgresDialect } from 'kysely';
@@ -45,7 +46,7 @@ test('the executor confirms, saves and queues the independent review atomically'
   assert.equal(rows[0]!.confirmed_requests, 1);
   assert.equal(rows[0]!.step, 'done');
   assert.deepEqual(rows[0]!.validated_decision, f.document);
-  assert.equal(rows[0]!.response_usage?.totalTokens, 8);
+  assert.equal(jsonObject(rows[0]!.response_usage).totalTokens, 8);
   assert.equal(rows[1]!.step, 'request');
   assert.equal(rows[1]!.request_budget_limit, 2);
   assert.deepEqual(rows[1]!.product_ids, f.input.inputIds.map(String));

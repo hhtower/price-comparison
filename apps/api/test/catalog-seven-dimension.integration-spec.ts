@@ -5,7 +5,7 @@ import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
-import { type DatabaseSchema, jsonb } from '../src/database/types.js';
+import { type DatabaseSchema, type JsonValue, jsonb } from '../src/database/types.js';
 import { CatalogRepository } from '../src/catalog/catalog.repository.js';
 import { CatalogService, normalizeCatalogQuery } from '../src/catalog/catalog.service.js';
 import { publishNextCatalogChange } from '../src/catalog/catalog-projection.js';
@@ -67,31 +67,31 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
     { name: 'subscription_override', value: '无' }, { name: 'bulk_purchase', value: 'supported' },
     { name: 'subscription_warranty', value: '质保 30 天' }, { name: 'usage_warranty', value: '首登' },
   ];
-  const accepted: { name: string; value: unknown }[] = [
-    ...valid, ...[0.5, 2, 90, 360, 365, { kind: 'range', min: 30, max: 90 }, { kind: 'min', days: 30 },
+  const accepted: { name: string; value: JsonValue }[] = [
+    ...valid, ...Array.of<JsonValue>(0.5, 2, 90, 360, 365, { kind: 'range', min: 30, max: 90 }, { kind: 'min', days: 30 },
       { kind: 'max', days: 90 }, { kind: 'approx', days: 30 }, { kind: 'permanent' },
       36500, { kind: 'range', min: 0.5, max: 36500 },
       ...['min', 'max', 'approx'].map(kind => ({ kind, days: 36500 })),
-    ].map(value => ({ name: 'duration', value })),
+    ).map(value => ({ name: 'duration', value })),
     ...Object.entries(PRODUCT_TAG_RULES).flatMap(([name, rule]) => (rule.values ?? []).map(value => ({ name, value }))),
     { name: 'supported_client', value: 'x'.repeat(80) },
     ...['subscription_warranty', 'usage_warranty'].flatMap(name => [
       '质保 48 小时', '质保 0.125 小时', '质保 1.3333 天', '质保 1e+21 天', '质保（期限未注明）',
     ].map(value => ({ name, value }))),
   ];
-  const rejected: { name: string; value: unknown }[] = [
-    ...['30', '1 month', 0, -1, 36501, null, [], {}, true, { kind: 'range', min: 30, max: 30 },
+  const rejected: { name: string; value: JsonValue }[] = [
+    ...Array.of<JsonValue>('30', '1 month', 0, -1, 36501, null, [], {}, true, { kind: 'range', min: 30, max: 30 },
       { kind: 'range', min: 90, max: 30 }, { kind: 'range', min: 0, max: 30 },
       { kind: 'range', min: 30, max: 36501 }, { kind: 'range', min: '30', max: 90 },
       { kind: 'range', min: 30, max: '90' }, { kind: 'range', min: 30 },
       { kind: 'range', max: 90 }, { kind: 'range', min: 30, max: 90, extra: true },
       { kind: 'permanent', days: 30 }, { kind: 'other', days: 30 },
-      ...['min', 'max', 'approx'].flatMap(kind => [
+      ...['min', 'max', 'approx'].flatMap(kind => Array.of<JsonValue>(
         { kind }, { kind, days: 30, extra: true },
         ...[0, -1, 36501, '30', null, [], {}, true].map(days => ({ kind, days })),
-      ]),
+      )),
       ...[[], ['min'], ['max'], ['approx'], {}, null, 1, true].map(kind => ({ kind, days: 30 })),
-    ].map(value => ({ name: 'duration', value })),
+    ).map(value => ({ name: 'duration', value })),
     ...Object.keys(PRODUCT_TAG_RULES).filter(name => name !== 'duration').flatMap(name =>
       [null, [], {}, true, 30, '', ' ', '\t', ' x', 'x ', '\nx', 'x\n', '\tx', 'x\t', 'x'.repeat(251)]
         .map(value => ({ name, value }))),
@@ -148,7 +148,7 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
     standardProductId: String(standard.id), detailKind: 'offers', detailPageSize: 50, tags, q,
   }));
   const results = (page: Awaited<ReturnType<typeof search>>) =>
-    page.items.flatMap(item => item.detail?.entries ?? []).map(entry => 'productId' in entry ? entry.productId : entry.offer.productId);
+    page.items.flatMap(item => (item.detail?.entries ?? []).map(entry => 'productId' in entry ? entry.productId : entry.offer.productId));
   assert.deepEqual(results(await search([{ name: 'duration', value: 30 }])), [String(source.id)]);
   const minimum = await search([{ name: 'duration_min_days', value: 30 }]);
   assert.equal(minimum.offerTotal, 5);
@@ -186,7 +186,7 @@ for (const upgrade of [false, true]) test(`seven-dimension read model: ${upgrade
   assert.deepEqual(await facts(), []);
   assert.deepEqual((await repository.facets({ tags: [] })).tagFacets, []);
   const untagged = await search([]);
-  assert.ok(untagged.items.flatMap(item => item.detail?.entries ?? []).every(entry => 'tags' in entry && entry.tags.length === 0));
+  assert.ok(untagged.items.every(item => (item.detail?.entries ?? []).every(entry => 'tags' in entry && entry.tags.length === 0)));
   assert.equal(untagged.items[0]!.offers[0]!.settlementQuantity, 3);
   assert.ok((await sql<{ version: bigint }>`select version from catalog_cache_versions`.execute(db)).rows[0]!.version > beforeVersion);
   assert.deepEqual((await sql`select facet_tags, product_count::int from catalog_read_facet_counts`.execute(db)).rows,

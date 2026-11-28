@@ -31,7 +31,7 @@ for (const cancelled of [false, true]) {
     } };
     const repository = new OfficialReferenceRepository(pool as never);
     const originalSettled = repository.onSettled.bind(repository);
-    repository.onSettled = (kind, id, workerId) => { originalSettled(kind, id, workerId); settlements++; firstSettled.resolve(); };
+    repository.onSettled = (kind, id, workerId, claimToken) => { originalSettled(kind, id, workerId, claimToken); settlements++; firstSettled.resolve(); };
     let runtime!: WorkerRuntime;
     runtime = new WorkerRuntime({ service: repository, kind: 'fetch_run', workerId: 'stable-worker', concurrency: 2,
       handler: async (job, signal) => {

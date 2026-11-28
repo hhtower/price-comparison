@@ -216,7 +216,7 @@ test('deployment SOCKS pins the actual destination and keeps concurrent handshak
     controller.abort(reason);
     assert.equal(await first, reason);
     socket.once('data', data => {
-      destinations.push([...data]);
+      destinations.push([...Buffer.from(data)]);
       socket.once('data', request => {
         requests.push(request.toString());
         socket.end('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK');

@@ -1,7 +1,15 @@
 import { sql, type Kysely } from 'kysely';
-import { AI_MEMBERSHIP_TIERS } from '@price-comparison/catalog/membership-policy';
 
-async function lockTables(database: Kysely<unknown>): Promise<void> {
+// Frozen from a517acb9; the installed function must not follow later application policies.
+const AI_MEMBERSHIP_TIERS = {
+  'openai/chatgpt': ['go', 'plus', 'pro_5x', 'pro_20x', 'pro_500', 'team', 'team_5x'],
+  'anthropic/claude': ['pro', 'max_5x', 'max_20x', 'team', 'team_5x'],
+  'google/gemini': ['plus', 'pro', 'ultra_5x', 'ultra_20x'],
+  'xai/grok': ['plus', 'premium', 'super', 'ultra', 'supergrok', 'heavy'],
+  'cursor/cursor': ['pro', 'pro_plus', 'ultra'],
+} as const;
+
+async function lockTables<DB>(database: Kysely<DB>): Promise<void> {
   await sql`do $locks$
     begin
       for attempt in 1..40 loop
@@ -20,7 +28,7 @@ async function lockTables(database: Kysely<unknown>): Promise<void> {
   $locks$`.execute(database);
 }
 
-export async function up(database: Kysely<unknown>): Promise<void> {
+export async function up<DB>(database: Kysely<DB>): Promise<void> {
   await lockTables(database);
   const identities = Object.entries(AI_MEMBERSHIP_TIERS).flatMap(([pair, tiers]) =>
     tiers.map(tier => `${pair}/${tier}`));
@@ -60,7 +68,7 @@ export async function up(database: Kysely<unknown>): Promise<void> {
       or old.platform is distinct from new.platform) execute function invalidate_membership_shop_features()`.execute(database);
 }
 
-export async function down(database: Kysely<unknown>): Promise<void> {
+export async function down<DB>(database: Kysely<DB>): Promise<void> {
   await lockTables(database);
   await sql`drop trigger invalidate_membership_shop_features on shops`.execute(database);
   await sql`drop function invalidate_membership_shop_features()`.execute(database);

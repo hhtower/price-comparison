@@ -12,7 +12,7 @@ import { validateRegionSnapshot } from './official-reference.snapshot.js';
 
 @Injectable()
 export class OfficialReferenceRepository implements ReferenceSnapshotReader, WorkerRuntimeService {
-  private readonly claims = new Map<bigint, string>();
+  private readonly claims = new Map<string, bigint>();
   intervalMs = 2 * 60 * 60 * 1000;
 
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
@@ -39,18 +39,18 @@ export class OfficialReferenceRepository implements ReferenceSnapshotReader, Wor
       + "order by (task_key = 'fx') desc, available_at, id for update skip locked limit 1) "
       + "update official_reference_jobs j set status = 'running', claimed_by = $1, claim_token = $2, "
       + "lease_until = clock_timestamp() + $3 * interval '1 millisecond', attempts = attempts + 1 from candidate c where j.id = c.id returning j.*",
-    [workerId, token, leaseMs, [...this.claims.keys()].map(String)]);
+    [workerId, token, leaseMs, [...this.claims.values()].map(String)]);
     const row = result.rows[0];
     if (!row) return null;
     const id = BigInt(row.id);
-    this.claims.set(id, token);
+    this.claims.set(token, id);
     return { kind: 'fetch_run', id, attempts: BigInt(row.attempts), claimed_by: workerId, lease_until: row.lease_until, row };
   }
 
-  async heartbeat(_kind: QueueKind, id: bigint, workerId: string, leaseMs = 30_000): Promise<void> {
+  async heartbeat(_kind: QueueKind, id: bigint, workerId: string, leaseMs = 30_000, claimToken?: string): Promise<void> {
     const result = await this.pool.query("update official_reference_jobs set lease_until = clock_timestamp() + $4 * interval '1 millisecond' "
       + "where id = $1 and claimed_by = $2 and claim_token = $3 and status = 'running' and lease_until > clock_timestamp()",
-    [String(id), workerId, this.claims.get(id), leaseMs]);
+    [String(id), workerId, claimToken, leaseMs]);
     if (!result.rowCount) throw new Error('Reference task lease lost');
   }
 
@@ -68,8 +68,8 @@ export class OfficialReferenceRepository implements ReferenceSnapshotReader, Wor
     if (!result.rowCount) throw new Error('Reference task lease lost before publication');
   }
 
-  async complete(_kind: QueueKind, id: bigint, workerId: string): Promise<void> {
-    await this.release(id, workerId, this.intervalMs, null, true);
+  async complete(_kind: QueueKind, id: bigint, workerId: string, claimToken?: string): Promise<void> {
+    await this.release(id, workerId, this.intervalMs, null, true, claimToken);
   }
 
   async markUnavailable(job: ClaimedJob, signal: AbortSignal): Promise<void> {
@@ -81,25 +81,25 @@ export class OfficialReferenceRepository implements ReferenceSnapshotReader, Wor
     if (!result.rowCount) throw new Error('Reference task lease lost before retirement');
   }
 
-  async fail(_kind: QueueKind, id: bigint, workerId: string, _error: string, options?: { retry?: boolean; backoffMs?: number }): Promise<void> {
+  async fail(_kind: QueueKind, id: bigint, workerId: string, _error: string, options?: { retry?: boolean; backoffMs?: number; claimToken?: string }): Promise<void> {
     // Never persist transport errors: proxy URLs can carry credentials.
     await this.release(id, workerId, options?.retry ? options.backoffMs ?? 30_000 : this.intervalMs,
-      '官方来源本次更新失败，保留上次完整报价', !options?.retry);
+      '官方来源本次更新失败，保留上次完整报价', !options?.retry, options?.claimToken);
   }
 
-  async requeue(_kind: QueueKind, id: bigint, workerId: string, backoffMs = 0): Promise<void> {
-    await this.release(id, workerId, backoffMs, undefined, false);
+  async requeue(_kind: QueueKind, id: bigint, workerId: string, backoffMs = 0, claimToken?: string): Promise<void> {
+    await this.release(id, workerId, backoffMs, undefined, false, claimToken);
   }
 
-  onSettled(_kind: QueueKind, id: bigint, _workerId: string): void {
-    this.claims.delete(id);
+  onSettled(_kind: QueueKind, id: bigint, _workerId: string, claimToken?: string): void {
+    if (claimToken && this.claims.get(claimToken) === id) this.claims.delete(claimToken);
   }
 
-  private async release(id: bigint, workerId: string, delay: number, error: string | null | undefined, resetAttempts: boolean) {
+  private async release(id: bigint, workerId: string, delay: number, error: string | null | undefined, resetAttempts: boolean, claimToken?: string) {
     await this.pool.query("update official_reference_jobs set status = 'queued', claimed_by = null, claim_token = null, lease_until = null, "
       + "available_at = clock_timestamp() + $4 * interval '1 millisecond', attempts = case when $5 then 0 else attempts end, "
       + 'last_error = case when $6 then $7 else last_error end '
       + "where id = $1 and claimed_by = $2 and claim_token = $3 and status = 'running'",
-    [String(id), workerId, this.claims.get(id), delay, resetAttempts, error !== undefined, error ?? null]);
+    [String(id), workerId, claimToken, delay, resetAttempts, error !== undefined, error ?? null]);
   }
 }

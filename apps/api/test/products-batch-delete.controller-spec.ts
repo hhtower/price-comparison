@@ -46,11 +46,11 @@ async function setup(t: TestContext, ids: bigint[], maxRequests = 60) {
   await app.init();
   const server = app.getHttpAdapter().getInstance();
   const headers = { cookie: 'admin_session=test-session' };
-  const remove = (payload: unknown, authenticated = true) => server.inject({
+  const remove = (payload: object, authenticated = true) => server.inject({
     method: 'POST', url: '/v1/admin/products/batch-delete',
     headers: authenticated ? headers : {}, payload,
   });
-  const restore = (payload: unknown, authenticated = true) => server.inject({
+  const restore = (payload: object, authenticated = true) => server.inject({
     method: 'POST', url: '/v1/admin/products/batch-restore',
     headers: authenticated ? headers : {}, payload,
   });

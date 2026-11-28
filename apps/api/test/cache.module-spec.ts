@@ -96,7 +96,8 @@ test('real Redis serves a second cache instance and then promotes the value to i
     assert.deepEqual(await first.wrap(key, async () => expected), expected);
     await written.promise;
     const stored = await first.stores[1]!.getRaw(key);
-    assert.deepEqual(stored?.value, expected);
+    assert.ok(stored && typeof stored === 'object');
+    assert.deepEqual(stored.value, expected);
     assert.ok(stored?.expires && stored.expires - Date.now() <= CATALOG_CACHE_TTL_MS);
     const unexpectedLoad = async () => { assert.fail('the second instance must reuse Redis'); };
     assert.deepEqual(await second.wrap(key, unexpectedLoad), expected);
@@ -120,7 +121,7 @@ for (const stalledCommand of ['GET', 'SET']) {
       let pending = Buffer.alloc(0);
       socket.on('close', () => sockets.delete(socket));
       socket.on('data', chunk => {
-        pending = Buffer.concat([pending, chunk]);
+        pending = Buffer.concat([pending, Buffer.from(chunk)]);
         for (;;) {
           const headerEnd = pending.indexOf('\r\n');
           if (headerEnd < 0) return;
@@ -171,7 +172,7 @@ test('Nest owns the configured cache provider and closes the Redis adapter on sh
   const module = await Test.createTestingModule({ imports: [CatalogCacheModule] }).compile();
   const cache = module.get<Cache>(CACHE);
   const key = 'framework-lifecycle:' + randomUUID();
-  const redis = cache.stores[1]?.store as KeyvRedis | undefined;
+  const redis = cache.stores[1]?.store as KeyvRedis<unknown> | undefined;
   try {
     await cache.set(key, 'ready');
     assert.equal(await cache.get(key), 'ready');

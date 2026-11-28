@@ -270,7 +270,7 @@ test('active tag board counts only its task members regardless of history or cur
  await db.updateTable('ai_jobs').set({ status: 'succeeded' }).where('id', '=', f.job.id).execute();
  const completed = await queue();
  assert.deepEqual(completed.items, []);
- for (const field of ['total', 'queued', 'running', 'paused', 'pendingProducts']) assert.equal(completed.summary[field], 0);
+ for (const field of ['total', 'queued', 'running', 'paused', 'pendingProducts'] as const) assert.equal(completed.summary[field], 0);
 });
 
 test('all-pending and historical tag queue coverage use the latest current audited outcomes', async () => {
@@ -417,7 +417,7 @@ for (const field of ['category', 'usage_guide'] as const) {
   const scope={productIds:[f.inputId],model:'mock'};
   const before=await previewTagJob(db,scope);
   const sourceCategory=field==='category'?'Changed merchant category':'';
-  const sourceData=field==='usage_guide'?{usage_guide:'Changed usage instructions'}:{};
+  const sourceData: import('../src/database/types.js').JsonValue=field==='usage_guide'?{usage_guide:'Changed usage instructions'}:{};
   const fingerprint=productContentFingerprint({...f.payload,sourceCategory,sourceData});
   assert.equal(fingerprint,f.products[0]!.content_fingerprint);
   await db.updateTable('products').set({source_category:sourceCategory,source_data:jsonb(sourceData),content_fingerprint:fingerprint})
@@ -561,7 +561,7 @@ test('pause after a preparation claim preserves the job and local retry budget',
  assert.equal(paused.status,'paused');assert.equal(batch.status,'queued');assert.equal(batch.attempts,3n);
  await f.repo.resumeJob(job.id);
  const claim=(await jobs.claimNext('ai_batch','resumed-preparation',60000))!;
- await jobs.complete('ai_batch',claim.id,claim.claimed_by);
+ await jobs.complete('ai_batch',claim.id,claim.claimed_by,String(claim.row.claim_token));
  assert.equal((await db.selectFrom('ai_job_batches').select('status').where('id','=',claim.id).executeTakeFirstOrThrow()).status,'running');
  await prepareAllPendingTagJob(db,claim.id,{workerId:claim.claimed_by,attempt:claim.attempts,token:String(claim.row.claim_token)});
  assert.equal((await db.selectFrom('ai_jobs').select('phase').where('id','=',job.id).executeTakeFirstOrThrow()).phase,'standardizing');
@@ -580,7 +580,7 @@ test('expired preparation lease rolls back all members and exhausted local retri
  assert.equal((await db.selectFrom('ai_job_input_members').select('product_id').where('job_id','=',job.id).execute()).length,0);
  const recovered=(await jobs.claimNext('ai_batch','recovered-preparation',60000))!;
  assert.equal(recovered.id,claim.id);
- await jobs.fail('ai_batch',recovered.id,recovered.claimed_by,'证据准备失败',{retry:false,retryClass:'local'});
+ await jobs.fail('ai_batch',recovered.id,recovered.claimed_by,'证据准备失败',{retry:false,retryClass:'local',claimToken:String(recovered.row.claim_token)});
  const failed=await db.selectFrom('ai_jobs').selectAll().where('id','=',job.id).executeTakeFirstOrThrow();
  assert.equal(failed.status,'failed');assert.equal(failed.error,'证据准备失败');
  assert.ok((await readAiTaskQueue(db,{jobType:'tag_extraction',status:'attention'})).items.some(item=>item.id===String(job.id)));
@@ -657,13 +657,13 @@ for (const field of ['url', 'protocol', 'platform'] as const) for (const complet
  });
 }
 
-for (const invalid of [
+for (const invalid of Array.of<{ name: string; extra: Record<string, import('../src/database/types.js').JsonValue> }>(
  {name:'absent text and source',extra:{}},
  {name:'null text and absent source',extra:{shopText:null}},
  {name:'text without source',extra:{shopText:{unitId:'1',name:'name',description:'body',hash:'hash'}}},
  {name:'null source',extra:{shopSource:null}},
  {name:'malformed source',extra:{shopSource:{}}},
-]) test(`invalid tag source cannot cover a product: ${invalid.name}`,async()=>{
+)) test(`invalid tag source cannot cover a product: ${invalid.name}`,async()=>{
  const f=await fixture();
  const shopId=f.products[0]!.shop_id;
  await db.updateTable('ai_jobs').set({status:'succeeded'}).where('id','=',f.job.id).execute();

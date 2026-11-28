@@ -201,7 +201,7 @@ export interface OfferTable {
   settlement_price: string | null;
   settlement_verified_at: NullableTimestamp;
   settlement_payment_method: string | null;
-  settlement_kind: 'verified' | 'estimated';
+  settlement_kind: Generated<'verified' | 'estimated'>;
   settlement_quantity: number | null;
   settlement_total_amount: string | null;
   settlement_refresh_at: NullableTimestamp;
@@ -285,7 +285,7 @@ export interface AiJobInputTable {
   input_id: bigint;
   fingerprint: string;
   payload: JsonbColumn;
-  status: WorkItemStatus;
+  status: Generated<WorkItemStatus>;
   cached: Generated<boolean>;
   attempts: Generated<bigint>;
   error: string | null;
@@ -436,7 +436,7 @@ export interface StandardizationOutboxTable {
   product_id: bigint;
   event_id: bigint;
   fingerprint: string;
-  status: StandardizationOutboxStatus;
+  status: Generated<StandardizationOutboxStatus>;
   attempts: Generated<bigint>;
   available_at: GeneratedTimestamp;
   claimed_by: string | null;

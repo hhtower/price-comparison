@@ -68,7 +68,7 @@ describe('current evidence queue projection', () => {
     await db.insertInto('product_standardization_decisions').values({ product_id: isolated.product.id, action: 'quarantine', source: 'application', reason: 'reviewed isolation', evidence_known: true, content_version: 1n, content_fingerprint: isolated.product.content_fingerprint, standardization_revision: isolated.product.standardization_revision, evidence_snapshot: jsonb({ name: 'unbound-review' }) }).execute();
     assert.equal((await readRetryPool(db, { limit: 100 })).total, 2);
     const queue = await readAiTaskQueue(db, { status: 'all' });
-    assert.equal('manual_isolation' in queue.summary.currentReasons, false);
+    assert.equal('manual_isolation' in queue.summary.currentReasons!, false);
     assert.equal(queue.items.find(row => row.id === String(isolated.job.id))!.unclassified, 0);
     await db.updateTable('products').set({ content_version: 2n }).where('id', '=', isolated.product.id).execute();
     assert.equal((await readAiTaskQueue(db, { status: 'all' })).items.find(row => row.id === String(isolated.job.id))!.unclassified, 0);
@@ -96,10 +96,10 @@ describe('current evidence queue projection', () => {
     const before = await readRetryPool(db, { limit: 100 });
     for (const code of ['evidence_invalid', 'attribute_conflict', 'identity_conflict', 'publication_blocked']) await result(code, code);
     const { summary } = await readAiTaskQueue(db, { status: 'all' });
-    for (const code of ['evidence_invalid', 'attribute_conflict', 'identity_conflict', 'publication_blocked']) assert.equal(summary.currentReasons[code], 1, code);
+    for (const code of ['evidence_invalid', 'attribute_conflict', 'identity_conflict', 'publication_blocked']) assert.equal(summary.currentReasons![code], 1, code);
     const pool = await readRetryPool(db, { limit: 100 });
     assert.equal(pool.total, before.total + 2, 'citation and attribute failures remain available for explicit retry');
-    assert.ok(!pool.items.some(row => ['identity_conflict', 'publication_blocked'].includes(row.reasonCode)));
+    assert.ok(!pool.items.some(row => ['identity_conflict', 'publication_blocked'].includes(row.reasonCode ?? '')));
   });
 
   test('unverified AI assignments remain unresolved but hiding a human assignment is not isolation', async () => {

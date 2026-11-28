@@ -31,6 +31,7 @@ test('PostgreSQL query observability preserves native APIs, timeouts and Kysely 
   await assert.rejects(pool.query('select 1/0'), { code: '22012' });
   await new Promise<void>((resolve) => {
     pool.query('select 1/0', (error) => {
+      assert.ok(error && 'code' in error);
       assert.equal(error.code, '22012');
       resolve();
     });
@@ -50,7 +51,8 @@ test('PostgreSQL query observability preserves native APIs, timeouts and Kysely 
   const database = new Kysely({ dialect: new PostgresDialect({ pool }) });
   await sql`select 5`.execute(database);
   await assert.rejects(sql`select 1/0`.execute(database), { code: '22012' });
-  await assert.rejects(pool.query({ text: 'select pg_sleep(1)', query_timeout: 5 }), /Query read timeout/);
+  const timeoutQuery = { text: 'select pg_sleep(1)', query_timeout: 5 };
+  await assert.rejects(pool.query(timeoutQuery), /Query read timeout/);
   assert.equal(metrics.snapshot().database.queries, 11);
   const records = lines.map((line) => JSON.parse(line));
   assert.equal(records.length, 11);

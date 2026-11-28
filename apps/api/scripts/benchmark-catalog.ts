@@ -121,7 +121,7 @@ try {
     results.push({ case: name, serverP95Ms: +serverSamples[23]!.toFixed(1), p50Ms: +samples[12]!.toFixed(1), p95Ms: +samples[23]!.toFixed(1), maxMs: +samples[24]!.toFixed(1) });
   }
   const concurrent = [];
-  const concurrentServer = [];
+  const concurrentServer: number[] = [];
   for (let round = 0; round < 10; round++) {
     await Promise.all(cache.stores.map(store => store.clear()));
     concurrent.push(...await Promise.all(cases.slice(0, 4).map(async ([, query]) => {

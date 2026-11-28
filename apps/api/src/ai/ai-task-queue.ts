@@ -4,7 +4,7 @@ import { isAttributeJobType, jsonb, type AttributeJobType } from '../database/ty
 import { sql, type Kysely } from 'kysely';
 import { DomainValidationError } from '../common/errors.js';
 import { buildCursorPage, normalizePageRequest, type PageRequest } from '../common/pagination.js';
-import type { DatabaseSchema } from '../database/types.js';
+import type { AiJobStatus, AiJobType, DatabaseSchema, JsonValue } from '../database/types.js';
 import { currentManualDecision, currentUnclassifiedQuery } from './ai-retry-pool.js';
 import { currentAttributeMemberHistory, currentTagMemberSource } from './tag-extraction-jobs.js';
 import { hasUsableOffer } from './offer-eligibility.js';
@@ -12,6 +12,25 @@ import { currentMembershipKind } from '../standardization/membership-classificat
 import { hasLostMemberRequest, lostBatchRequest } from './request-outcome.js';
 
 export interface TaskQueueFilter extends PageRequest { status?: string; jobType?: string; scopeShopId?: bigint; totalOnly?: boolean }
+interface TaskQueueItem {
+  id: string; status: AiJobStatus; total: number; processed: number; remaining: number; unclassified: number;
+  model: string; jobType: AiJobType; sourceFetchRunId: string | null; scopeShopId: string | null;
+  shopName: string | null; createdAt: Date | string; finishedAt: Date | string | null;
+  historicalUnclassified?: number;
+  phase?: string; parentIdentityJobId?: string | null; retryOfJobId?: string | null; uniqueInputCount?: number;
+  pipelineVersions?: JsonValue; configurationCurrent?: boolean; inputBytes?: string; estimatedTokens?: string;
+}
+interface TaskQueueSummary {
+  total: number;
+  unfinished?: number; queued?: number; running?: number; paused?: number; attention?: number;
+  coveredProducts?: number; reviewProducts?: number; failedProducts?: number;
+  pendingProducts?: number; pendingEvents?: number; currentReasons?: Record<string, number>;
+}
+interface TaskQueuePage {
+  items: TaskQueueItem[];
+  nextCursor: string | null;
+  summary: TaskQueueSummary;
+}
 const unfinished = sql<boolean>`j.status in ('queued', 'running', 'paused', 'ready')`;
 const taskShopScope = (shopId?: bigint) => shopId === undefined ? sql<boolean>`true` : sql<boolean>`j.id in (
   select id from ai_jobs where scope_shop_id=${shopId}
@@ -36,7 +55,7 @@ const currentPending = (scopeShopId?: bigint) => sql<bigint>`(select count(disti
         and newer_job.job_type not in ('tag_extraction', 'membership_features', 'text_review')))`;
 
 /** Job history stays available; attention and pending counts project current product state. */
-export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQueueFilter) {
+export async function readAiTaskQueue(db: Kysely<DatabaseSchema>, input: TaskQueueFilter): Promise<TaskQueuePage> {
   if (db.isTransaction) return readTaskQueue(db, input);
   return db.transaction().setIsolationLevel('repeatable read').execute(async tx => {
     await sql`set local jit = off`.execute(tx);
@@ -211,7 +230,7 @@ async function readAttributeTaskQueue(db:Kysely<DatabaseSchema>,input:TaskQueueF
  const currentCandidate = sql`m.content_version=p.content_version and m.standardization_revision=p.standardization_revision
    and m.fingerprint=p.content_fingerprint and p.deleted_at is null and not p.standardization_locked
    ${input.scopeShopId === undefined ? sql`` : sql`and p.shop_id=${input.scopeShopId}`}`;
- const result=await sql<{items: Array<Record<string,unknown>>;summary: Record<string,unknown>}>`
+ const result=await sql<{items: TaskQueueItem[];summary: TaskQueueSummary}>`
  with ${pageFirst ? sql`scoped_ids as not materialized (select j.id from ai_jobs j where ${jobScope}),
  page_ids as (select id from scoped_ids ${pageWindow}),
  page_members as materialized (

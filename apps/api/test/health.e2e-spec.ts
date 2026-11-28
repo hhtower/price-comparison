@@ -10,6 +10,10 @@ import { AuthGuard } from '../src/auth/auth.guard.js';
 import { AuthService, REDIS } from '../src/auth/auth.service.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DATABASE, DatabaseService, PG_POOL } from '../src/database/database.providers.js';
+import { CACHE, createCache, createMemoryStore } from '../src/cache/cache.js';
+import { RATE_LIMIT_STORE } from '../src/common/rate-limit.guard.js';
+import { CRAWLER_METRICS_REDIS } from '../src/crawler/crawler-redis.module.js';
+import { QualityService } from '../src/quality/quality.service.js';
 
 describe('GET /health', () => {
   let app: INestApplication;
@@ -47,6 +51,14 @@ describe('GET /health', () => {
       .useModule(ProbeDatabaseModule)
       .overrideModule(AuthModule)
       .useModule(ProbeAuthModule)
+      .overrideProvider(CACHE)
+      .useValue(createCache({ stores: [createMemoryStore(1000, 10)], ttl: 1000 }))
+      .overrideProvider(RATE_LIMIT_STORE)
+      .useValue({ hit: async () => ({ count: 1, retryAfterMs: 1000 }) })
+      .overrideProvider(CRAWLER_METRICS_REDIS)
+      .useValue(undefined)
+      .overrideProvider(QualityService)
+      .useValue({})
       .compile();
     app = testingModule.createNestApplication(new FastifyAdapter({ logger: false }));
     await app.init();

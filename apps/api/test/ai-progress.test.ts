@@ -36,8 +36,8 @@ test('text review uses member progress without inventing tag or identity stages'
   assert.equal(snapshot.textReviewResults?.failed, 1);
   assert.equal(snapshot.tagAcceptance, undefined);
   assert.equal(snapshot.reviewStages, undefined);
-  assert.equal(snapshot.tagStages, undefined);
-  assert.equal(snapshot.standardizationStages, undefined);
+  assert.equal(Reflect.get(snapshot, 'tagStages'), undefined);
+  assert.equal(Reflect.get(snapshot, 'standardizationStages'), undefined);
 });
 
 for (const jobType of ['tag_extraction', 'membership_features']) {
@@ -64,8 +64,8 @@ for (const jobType of ['tag_extraction', 'membership_features']) {
     assert.deepEqual(snapshot.reviewStages, {
       generationCompleted: 2, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
     });
-    assert.equal(snapshot.standardizationStages, undefined);
-    assert.equal(snapshot.tagStages, undefined);
+    assert.equal(Reflect.get(snapshot, 'standardizationStages'), undefined);
+    assert.equal(Reflect.get(snapshot, 'tagStages'), undefined);
   });
 }
 
@@ -209,8 +209,8 @@ test('standardization stages report batch work without inventing published produ
   assert.deepEqual(snapshot.reviewStages, {
     generationCompleted: 3, reviewQueued: 2, reviewRunning: 1, reviewCompleted: 4, publicationQueued: 5,
   });
-  assert.equal(snapshot.tagStages, undefined);
-  assert.equal(snapshot.standardizationStages, undefined);
+  assert.equal(Reflect.get(snapshot, 'tagStages'), undefined);
+  assert.equal(Reflect.get(snapshot, 'standardizationStages'), undefined);
   assert.equal(snapshot.results.classified, 0);
   assert.equal(snapshot.publication.publishedMembers, 0);
   assert.equal(snapshot.processed, '0');

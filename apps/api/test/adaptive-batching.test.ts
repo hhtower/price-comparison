@@ -1,8 +1,9 @@
+import { jsonObject } from './json-object.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { planAdaptiveBatches, buildCandidateSearchQuery, buildExtractionPayload, estimateInputSize, extractionPayloadKey } from '../src/ai/adaptive-batching.js';
 import { classifyRetryClass } from '../src/jobs/jobs.repository.js';
-import { assessProductEvidence } from '../src/standardization/identity-policy.js';
+
 import { productContentFingerprint } from '../src/standardization/fingerprint.js';
 import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 
@@ -11,7 +12,7 @@ test('input key ignores per-listing bindings but preserves every extraction fiel
   const key = extractionPayloadKey(payload);
   assert.equal(extractionPayloadKey({ ...payload, id: '2', shopText: { hash: 'other' }, shopSource: { url: 'other' } }), key);
   assert.equal(extractionPayloadKey({ ...payload, category: 'different' }), key);
-  for (const changed of [{ spec: 'annual' }, { sourceData: { evidence: 'recharge' } }]) {
+  for (const changed of Array.of<import('../src/ai/adaptive-batching.js').ExtractionPayload>({ spec: 'annual' }, { sourceData: { evidence: 'recharge' } })) {
     assert.notEqual(extractionPayloadKey({ ...payload, ...changed }), key);
   }
 });
@@ -29,12 +30,12 @@ test('frozen model input projects visible HTML once at every string leaf without
   assert.equal(payload.spec, '<b>字面标签');
   assert.equal(productContentFingerprint({ name: 'ChatGPT Plus', sourceData }), before);
   assert.equal(sourceData.evidence.includes('<strong>'), true);
-  assert.equal(buildExtractionPayload({ id: '2', name: 'n', spec: '', evidence: '前文<div>正文</div>后文' }).sourceData?.evidence, '前文\n正文\n后文');
-  assert.equal(buildExtractionPayload({ id: '2a', name: 'n', spec: '', description: '简介',
-    sourceData: { evidence: '独立正文', content: '详情' } }).sourceData?.content, '详情 独立正文');
-  assert.equal(buildExtractionPayload({ id: '2b', name: 'n', spec: '', description: '完整正文',
-    sourceData: { evidence: '<p>完整<strong>正文</strong></p>' } }).sourceData?.content, undefined);
-  assert.equal(buildExtractionPayload({ id: '3', name: 'n', spec: '', sourceData: { evidence: 'Use &lt;example&gt; literally' } }).sourceData?.evidence, 'Use <example> literally');
+  assert.equal(jsonObject(buildExtractionPayload({ id: '2', name: 'n', spec: '', evidence: '前文<div>正文</div>后文' }).sourceData).evidence, '前文\n正文\n后文');
+  assert.equal(jsonObject(buildExtractionPayload({ id: '2a', name: 'n', spec: '', description: '简介',
+    sourceData: { evidence: '独立正文', content: '详情' } }).sourceData).content, '详情 独立正文');
+  assert.equal(jsonObject(buildExtractionPayload({ id: '2b', name: 'n', spec: '', description: '完整正文',
+    sourceData: { evidence: '<p>完整<strong>正文</strong></p>' } }).sourceData ?? {}).content, undefined);
+  assert.equal(jsonObject(buildExtractionPayload({ id: '3', name: 'n', spec: '', sourceData: { evidence: 'Use &lt;example&gt; literally' } }).sourceData).evidence, 'Use <example> literally');
   assert.equal(buildExtractionPayload({ id: '4', name: 'n', spec: '', sourceData: { brand: '&lt;Vendor&gt;' } }).brand, '<Vendor>');
 });
 

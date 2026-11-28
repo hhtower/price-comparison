@@ -61,7 +61,7 @@ test('attention history reads candidate member IDs before payloads and retains u
     const captured = query;
     await sql`set jit = off`.execute(db);
     const result = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Record<string, any> }> }>(
-      CompiledQuery.raw(`explain (analyze, buffers, format json) ${captured.sql}`, captured.parameters),
+      CompiledQuery.raw(`explain (analyze, buffers, format json) ${captured.sql}`, [...captured.parameters]),
     );
     const nodes = (node: Record<string, any>): Array<Record<string, any>> => [node, ...(node.Plans ?? []).flatMap(nodes)];
     const scans = nodes(result.rows[0]!['QUERY PLAN'][0]!.Plan).filter(node =>

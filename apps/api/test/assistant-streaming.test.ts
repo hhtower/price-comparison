@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { emptyShoppingNeeds, type AssistantReply } from '@price-comparison/catalog/assistant-contract';
-import { createStreamingCall, type StreamingInput } from '../src/ai/llm-runtime.js';
+import { createStreamingCall } from '../src/ai/llm-runtime.js';
 import { AssistantService } from '../src/assistant/assistant.service.js';
 import type { AssistantRepository } from '../src/assistant/assistant.repository.js';
 import type { CatalogService } from '../src/catalog/catalog.service.js';
@@ -315,7 +315,8 @@ test('consultation uses two fragmented shared streams and commits sourced facts 
   assert.equal(state.requests, 2);
   assert.equal(state.committed, 1);
   assert.equal(state.saved?.kind, 'explanation');
-  assert.match(state.saved!.text, /保障或交付方式不明确/u);
+  assert.match(state.saved!.text, /没有保障承诺或交付方式不明确/u);
+  assert.match(state.saved!.text, /不因未写具体天数归入短期/u);
   assert.equal(state.saved?.sources?.[0]?.path, '/guide');
 });
 

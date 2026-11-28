@@ -53,7 +53,7 @@ test('quality HTTP API validates input and protects reports, cancellation, retes
   const cancelled = await http.inject({ method: 'POST', url: url + '/cancel', headers });
   assert.equal(cancelled.statusCode, 200); assert.ok(['completed', 'cancelled'].includes(cancelled.json().state));
   const event = await http.inject({ method: 'GET', url: url + '/events', headers });
-  assert.equal(event.statusCode, 200); assert.match(event.headers['content-type'], /text\/event-stream/);
+  assert.equal(event.statusCode, 200); assert.match(event.headers['content-type']!, /text\/event-stream/);
   assert.match(event.body, /data: /); assert.equal(event.body.includes(accessToken), false);
   assert.equal((await http.inject({ method: 'POST', url: url + '/retest', headers, payload: { itemIds: ['ai-access'], input: { kind: 'ip', target: '8.8.8.8' } } })).statusCode, 400);
 });

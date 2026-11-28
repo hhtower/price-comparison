@@ -12,7 +12,7 @@ function workerEntrypoints(value: string, pattern: RegExp): Set<string> {
 
 test('deployment excludes local artifacts', () => {
   const ignored = readFileSync('.dockerignore', 'utf8').split(/\r?\n/);
-  for (const path of ['docs/*', 'output/', '.playwright-cli/', '.playwright-mcp/', '.omc/', '.env', '.env.*', '.claude/', '.local/']) {
+  for (const path of ['docs/*', 'output/', 'out/', '.tmp/', '.vitest/', '**/output/', '**/node_modules/', '**/.omc/', '.playwright-cli/', '.playwright-mcp/', '.omc/', '.env', '.env.*', '.claude/', '.local/']) {
     assert.ok(ignored.includes(path), path + ' must not enter the Docker build context');
   }
   assert.deepEqual(ignored.filter(path => path.startsWith('!docs/')).sort(), ['!docs/mcp.md', '!docs/skill.md']);

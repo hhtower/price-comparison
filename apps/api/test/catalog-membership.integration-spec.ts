@@ -52,7 +52,7 @@ describe('membership catalog features share standard identities', { skip: !proce
       .where('id', '=', BigInt(id)).execute();
   }
 
-  async function saveFeatureTask(id: string, status: string, jobType = 'membership_features') {
+  async function saveFeatureTask(id: string, status: string, jobType: import('../src/database/types.js').AiJobType = 'membership_features') {
     const job = await db.insertInto('ai_jobs').values({ status: 'running', total: 1n, model: 'test', job_type: jobType })
       .returning('id').executeTakeFirstOrThrow();
     await sql`insert into ai_job_inputs (job_id, input_id, fingerprint, payload)
@@ -921,7 +921,7 @@ describe('membership catalog features share standard identities', { skip: !proce
       assert.deepEqual(facets.tagFacets.filter((tag: { name: string }) => tag.name === 'duration')
         .map((tag: { value: string }) => tag.value).sort(), [30, 60]);
       for (const path of ['', '/facets', `/products/${standard.id}/price-history`]) {
-        for (const scope of [{ membershipKind: 'account', membershipKinds: ['rental', 'short_term'] }, { membershipKinds: 'account' }]) {
+        for (const scope of Array.of<Record<string, string | string[]>>({ membershipKind: 'account', membershipKinds: ['rental', 'short_term'] }, { membershipKinds: 'account' })) {
           assert.equal((await read(path, scope, 400)).error.code, 'INVALID_MEMBERSHIP_KIND');
         }
       }

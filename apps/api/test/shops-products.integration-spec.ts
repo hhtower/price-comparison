@@ -376,6 +376,14 @@ describe('shop, product, and offer repositories', () => {
     const restored = await products.restore(id);
     assert.equal(restored!.content_version, deleted.content_version);
     assert.equal(restored!.standardization_revision, deleted.standardization_revision);
+    assert.deepEqual(await standardization.claimOutbox('restored-product'), []);
+    const waiting = await database.selectFrom('standardization_outbox').select('attempts')
+      .where('product_id', '=', id).where('status', '=', 'queued').executeTakeFirstOrThrow();
+    assert.equal(waiting.attempts, 0n);
+    await database.insertInto('offers').values({
+      product_id: id, idempotency_key: 'restored-product-available', price: '10', currency: 'CNY',
+      captured_at: new Date(), stock_available: true, is_stale: false,
+    }).execute();
     const claims = await standardization.claimOutbox('restored-product');
     assert.equal(claims.length, 1);
     assert.equal(claims[0]!.product_id, id);

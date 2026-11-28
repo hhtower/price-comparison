@@ -4,7 +4,7 @@ import { Kysely, PostgresDialect } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
-import { jsonb, type DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type JsonValue, type StandardizationMemberStatus, type DatabaseSchema } from '../src/database/types.js';
 import { getJobProgress, progressSnapshotFromRow } from '../src/ai/ai-progress.repository.js';
 test('tag outcomes partition all members without trusting legacy counters',()=>{
  const p=progressSnapshotFromRow({job_type:'tag_extraction',member_total:12,member_queued:2,member_running:1,tag_counts:{updated:2,unchanged:1,empty:1,review:1,skipped:1,failed:1,cancelled:1,unrecorded:1},total:999,processed:999});
@@ -30,7 +30,7 @@ test('two-stage counts describe batches independently of terminal member outcome
   assert.deepEqual(progressSnapshotFromRow({ job_type: 'manual_full', review_completed: 4 }).reviewStages, {
     generationCompleted: 0, reviewQueued: 0, reviewRunning: 0, reviewCompleted: 4, publicationQueued: 0,
   });
-  assert.equal(p.tagStages, undefined);
+  assert.equal(Reflect.get(p, 'tagStages'), undefined);
 });
 
 for (const jobType of ['tag_extraction', 'membership_features'] as const) {
@@ -52,7 +52,7 @@ test(`${jobType} progress counts stored acceptance for completed members and its
     const duration = { name: 'duration', value: '1 month', evidence: [{ path: 'spec', quote: '一个月' }] };
     const region = { name: 'region', value: 'US', evidence: [{ path: 'name', quote: '美区' }] };
     const rejected = { name: 'renewable', value: 'yes', evidence: [], reasonCode: 'citation_missing', reason: '缺少证据' };
-    const cases = [
+    const cases: Array<{ status: StandardizationMemberStatus; output: JsonValue | undefined }> = [
       { status: 'classified', output: { outcome: 'updated', acceptedTags: [duration, region], rejectedTags: [rejected, rejected, rejected] } },
       { status: 'classified', output: { outcome: 'review', acceptedTags: [duration], rejectedTags: [rejected, rejected] } },
       { status: 'classified', output: { outcome: 'updated', acceptedTags: [duration], rejectedTags: [] } },
@@ -86,11 +86,11 @@ test(`${jobType} progress counts stored acceptance for completed members and its
     const jobBatches = jobType === 'tag_extraction'
       ? [...batches, { status: 'succeeded', step: 'done', reference: { reviewStage: 'warranty' } } as const] : batches;
     await db.insertInto('ai_job_batches').values(jobBatches.map((batch, i) => ({
-      job_id: job.id, batch_index: i, round: 0, product_ids: jsonb([String(inputId)]), product_count: 1,
+      job_id: job.id, batch_index: BigInt(i), round: 0, product_ids: jsonb([String(inputId)]), product_count: 1n,
       status: batch.status, step: batch.step, reference_snapshot: batch.reference ? jsonb(batch.reference) : null,
     }))).execute();
     await db.insertInto('ai_job_batches').values({
-      job_id: job.id, batch_index: -1, round: 0, product_ids: jsonb([]), product_count: 0,
+      job_id: job.id, batch_index: -1n, round: 0, product_ids: jsonb([]), product_count: 0n,
       status: 'queued', step: 'request', reference_snapshot: jsonb({ reviewStage: 'review' }),
     }).execute();
     await db.insertInto('ai_job_progress').values({ job_id: job.id, total: 9n }).execute();
@@ -110,14 +110,14 @@ test(`${jobType} progress counts stored acceptance for completed members and its
     }).returning('id').executeTakeFirstOrThrow();
     await db.insertInto('ai_job_progress').values({ job_id: standardizationJob.id, total: 9n }).execute();
     await db.insertInto('ai_job_batches').values(batches.map((batch, i) => ({
-      job_id: standardizationJob.id, batch_index: i, round: batch.reference?.reviewStage === 'review' ? 1 : 0,
-      product_ids: jsonb([String(inputId)]), product_count: 1, status: batch.status, step: batch.step,
+      job_id: standardizationJob.id, batch_index: BigInt(i), round: batch.reference?.reviewStage === 'review' ? 1 : 0,
+      product_ids: jsonb([String(inputId)]), product_count: 1n, status: batch.status, step: batch.step,
       reference_snapshot: batch.reference ? jsonb({ reviewStage: batch.reference.reviewStage, proposalBatchId: '1' }) : null,
     }))).execute();
     await db.insertInto('ai_job_batches').values([
-      { job_id: standardizationJob.id, batch_index: -1, round: 1, product_ids: jsonb([]), product_count: 0,
+      { job_id: standardizationJob.id, batch_index: -1n, round: 1, product_ids: jsonb([]), product_count: 0n,
         status: 'queued', step: 'request', reference_snapshot: jsonb({ reviewStage: 'review' }) },
-      { job_id: standardizationJob.id, batch_index: 20, round: 0, product_ids: jsonb([]), product_count: 0,
+      { job_id: standardizationJob.id, batch_index: 20n, round: 0, product_ids: jsonb([]), product_count: 0n,
         status: 'queued', step: 'request', reference_snapshot: jsonb({ reviewStage: 'generate' }) },
     ]).execute();
     const standardization = await getJobProgress(db, standardizationJob.id);
@@ -125,7 +125,7 @@ test(`${jobType} progress counts stored acceptance for completed members and its
     assert.deepEqual(standardization?.reviewStages, {
       generationCompleted: 3, reviewQueued: 1, reviewRunning: 1, reviewCompleted: 1, publicationQueued: 1,
     });
-    assert.equal(standardization?.tagStages, undefined);
+    assert.equal(standardization && Reflect.get(standardization, 'tagStages'), undefined);
     assert.equal(standardization?.results.classified, 0);
     assert.equal(standardization?.publication.publishedMembers, 0);
   } finally {

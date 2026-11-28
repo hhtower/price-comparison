@@ -58,7 +58,7 @@ async function fixture(count = 1, fanout = false, textReview = false) {
     platform: 'test', name: 'budget', url: `https://budget.invalid/${Math.random()}`, enabled: true,
   }).returning('id').executeTakeFirstOrThrow();
   const source = { name: 'ChatGPT Plus account', spec: '1 month', sourceCategory: 'Subscriptions', sourceData: { evidence: 'Original frozen evidence' } };
-  const products = [];
+  const products: Array<{ id: bigint }> = [];
   for (let index = 0; index < count; index++) {
     const name = source.name + (index && !(fanout && index === count - 1) ? ` variant ${index}` : '');
     const sourceData = { ...source.sourceData, ...(textReview ? { ratingText: {

@@ -274,7 +274,7 @@ test('history scopes separate membership daily minima and include only failed AI
   assert.deepEqual(await prices({ membershipKind: 'short_term', productId: String(staleId) }), []);
   assert.deepEqual(await prices({ membershipKind: 'unclassified', newcomer: true }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
   assert.deepEqual(await prices({ membershipKind: ['account', 'unclassified'] }), [['2026-10-13', '2.00'], ['2026-10-14', '3.00']]);
-  for (const status of ['queued', 'processing', 'cancelled', 'classified']) {
+  for (const status of ['queued', 'processing', 'cancelled', 'classified'] as const) {
     await db.updateTable('ai_job_input_members').set({ status }).where('job_id', '=', featureJob.id).execute();
     assert.deepEqual(await prices({ membershipKind: 'unclassified' }), [], status);
     assert.deepEqual(await prices({ membershipKind: ['account', 'unclassified'] }), [['2026-10-13', '40.00'], ['2026-10-14', '39']], status);
@@ -299,7 +299,7 @@ test('newcomer history keeps non-AI products while explicit membership kinds exc
   await quote();
   assert.equal((await history.get(String(standard), undefined, 'CNY', { newcomer: true })).points.length, 1);
   const service = new CatalogService(new CatalogRepository(db, { now: () => now, ttlMs: 8100000 }), {} as never);
-  assert.deepEqual((await service.getPriceHistory(String(standard), undefined, 'CNY', { membershipKind: 'unclassified' })).points, []);
+  assert.deepEqual((await service.getPriceHistory(String(standard), undefined, 'CNY', { membershipKind: 'unclassified' }))!.points, []);
   for (const kind of ['account', 'top_up', 'rental', 'short_term'] as MembershipKind[]) {
     assert.deepEqual((await history.get(String(standard), undefined, 'CNY', { membershipKinds: [kind], newcomer: true })).points, []);
   }

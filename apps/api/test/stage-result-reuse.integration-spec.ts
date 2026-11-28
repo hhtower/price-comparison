@@ -147,7 +147,7 @@ test('newer standardization results supersede retry history across unrelated ver
   }).returning('id').executeTakeFirstOrThrow();
   const member = await db.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   const input = await db.selectFrom('ai_job_inputs').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
-  await db.insertInto('ai_job_inputs').values({ ...input, job_id: newer.id, payload: jsonb(input.payload) }).execute();
+  await db.insertInto('ai_job_inputs').values({ ...input, job_id: newer.id, payload: jsonb(input.payload), previous_decision: input.previous_decision === null ? null : jsonb(input.previous_decision) }).execute();
   await db.insertInto('ai_job_input_members').values({ ...member, job_id: newer.id, payload: jsonb(member.payload), output: null }).execute();
   const result = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   await db.insertInto('ai_standardization_results').values({
@@ -221,7 +221,7 @@ for (const kind of ['tag_extraction', 'membership_features'] as const) {
       const queue = await history(f);
       await assert.rejects(autoAttribute(f, kind), emptyScope);
       assert.equal(queue.summary.pendingProducts, 0);
-      assert.equal(queue.summary.currentReasons.request_outcome_unknown, 1);
+      assert.equal(queue.summary.currentReasons!.request_outcome_unknown, 1);
       assert.equal(queue.items.find(item => item.id === String(f.job.id))?.unclassified, 1);
       assert.equal(queue.items.find(item => item.id === String(retry.id))?.unclassified, 0);
       for (const status of ['all', 'attention']) {
@@ -249,7 +249,7 @@ for (const kind of ['tag_extraction', 'membership_features'] as const) {
           .where('id', '=', f.product.id).execute();
       }
       const covered = await history(f);
-      assert.equal(covered.summary.currentReasons.request_outcome_unknown, undefined);
+      assert.equal(covered.summary.currentReasons!.request_outcome_unknown, undefined);
       assert.equal(covered.summary.coveredProducts, 1);
       await assert.rejects(autoAttribute(f, kind), emptyScope);
     });
@@ -264,7 +264,7 @@ for (const kind of ['tag_extraction', 'membership_features'] as const) {
       else await db.updateTable('products').set({ standardization_revision: 99n }).where('id', '=', f.product.id).execute();
       const queue = await history(f);
       assert.equal(queue.summary.pendingProducts, 1);
-      assert.equal(queue.summary.currentReasons.request_outcome_unknown, undefined);
+      assert.equal(queue.summary.currentReasons!.request_outcome_unknown, undefined);
       assert.ok((await autoAttribute(f, kind)).id > f.job.id);
     });
   }
@@ -286,7 +286,7 @@ for (const kind of ['tag_extraction', 'membership_features'] as const) {
       const queue = await history(f);
       assert.equal(queue.items[0]?.unclassified, lost ? 1 : 0);
       assert.equal(queue.items[0]?.remaining, lost ? 0 : 1);
-      assert.equal(queue.summary.currentReasons.request_outcome_unknown, lost ? 1 : undefined);
+      assert.equal(queue.summary.currentReasons!.request_outcome_unknown, lost ? 1 : undefined);
       if (!lost) {
         const scope = { jobType: kind, scopeShopId: f.shop.id };
         const active = await readAiTaskQueue(db, scope);
@@ -314,7 +314,7 @@ for (const mode of ['unknown', 'unresolved'] as const) {
         const scope = { jobType: kind, status: 'attention', scopeShopId: f.shop.id };
         const queue = await readAiTaskQueue(db, scope);
         assert.equal(queue.summary.pendingProducts, 0);
-        assert.equal(queue.summary.currentReasons.request_outcome_unknown, 1);
+        assert.equal(queue.summary.currentReasons!.request_outcome_unknown, 1);
         assert.equal(queue.items.find(item => item.id === String(f.job.id))?.unclassified, 1);
         assert.deepEqual(await readAiTaskQueue(db, { ...scope, totalOnly: true }),
           { ...queue, summary: { total: queue.summary.total } });
@@ -346,7 +346,8 @@ test('a materialized unknown result with old headers supersedes older current re
   }).returning('id').executeTakeFirstOrThrow();
   const member = await db.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   const input = await db.selectFrom('ai_job_inputs').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
-  await db.insertInto('ai_job_inputs').values({ ...input, job_id: newer.id, payload: jsonb(input.payload) }).execute();
+  await db.insertInto('ai_job_inputs').values({ ...input, job_id: newer.id, payload: jsonb(input.payload),
+    previous_decision: input.previous_decision === null ? null : jsonb(input.previous_decision) }).execute();
   await db.insertInto('ai_job_input_members').values({ ...member, job_id: newer.id, payload: jsonb(member.payload), output: null }).execute();
   const result = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', f.job.id).executeTakeFirstOrThrow();
   await db.insertInto('ai_standardization_results').values({
@@ -435,7 +436,7 @@ for (const kind of ['tag_extraction', 'membership_features'] as const) {
     const queue = await history(f);
     assert.equal(queue.summary.coveredProducts, 0);
     assert.equal(queue.summary.pendingProducts, 0);
-    assert.equal(queue.summary.currentReasons.request_outcome_unknown, 1);
+    assert.equal(queue.summary.currentReasons!.request_outcome_unknown, 1);
     assert.equal(queue.summary.attention, 1);
     const other = kind === 'tag_extraction' ? 'membership_features' : 'tag_extraction';
     assert.ok((await autoAttribute(f, other)).id > f.job.id, 'another stage is independent');
@@ -489,7 +490,7 @@ test('a later completed tag failure supersedes older coverage across identity ve
   const all = await history(f);
   assert.equal(all.summary.coveredProducts, 0);
   assert.equal(all.summary.pendingProducts, 1);
-  assert.equal(all.summary.currentReasons.provider_error, 1);
+  assert.equal(all.summary.currentReasons!.provider_error, 1);
   for (const status of ['all', 'attention', 'unfinished']) {
     let cursor: string | undefined;
     do {

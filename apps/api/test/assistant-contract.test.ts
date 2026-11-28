@@ -164,7 +164,7 @@ test('product choice persists across follow-ups and quote details reject unsafe 
 
 test('empty needs have no implicit hard requirements and no shared mutable arrays', () => {
   const first = emptyShoppingNeeds();
-  assert.deepEqual(first, {
+  assert.deepEqual({ ...first }, {
     purpose: null, platform: null, budget: null, requiredTags: [],
     preferences: [],
   });

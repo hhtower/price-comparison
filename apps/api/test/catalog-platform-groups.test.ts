@@ -16,7 +16,7 @@ test('Grok, X and Cursor share navigation and normalize old platform links', () 
   assert.equal(CATALOG_PLATFORMS.find(group => group.id === 'xai')?.label, 'Grok / X / Cursor');
   assert.equal(CATALOG_PLATFORMS.some(group => String(group.id) === 'x'), false);
   assert.equal(CATALOG_PLATFORMS.some(group => String(group.id) === 'cursor'), false);
-  assert.equal(CATALOG_PLATFORMS.some(group => group.id === 'github'), false);
+  assert.equal(CATALOG_PLATFORMS.some(group => String(group.id) === 'github'), false);
   assert.deepEqual(groupCatalogPlatforms(['Grok', 'xai', 'x', 'Twitter', 'X/Twitter', 'Cursor', 'github']), ['xai', 'other']);
   for (const platform of ['xai', 'Grok', 'x', 'twitter', ' Cursor ']) {
     assert.equal(platformGroups.normalizeCatalogPlatform(platform), 'xai');

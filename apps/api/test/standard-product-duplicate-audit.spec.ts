@@ -54,7 +54,7 @@ test('incremental audit equals the full result subset and cursor rejects version
   const first = auditStandardProductDuplicates(products, [], options);
   assert.ok(first.nextCursor);
   const pages = [first];
-  let cursor = first.nextCursor;
+  let cursor: string | null = first.nextCursor;
   while (cursor !== null) {
     pages.push(auditStandardProductDuplicates(products, [], { ...options, cursor }));
     cursor = pages.at(-1)!.nextCursor;

@@ -58,8 +58,9 @@ describe('global AI retry pool', () => {
     assert.deepEqual(await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', jobId).execute(), []);
     const batches = await db.selectFrom('ai_job_batches').select('id').where('job_id', '=', jobId).execute();
     for (const batch of batches) {
-      await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'test', lease_until: new Date(Date.now() + 60000) }).where('id', '=', batch.id).execute();
-      await new JobsRepository(db).fail('ai_batch', batch.id, 'test', 'fixture failure', { retry: false, retryClass: source });
+      const claimToken = randomUUID();
+      await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'test', claim_token: claimToken, lease_until: new Date(Date.now() + 60000) }).where('id', '=', batch.id).execute();
+      await new JobsRepository(db).fail('ai_batch', batch.id, 'test', 'fixture failure', { retry: false, retryClass: source, claimToken });
     }
   }
   async function failed(ids: bigint[], source = 'provider_unknown') {
@@ -151,7 +152,7 @@ describe('global AI retry pool', () => {
     assert.equal(page.items[0]?.productId, String(ids[0]));
     assert.ok(reportQuery);
     const plan = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Record<string, any> }> }>(
-      CompiledQuery.raw(`explain (analyze, buffers, format json) ${reportQuery.sql}`, reportQuery.parameters),
+      CompiledQuery.raw(`explain (analyze, buffers, format json) ${reportQuery.sql}`, [...reportQuery.parameters]),
     );
     const nodes = (node: Record<string, any>): Array<Record<string, any>> => [node, ...(node.Plans ?? []).flatMap(nodes)];
     assert.ok(nodes(plan.rows[0]!['QUERY PLAN'][0]!.Plan).filter(node => node['Relation Name'] === 'offers')
@@ -181,8 +182,9 @@ describe('global AI retry pool', () => {
     const job = await repository.createJob({ model: 'mock', productIds: ids, batchSize: 1 });
     const batch = job.batches[0]!;
     await db.updateTable('ai_jobs').set({ status: 'running' }).where('id', '=', job.id).execute();
-    await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'test', lease_until: new Date(Date.now() + 60000) }).where('id', '=', batch.id).execute();
-    await new JobsRepository(db).fail('ai_batch', batch.id, 'test', 'stream interrupted', { retry: false, retryClass: 'provider_unknown' });
+    const claimToken = randomUUID();
+    await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'test', claim_token: claimToken, lease_until: new Date(Date.now() + 60000) }).where('id', '=', batch.id).execute();
+    await new JobsRepository(db).fail('ai_batch', batch.id, 'test', 'stream interrupted', { retry: false, retryClass: 'provider_unknown', claimToken });
     const page = await list();
     assert.equal(page.total, 1);
     assert.equal(page.items[0]?.productId, String(batch.productIds[0]));

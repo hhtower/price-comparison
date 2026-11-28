@@ -44,6 +44,107 @@ test('runtime enforces bounded concurrency and completes jobs', async () => {
   await runtime.stop();
 });
 
+test('overlapping claims for one job each consume capacity and remain cancellable after the older claim settles', async () => {
+  const state = service();
+  const releases = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const settled = Promise.withResolvers<void>();
+  const signals: AbortSignal[] = [];
+  let claims = 0;
+  state.claimAvailable = async () => [{ ...job(1n), row: { claim_token: `claim-${claims++}` } }];
+  state.onSettled = () => settled.resolve();
+  const runtime = new WorkerRuntime({
+    service: state, kind: 'ai_batch', workerId: 'worker', concurrency: 2,
+    handler: async (_job, signal) => {
+      const index = signals.push(signal) - 1;
+      entered[index]!.resolve();
+      await releases[index]!.promise;
+    },
+  });
+  try {
+    await runtime.runOnce();
+    await entered[0]!.promise;
+    await runtime.runOnce();
+    await entered[1]!.promise;
+    assert.equal(await runtime.runOnce(), 0, 'two instances of one ID must fill both slots');
+    assert.equal(claims, 2);
+    releases[0]!.resolve();
+    await settled.promise;
+    runtime.cancel(1n);
+    assert.equal(signals[1]!.aborted, true, 'older cleanup must preserve the newer claim');
+  } finally {
+    for (const release of releases) release.resolve();
+    await runtime.stop();
+  }
+});
+
+test('cancel and shutdown reach every overlapping claim and stop waits for both handlers', async () => {
+  for (const cancelFirst of [true, false]) {
+    const state = service();
+    const releases = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const signals: AbortSignal[] = [];
+    state.claimAvailable = async () => [job(1n)];
+    const runtime = new WorkerRuntime({
+      service: state, kind: 'ai_batch', workerId: 'worker', concurrency: 2,
+      handler: async (_job, signal) => {
+        const index = signals.push(signal) - 1;
+        entered[index]!.resolve();
+        await releases[index]!.promise;
+      },
+    });
+    let stopping: Promise<void> | undefined;
+    try {
+      await runtime.runOnce();
+      await entered[0]!.promise;
+      await runtime.runOnce();
+      await entered[1]!.promise;
+      if (cancelFirst) runtime.cancel(1n);
+      else stopping = runtime.stop();
+      assert.deepEqual(signals.map(signal => signal.aborted), [true, true]);
+      stopping ??= runtime.stop();
+      let stopped = false;
+      void stopping.then(() => { stopped = true; });
+      releases[1]!.resolve();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(stopped, false, 'shutdown must await the older handler too');
+    } finally {
+      for (const release of releases) release.resolve();
+      await (stopping ?? runtime.stop());
+    }
+  }
+});
+
+test('runtime forwards the original claim token on completion and failure for every queue kind', async () => {
+  for (const kind of ['ai_batch', 'fetch_run', 'assistant_turn'] as const) {
+    for (const fails of [false, true]) {
+      const state = service();
+      const settled = Promise.withResolvers<void>();
+      let available = true;
+      let receivedToken: string | undefined;
+      state.claimNext = async () => {
+        if (!available) return null;
+        available = false;
+        return { ...job(1n), kind, row: { claim_token: 'original-claim' } };
+      };
+      state.complete = async (_kind, _id, _worker, token?: string) => {
+        receivedToken = token;
+      };
+      state.fail = async (_kind, _id, _worker, _error, options) => { receivedToken = options?.claimToken; };
+      state.onSettled = () => settled.resolve();
+      const runtime = new WorkerRuntime({
+        service: state, kind, workerId: 'worker',
+        handler: async () => { if (fails) throw new Error('invalid response'); },
+      });
+      try {
+        await runtime.runOnce();
+        await settled.promise;
+        assert.equal(receivedToken, 'original-claim', `${kind}: ${fails ? 'fail' : 'complete'}`);
+      } finally { await runtime.stop(); }
+    }
+  }
+});
+
 test('heartbeat failure aborts handler and requeues instead of completing', async () => {
   const state = service([job(4n)]);
   let aborted = false;
@@ -111,9 +212,7 @@ test('worker lifecycle logs and metrics carry job correlation fields', async () 
 });
 
 test('worker samples queue depth into the shared metrics registry', async () => {
-  const state = service([job(10n)]) as WorkerRuntimeService & {
-    queueDepth: () => Promise<number>;
-  };
+  const state = service([job(10n)]);
   state.queueDepth = async function () { assert.equal(this, state); return 7; };
   const metrics = new MetricsRegistry();
   const runtime = new WorkerRuntime({

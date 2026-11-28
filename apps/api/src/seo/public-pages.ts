@@ -71,7 +71,7 @@ function catalogContent(page: CatalogPage): string {
     : [{ ...item, membershipKind: undefined }]);
   return '<h2 id="catalog-quotes">本站商品报价与来源</h2>'
     + (cards.length ? cards.map(item => '<article><h3><a href="' + escapeHtml(productPagePath(item.id, 1, item.membershipKind)) + '">'
-      + escapeHtml(standardProductDisplayName(item.name) + (item.membershipKind ? ' · ' + membershipKindLabel(item.membershipKind) : '')) + '</a></h3><p>平台：'
+      + escapeHtml(standardProductDisplayName(item.name) + (item.membershipKind ? ' · ' + membershipKindLabel(item.membershipKind, item.identity) : '')) + '</a></h3><p>平台：'
       + escapeHtml(item.platform) + '</p><ul>' + item.offers.map(renderOffer).join('') + '</ul></article>').join('')
       : '<p>暂无可用报价，请稍后再试。</p>')
     + (page.nextCursor ? '<nav aria-label="商品分页"><a rel="next" href="' + escapeHtml(catalogPageMetadata(page.nextCursor).path) + '">下一页商品</a></nav>' : '')
@@ -192,7 +192,7 @@ export function registerPublicPages(adapter: FastifyAdapter, options: PublicPage
       if (pageNumber > 1 && (pageNumber - 1) * PRODUCT_PAGE_SIZE >= total) return missing('商品分页不存在');
       const page = productPageMetadata(product, pageNumber, membershipKind);
       const schema = productPageSchema(product, origin, pageNumber, membershipKind);
-      const content = '<h1>' + escapeHtml(standardProductDisplayName(product.name) + (membershipKind ? ' · ' + membershipKindLabel(membershipKind) : '')) + '</h1>' + seoIntroduction(true)
+      const content = '<h1>' + escapeHtml(standardProductDisplayName(product.name) + (membershipKind ? ' · ' + membershipKindLabel(membershipKind, product.identity) : '')) + '</h1>' + seoIntroduction(true)
         + '<h2 id="catalog-quotes">商铺报价与来源</h2>'
         + (offers.length ? '<ul>' + offers.map(renderOffer).join('') + '</ul>' : '<p>暂无可用报价，请稍后再试。</p>')
         + '<nav aria-label="报价分页">'

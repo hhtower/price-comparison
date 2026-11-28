@@ -34,6 +34,10 @@ function fixture(rows: unknown[] = [claim], acknowledged: unknown[] = rows, curr
           events.push('ack'); return {rows:acknowledged.map((row:any)=>({id:row.id})),numAffectedRows:BigInt(acknowledged.length)};
         }
         if(query.sql.startsWith('select') && query.sql.includes('from "shops"')) return {rows:(options.eligibleShopIds ?? [currentProduct.shop_id]).map(id=>({id}))};
+        // Locked evidence reads need the full row, unlike eligibility probes.
+        if(query.sql.startsWith('select') && query.sql.includes('inner join "shops"') && query.sql.endsWith('for update of "products"')) {
+          return {rows:[{...storedProduct,membership_features:null,shop_url:'https://shop.invalid',shop_protocol:null,shop_platform:'test'}]};
+        }
         if(query.sql.startsWith('select') && query.sql.includes('inner join "shops"')) return {rows:eligibleProductIds.map(id=>({id}))};
         if(query.sql.startsWith('select') && query.sql.includes('"products"') && query.sql.endsWith('for share')) return {rows:eligibleProductIds.map(id=>({id}))};
         if(query.sql.startsWith('select') && query.sql.includes('"products"')) return {rows:[storedProduct]};
@@ -238,6 +242,8 @@ test('assignment, withdrawal and tag edits advance revision and invalidate the c
     assert.equal(f.queries.some(query=>query.sql.startsWith('insert into "standardization_outbox"')),false,action);
     if(action==='withdrawal') assert.equal(f.queries.some(query=>query.sql.startsWith('insert into "standard_product_members"')),false);
     if(action==='assignment'||action==='withdrawal'){
+      const decision=f.queries.find(query=>query.sql.startsWith('insert into "product_standardization_decisions"'))!;
+      assert.ok(decision.parameters.includes(product.standardization_revision+1n),action);
       assert.ok(f.queries.some(query=>query.sql.includes('update standardization_catalog_versions')),action);
       const change=f.queries.find(query=>query.sql.startsWith('insert into "catalog_index_changes"'))!;
       assert.ok(change,action);

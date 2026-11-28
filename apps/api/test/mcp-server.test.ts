@@ -390,7 +390,7 @@ test('MCP exposes feature groups on one standard and reads its normal offer deta
   const { call, catalog, queries } = await harness(t);
   const groups = ['account', 'short_term'].map(kind => ({ kind, shopCount: 1, productCount: 1, offers: [{ ...offer, membershipKind: kind }] }));
   const getCatalog = catalog.getCatalog.bind(catalog);
-  t.mock.method(catalog, 'getCatalog', async input => {
+  t.mock.method(catalog, 'getCatalog', async (input: Parameters<typeof catalog.getCatalog>[0]) => {
     const page = await getCatalog(input);
     return { ...page, items: page.items.map(item => ({ ...item, membershipGroups: groups })) };
   });

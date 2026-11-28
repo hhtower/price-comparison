@@ -583,14 +583,14 @@ describe('AI identity standardization publication', () => {
     await prepared.repository.pauseJob(prepared.job.id);
     await assert.rejects(prepared.repository.publishBatch(prepared.batchId), /cannot publish/);
     const queue = new JobsRepository(database);
-    await queue.requeue('ai_batch', prepared.batchId, 'integration');
+    await queue.requeue('ai_batch', prepared.batchId, 'integration', 0, 'publish-claim');
     const interrupted = await database.selectFrom('ai_job_batches').select(['status', 'step', 'error_source', 'request_budget_used', 'confirmed_requests']).where('id', '=', prepared.batchId).executeTakeFirstOrThrow();
     assert.deepEqual(interrupted, { status: 'queued', step: 'publish', error_source: 'local', request_budget_used: 1, confirmed_requests: 1 });
     await prepared.repository.resumeJob(prepared.job.id);
     await claim(prepared.batchId, 'publish', 3n, 'resumed-claim');
     await prepared.repository.publishBatch(prepared.batchId, { workerId: 'integration', attempt: 3n, token: 'resumed-claim' });
     // Completion interrupted after publishing must stay successful.
-    await queue.requeue('ai_batch', prepared.batchId, 'integration');
+    await queue.requeue('ai_batch', prepared.batchId, 'integration', 0, 'resumed-claim');
     const finished = await database.selectFrom('ai_job_batches').select(['status', 'request_budget_used', 'confirmed_requests']).where('id', '=', prepared.batchId).executeTakeFirstOrThrow();
     assert.deepEqual(finished, { status: 'succeeded', request_budget_used: 1, confirmed_requests: 1 });
     assert.equal((await database.selectFrom('standard_product_members').select('product_id').where('product_id', '=', product.id).execute()).length, 1);
@@ -606,7 +606,7 @@ describe('AI identity standardization publication', () => {
     await repository.prepareBatch(batchId);
     await repository.reserveBatchRequest(batchId, { workerId: 'integration', attempt: 1n, token: 'request-claim' });
     await repository.pauseJob(job.id);
-    await new JobsRepository(database).requeue('ai_batch', batchId, 'integration');
+    await new JobsRepository(database).requeue('ai_batch', batchId, 'integration', 0, 'request-claim');
     assert.deepEqual(await database.selectFrom('ai_job_batches').select(['status', 'error_source', 'request_budget_used', 'confirmed_requests']).where('id', '=', batchId).executeTakeFirstOrThrow(), {
       status: 'failed', error_source: 'request_outcome_unknown', request_budget_used: 1, confirmed_requests: 0,
     });
@@ -633,7 +633,7 @@ describe('AI identity standardization publication', () => {
       await repository.prepareBatch(batch.id);
       await repository.reserveBatchRequest(batch.id);
       await repository.recordBatchRequestOutcome(batch.id, 'unknown');
-      await new JobsRepository(database).fail('ai_batch', batch.id, 'integration', 'AI response timed out after 180000ms', { retry: false, retryClass: 'provider_unknown' });
+      await new JobsRepository(database).fail('ai_batch', batch.id, 'integration', 'AI response timed out after 180000ms', { retry: false, retryClass: 'provider_unknown', claimToken: 'request-claim' });
     }
     return { repository, job };
   }
@@ -654,7 +654,7 @@ describe('AI identity standardization publication', () => {
     const product = await addProduct(shop.id, 'ChatGPT Plus invalid identity reference');
     const prepared = await createPreparedJob([product.id]);
     const reason = 'AI identity ref 无效：字符串为空';
-    await new JobsRepository(database).fail('ai_batch', prepared.batchId, 'integration', reason, { retry: false, retryClass: 'invalid_response' });
+    await new JobsRepository(database).fail('ai_batch', prepared.batchId, 'integration', reason, { retry: false, retryClass: 'invalid_response', claimToken: 'request-claim' });
     const page = await prepared.repository.listJobResults({ jobId: prepared.job.id, limit: 10 });
     assert.equal(page.items[0]?.reasonCode, 'invalid_response');
     assert.equal(page.items[0]?.reason, reason);
@@ -681,7 +681,7 @@ describe('AI identity standardization publication', () => {
     await prepared.repository.recordBatchRequestOutcome(prepared.batchId, 'confirmed', failure.responseMetadata, claim);
     await prepared.repository.recordBatchRequestOutcome(prepared.batchId, 'confirmed', failure.responseMetadata, claim);
     await new JobsRepository(database).fail('ai_batch', prepared.batchId, 'integration', failure.message,
-      { retry: false, retryClass: 'invalid_response' });
+      { retry: false, retryClass: 'invalid_response', claimToken: claim.token });
     const batch = await database.selectFrom('ai_job_batches').selectAll().where('id', '=', prepared.batchId).executeTakeFirstOrThrow();
     assert.equal(batch.confirmed_requests, 1, 'audit retries do not count another provider request');
     assert.equal(batch.request_budget_used, 1);
@@ -926,7 +926,7 @@ describe('AI identity standardization publication', () => {
       { items: [], missingIds: [String(source.id)] }, {}, { workerId: 'integration', attempt: 1n, token: 'request-claim' }));
     assert.equal((await database.selectFrom('ai_job_batches').select('validated_decision')
       .where('id', '=', prepared.batchId).executeTakeFirstOrThrow()).validated_decision, null);
-    await new JobsRepository(database).fail('ai_batch', prepared.batchId, 'integration', 'missing input item', { retry: false, retryClass: 'invalid_response' });
+    await new JobsRepository(database).fail('ai_batch', prepared.batchId, 'integration', 'missing input item', { retry: false, retryClass: 'invalid_response', claimToken: 'request-claim' });
     await Promise.all([database.transaction().execute(tx => finalizeAiJob(tx, prepared.job.id)),
       database.transaction().execute(tx => finalizeAiJob(tx, prepared.job.id))]);
     assert.deepEqual(await database.selectFrom('ai_job_batches').select('round').where('job_id', '=', prepared.job.id).execute(), [{ round: 0 }]);

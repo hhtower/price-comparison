@@ -16,9 +16,11 @@ AI 功能默认关闭，启用后会调用配置的模型服务并可能产生�
 
 ## 验证
 
-代码修改后运行受影响测试、`npm run typecheck` 和 `npm run build`；仅文档修改时核对内容与链接即可。`npm test` 包含后端和前端测试。
+代码修改后运行受影响测试、`npm run typecheck` 和 `npm run build`；类型检查覆盖 API、共享包及后端测试和脚本。仅文档修改时核对内容与链接即可。`npm test` 包含后端和前端测试。
 
 数据库与 Redis 集成测试只使用专用的 `TEST_DATABASE_URL`、`TEST_REDIS_URL` 或测试创建的临时容器，不使用业务连接。缺少测试服务时，部分测试会跳过或报错；容器测试需要 Docker。
+
+测试入口自动构建共享包；后端测试不加载 `.env`，并清除继承的业务连接。单独运行后端用例时使用 `node --import tsx --import ./apps/api/test/setup-env.js --test <测试文件>`，修改共享包后先运行 `npm run build:shared`。
 
 LLM 测试使用 mock 或免费本地模型，不调用付费模型。开发约束见 [AGENTS.md](AGENTS.md)，贡献要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

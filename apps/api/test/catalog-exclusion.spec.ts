@@ -34,7 +34,7 @@ for (const name of [
 });
 
 test('negated API and official claims do not bypass positive relay evidence', () => {
-  for (const fields of [
+  for (const fields of Array.of<Omit<import('../src/ai/adaptive-batching.js').ExtractionInput, 'id' | 'spec'> & { spec?: string }>(
     { name: '【官方充值】Codex API 500额度' },
     { name: 'Codex 非API额度；Claude API 中转充值' },
     { name: 'Claude API 号池充值；Codex 非API额度' },
@@ -43,7 +43,7 @@ test('negated API and official claims do not bypass positive relay evidence', ()
     { name: 'Codex 非API额度', sourceData: { category: '额度兑换码' } },
     { name: '【官方充值】Codex 非API额度', sourceData: { evidence: '实际交付 Claude 中转 API 余额。' } },
     { name: '【官方充值】Codex 非API额度', sourceData: { evidence: '实际交付 API URL 和 API KEY，Claude 号池余额。' } },
-  ]) {
+  )) {
     assert.equal(isExcludedApiRelay(fields), true, JSON.stringify(fields));
     assert.equal(isExcludedApiRelay(buildExtractionPayload({ id: 'mixed-relay', spec: '', ...fields }), 'text'), true, JSON.stringify(fields));
   }

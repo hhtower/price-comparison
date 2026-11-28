@@ -69,7 +69,7 @@ test('selected standard and mixed advanced seats resolve the offered menu withou
   const denial = { name: 'Team 5X 成品账号', sourceData: { evidence: '本商品不是5Xteam。' } };
   const selectedStandard = { name: 'Team 订阅套餐', spec: '2个标准席位', sourceData: { evidence: '套餐可选标准或高级席位；实际提供5X Team账号，其他套餐可选。' } };
   for (const [raw, reject5x, rejectStandard] of [[denial, true, true], [selectedStandard, true, true]] as const) {
-    for (const [input, format] of [[raw, 'raw'], [buildExtractionPayload({ id: 'conflict', ...raw, spec: raw.spec ?? '' }), 'text']] as const) {
+    for (const [input, format] of [[raw, 'raw'], [buildExtractionPayload({ id: 'conflict', ...raw, spec: 'spec' in raw ? raw.spec ?? '' : '' }), 'text']] as const) {
       assert.equal(Boolean(identityEvidenceConflict(team5x, input, format)), reject5x);
       assert.equal(Boolean(identityEvidenceConflict(team, input, format)), rejectStandard);
     }
@@ -188,14 +188,14 @@ test('sold tutorials, API credits, mailboxes, menus and contradictory delivery r
 });
 
 test('time extension cards cannot be assigned to Team subscriptions', () => {
-  for (const raw of [
+  for (const raw of Array.of<{ name: string; spec?: string; sourceData?: import('../src/database/types.js').JsonValue }>(
     { name: 'team 续时1h卡', sourceData: { category: 'OpenAI team/business' } },
     { name: 'ChatGPT Team 续时1h卡' },
     { name: 'TEAM 续时１Ｈ卡', sourceData: { evidence: '用于已有Team账号续时。' } },
     { name: 'Team 5x', spec: '续时1小时卡', sourceData: { evidence: '需已有账号，不提供新账号。' } },
     { name: 'ChatGPT Team 续时卡' },
-  ]) {
-    const frozen = buildExtractionPayload({ id: 'time-extension', ...raw, spec: 'spec' in raw ? raw.spec : '' });
+  )) {
+    const frozen = buildExtractionPayload({ id: 'time-extension', ...raw, spec: 'spec' in raw ? raw.spec ?? '' : '' });
     for (const [evidence, format] of [[raw, 'raw'], [frozen, 'text']] as const) {
       assert.equal(assessProductEvidence(evidence, format).kind, 'other', raw.name + ' ' + format);
       for (const identity of [team, team5x]) assert.ok(identityEvidenceConflict(identity, evidence, format), raw.name + ' ' + format);

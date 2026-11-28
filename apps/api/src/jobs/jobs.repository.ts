@@ -300,17 +300,19 @@ export class JobsRepository {
       update ${sql.raw(QUEUE_TABLES[kind])}
       set lease_until = now() + (${leaseMs} * interval '1 millisecond')
       where id = ${id} and status = 'running' and claimed_by = ${workerId} and lease_until > now()
+        and claim_token = ${claimToken ?? ''}
     `.execute(this.database);
     if (result.numAffectedRows !== 1n) throw new Error('heartbeat: lease owner or lease expired');
   }
 
-  async complete(kind: QueueKind, id: bigint, workerId: string): Promise<void> {
+  async complete(kind: QueueKind, id: bigint, workerId: string, claimToken?: string): Promise<void> {
     if (kind === 'assistant_turn') return completeAssistantTurn(this.database, id, workerId);
-    if (kind === 'ai_batch') return this.completeStandardizationBatch(id, workerId);
+    if (kind === 'ai_batch') return this.completeStandardizationBatch(id, workerId, claimToken);
     await this.database.transaction().execute(async (transaction) => {
       const result = await transaction.updateTable('fetch_runs')
         .set({ status: 'succeeded', claimed_by: null, lease_until: null, finished_at: sql`now()`, error: null })
         .where('id', '=', id).where('status', '=', 'running').where('claimed_by', '=', workerId)
+        .where('claim_token', '=', claimToken ?? '')
         .where('lease_until', '>', sql<Date>`now()`).executeTakeFirst();
       if (result.numUpdatedRows === 1n) return;
       const row = await transaction.selectFrom('fetch_runs').select('status').where('id', '=', id).executeTakeFirst();
@@ -318,12 +320,12 @@ export class JobsRepository {
     });
   }
 
-  private async completeStandardizationBatch(id: bigint, workerId: string): Promise<void> {
+  private async completeStandardizationBatch(id: bigint, workerId: string, claimToken?: string): Promise<void> {
     await this.database.transaction().execute(async tx => {
       const located = await tx.selectFrom('ai_job_batches').select('job_id').where('id', '=', id).executeTakeFirstOrThrow();
       await tx.selectFrom('ai_jobs').select('id')
         .where('id', '=', located.job_id).forUpdate().executeTakeFirstOrThrow();
-      const batch = await tx.selectFrom('ai_job_batches').select(['status', 'step', 'claimed_by', 'lease_until'])
+      const batch = await tx.selectFrom('ai_job_batches').select(['status', 'step', 'claimed_by', 'claim_token', 'lease_until'])
         .where('id', '=', id).forUpdate().executeTakeFirstOrThrow();
       if (batch.status === 'succeeded' && batch.step === 'done') {
         await finalizeAiJob(tx, located.job_id);
@@ -332,7 +334,8 @@ export class JobsRepository {
       // Preparation commits its own fenced completion; an older claim may finish after resume.
       if (batch.step === 'prepare') return;
       if (batch.status === 'queued' && (batch.step === 'publish' || batch.step === 'done')) return;
-      if (batch.status !== 'running' || batch.claimed_by !== workerId || batch.lease_until === null || batch.lease_until <= new Date()) {
+      if (batch.status !== 'running' || batch.claimed_by !== workerId || !claimToken || batch.claim_token !== claimToken
+        || batch.lease_until === null || batch.lease_until <= new Date()) {
         if (['failed', 'cancelled'].includes(batch.status)) return;
         throw new Error('lease owner or lease expired');
       }
@@ -358,6 +361,7 @@ export class JobsRepository {
           available_at: sql`now() + (${backoffMs} * interval '1 millisecond')`, finished_at: retry ? null : sql`now()`,
         })
         .where('id', '=', id).where('status', '=', 'running').where('claimed_by', '=', workerId)
+        .where('claim_token', '=', options.claimToken ?? '')
         .where('lease_until', '>', sql<Date>`now()`).executeTakeFirst();
       if (result.numUpdatedRows === 1n) return;
       const row = await transaction.selectFrom('fetch_runs').select('status').where('id', '=', id).executeTakeFirst();
@@ -376,7 +380,7 @@ export class JobsRepository {
       const located = await tx.selectFrom('ai_job_batches').select('job_id').where('id', '=', id).executeTakeFirstOrThrow();
       await tx.selectFrom('ai_jobs').select('id').where('id', '=', located.job_id).forUpdate().executeTakeFirstOrThrow();
       const batch = await tx.selectFrom('ai_job_batches').select([
-        'status', 'step', 'claimed_by', 'lease_until', 'request_budget_used', 'request_budget_limit',
+        'status', 'step', 'claimed_by', 'claim_token', 'lease_until', 'request_budget_used', 'request_budget_limit',
         'confirmed_requests', 'unknown_requests',
       ]).where('id', '=', id).forUpdate().executeTakeFirstOrThrow();
       if (['succeeded', 'failed', 'cancelled'].includes(batch.status)) {
@@ -384,7 +388,8 @@ export class JobsRepository {
         return;
       }
       if (batch.status === 'queued') return;
-      if (batch.status !== 'running' || batch.claimed_by !== workerId || batch.lease_until === null || batch.lease_until <= new Date()) {
+      if (batch.status !== 'running' || batch.claimed_by !== workerId || !options.claimToken || batch.claim_token !== options.claimToken
+        || batch.lease_until === null || batch.lease_until <= new Date()) {
         throw new Error('lease owner or lease expired');
       }
 

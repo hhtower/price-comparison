@@ -10,7 +10,7 @@ const snapshot = (country = 'us', currency = 'USD', amount = 20) => ({
   appId: '6448311069', country, currency, capturedAt,
   sourceUrl: 'https://apps.apple.com/' + country + '/app/id6448311069',
   offers: [
-    { id: 'sku-plus-month', name: 'Plus', amount, formatted: String(amount), period: null, kind: 'subscription' },
+    { id: 'sku-plus-month', name: 'Plus', amount, formatted: String(amount), period: null as string | null, kind: 'subscription' },
     { id: 'sku-plus-year', name: 'Plus', amount: amount * 10, formatted: String(amount * 10), period: null, kind: 'subscription' },
   ],
 });

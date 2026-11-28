@@ -9,9 +9,9 @@ const listing = (id: number, extra: Partial<Listing> = {}): Listing =>
 const detail = (id: number, extra: Record<string, unknown> = {}) => ({ code: 200, data: {
   id, name: `P${id}`, status: 1, draft_status: 0, inventory_hidden: 0, minimum: 1, maximum: 0,
   config: {}, only_user: 0, purchase_count: 0, description: '', delivery_way: 1, cover: '', ...extra } });
-const jsonResponse = (payload: unknown) => ({ ok: true, status: 200, json: async () => payload, headers: { get: () => 'application/json' } });
-const makeFetch = (route: (url: URL, init: { body?: string }) => unknown) =>
-  async (input: string | URL, init: { body?: string } = {}) => jsonResponse(route(new URL(String(input)), init));
+const jsonResponse = (payload: unknown) => Response.json(payload);
+const makeFetch = (route: (url: URL, init: RequestInit) => unknown): typeof fetch =>
+  async (input, init = {}) => jsonResponse(route(new URL(input instanceof Request ? input.url : String(input)), init));
 const standardItemReads = (over: { stock?: unknown; quote?: unknown } = {}) => (url: URL): unknown => {
   if (url.pathname.endsWith('/commodityDetail')) return detail(Number(url.searchParams.get('commodityId')));
   if (url.pathname.endsWith('/stock')) return { code: 200, data: over.stock ?? { stock: '5', stock_state: 1 } };
@@ -50,7 +50,7 @@ describe('acg-faka 站点侧缺陷容忍(2026-10-25 六店实测)', () => {
         return { code: 200, data: [listing(1), listing(2)] };
       }
       return standardItemReads()(url);
-    }), { onListStats: value => { stats = value; } });
+    }), { onListStats: (value: NonNullable<typeof stats>) => { stats = value; } });
     assert.equal(products.length, 2);
     assert.equal(stats!.categories, 1);
     assert.equal(stats!.categoryClaims, 2);
@@ -70,7 +70,7 @@ describe('acg-faka 站点侧缺陷容忍(2026-10-25 六店实测)', () => {
       }
       return standardItemReads()(url);
     }));
-    assert.deepEqual(products.map(product => product.externalId), items.map(item => String(item.id)));
+    assert.deepEqual(products.map((product: { externalId: string }) => product.externalId), items.map(item => String(item.id)));
     assert.deepEqual(pages, [1, 2]);
   });
 
@@ -103,7 +103,7 @@ describe('acg-faka 站点侧缺陷容忍(2026-10-25 六店实测)', () => {
       if (url.pathname.endsWith('/data')) return { code: 200, data: [] };
       if (url.pathname.endsWith('/commodity')) return { code: 200, data: [listing(21)], total: 1 };
       if (url.pathname.endsWith('/commodityDetail')) return detail(21, { config: { category: { 普通: 0, 质保: 1 } } });
-      if (url.pathname.endsWith('/valuation') && new URLSearchParams(init.body ?? '').get('race') === '质保')
+      if (url.pathname.endsWith('/valuation') && new URLSearchParams(String(init.body ?? '')).get('race') === '质保')
         return { code: 0, msg: '此商品类型不存在[质保]' };
       return standardItemReads()(url);
     }));

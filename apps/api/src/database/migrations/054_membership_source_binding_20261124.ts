@@ -1,8 +1,9 @@
 import type { Kysely } from 'kysely';
-import { up as refreshMembershipProjection } from './052_top_up_half_price_feature_20261123.js';
+import { membershipKind054 } from './snapshots/membership-policy.js';
+import { refreshMembershipProjection } from './snapshots/membership-projection.js';
 
-export async function up(database: Kysely<unknown>): Promise<void> {
-  await refreshMembershipProjection(database);
+export async function up<DB>(database: Kysely<DB>): Promise<void> {
+  await refreshMembershipProjection(database, membershipKind054);
 }
 
 export async function down(): Promise<void> {

@@ -16,7 +16,7 @@ test('public protocol detection rejects private addresses and revalidates DNS be
   }
   assert.equal(sent, 0);
   let resolutions = 0;
-  const rebound = new ProtocolDetectionService({ lookup: publicLookup,
+  const rebound = new ProtocolDetectionService({
     lookup: async () => [{ address: ++resolutions === 1 ? '8.8.8.8' : '192.168.1.1', family: 4 }],
     fetchImpl: async (_input, init) => { sent++; assert.ok((init as any).dispatcher); return feed(); },
   });

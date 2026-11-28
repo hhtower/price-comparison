@@ -7,9 +7,9 @@ import { applyNeedsPatch, parseUnderstanding } from '../src/assistant/assistant.
 import { candidateEvidence } from '../src/assistant/assistant-candidates.js';
 import type { AssistantRepository } from '../src/assistant/assistant.repository.js';
 import type { CatalogService } from '../src/catalog/catalog.service.js';
-import type { StreamingCall, StreamingResult } from '../src/ai/llm-runtime.js';
+import type { StreamingCall } from '../src/ai/llm-runtime.js';
 import type { ClaimedJob } from '../src/jobs/jobs.repository.js';
-import type { CatalogOffer } from '../src/catalog/catalog.repository.js';
+import type { CatalogOffer, CatalogTag } from '../src/catalog/catalog.repository.js';
 
 const quoteNow = new Date('2026-10-31T12:00:00.000Z');
 
@@ -106,7 +106,7 @@ test('obsolete filters produce an explicit question without model calls, catalog
 function shoppingFixture() {
   const product = { id: '42', name: 'Claude Pro', platform: 'anthropic', platformGroup: 'anthropic', kind: '订阅',
     identity: { family: 'anthropic', product: 'claude', tier: 'pro' } };
-  const offer: CatalogOffer = {
+  const offer: { -readonly [K in keyof CatalogOffer]: CatalogOffer[K] } & { tags: CatalogTag[] } = {
     membershipKind: 'top_up',
     shopId: '3', productId: '9', name: 'Pro 一个月', shop: '测试商铺', price: '30.00', currency: 'CNY',
     settlementQuantity: 1, priceStatus: 'verified', capturedAt: quoteNow.toISOString(),
@@ -785,7 +785,8 @@ test('consultation explains membership categories without changing shopping need
   assert.equal(state.saved?.kind, 'explanation');
   assert.deepEqual(state.saved?.needs, needs);
   assert.match(state.saved!.text, /25/u);
-  assert.match(state.saved!.text, /保障或交付方式不明确/u);
+  assert.match(state.saved!.text, /没有保障承诺或交付方式不明确/u);
+  assert.match(state.saved!.text, /不因未写具体天数归入短期/u);
   assert.doesNotMatch(state.saved!.text, /想买哪个|主要想用/u);
   assert.ok(state.saved!.sources?.some(source => source.path === '/guide'));
 });

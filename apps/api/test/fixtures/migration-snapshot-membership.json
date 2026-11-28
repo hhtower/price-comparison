@@ -1,0 +1,139 @@
+[
+  {
+    "name": "037_catalog_membership_kinds_20261113",
+    "revision": "79e693690de7e9cac31a8fc005937c6cedac074c",
+    "kindSql": "case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features ? 'source') or \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform)) then \"p\".membership_features #>> '{decision,kind}' else null end",
+    "up": [
+      {
+        "sql": "lock table shops, products in share row exclusive mode",
+        "parameters": []
+      },
+      {
+        "sql": "create table catalog_membership_kinds ( product_id bigint primary key references products(id) on delete cascade, kind text not null, policy_version text not null )",
+        "parameters": []
+      },
+      {
+        "sql": "create function catalog_membership_kinds_changed() returns trigger language plpgsql set search_path from current as $function$ begin if tg_op = 'UPDATE' and (new.membership_features, new.content_version, new.content_fingerprint, new.standardization_revision, new.shop_id) is not distinct from (old.membership_features, old.content_version, old.content_fingerprint, old.standardization_revision, old.shop_id) then return null; end if; insert into catalog_membership_kinds (product_id, kind, policy_version) select id, kind, 'ai-membership-20261110-v3' from ( select p.id, case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features ? 'source') or \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform)) then \"p\".membership_features #>> '{decision,kind}' else null end as kind from products p join shops sh on sh.id = p.shop_id where p.id = new.id ) current_features where kind is not null on conflict (product_id) do update set kind = excluded.kind, policy_version = excluded.policy_version; if not found then delete from catalog_membership_kinds where product_id = new.id; end if; return null; end $function$",
+        "parameters": []
+      },
+      {
+        "sql": "create trigger catalog_membership_kinds_changed after insert or update of membership_features, content_version, content_fingerprint, standardization_revision, shop_id on products for each row execute function catalog_membership_kinds_changed()",
+        "parameters": []
+      },
+      {
+        "sql": "insert into catalog_membership_kinds (product_id, kind, policy_version) select id, kind, 'ai-membership-20261110-v3' from ( select p.id, case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features ? 'source') or \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform)) then \"p\".membership_features #>> '{decision,kind}' else null end as kind from products p join shops sh on sh.id = p.shop_id where p.membership_features is not null ) current_features where kind is not null",
+        "parameters": []
+      },
+      {
+        "sql": "analyze catalog_membership_kinds",
+        "parameters": []
+      }
+    ],
+    "down": [
+      {
+        "sql": "drop trigger catalog_membership_kinds_changed on products",
+        "parameters": []
+      },
+      {
+        "sql": "drop function catalog_membership_kinds_changed()",
+        "parameters": []
+      },
+      {
+        "sql": "drop table catalog_membership_kinds",
+        "parameters": []
+      }
+    ]
+  },
+  {
+    "name": "052_top_up_half_price_feature_20261123",
+    "revision": "20fac4ff700bce746fac7d5bc2985061912b25af",
+    "kindSql": "case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (\"p\".membership_features #>> '{decision,kind}' not in ('top_up', 'top_up_half_price') or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and (not (\"p\".membership_features ? 'source') or \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform)) then \"p\".membership_features #>> '{decision,kind}' else null end",
+    "up": [
+      {
+        "sql": "lock table shops, products in share row exclusive mode",
+        "parameters": []
+      },
+      {
+        "sql": "create or replace function catalog_membership_kinds_changed() returns trigger language plpgsql set search_path from current as $function$ begin if tg_op = 'UPDATE' and (new.membership_features, new.content_version, new.content_fingerprint, new.standardization_revision, new.shop_id) is not distinct from (old.membership_features, old.content_version, old.content_fingerprint, old.standardization_revision, old.shop_id) then return null; end if; insert into catalog_membership_kinds (product_id, kind, policy_version) select id, kind, 'ai-membership-20261110-v3' from ( select p.id, case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (\"p\".membership_features #>> '{decision,kind}' not in ('top_up', 'top_up_half_price') or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and (not (\"p\".membership_features ? 'source') or \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform)) then \"p\".membership_features #>> '{decision,kind}' else null end as kind from products p join shops sh on sh.id = p.shop_id where p.id = new.id ) current_features where kind is not null on conflict (product_id) do update set kind = excluded.kind, policy_version = excluded.policy_version; if not found then delete from catalog_membership_kinds where product_id = new.id; end if; return null; end $function$",
+        "parameters": []
+      },
+      {
+        "sql": "delete from catalog_membership_kinds mk where not exists ( select 1 from products p join shops sh on sh.id = p.shop_id where p.id = mk.product_id and case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (\"p\".membership_features #>> '{decision,kind}' not in ('top_up', 'top_up_half_price') or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and (not (\"p\".membership_features ? 'source') or \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform)) then \"p\".membership_features #>> '{decision,kind}' else null end is not null )",
+        "parameters": []
+      },
+      {
+        "sql": "insert into catalog_membership_kinds (product_id, kind, policy_version) select id, kind, 'ai-membership-20261110-v3' from ( select p.id, case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (\"p\".membership_features #>> '{decision,kind}' not in ('top_up', 'top_up_half_price') or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and (not (\"p\".membership_features ? 'source') or \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform)) then \"p\".membership_features #>> '{decision,kind}' else null end as kind from products p join shops sh on sh.id = p.shop_id where p.membership_features is not null ) current_features where kind is not null on conflict (product_id) do update set kind = excluded.kind, policy_version = excluded.policy_version where (catalog_membership_kinds.kind, catalog_membership_kinds.policy_version) is distinct from (excluded.kind, excluded.policy_version)",
+        "parameters": []
+      },
+      {
+        "sql": "update catalog_cache_versions set version = version + 1, updated_at = now() where id = 1",
+        "parameters": []
+      }
+    ],
+    "down": []
+  },
+  {
+    "name": "054_membership_source_binding_20261124",
+    "revision": "99eac326a296b3d18799c416ddffc318abe83229",
+    "kindSql": "case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features #>> '{decision,kind}' = any(array['top_up', 'top_up_half_price']::text[]::text[])) or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform) then \"p\".membership_features #>> '{decision,kind}' else null end",
+    "up": [
+      {
+        "sql": "lock table shops, products in share row exclusive mode",
+        "parameters": []
+      },
+      {
+        "sql": "create or replace function catalog_membership_kinds_changed() returns trigger language plpgsql set search_path from current as $function$ begin if tg_op = 'UPDATE' and (new.membership_features, new.content_version, new.content_fingerprint, new.standardization_revision, new.shop_id) is not distinct from (old.membership_features, old.content_version, old.content_fingerprint, old.standardization_revision, old.shop_id) then return null; end if; insert into catalog_membership_kinds (product_id, kind, policy_version) select id, kind, 'ai-membership-20261110-v3' from ( select p.id, case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features #>> '{decision,kind}' = any(array['top_up', 'top_up_half_price']::text[]::text[])) or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform) then \"p\".membership_features #>> '{decision,kind}' else null end as kind from products p join shops sh on sh.id = p.shop_id where p.id = new.id ) current_features where kind is not null on conflict (product_id) do update set kind = excluded.kind, policy_version = excluded.policy_version; if not found then delete from catalog_membership_kinds where product_id = new.id; end if; return null; end $function$",
+        "parameters": []
+      },
+      {
+        "sql": "delete from catalog_membership_kinds mk where not exists ( select 1 from products p join shops sh on sh.id = p.shop_id where p.id = mk.product_id and case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features #>> '{decision,kind}' = any(array['top_up', 'top_up_half_price']::text[]::text[])) or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform) then \"p\".membership_features #>> '{decision,kind}' else null end is not null )",
+        "parameters": []
+      },
+      {
+        "sql": "insert into catalog_membership_kinds (product_id, kind, policy_version) select id, kind, 'ai-membership-20261110-v3' from ( select p.id, case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features #>> '{decision,kind}' = any(array['top_up', 'top_up_half_price']::text[]::text[])) or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform) then \"p\".membership_features #>> '{decision,kind}' else null end as kind from products p join shops sh on sh.id = p.shop_id where p.membership_features is not null ) current_features where kind is not null on conflict (product_id) do update set kind = excluded.kind, policy_version = excluded.policy_version where (catalog_membership_kinds.kind, catalog_membership_kinds.policy_version) is distinct from (excluded.kind, excluded.policy_version)",
+        "parameters": []
+      },
+      {
+        "sql": "update catalog_cache_versions set version = version + 1, updated_at = now() where id = 1",
+        "parameters": []
+      }
+    ],
+    "down": []
+  },
+  {
+    "name": "055_membership_decision_metadata_20261124",
+    "revision": "54e9fa0c7e33e28d3d67e52d86c41ece97da1d34",
+    "kindSql": "case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features->'decision' = jsonb_build_object( 'kind', \"p\".membership_features #>> '{decision,kind}', 'reason', 'llm_reviewed') and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features #>> '{decision,kind}' = any(array['top_up', 'top_up_half_price']::text[]::text[])) or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform) then \"p\".membership_features #>> '{decision,kind}' else null end",
+    "up": [
+      {
+        "sql": "lock table shops, products in share row exclusive mode",
+        "parameters": []
+      },
+      {
+        "sql": "update products set membership_features = jsonb_set( membership_features, '{decision}', (membership_features->'decision') - 'durationSource' - 'requiredWarrantyDays') where jsonb_typeof(membership_features->'decision') = 'object' and (membership_features->'decision') ?| array['durationSource', 'requiredWarrantyDays']",
+        "parameters": []
+      },
+      {
+        "sql": "lock table shops, products in share row exclusive mode",
+        "parameters": []
+      },
+      {
+        "sql": "create or replace function catalog_membership_kinds_changed() returns trigger language plpgsql set search_path from current as $function$ begin if tg_op = 'UPDATE' and (new.membership_features, new.content_version, new.content_fingerprint, new.standardization_revision, new.shop_id) is not distinct from (old.membership_features, old.content_version, old.content_fingerprint, old.standardization_revision, old.shop_id) then return null; end if; insert into catalog_membership_kinds (product_id, kind, policy_version) select id, kind, 'ai-membership-20261110-v3' from ( select p.id, case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features->'decision' = jsonb_build_object( 'kind', \"p\".membership_features #>> '{decision,kind}', 'reason', 'llm_reviewed') and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features #>> '{decision,kind}' = any(array['top_up', 'top_up_half_price']::text[]::text[])) or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform) then \"p\".membership_features #>> '{decision,kind}' else null end as kind from products p join shops sh on sh.id = p.shop_id where p.id = new.id ) current_features where kind is not null on conflict (product_id) do update set kind = excluded.kind, policy_version = excluded.policy_version; if not found then delete from catalog_membership_kinds where product_id = new.id; end if; return null; end $function$",
+        "parameters": []
+      },
+      {
+        "sql": "delete from catalog_membership_kinds mk where not exists ( select 1 from products p join shops sh on sh.id = p.shop_id where p.id = mk.product_id and case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features->'decision' = jsonb_build_object( 'kind', \"p\".membership_features #>> '{decision,kind}', 'reason', 'llm_reviewed') and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features #>> '{decision,kind}' = any(array['top_up', 'top_up_half_price']::text[]::text[])) or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform) then \"p\".membership_features #>> '{decision,kind}' else null end is not null )",
+        "parameters": []
+      },
+      {
+        "sql": "insert into catalog_membership_kinds (product_id, kind, policy_version) select id, kind, 'ai-membership-20261110-v3' from ( select p.id, case when \"p\".membership_features->>'contentVersion' = \"p\".content_version::text and \"p\".membership_features->>'fingerprint' = \"p\".content_fingerprint and \"p\".membership_features->>'revision' = \"p\".standardization_revision::text and \"p\".membership_features->>'policyVersion' = 'ai-membership-20261110-v3' and \"p\".membership_features #>> '{decision,reason}' = 'llm_reviewed' and \"p\".membership_features->'decision' = jsonb_build_object( 'kind', \"p\".membership_features #>> '{decision,kind}', 'reason', 'llm_reviewed') and \"p\".membership_features #>> '{decision,kind}' = any(array['account', 'top_up', 'top_up_half_price', 'rental', 'short_term']::text[]::text[]) and (not (\"p\".membership_features #>> '{decision,kind}' = any(array['top_up', 'top_up_half_price']::text[]::text[])) or \"p\".membership_features->>'topUpPolicyVersion' = 'top-up-eligibility-20261124-v1') and \"p\".membership_features->'source' = jsonb_build_object('url', \"sh\".url, 'protocol', \"sh\".protocol, 'platform', \"sh\".platform) then \"p\".membership_features #>> '{decision,kind}' else null end as kind from products p join shops sh on sh.id = p.shop_id where p.membership_features is not null ) current_features where kind is not null on conflict (product_id) do update set kind = excluded.kind, policy_version = excluded.policy_version where (catalog_membership_kinds.kind, catalog_membership_kinds.policy_version) is distinct from (excluded.kind, excluded.policy_version)",
+        "parameters": []
+      },
+      {
+        "sql": "update catalog_cache_versions set version = version + 1, updated_at = now() where id = 1",
+        "parameters": []
+      }
+    ],
+    "down": []
+  }
+]

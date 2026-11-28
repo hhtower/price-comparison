@@ -112,10 +112,10 @@ for (const format of ['raw', 'text'] as const) {
   test(`a warranty range retains its guaranteed minimum: ${format}`, () => {
     for (const body of ['28-30天质保', '质保28-30天', '28至30天质保', '质保28～30天', '28–30天质保', '质保28—30天']) {
       const raw = { name: 'Codex Plus 成品号 质保28天', sourceData: { evidence: `<p>${body}</p>` } };
-      const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'warranty-range', ...raw });
+      const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'warranty-range', spec: '', ...raw });
       assert.equal(check(evidence, format), null, body);
       const stricter = { ...raw, name: 'Codex Plus 成品号 质保30天' };
-      const stricterEvidence = format === 'raw' ? stricter : buildExtractionPayload({ id: 'warranty-range-strict', ...stricter });
+      const stricterEvidence = format === 'raw' ? stricter : buildExtractionPayload({ id: 'warranty-range-strict', spec: '', ...stricter });
       assert.match(check(stricterEvidence, format) ?? '', /^warranty conflict/u, body);
     }
   });
@@ -124,12 +124,12 @@ for (const format of ['raw', 'text'] as const) {
     const raw = { name: 'Muse 成品号', sourceData: {
       evidence: '<p>您收到账密后请及时登录。</p><p>登陆成功后如果没有账户密码请您马上设置账户密码（可以点击忘记了密码重置）。</p>',
     } };
-    const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'password-setup', ...raw });
+    const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'password-setup', spec: '', ...raw });
     assert.equal(check(evidence, format), null);
     const conflicting = { ...raw, name: 'Muse 成品号 提供账密', sourceData: {
       evidence: '<p>实际只交付RT，没有账户密码。</p>',
     } };
-    const conflictingEvidence = format === 'raw' ? conflicting : buildExtractionPayload({ id: 'password-delivery', ...conflicting });
+    const conflictingEvidence = format === 'raw' ? conflicting : buildExtractionPayload({ id: 'password-delivery', spec: '', ...conflicting });
     assert.match(check(conflictingEvidence, format) ?? '', /^credentials conflict/u);
   });
 
@@ -142,7 +142,7 @@ for (const format of ['raw', 'text'] as const) {
       ['Muse 成品号 不带账密', '登陆成功后如果没有账户密码请设置账号密码并随货交付'],
     ]) {
       const raw = { name, sourceData: { evidence: `<p>${body}</p>` } };
-      const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'password-independent-claim', ...raw });
+      const evidence = format === 'raw' ? raw : buildExtractionPayload({ id: 'password-independent-claim', spec: '', ...raw });
       assert.match(check(evidence, format) ?? '', /^credentials conflict/u, body);
     }
   });

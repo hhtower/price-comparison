@@ -1,0 +1,214 @@
+{
+  "revision": "a517acb97ea11633da9326c50f8f1f82164a49e0",
+  "identities": [
+    [
+      "openai",
+      "chatgpt",
+      "go"
+    ],
+    [
+      "openai",
+      "chatgpt",
+      "plus"
+    ],
+    [
+      "openai",
+      "chatgpt",
+      "pro_5x"
+    ],
+    [
+      "openai",
+      "chatgpt",
+      "pro_20x"
+    ],
+    [
+      "openai",
+      "chatgpt",
+      "pro_500"
+    ],
+    [
+      "openai",
+      "chatgpt",
+      "team"
+    ],
+    [
+      "openai",
+      "chatgpt",
+      "team_5x"
+    ],
+    [
+      "anthropic",
+      "claude",
+      "pro"
+    ],
+    [
+      "anthropic",
+      "claude",
+      "max_5x"
+    ],
+    [
+      "anthropic",
+      "claude",
+      "max_20x"
+    ],
+    [
+      "anthropic",
+      "claude",
+      "team"
+    ],
+    [
+      "anthropic",
+      "claude",
+      "team_5x"
+    ],
+    [
+      "google",
+      "gemini",
+      "plus"
+    ],
+    [
+      "google",
+      "gemini",
+      "pro"
+    ],
+    [
+      "google",
+      "gemini",
+      "ultra_5x"
+    ],
+    [
+      "google",
+      "gemini",
+      "ultra_20x"
+    ],
+    [
+      "xai",
+      "grok",
+      "plus"
+    ],
+    [
+      "xai",
+      "grok",
+      "premium"
+    ],
+    [
+      "xai",
+      "grok",
+      "super"
+    ],
+    [
+      "xai",
+      "grok",
+      "ultra"
+    ],
+    [
+      "xai",
+      "grok",
+      "supergrok"
+    ],
+    [
+      "xai",
+      "grok",
+      "heavy"
+    ],
+    [
+      "cursor",
+      "cursor",
+      "pro"
+    ],
+    [
+      "cursor",
+      "cursor",
+      "pro_plus"
+    ],
+    [
+      "cursor",
+      "cursor",
+      "ultra"
+    ]
+  ],
+  "up": [
+    {
+      "sql": "do $locks$ begin for attempt in 1..40 loop begin lock table shops, products, standard_products, ai_jobs in access exclusive mode nowait; return; exception when lock_not_available then if attempt = 40 then raise exception 'Membership feature schema migration could not acquire table locks' using errcode = '55P03', hint = 'Pause application writers and workers, then retry the migration.'; end if; end; perform pg_sleep(0.25); end loop; end $locks$",
+      "parameters": []
+    },
+    {
+      "sql": "create function is_ai_membership(family text, product text, tier text) returns boolean language sql immutable parallel safe as $function$ select coalesce((family, product, tier) in (('openai','chatgpt','go'),('openai','chatgpt','plus'),('openai','chatgpt','pro_5x'),('openai','chatgpt','pro_20x'),('openai','chatgpt','pro_500'),('openai','chatgpt','team'),('openai','chatgpt','team_5x'),('anthropic','claude','pro'),('anthropic','claude','max_5x'),('anthropic','claude','max_20x'),('anthropic','claude','team'),('anthropic','claude','team_5x'),('google','gemini','plus'),('google','gemini','pro'),('google','gemini','ultra_5x'),('google','gemini','ultra_20x'),('xai','grok','plus'),('xai','grok','premium'),('xai','grok','super'),('xai','grok','ultra'),('xai','grok','supergrok'),('xai','grok','heavy'),('cursor','cursor','pro'),('cursor','cursor','pro_plus'),('cursor','cursor','ultra')), false) $function$",
+      "parameters": []
+    },
+    {
+      "sql": "alter table products add column membership_features jsonb",
+      "parameters": []
+    },
+    {
+      "sql": "alter table ai_jobs drop constraint if exists ai_jobs_job_type_check",
+      "parameters": []
+    },
+    {
+      "sql": "alter table ai_jobs add constraint ai_jobs_job_type_check check (job_type in ('incremental', 'calibration', 'manual_full', 'tag_extraction', 'membership_features'))",
+      "parameters": []
+    },
+    {
+      "sql": "create unique index ai_membership_feature_parent on ai_jobs(parent_identity_job_id) where job_type = 'membership_features' and parent_identity_job_id is not null and retry_of_job_id is null",
+      "parameters": []
+    },
+    {
+      "sql": "create function invalidate_membership_features() returns trigger language plpgsql as $function$ begin update products set membership_features = null, standardization_revision = standardization_revision + 1 where id = new.id and membership_features is not null; return new; end $function$",
+      "parameters": []
+    },
+    {
+      "sql": "create trigger invalidate_membership_features after update on products for each row when (old.content_version is distinct from new.content_version or old.content_fingerprint is distinct from new.content_fingerprint or old.shop_id is distinct from new.shop_id) execute function invalidate_membership_features()",
+      "parameters": []
+    },
+    {
+      "sql": "create function invalidate_membership_shop_features() returns trigger language plpgsql as $function$ begin update products set membership_features = null, standardization_revision = standardization_revision + 1 where shop_id = new.id and membership_features is not null; return new; end $function$",
+      "parameters": []
+    },
+    {
+      "sql": "create trigger invalidate_membership_shop_features after update of url, protocol, platform on shops for each row when (old.url is distinct from new.url or old.protocol is distinct from new.protocol or old.platform is distinct from new.platform) execute function invalidate_membership_shop_features()",
+      "parameters": []
+    }
+  ],
+  "down": [
+    {
+      "sql": "do $locks$ begin for attempt in 1..40 loop begin lock table shops, products, standard_products, ai_jobs in access exclusive mode nowait; return; exception when lock_not_available then if attempt = 40 then raise exception 'Membership feature schema migration could not acquire table locks' using errcode = '55P03', hint = 'Pause application writers and workers, then retry the migration.'; end if; end; perform pg_sleep(0.25); end loop; end $locks$",
+      "parameters": []
+    },
+    {
+      "sql": "drop trigger invalidate_membership_shop_features on shops",
+      "parameters": []
+    },
+    {
+      "sql": "drop function invalidate_membership_shop_features()",
+      "parameters": []
+    },
+    {
+      "sql": "drop trigger invalidate_membership_features on products",
+      "parameters": []
+    },
+    {
+      "sql": "drop function invalidate_membership_features()",
+      "parameters": []
+    },
+    {
+      "sql": "drop index ai_membership_feature_parent",
+      "parameters": []
+    },
+    {
+      "sql": "alter table ai_jobs drop constraint ai_jobs_job_type_check",
+      "parameters": []
+    },
+    {
+      "sql": "alter table ai_jobs add constraint ai_jobs_job_type_check check (job_type in ('incremental', 'calibration', 'manual_full', 'tag_extraction'))",
+      "parameters": []
+    },
+    {
+      "sql": "alter table products drop column membership_features",
+      "parameters": []
+    },
+    {
+      "sql": "drop function is_ai_membership(text, text, text)",
+      "parameters": []
+    }
+  ]
+}

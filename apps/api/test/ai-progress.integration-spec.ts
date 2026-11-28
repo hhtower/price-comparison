@@ -5,7 +5,7 @@ import { CompiledQuery, Kysely, PostgresDialect } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import { Pool } from 'pg';
 import { migrationProvider } from '../scripts/migrate.js';
-import { jsonb, type DatabaseSchema } from '../src/database/types.js';
+import { jsonb, type JsonValue, type StandardizationMemberStatus, type DatabaseSchema } from '../src/database/types.js';
 import { getJobProgress } from '../src/ai/ai-progress.repository.js';
 
 type Plan = { 'Relation Name'?: string; 'Actual Loops': number; Plans?: Plan[] };
@@ -24,7 +24,7 @@ test('progress projects members once while preserving legacy JSON and version se
     const migration = await new Migrator({ db, provider: migrationProvider, migrationTableSchema: schema }).migrateToLatest();
     if (migration.error) throw migration.error;
     const shop = await db.insertInto('shops').values({ platform: 'test', name: 'progress', url: 'https://test.invalid', enabled: true }).returning('id').executeTakeFirstOrThrow();
-    const cases = [
+    const cases: Array<{ status: StandardizationMemberStatus; output: JsonValue | undefined }> = [
       { status: 'queued', output: { acceptedTags: null } },
       { status: 'processing', output: { rejectedTags: {} } },
       { status: 'classified', output: { outcome: 'updated', acceptedTags: [1, 2], rejectedTags: [3],

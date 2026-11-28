@@ -347,10 +347,10 @@ for (const outcome of ['non_ai', 'failed', 'unclassified'] as const) {
     assert.deepEqual(await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id).execute(), []);
     if (outcome === 'failed') {
       const batch = parent.batches[0]!;
-      await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'failed-identity',
+      await db.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'failed-identity', claim_token: 'failed-identity-claim',
         attempts: 1n, lease_until: new Date(Date.now() + 60_000) }).where('id', '=', batch.id).execute();
       await new JobsRepository(db).fail('ai_batch', batch.id, 'failed-identity', 'mock provider refusal',
-        { retry: false, retryClass: 'provider_policy_rejection' });
+        { retry: false, retryClass: 'provider_policy_rejection', claimToken: 'failed-identity-claim' });
     } else await publishIdentity(f, parent, outcome === 'non_ai' ? { tier: 'free' } : { approved: false });
     assert.deepEqual(await db.selectFrom('ai_jobs').select('id').where('parent_identity_job_id', '=', parent.id)
       .where('job_type', '=', 'membership_features').execute(), []);
@@ -553,7 +553,7 @@ test('feature provider refusal stays out of the identity retry pool', async () =
     .where('job_type', '=', 'membership_features').executeTakeFirstOrThrow();
   const task = await featureTask(f.product.id, child.id);
   await new JobsRepository(db).fail('ai_batch', task.batch.id, task.claim.workerId, 'provider refused',
-    { retry: false, retryClass: 'provider_policy_rejection' });
+    { retry: false, retryClass: 'provider_policy_rejection', claimToken: task.claim.token });
   const result = await db.selectFrom('ai_standardization_results').select('reason_code')
     .where('job_id', '=', parent.id).where('product_id', '=', f.product.id).executeTakeFirstOrThrow();
   assert.equal(result.reason_code, null);

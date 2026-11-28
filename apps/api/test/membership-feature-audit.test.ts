@@ -43,7 +43,7 @@ test('feature results count one saved classification and never count unsaved app
     [{ ...classificationResult, outcome: 'skipped' }, 'classified', 0, 0],
     [{ ...classificationResult, outcome: 'failed' }, 'failed', 0, 0],
     [{ ...classificationResult, outcome: 'failed', classificationReviewed: false,
-      review: { mode: 'membership_binary', decision: false, code: 'source_conflict', refs: [0] } }, 'failed', 0, 1],
+      review: { mode: 'membership_binary', decision: false, code: 'source_conflict', refs: [0] as number[] } }, 'failed', 0, 1],
     [classificationResult, 'processing', 0, 0],
   ] as const) {
     const f = fixture('membership_features', output, status);
@@ -72,7 +72,7 @@ test('feature batch audits use diagnostic classifications without a per-tag comp
   ]);
   t.after(() => f.db.destroy());
   const audit = await f.repo.tagProductAudit(1n, 2n);
-  assert.deepEqual(audit.batches.map(batch => batch.stage), ['generate', 'review']);
+  assert.deepEqual(audit.batches.map((batch: { stage: string }) => batch.stage), ['generate', 'review']);
   assert.equal(audit.batches[1].proposal_batch_id, '10');
   assert.equal(audit.batches[0].proposed_membership_kind, 'rental');
   assert.equal(audit.batches[0].classification_decision, null);
@@ -111,8 +111,8 @@ test('feature audits expose durable diagnostic refs and the shared repair round 
   assert.equal(audit.batches[1].classification_feedback, null);
   assert.deepEqual(audit.batches[2].classification_feedback, { classificationDecision: true, code: null, refs: [] });
   assert.deepEqual(audit.batches.map((batch: { reviewRepairRound: number }) => batch.reviewRepairRound), [0, 1, 1]);
-  assert.deepEqual(audit.batches.map(batch => batch.stage), ['review', 'repair', 'review']);
-  assert.deepEqual(audit.batches.map(batch => batch.proposal_batch_id), ['9', null, '11']);
+  assert.deepEqual(audit.batches.map((batch: { stage: string }) => batch.stage), ['review', 'repair', 'review']);
+  assert.deepEqual(audit.batches.map((batch: { proposal_batch_id: string | null }) => batch.proposal_batch_id), ['9', null, '11']);
   assert.ok(audit.batches.every((batch: object) => !Object.hasOwn(batch, 'tagRepairRound')));
   assert.deepEqual(audit.member.output.review, { mode: 'membership_binary', decision: false, code: 'delivery_mismatch', refs: [0, 2] });
 });

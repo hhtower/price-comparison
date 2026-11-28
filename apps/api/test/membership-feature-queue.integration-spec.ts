@@ -242,7 +242,7 @@ for (const jobType of ['tag_extraction', 'membership_features'] as const) {
     assert.equal(queue.summary.failedProducts, 0);
     assert.equal(queue.summary.coveredProducts, 0);
     assert.equal(queue.summary.pendingProducts, 1);
-    assert.equal(queue.summary.currentReasons.incomplete, 1);
+    assert.equal(queue.summary.currentReasons!.incomplete, 1);
   });
 }
 
@@ -252,7 +252,7 @@ test('unfinished feature counts recheck current published AI identity and shop s
   await assign(f, 1, 'provisional');
   const nonAi = await assign(f, 2, 'published');
   await db.updateTable('standard_products').set({ canonical_tier: 'free' }).where('id', '=', nonAi).execute();
-  const ids = [];
+  const ids: bigint[] = [];
   for (let index = 0; index < 3; index++) ids.push(await task(f, 'membership_features', undefined, index));
   const scope = { jobType: 'membership_features', status: 'unfinished', scopeShopId: f.shop.id };
   let queue = await readAiTaskQueue(db, scope);
@@ -264,7 +264,7 @@ test('unfinished feature counts recheck current published AI identity and shop s
   await assign(other, 0, 'published');
   const otherJob = await task(other, 'membership_features');
   const otherMember = await db.selectFrom('ai_job_input_members').selectAll().where('job_id', '=', otherJob).executeTakeFirstOrThrow();
-  await db.insertInto('ai_job_input_members').values({ ...otherMember, job_id: ids[0], input_id: f.products[0].id,
+  await db.insertInto('ai_job_input_members').values({ ...otherMember, output: otherMember.output === null ? null : jsonb(otherMember.output), job_id: ids[0], input_id: f.products[0].id,
     payload: jsonb(otherMember.payload as JsonValue) }).execute();
   assert.equal((await readAiTaskQueue(db, scope)).summary.pendingProducts, 1);
   await db.updateTable('standard_products').set({ canonical_tier: 'free' }).where('id', '=', standard).execute();

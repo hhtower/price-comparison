@@ -1,6 +1,6 @@
 import { sql, type Kysely } from 'kysely';
 
-export async function up(database: Kysely<unknown>): Promise<void> {
+export async function up<DB>(database: Kysely<DB>): Promise<void> {
   await sql`
     create table assistant_sessions (
       id uuid primary key,
@@ -47,6 +47,6 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   `.execute(database);
 }
 
-export async function down(database: Kysely<unknown>): Promise<void> {
+export async function down<DB>(database: Kysely<DB>): Promise<void> {
   await sql`drop table assistant_turns; drop table assistant_sessions`.execute(database);
 }

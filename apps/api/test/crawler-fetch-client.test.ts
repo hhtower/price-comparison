@@ -8,7 +8,7 @@ import { createQualityFetch } from '../src/quality/quality-network.js';
 
 function fakeLease(url: string | null) {
   const events: string[] = [];
-  const lease: ProxyLease = {
+  const lease: Omit<ProxyLease, 'dispatcher'> & { dispatcher: ProxyLease['dispatcher'] } = {
     proxyUrl: url, dispatcher: undefined,
     reportSuccess: () => events.push('success'),
     reportFailure: kind => events.push(`failure:${kind}`),
@@ -124,7 +124,7 @@ test('quality wrapping preserves the crawler body failure stage and code', async
 test('preserves a validated public-address dispatcher instead of replacing it with a proxy', async () => {
   const pinned = {} as any;
   const proxy = fakeLease('http://proxy');
-  proxy.lease.dispatcher = {} as any;
+  proxy.lease.dispatcher = {} as ProxyLease['dispatcher'];
   const counters: string[] = [];
   const factory = createRunFetchFactory({
     limiter: { acquire: async () => {} } as any, pool: { acquire: async (_signal: AbortSignal, _preferred: unknown, admit?: () => Promise<void>) => { await admit?.(); return proxy.lease; } } as any,

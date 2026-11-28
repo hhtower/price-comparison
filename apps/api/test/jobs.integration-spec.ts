@@ -81,12 +81,12 @@ describe('durable job queue leases', () => {
     const batch = await database.insertInto('ai_job_batches').values({ job_id: job.id, batch_index: 1n, product_ids: '[]' as never, product_count: 0n, status: 'queued' }).returning('id').executeTakeFirstOrThrow();
     const claim = await repository.claimNext('ai_batch', 'owner-a', 10_000);
     assert.ok(claim);
-    await assert.rejects(repository.heartbeat('ai_batch', batch.id, 'owner-b'), /lease|owner/i);
-    await repository.heartbeat('ai_batch', batch.id, 'owner-a');
-    await assert.rejects(repository.complete('ai_batch', batch.id, 'owner-b'), /lease|owner/i);
+    await assert.rejects(repository.heartbeat('ai_batch', batch.id, 'owner-b', 30_000, String(claim.row.claim_token)), /lease|owner/i);
+    await repository.heartbeat('ai_batch', batch.id, 'owner-a', 30_000, String(claim.row.claim_token));
+    await assert.rejects(repository.complete('ai_batch', batch.id, 'owner-b', String(claim.row.claim_token)), /lease|owner/i);
     await database.updateTable('ai_job_batches').set({ step: 'done' }).where('id', '=', batch.id).execute();
-    await repository.complete('ai_batch', batch.id, 'owner-a');
-    await repository.complete('ai_batch', batch.id, 'owner-a');
+    await repository.complete('ai_batch', batch.id, 'owner-a', String(claim.row.claim_token));
+    await repository.complete('ai_batch', batch.id, 'owner-a', String(claim.row.claim_token));
   });
 
   test('expired leases can be reclaimed and stale owners cannot overwrite them', async () => {
@@ -97,8 +97,8 @@ describe('durable job queue leases', () => {
     await new Promise((resolve) => setTimeout(resolve, 15));
     const recovered = await repository.claimNext('fetch_run', 'recovery-worker', 5000);
     assert.equal(recovered?.id, task.id);
-    await assert.rejects(repository.complete('fetch_run', task.id, 'crashed-worker'), /lease|owner/i);
-    await repository.fail('fetch_run', task.id, 'recovery-worker', 'temporary', { retry: true, backoffMs: 0 });
+    await assert.rejects(repository.complete('fetch_run', task.id, 'crashed-worker', String(first.row.claim_token)), /lease|owner/i);
+    await repository.fail('fetch_run', task.id, 'recovery-worker', 'temporary', { retry: true, backoffMs: 0, claimToken: String(recovered!.row.claim_token) });
     const retried = await repository.claimNext('fetch_run', 'retry-worker', 5000);
     assert.equal(retried?.attempts, 3n);
   });
@@ -108,11 +108,70 @@ describe('durable job queue leases', () => {
     const job = await database.insertInto('ai_jobs').values({ status: 'queued', total: 1n, model: 'test', prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')), rule_version: STANDARDIZATION_POLICY_VERSION }).returning('id').executeTakeFirstOrThrow();
     await database.insertInto('ai_job_batches').values({ id: 9001n, job_id: job.id, batch_index: 90n, product_ids: '[]' as never, product_count: 0n, status: 'queued', step: 'done' }).execute();
     await database.insertInto('fetch_runs').values({ id: 9001n, shop_id: shop.id, started_at: new Date(), status: 'queued' }).execute();
-    await database.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'same-owner', lease_until: new Date(Date.now() + 5000) }).where('id', '=', 9001n).execute();
-    await database.updateTable('fetch_runs').set({ status: 'running', claimed_by: 'same-owner', lease_until: new Date(Date.now() + 5000) }).where('id', '=', 9001n).execute();
-    await repository.complete('ai_batch', 9001n, 'same-owner');
+    await database.updateTable('ai_job_batches').set({ status: 'running', claimed_by: 'same-owner', claim_token: 'batch-claim', lease_until: new Date(Date.now() + 5000) }).where('id', '=', 9001n).execute();
+    await database.updateTable('fetch_runs').set({ status: 'running', claimed_by: 'same-owner', claim_token: 'fetch-claim', lease_until: new Date(Date.now() + 5000) }).where('id', '=', 9001n).execute();
+    await repository.complete('ai_batch', 9001n, 'same-owner', 'batch-claim');
     assert.equal((await database.selectFrom('fetch_runs').select('status').where('id', '=', 9001n).executeTakeFirstOrThrow()).status, 'running');
-    await repository.complete('fetch_run', 9001n, 'same-owner');
+    await repository.complete('fetch_run', 9001n, 'same-owner', 'fetch-claim');
+  });
+
+  test('same-worker publication reclaim rejects stale and missing tokens without changing the new claim', async () => {
+    const job = await database.insertInto('ai_jobs').values({
+      status: 'queued', total: 1n, model: 'test', priority: 10000,
+      prompt_version: STANDARDIZATION_PROMPT_VERSION, pipeline_versions: jsonb(pipelineVersionSnapshot('test')),
+      rule_version: STANDARDIZATION_POLICY_VERSION,
+    }).returning('id').executeTakeFirstOrThrow();
+    const batch = await database.insertInto('ai_job_batches').values({
+      job_id: job.id, batch_index: 0n, product_ids: '[]' as never, product_count: 0n, status: 'queued',
+    }).returning('id').executeTakeFirstOrThrow();
+    const first = await repository.claimNext('ai_batch', 'same-worker', 30_000);
+    assert.equal(first?.id, batch.id);
+    // Reproduce the checkpoint commit before the original handler finishes its metrics.
+    await database.updateTable('ai_job_batches').set({
+      status: 'queued', step: 'publish', attempts: 0n, claimed_by: null, claim_token: null, lease_until: null,
+    }).where('id', '=', batch.id).execute();
+    const current = await repository.claimNext('ai_batch', 'same-worker', 30_000);
+    assert.equal(current?.id, batch.id);
+    assert.equal(current?.attempts, first?.attempts, 'attempt counters reset at publication');
+    assert.notEqual(current!.row.claim_token, first!.row.claim_token);
+    const before = await database.selectFrom('ai_job_batches').selectAll().where('id', '=', batch.id).executeTakeFirstOrThrow();
+    for (const token of [String(first!.row.claim_token), undefined]) {
+      await assert.rejects(repository.complete('ai_batch', batch.id, 'same-worker', token), /lease|claim/i);
+      await assert.rejects(repository.fail('ai_batch', batch.id, 'same-worker', 'late failure', { claimToken: token }), /lease|claim/i);
+      await assert.rejects(repository.requeue('ai_batch', batch.id, 'same-worker', 0, token), /lease|claim/i);
+      await assert.rejects(repository.heartbeat('ai_batch', batch.id, 'same-worker', 30_000, token), /lease|claim/i);
+    }
+    assert.deepEqual(await database.selectFrom('ai_job_batches').selectAll().where('id', '=', batch.id).executeTakeFirstOrThrow(), before);
+    await repository.heartbeat('ai_batch', batch.id, 'same-worker', 30_000, String(current!.row.claim_token));
+    await repository.complete('ai_batch', batch.id, 'same-worker', String(current!.row.claim_token));
+    assert.equal((await database.selectFrom('ai_job_batches').select('status').where('id', '=', batch.id).executeTakeFirstOrThrow()).status, 'queued');
+    await database.updateTable('ai_jobs').set({ status: 'cancelled' }).where('id', '=', job.id).execute();
+  });
+
+  test('same-worker fetch reclaim fences every transition and heartbeat by token', async () => {
+    await database.updateTable('fetch_runs').set({ status: 'cancelled' }).where('status', 'in', ['running', 'queued']).execute();
+    const shop = await database.insertInto('shops').values({
+      platform: 'claim-token', url: `https://claim-token-${Date.now()}.invalid`, name: 'claim-token',
+    }).returning('id').executeTakeFirstOrThrow();
+    const task = await database.insertInto('fetch_runs').values({
+      shop_id: shop.id, started_at: new Date(), status: 'queued',
+    }).returning('id').executeTakeFirstOrThrow();
+    const first = await repository.claimNext('fetch_run', 'same-worker', 30_000);
+    assert.equal(first?.id, task.id);
+    await database.updateTable('fetch_runs').set({ lease_until: new Date(0) }).where('id', '=', task.id).execute();
+    const current = await repository.claimNext('fetch_run', 'same-worker', 30_000);
+    assert.equal(current?.id, task.id);
+    const before = await database.selectFrom('fetch_runs').selectAll().where('id', '=', task.id).executeTakeFirstOrThrow();
+    for (const token of [String(first!.row.claim_token), undefined]) {
+      await assert.rejects(repository.complete('fetch_run', task.id, 'same-worker', token), /lease|claim/i);
+      await assert.rejects(repository.fail('fetch_run', task.id, 'same-worker', 'late failure', { claimToken: token }), /lease|claim/i);
+      await assert.rejects(repository.requeue('fetch_run', task.id, 'same-worker', 0, token), /lease|claim/i);
+      await assert.rejects(repository.heartbeat('fetch_run', task.id, 'same-worker', 30_000, token), /lease|claim/i);
+    }
+    assert.deepEqual(await database.selectFrom('fetch_runs').selectAll().where('id', '=', task.id).executeTakeFirstOrThrow(), before);
+    await repository.heartbeat('fetch_run', task.id, 'same-worker', 30_000, String(current!.row.claim_token));
+    await repository.complete('fetch_run', task.id, 'same-worker', String(current!.row.claim_token));
+    assert.equal((await database.selectFrom('fetch_runs').select('status').where('id', '=', task.id).executeTakeFirstOrThrow()).status, 'succeeded');
   });
 
   test('legacy running rows with null lease are recoverable', async () => {

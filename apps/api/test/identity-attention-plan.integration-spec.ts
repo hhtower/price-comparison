@@ -41,7 +41,7 @@ test('current identity results locate the matching member without rescanning its
     const query = currentUnclassifiedQuery(db).select(['p.id', 'r.job_id']).compile();
     assert.equal((await db.executeQuery(query)).rows.length, count);
     const result = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Record<string, any> }> }>(
-      CompiledQuery.raw(`explain (analyze, buffers, format json) ${query.sql}`, query.parameters),
+      CompiledQuery.raw(`explain (analyze, buffers, format json) ${query.sql}`, [...query.parameters]),
     );
     const nodes = (node: Record<string, any>): Array<Record<string, any>> => [node, ...(node.Plans ?? []).flatMap(nodes)];
     const scans = nodes(result.rows[0]!['QUERY PLAN'][0]!.Plan).filter(node =>
@@ -54,8 +54,8 @@ test('current identity results locate the matching member without rescanning its
     const missing = await db.selectFrom('products').select('id').orderBy('id').executeTakeFirstOrThrow();
     await db.deleteFrom('ai_standardization_results').where('product_id', '=', missing.id).execute();
     await db.insertInto('ai_job_batches').values({
-      job_id: job.id, batch_index: 0, product_ids: jsonb([String(missing.id)]), product_count: 1n,
-      status: 'failed', step: 'request', unknown_requests: 1n, request_budget_used: 1n,
+      job_id: job.id, batch_index: 0n, product_ids: jsonb([String(missing.id)]), product_count: 1n,
+      status: 'failed', step: 'request', unknown_requests: 1, request_budget_used: 1,
     }).execute();
     await sql`insert into ai_jobs(model,total,status,job_type,prompt_version,rule_version,pipeline_versions)
       select 'mock',1,'succeeded',case when n<=50 then 'manual_full' else 'tag_extraction' end,
@@ -76,7 +76,7 @@ test('current identity results locate the matching member without rescanning its
     assert.equal(rows.length, count);
     assert.equal(rows.find(row => row.id === missing.id)?.reason_code, 'request_outcome_unknown');
     const missingPlan = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Record<string, any> }> }>(
-      CompiledQuery.raw(`explain (analyze, buffers, format json) ${withMissing.sql}`, withMissing.parameters),
+      CompiledQuery.raw(`explain (analyze, buffers, format json) ${withMissing.sql}`, [...withMissing.parameters]),
     );
     const fallbackScans = nodes(missingPlan.rows[0]!['QUERY PLAN'][0]!.Plan).filter(node =>
       node['Relation Name'] === 'ai_job_input_members' && node.Alias === 'm');

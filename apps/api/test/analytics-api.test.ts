@@ -125,7 +125,7 @@ test('only admins can manage normalized IP exclusions and current IP follows the
   assert.deepEqual((await http.inject({ method: 'GET', url, headers })).json().ips, ['127.0.0.1', '8.8.8.8', '2001:db8::1']);
   for (const payload of [null, [], {}, { ip: 123 }, { ip: '' }, { ip: 'x'.repeat(65) }, { ip: '8.8.8.8/24' },
     { ip: 'http://8.8.8.8' }, { ip: '8.8.8.8:80' }, { ip: 'fe80::1%eth0' }, { ip: 'invalid' }, { ip: '8.8.8.8', extra: true }]) {
-    assert.equal((await http.inject({ method: 'POST', url, headers, payload })).statusCode, 400);
+    assert.equal((await http.inject({ method: 'POST', url, headers: { ...headers, 'content-type': 'application/json' }, payload: JSON.stringify(payload) })).statusCode, 400);
   }
   assert.equal((await http.inject({ method: 'DELETE', url: url + '/invalid', headers })).statusCode, 400);
   response = await http.inject({ method: 'DELETE', url: url + '/' + encodeURIComponent('::ffff:8.8.8.8'), headers });

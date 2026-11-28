@@ -1,3 +1,4 @@
+import { jsonObject } from './json-object.js';
 import { withMembershipSource } from './membership-fixture.js';
 import { tagRows } from './tag-fixtures.js';
 import { pipelineVersionSnapshot, PIPELINE_VERSIONS, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
@@ -8,10 +9,10 @@ import { Pool } from 'pg';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import '../src/config/env.js';
 import { createApp } from '../src/main.js';
-import { AppModule } from '../src/app.module.js';
+
 import { DatabaseModule } from '../src/database/database.module.js';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { createPostgresPool, DATABASE, DatabaseService, PG_POOL } from '../src/database/database.providers.js';
+import { createPostgresPool, DATABASE } from '../src/database/database.providers.js';
 import { jsonb, type DatabaseSchema, type JsonValue, type PublicationState, type StandardVerificationState } from '../src/database/types.js';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { ProtocolDetectionService } from '../src/platforms/protocol-detection.service.js';
@@ -94,7 +95,8 @@ describe('admin lists over real PostgreSQL', () => {
       const server = app.getHttpAdapter().getInstance();
       const product = await server.inject('/v1/catalog/products/' + ids.standardBackup);
       assert.equal(product.statusCode, 200);
-    assert.deepEqual(product.json(), { id: String(ids.standardBackup), name: 'Alpha Backup', platform: '16688', kind: '其他', isAiMembership: false });
+      assert.deepEqual(product.json(), { id: String(ids.standardBackup), name: 'Alpha Backup', platform: '16688',
+        identity: { family: '', product: '', tier: '' }, kind: '其他', isAiMembership: false });
       const list = await server.inject('/v1/catalog/products');
       assert.equal(list.statusCode, 200);
       assert.ok(list.json().items.some((item: { id: string }) => item.id === String(ids.standardBackup)));
@@ -109,7 +111,8 @@ describe('admin lists over real PostgreSQL', () => {
     const shops = await get(`shops?${shopQuery}`);
     assert.deepEqual(shops.items.map((item: { name: string }) => item.name), ['Alpha Shop']);
     assert.equal(shops.nextCursor, undefined);
-    assert.deepEqual(Object.keys(shops.items[0]).sort(), ['enabled', 'id', 'lastError', 'lastFetchAt', 'name', 'platform', 'protocol', 'url']);
+    assert.deepEqual(Object.keys(shops.items[0]).sort(), ['deletedAt', 'enabled', 'id', 'lastError', 'lastFetchAt', 'name', 'platform', 'protocol', 'url']);
+    assert.equal(shops.items[0].deletedAt, null);
     assert.equal(shops.items[0].protocol, null);
 
     const productQuery = new URLSearchParams({ shopId: ids.shopAlpha!.toString(), keyword: 'Red', standardized: 'true', limit: '2' });
@@ -396,9 +399,9 @@ describe('admin lists over real PostgreSQL', () => {
       assert.equal(stored.canonical_tier, identity.canonicalTier);
       const decision = await database.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', candidate.id).orderBy('id', 'desc').executeTakeFirstOrThrow();
       assert.equal(decision.action, 'identity_update');
-      assert.equal(decision.target_snapshot?.family, identity.canonicalFamily);
-      assert.equal(decision.target_snapshot?.product, identity.canonicalProduct);
-      assert.equal(decision.target_snapshot?.tier, identity.canonicalTier);
+      assert.equal(jsonObject(decision.target_snapshot).family, identity.canonicalFamily);
+      assert.equal(jsonObject(decision.target_snapshot).product, identity.canonicalProduct);
+      assert.equal(jsonObject(decision.target_snapshot).tier, identity.canonicalTier);
     }
   });
 
@@ -463,7 +466,7 @@ describe('admin lists over real PostgreSQL', () => {
     assert.equal(stored.standard_key, updated.payload.standardKey);
     const decision = await database.selectFrom('product_standardization_decisions').selectAll().where('product_id', '=', candidate.id).orderBy('id', 'desc').executeTakeFirstOrThrow();
     assert.equal(decision.action, 'assign');
-    assert.equal(decision.target_snapshot?.tier, 'tutorial');
+    assert.equal(jsonObject(decision.target_snapshot).tier, 'tutorial');
     const member = await database.selectFrom('standard_product_members').select('standard_product_id').where('product_id', '=', candidate.id).executeTakeFirstOrThrow();
     assert.equal(member.standard_product_id, stored.id);
     for (const tier of ['', 'unknown', 'n/a', '不适用', 'not-applicable', 'not / applicable', 'n_a', 'n-a']) {
@@ -714,14 +717,14 @@ describe('admin lists over real PostgreSQL', () => {
     } finally { detector.detect = originalDetect; }
   });
 
-  async function get(path: string, expectedStatus = 200): Promise<{ statusCode: number; payload: any; items: any[]; nextCursor?: string }> {
+  async function get(path: string, expectedStatus = 200): Promise<{ statusCode: number; payload: any; items: any[]; nextCursor?: string; page?: number; pageSize?: number; total?: number }> {
     const response = await app.getHttpAdapter().getInstance().inject({ method: 'GET', url: `/v1/admin/${path}`, headers: { cookie } });
     assert.equal(response.statusCode, expectedStatus, `${path}: ${response.payload}`);
     const payload = response.payload ? JSON.parse(response.payload) : undefined;
     return { statusCode: response.statusCode, payload, ...payload };
   }
 
-  async function mutate(method: 'POST' | 'PATCH' | 'DELETE', path: string, payload?: unknown, expectedStatus = 200): Promise<{ statusCode: number; payload: any }> {
+  async function mutate(method: 'POST' | 'PATCH' | 'DELETE', path: string, payload?: object, expectedStatus = 200): Promise<{ statusCode: number; payload: any }> {
     const response = await app.getHttpAdapter().getInstance().inject({
       method,
       url: `/v1/admin/${path.replace(/^\//, '')}`,

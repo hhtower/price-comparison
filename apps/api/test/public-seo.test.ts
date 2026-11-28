@@ -11,6 +11,7 @@ import { productPagePath, productPageMetadata, productPageSchema } from '../src/
 import type { MembershipGroup } from '@price-comparison/catalog/membership-policy';
 import type { CatalogQueryInput } from '../src/catalog/catalog.service.js';
 
+const plusIdentity = { family: 'openai', product: 'chatgpt', tier: 'plus' };
 const page: CatalogPage = { total: 1, platformFacets: ['openai'], items: [{
   id: '42', standardProductId: '42', name: 'ChatGPT Plus', platform: 'openai',
   shopCount: 1, productCount: 1, minPrice: '12.50', latestCapturedAt: '2026-09-27T00:00:00Z',
@@ -38,10 +39,10 @@ function schemaNode(document: Document, type: string): Record<string, any> {
 }
 
 test('shared metadata keeps feature paths and labels in paginated schema without changing standard URLs', () => {
-  const product = { id: '42', name: 'ChatGPT Plus' };
+  const product = { id: '42', name: 'ChatGPT Plus', identity: plusIdentity };
   assert.equal(productPagePath('42'), '/products/42');
   assert.equal(productPageMetadata(product, 2).path, '/products/42?page=2');
-  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充 · 通用'], ['top_up_half_price', '代充 · 需半价资格'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
+  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充 · 通用'], ['top_up_half_price', '代充 · 半价资格'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
     const path = `/products/42/features/${kind}`;
     assert.equal(productPagePath('42', 1, kind), path);
     const metadata = productPageMetadata(product, 2, kind);
@@ -58,14 +59,14 @@ test('shared metadata keeps feature paths and labels in paginated schema without
 test('feature SSR pins its filter and preserves canonical, title and pagination across all kinds', async t => {
   const queries: CatalogQueryInput[] = [];
   const server = setup(t, {
-    getProduct: async (id: string) => ({ id, name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅', isAiMembership: true }),
+    getProduct: async (id: string) => ({ id, name: 'ChatGPT Plus', platform: 'openai', kind: '账号与订阅', isAiMembership: true, identity: plusIdentity }),
     getCatalog: async (input: CatalogQueryInput) => {
       queries.push(input);
       const offer = { ...page.items[0]!.offers[0]!, name: '仅选中特性报价' };
       return { ...page, items: [{ ...page.items[0]!, detail: { kind: 'offers', entries: [offer], total: 30, page: input.detailPage, pageSize: 12 } }] };
     },
   });
-  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充 · 通用'], ['top_up_half_price', '代充 · 需半价资格'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
+  for (const [kind, label] of [['account', '成品号'], ['top_up', '代充 · 通用'], ['top_up_half_price', '代充 · 半价资格'], ['rental', '租号'], ['short_term', '短期'], ['unclassified', '未分类']] as const) {
     const path = `/products/42/features/${kind}`;
     const response = await server.inject(path + '?page=2&membershipKind=rental&membershipKinds=short_term&newcomer=true&utm_source=test');
     assert.equal(response.statusCode, 200);
@@ -83,6 +84,37 @@ test('feature SSR pins its filter and preserves canonical, title and pagination 
     assert.match(document.body.textContent!, /仅选中特性报价/);
     assert.equal((await server.inject(path + '?page=4')).statusCode, 404);
   }
+});
+
+for (const { scope, identity, label } of [
+  { scope: 'Plus identity', identity: plusIdentity, label: '代充 · 通用' },
+  { scope: 'missing identity', identity: undefined, label: '代充' },
+  { scope: 'another identity', identity: { family: 'google', product: 'gemini', tier: 'pro' }, label: '代充' },
+]) test(`SSR top-up labels follow ${scope} rather than inferring identity from the name`, async t => {
+  const item: CatalogPage['items'][number] = {
+    ...page.items[0]!, identity, isAiMembership: true,
+    membershipGroups: [{ kind: 'top_up', shopCount: 1, productCount: 1, minPrice: '12.50', maxPrice: '12.50',
+      latestCapturedAt: '2026-09-27T00:00:00Z', offers: page.items[0]!.offers }],
+  };
+  const server = setup(t, {
+    getProduct: async (id: string) => ({ id, name: item.name, platform: item.platform, kind: '账号与订阅', isAiMembership: true, identity }),
+    getCatalog: async () => ({ ...page, items: [item] }),
+  });
+  const path = '/products/42/features/top_up';
+  const name = `ChatGPT Plus · ${label}`;
+  const home = await server.inject('/');
+  assert.equal(home.statusCode, 200);
+  const homeDocument = new JSDOM(home.body).window.document;
+  assert.equal(homeDocument.querySelector(`article h3 a[href="${path}"]`)!.textContent, name);
+  const detail = await server.inject(path);
+  assert.equal(detail.statusCode, 200);
+  const document = new JSDOM(detail.body).window.document;
+  assert.equal(document.querySelector('h1')!.textContent, name);
+  assert.equal(document.title, `${name}价格比较 - ${SITE_NAME}`);
+  assert.ok(document.querySelector('meta[name="description"]')!.getAttribute('content')!.includes(name));
+  assert.equal(schemaNode(document, 'CollectionPage').name, document.title);
+  assert.equal(schemaNode(document, 'BreadcrumbList').itemListElement.at(-1).name, name);
+  assert.equal(document.querySelector('link[rel="canonical"]')!.getAttribute('href'), 'https://price.yufu.pub' + path);
 });
 
 test('feature SSR rejects invalid kinds, non-AI products and invalid pages, and preserves merged feature URLs', async t => {

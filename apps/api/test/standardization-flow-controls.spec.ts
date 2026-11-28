@@ -51,7 +51,7 @@ test('synthetic controls do not become observed model accuracy and regressions r
   assert.ok(report.groupedCoverage.groups < standardizationFlowControls.length, 'alternate proposals share their full-evidence group');
   assert.equal(report.groupedCoverage.reviewedIdentityGroups + report.groupedCoverage.noReviewedIdentityGroups, report.groupedCoverage.groups);
   assert.deepEqual(report.tagRegression, { missingExpectedValues: 0, unsupportedOrContradictoryValues: 0 });
-  const sameEvidence = report.evidenceGroups.find(group => group.controlIds.includes('pro-price-not-tier'));
+  const sameEvidence = report.evidenceGroups.find((group: { controlIds: string[] }) => group.controlIds.includes('pro-price-not-tier'));
   assert.ok(sameEvidence?.controlIds.includes('pro-price-wrong-tier'));
 });
 

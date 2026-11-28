@@ -101,7 +101,7 @@ export function readCrawlerConfig(environment: NodeJS.ProcessEnv = process.env):
 }
 
 export function loadEnvironment(): void {
-  if (!loadedEnvFile) return;
+  if (process.env.NODE_ENV === 'test' || !loadedEnvFile) return;
   process.loadEnvFile(loadedEnvFile);
 }
 

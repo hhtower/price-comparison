@@ -112,7 +112,7 @@ test('generic plans and other platforms do not gain an OpenAI supplement', () =>
   ]) {
     for (const index of indexes()) {
       assert.equal(index.search(input).candidates.some(candidate => candidate.family === 'openai' && candidate.routes.includes('supplement')),
-        false, input.primaryText);
+        false, String(input.primaryText));
     }
   }
 });

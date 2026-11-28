@@ -219,14 +219,15 @@ test('visitor analytics migration, atomic writes, deduplication and reports over
       await repository.collect({ ...payload, visitId: randomUUID() }, { ...known, city: 'Original city' });
       const list = await reportRepository.visits(query);
       const enriched = list.items.find((row: any) => row.id === failedId);
+      assert.ok(enriched);
       assert.equal(enriched.city, 'Mountain View'); assert.equal(enriched.isp, 'Google LLC'); assert.equal(enriched.geoFromCache, true);
-      assert.equal(list.items.find((row: any) => row.id === payload.visitId).ip, null, 'never infer a historical IP');
+      assert.equal(list.items.find((row: any) => row.id === payload.visitId)!.ip, null, 'never infer a historical IP');
       assert.ok(list.items.some((row: any) => row.city === 'Original city' && !row.geoFromCache));
       assert.deepEqual((await reportRepository.summary(query)).countries, [{ key: 'United States', count: 2 }, { key: '未知', count: 1 }]);
       assert.equal((await pool.query('select geo_status from analytics_visits where id=$1', [failedId])).rows[0].geo_status, 'unavailable');
       assert.equal((await pool.query('select count(*)::integer as count from information_schema.tables where table_schema=$1 and table_name=$2', [schema, 'analytics_ip_cache'])).rows[0].count, 0);
       await cache.del('ip:8.8.8.8');
-      assert.equal((await reportRepository.visits(query)).items.find((row: any) => row.id === failedId).geoStatus, 'unavailable');
+      assert.equal((await reportRepository.visits(query)).items.find((row: any) => row.id === failedId)!.geoStatus, 'unavailable');
       assert.deepEqual((await reportRepository.summary(query)).countries, [{ key: '未知', count: 2 }, { key: 'United States', count: 1 }]);
       assert.equal(calls, 1, 'admin queries only read the cache');
     });
@@ -275,7 +276,7 @@ test('visitor analytics migration, atomic writes, deduplication and reports over
       assert.deepEqual(cached.mock.calls.map(call => call.arguments[0]), [['8.8.8.8'], ['1.1.1.1']]);
       const last = await reports.visits({ ...query, page: 202, limit: 1 });
       assert.equal(last.total, 202); assert.equal(last.items.length, 1);
-      assert.match(last.items[0].ip, /^198\.51\.100\./);
+      assert.match(last.items[0].ip!, /^198\.51\.100\./);
       assert.deepEqual(cached.mock.calls.at(-1)!.arguments[0], [last.items[0].ip]);
       const reads = cached.mock.callCount();
       const beyond = await reports.visits({ ...query, page: 203, limit: 1 });
@@ -320,7 +321,7 @@ test('visitor analytics migration, atomic writes, deduplication and reports over
       for (const [index, snapshot] of expected.entries()) {
         const row = list.items.find((item: any) => item.id === ids[index]);
         assert.ok(row);
-        for (const [field, value] of Object.entries(snapshot)) assert.equal(row[field], value, `${index}: ${field}`);
+        for (const [field, value] of Object.entries(snapshot)) assert.equal(Reflect.get(row, field), value, `${index}: ${field}`);
         assert.equal(row.geoFromCache, index < 2);
       }
       assert.deepEqual(cached.mock.calls[0]!.arguments[0]!.slice().sort(), ['1.1.1.1', '8.8.8.8', '9.9.9.9'], 'deduplicate unresolved page addresses');
@@ -483,6 +484,7 @@ test('visitor analytics migration, atomic writes, deduplication and reports over
       await repository.collect({ ...payload, visitId: randomUUID() });
       const list = await repository.visits(query);
       const first = list.items.find((row: any) => row.id === payload.visitId);
+      assert.ok(first);
       assert.equal(first.ip, '8.8.8.8'); assert.equal(first.countryCode, 'CN'); assert.equal(first.city, '深圳市'); assert.equal(first.isp, '中国电信'); assert.equal(first.geoStatus, 'resolved');
       assert.ok(list.items.some((row: any) => row.ip === '2001:4860:4860::8888'));
       const report = await repository.summary(query);

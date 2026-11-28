@@ -1,3 +1,4 @@
+import { jsonObject } from './json-object.js';
 import { tagRows } from './tag-fixtures.js';
 import { publishNextCatalogChange } from '../src/catalog/catalog-projection.js';
 import assert from 'node:assert/strict';
@@ -81,7 +82,7 @@ describe('complete shop snapshot synchronization', () => {
       await settled.promise;
     } finally { await worker.stop(); }
   }
-  async function refresh(shopId: bigint, list: (ReturnType<typeof listing> & { image?: string })[], job?: ClaimedJob) {
+  async function refresh(shopId: bigint, list: (ReturnType<typeof listing> & { image?: string; description?: string })[], job?: ClaimedJob) {
     const previous = globalThis.fetch;
     globalThis.fetch = async () => new Response(JSON.stringify({ code: 1, data: { list } }));
     try {
@@ -318,7 +319,7 @@ describe('complete shop snapshot synchronization', () => {
     const s = await shop();
     let quote: unknown = '98.00';
     const handler = createCrawlerHandler(database, new ProductsRepository(database), {
-      fetchFactory: () => async (url, options) => {
+      fetchFactory: () => async (url, _options) => {
         if (String(url).endsWith('/shopApi/goods/list')) return new Response(JSON.stringify({ code: 1, data: { list: [{ goods_no: 'settlement', name: 'Settlement', price: 90, stock_available_quantity: 1 }] } }));
         if (String(url).endsWith('/shopApi/payment/list')) return new Response(JSON.stringify({ code: 1, data: { list: [{ id: 11, show_name: '支付宝' }] } }));
         return new Response(JSON.stringify(quote === undefined ? { code: 0, data: null } : { code: 1, data: { total_amount: quote } }));
@@ -345,7 +346,7 @@ describe('complete shop snapshot synchronization', () => {
     const product = await publish(s.id, 'selected');
     let price = 10, stock = 1, name = 'ChatGPT Plus', calls = 0;
     const handler = createCrawlerHandler(database, new ProductsRepository(database), {
-      fetchFactory: () => async (url, options) => {
+      fetchFactory: () => async (url) => {
         if (String(url).endsWith('/goods/list')) return Response.json({ code: 1, data: { list: [{ ...listing('selected', name, price), stock_available_quantity: stock }] } });
         if (String(url).endsWith('/shop/detail')) return Response.json({ code: 0 });
         calls++;
@@ -362,7 +363,7 @@ describe('complete shop snapshot synchronization', () => {
     const retained = await database.selectFrom('offers').selectAll().where('product_id', '=', product.id).executeTakeFirstOrThrow();
     assert.equal(retained.settlement_price, '10.30');
     assert.deepEqual(retained.settlement_verified_at, first.settlement_verified_at);
-    assert.equal(Reflect.get((await database.selectFrom('fetch_runs').select('settlement_report').where('id', '=', skipped.id).executeTakeFirstOrThrow()).settlement_report, 'reasons').recently_verified, 1);
+    assert.equal(jsonObject(jsonObject((await database.selectFrom('fetch_runs').select('settlement_report').where('id', '=', skipped.id).executeTakeFirstOrThrow()).settlement_report).reasons).recently_verified, 1);
     await database.updateTable('offers').set({ settlement_verified_at: new Date(0) }).where('product_id', '=', product.id).execute();
     await handler(await claim(s.id));
     assert.equal(calls, 4, 'expired quotes are refreshed');
@@ -479,13 +480,13 @@ describe('complete shop snapshot synchronization', () => {
     const row = await database.selectFrom('fetch_runs').selectAll().where('id', '=', retry.id).executeTakeFirstOrThrow();
     assert.equal(row.status, 'succeeded', 'settlement failure must not retry the shop list');
     assert.equal(row.item_count, 2n, 'the complete goods snapshot is already committed');
-    const report = Reflect.get(row, 'settlement_report');
+    const report = jsonObject(row.settlement_report);
     assert.equal(report.listStatus, 'succeeded');
     assert.equal(report.failed, 1);
     assert.equal(report.retryable, 1);
     assert.equal(report.estimated, 2);
     assert.equal(report.verified, 0);
-    assert.equal(report.reasons.request_failed, 1);
+    assert.equal(jsonObject(report.reasons).request_failed, 1);
     assert.equal(report.skipped, 1);
     assert.match(row.error!, /settlement network failure/);
     const supplement = await database.selectFrom('fetch_runs').selectAll().where('source_fetch_run_id', '=', retry.id).executeTakeFirstOrThrow();
@@ -515,11 +516,11 @@ describe('complete shop snapshot synchronization', () => {
     })(job);
     const row = await database.selectFrom('fetch_runs').selectAll().where('id', '=', job.id).executeTakeFirstOrThrow();
     assert.equal(row.status, 'succeeded');
-    assert.equal(Reflect.get(row, 'settlement_report').reasons.no_payment_channel, 1);
-    assert.equal(Reflect.get(row, 'settlement_report').estimated, 1);
+    assert.equal(jsonObject(jsonObject(row.settlement_report).reasons).no_payment_channel, 1);
+    assert.equal(jsonObject(row.settlement_report).estimated, 1);
     assert.match(row.error!, /settlement failure/);
     const page = await new AdminRepository(database).listRunHistory({ shopId: s.id, limit: 100 });
-    assert.equal(Reflect.get(page.items.find(item => item.id === job.id)!, 'settlement_report').failed, 1);
+    assert.equal(jsonObject(page.items.find(item => item.id === job.id)!.settlement_report).failed, 1);
     const supplements = await database.selectFrom('fetch_runs').select('id').where('source_fetch_run_id', '=', job.id).execute();
     assert.deepEqual(supplements, [], 'terminal failures must not burn quota in the 5s retry queue');
   });
@@ -666,7 +667,7 @@ describe('complete shop snapshot synchronization', () => {
       throw new Error('unexpected endpoint');
     };
     const handler = createCrawlerHandler(database, new ProductsRepository(database), {
-      publicFetchFactory: async () => ({ fetch: fetchImpl, close: async () => {} }),
+      publicFetchFactory: async () => ({ fetch: fetchImpl, dial: async () => { throw new Error('Unexpected socket dial in fetch fixture'); }, close: async () => {} }),
     });
     await handler(await claim(s.id));
     const product = await publish(s.id, '220');
@@ -725,7 +726,7 @@ describe('complete shop snapshot synchronization', () => {
       throw new Error('unexpected ACG endpoint');
     };
     const handler = createCrawlerHandler(database, new ProductsRepository(database), {
-      publicFetchFactory: async () => ({ fetch: fetchImpl, close: async () => {} }),
+      publicFetchFactory: async () => ({ fetch: fetchImpl, dial: async () => { throw new Error('Unexpected socket dial in fetch fixture'); }, close: async () => {} }),
     });
     await handler(await claim(s.id));
     const before = await database.selectFrom('products').selectAll().where('shop_id', '=', s.id).orderBy('id').execute();
@@ -829,7 +830,7 @@ describe('complete shop snapshot synchronization', () => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([
-            new JobsRepository(database).heartbeat('fetch_run', job.id, job.claimed_by, 120000),
+            new JobsRepository(database).heartbeat('fetch_run', job.id, job.claimed_by, 120000, String(job.row.claim_token)),
             new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('heartbeat blocked by crawler transaction')), 1000); }),
           ]);
         } finally { clearTimeout(timer); }

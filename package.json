@@ -18,10 +18,12 @@
     "worker:official-reference": "tsx apps/api/src/workers/official-reference.worker.ts",
     "worker:standardization": "tsx apps/api/src/workers/standardization-entrypoint.ts",
     "test": "npm run test:e2e && npm run test:web",
-    "test:e2e": "cross-env CATALOG_VERSION_BUMP_MIN_INTERVAL_MS=0 node --import tsx --test --test-concurrency=1 \"apps/api/test/*.test.js\" \"apps/api/test/*.test.ts\" \"apps/api/test/*.spec.ts\" \"apps/api/test/*-spec.ts\"",
-    "typecheck": "tsc -p apps/api/tsconfig.json --noEmit && tsc -p packages/catalog/tsconfig.json --noEmit",
+    "pretest:e2e": "npm run build:shared",
+    "test:e2e": "cross-env CATALOG_VERSION_BUMP_MIN_INTERVAL_MS=0 node --import tsx --import ./apps/api/test/setup-env.js --test --test-concurrency=1 \"apps/api/test/*.test.js\" \"apps/api/test/*.test.ts\" \"apps/api/test/*.spec.ts\" \"apps/api/test/*-spec.ts\"",
+    "typecheck": "tsc -p apps/api/tsconfig.json --noEmit && tsc -p packages/catalog/tsconfig.json --noEmit && tsc -p apps/api/tsconfig.test.json",
     "build:shared": "tsc -p packages/catalog/tsconfig.json",
     "postinstall": "npm run build:shared",
+    "pretest:web": "npm run build:shared",
     "test:web": "cross-env NODE_ENV=test vitest run --config apps/web/vite.config.js --mode test"
   },
   "devDependencies": {
@@ -30,6 +32,7 @@
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.8",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
     "@vitejs/plugin-react": "^6.1.2",

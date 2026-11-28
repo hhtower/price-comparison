@@ -1,9 +1,10 @@
+import type { TagExtractionResponse } from '../src/ai/tag-extraction-request.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { alignTagReviewDecisions, buildTagReviewRequest, parseTagReviewResponse } from '../src/ai/tag-review-request.js';
 import { buildTagExtractionRequest, TAG_SCHEMA } from '../src/ai/tag-extraction-request.js';
 
-const proposals = { items: [{ id: '11', tags: [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }] }] };
+const proposals: TagExtractionResponse = { items: [{ id: '11', tags: [{ name: 'duration', value: 30 }, { name: 'region', value: 'us' }] }] };
 const parse = (value: unknown) => parseTagReviewResponse(JSON.stringify(value));
 const item = { id: '11', feedback: '商品地区未明确', accepted: [true, false], complete: false };
 
@@ -78,7 +79,7 @@ test('review preserves full conditions without retaining previous accepted facts
     { name: 'duration', value: 30, evidence: [], proposalIndex: 1 },
   ], rejectedTags: [{ name: 'region', value: 'us', evidence: [], reasonCode: 'review_rejected', reason: 'unsupported', proposalIndex: 2 }],
   reviewed: true, complete: false, reviewDecisions: [true, true, false] }];
-  const proposals = { items: [{ id: '11', tags: [] }] };
+  const proposals: TagExtractionResponse = { items: [{ id: '11', tags: [] }] };
   const before = structuredClone({ inputs, proposals, previous });
   const sent = JSON.parse(buildTagReviewRequest(inputs, proposals, 'mock').messages[1]!.content);
   assert.deepEqual(sent.inputs, inputs);
@@ -93,7 +94,7 @@ test('review preserves full conditions without retaining previous accepted facts
 });
 
 test('candidate count includes structured values and every duplicate occurrence without changing proposals', () => {
-  const proposals = { items: [{ id: '11', tags: [
+  const proposals: TagExtractionResponse = { items: [{ id: '11', tags: [
     { name: 'duration', value: { kind: 'range', min: 7, max: 30 } },
     { name: 'region', value: 'us' },
     { name: 'region', value: 'us' },

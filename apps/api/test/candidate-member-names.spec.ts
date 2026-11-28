@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DummyDriver, Kysely, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler, type CompiledQuery } from 'kysely';
+import { DummyDriver, Kysely, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler, type DatabaseConnection, type CompiledQuery } from 'kysely';
 import type { DatabaseSchema } from '../src/database/types.js';
 import { recordCandidateCatalogChanges } from '../src/catalog/catalog-version.repository.js';
 import { VersionedCandidateIndex } from '../src/standardization/versioned-candidate-index.js';
@@ -13,9 +13,9 @@ function fixture(memberNames: Array<{ standard_product_id: bigint; member_names:
   let documents: CandidateDocument[] = [];
   const queries: CompiledQuery[] = [];
   class Driver extends DummyDriver {
-    async acquireConnection() {
+    async acquireConnection(): Promise<DatabaseConnection> {
       return {
-        async executeQuery(query: CompiledQuery) {
+        async executeQuery<R>(query: CompiledQuery) {
           queries.push(query);
           let rows: unknown[] = [];
           if (query.sql.includes('member_names')) rows = memberNames;
@@ -25,8 +25,9 @@ function fixture(memberNames: Array<{ standard_product_id: bigint; member_names:
           } else if (query.sql.startsWith('insert into "catalog_index_changes"')) {
             documents = query.parameters.filter((value): value is string => typeof value === 'string' && value.startsWith('{')).map(value => JSON.parse(value));
           }
-          return { rows, numAffectedRows: 1n };
+          return { rows: rows as R[], numAffectedRows: 1n };
         },
+        async *streamQuery<R>() { yield { rows: [] as R[] }; },
       };
     }
   }

@@ -51,8 +51,8 @@ test('reference queue isolates claims, atomically publishes, preserves failures 
     await owner.publish(fx, published, new AbortController().signal);
     assert.deepEqual((await first.readPublished())[0].snapshot, published);
     await assert.rejects(owner.publish(fx, { date: 'bad' }, new AbortController().signal));
-    await owner.fail('fetch_run', fx.id, fx.claimed_by, 'http://user:password@proxy', { retry: true, backoffMs: 0 });
-    owner.onSettled('fetch_run', fx.id, fx.claimed_by);
+    await owner.fail('fetch_run', fx.id, fx.claimed_by, 'http://user:password@proxy', { retry: true, backoffMs: 0, claimToken: String(fx.row.claim_token) });
+    owner.onSettled('fetch_run', fx.id, fx.claimed_by, String(fx.row.claim_token));
     const saved = (await first.readPublished())[0];
     assert.deepEqual(saved.snapshot, published); assert.ok(saved.last_error); assert.ok(!saved.last_error.includes('password'));
     const retry = await owner.claimNext('fetch_run', 'retry', 30_000); assert.ok(retry); assert.equal(retry.id, fx.id);
@@ -63,7 +63,7 @@ test('reference queue isolates claims, atomically publishes, preserves failures 
     const controller = new AbortController(); controller.abort();
     await assert.rejects(replacementOwner.publish(replacement, published, controller.signal));
     await replacementOwner.publish(replacement, published, new AbortController().signal);
-    await replacementOwner.complete('fetch_run', replacement.id, replacement.claimed_by);
+    await replacementOwner.complete('fetch_run', replacement.id, replacement.claimed_by, String(replacement.row.claim_token));
     const state = (await pool.query('select status, attempts, available_at > now() as scheduled, last_error from official_reference_jobs where id = $1', [String(replacement.id)])).rows[0];
     assert.deepEqual({ ...state, attempts: String(state.attempts) }, { status: 'queued', attempts: '0', scheduled: true, last_error: null });
 
@@ -78,13 +78,13 @@ test('reference queue isolates claims, atomically publishes, preserves failures 
     const simultaneous = await recovering.claimNext('fetch_run', 'stable-worker', 30_000);
     assert.notEqual(simultaneous?.id, interrupted.id, 'do not duplicate an active local execution');
     unavailable = true;
-    await assert.rejects(recovering.complete('fetch_run', interrupted.id, 'stable-worker'));
+    await assert.rejects(recovering.complete('fetch_run', interrupted.id, 'stable-worker', String(interrupted.row.claim_token)));
     unavailable = false;
     const beforeFinalFailure = await recovering.claimNext('fetch_run', 'stable-worker', 30_000);
     assert.notEqual(beforeFinalFailure?.id, interrupted.id, 'complete failure must retain ownership until the runtime finishes fail/requeue');
     unavailable = true;
-    await assert.rejects(recovering.requeue('fetch_run', interrupted.id, 'stable-worker'));
-    recovering.onSettled('fetch_run', interrupted.id, 'stable-worker');
+    await assert.rejects(recovering.requeue('fetch_run', interrupted.id, 'stable-worker', 0, String(interrupted.row.claim_token)));
+    recovering.onSettled('fetch_run', interrupted.id, 'stable-worker', String(interrupted.row.claim_token));
     unavailable = false;
     const resumed = await recovering.claimNext('fetch_run', 'stable-worker', 30_000);
     assert.equal(resumed?.id, interrupted.id, 'reclaim after failed release without restarting the process');

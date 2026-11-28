@@ -1,3 +1,4 @@
+import type { TagExtractionResponse } from '../src/ai/tag-extraction-request.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
@@ -11,7 +12,7 @@ const proposals = { items: [{ id: '11', tags: [bill, twoFactor] }, { id: '12', t
 const review = { items: [{ id: '12', feedback: '缺少期限依据。', accepted: [false], complete: false }, { id: '11', feedback: '地区仅为网络建议。', accepted: [true, false], complete: true }] };
 const job = { id: 7n, row: { job_id: 3n, job_type: 'tag_extraction', step: 'request' } };
 
-function setup(content = JSON.stringify(review), finish: string | null = 'stop', timeout = 1000, hang = false, shopText?: unknown, candidates = proposals, jobType = 'tag_extraction', stage = 'review', previousDecisions?: any[], sourceEvidence = '建议使用美区IP。\n支持Codex。') {
+function setup(content = JSON.stringify(review), finish: string | null = 'stop', timeout = 1000, hang = false, shopText?: unknown, candidates: TagExtractionResponse = proposals, jobType = 'tag_extraction', stage = 'review', previousDecisions?: any[], sourceEvidence = '建议使用美区IP。\n支持Codex。') {
   let sends = 0;
   const call = createOpenAiModelCall({
     getTagExtractionBatchInputs: async () => ({ jobId: 3n, model: 'mock', stage, proposals: candidates, previousDecisions,

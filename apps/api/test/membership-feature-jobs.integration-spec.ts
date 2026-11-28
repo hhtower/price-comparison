@@ -351,7 +351,7 @@ test('async all-pending preparation routes feature jobs and ignores tag completi
 });
 
 test('all-pending coalesces within its kind and rejects request aliases from another kind', async () => {
-  const f = await fixture();
+  await fixture();
   const input = { allPending: true, model: 'mock', requestId: randomUUID() };
   const [feature, duplicate] = await Promise.all([
     createManualMembershipFeatureJob(db, input),

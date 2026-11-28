@@ -4,7 +4,7 @@ import { createOpenAiModelCall } from '../src/ai/ai.worker.js';
 import { buildTagExtractionOutcome } from '../src/ai/tag-extraction-result.js';
 
 const labels = { subscription_warranty: 30, subscription_warranty_t: 'day',
-  usage_warranty: null, usage_warranty_t: 'first_login' };
+  usage_warranty: null, usage_warranty_t: 'first_login' } as const;
 const job = { id: 7n, row: { job_id: 3n, job_type: 'tag_extraction', step: 'request' } };
 function fixture(content = JSON.stringify(labels), finish = 'stop', hang = false, timeout = 1000, eligible = true) {
   let sends = 0;

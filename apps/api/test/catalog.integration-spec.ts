@@ -13,7 +13,7 @@ import { bumpCatalogVersion, CatalogVersionRepository } from '../src/catalog/cat
 import { createCache } from '../src/cache/cache.js';
 import { ProductsRepository } from '../src/products/products.repository.js';
 import { assertCatalogPlan } from './fixtures/catalog-plan.js';
-import { isCanonicalProductTag, isFilterableProductTag } from '@price-comparison/catalog/product-tag-policy';
+import { isFilterableProductTag } from '@price-comparison/catalog/product-tag-policy';
 import { tagValueKey, type PurchaseTag, PURCHASE_ATTRIBUTE_DEFINITIONS } from '@price-comparison/catalog/purchase-attributes';
 import { defaultQuotePolicy } from '../src/catalog/quote-policy.js';
 import { mergeShopObservation } from '../src/shops/shop-rating.js';
@@ -149,7 +149,7 @@ describe('catalog SQL read model', () => {
     assert.equal(offer.paymentMethod, '支付价（预估：售价加4%）');
     const detail = await readPublished({ tags: [], standardProductId: String(standardOne), detailKind: 'offers', limit: 20 });
     assert.equal(detailOffers(detail.items[0]!)[0]!.priceStatus, 'estimated');
-    const reference = (await repository.referenceOffers({ tags: [], standardProductId: String(standardOne) }))
+    const reference = (await repository.referenceOffers({ tags: [], limit: 50, standardProductId: String(standardOne) }))
       .find(item => item.productId === String(productOne))!;
     assert.equal(reference.price, '10.40');
     assert.equal(reference.priceStatus, 'estimated');
@@ -1350,7 +1350,7 @@ describe('catalog SQL read model', () => {
     await assert.rejects(database.transaction().execute(async tx => {
       await tx.insertInto('product_tags').values({ product_id: productOne, name: 'access_channel', value: jsonb('web') }).execute();
       const row = await tx.selectFrom('catalog_product_facts').select('tags').where('product_id', '=', productOne).executeTakeFirstOrThrow();
-      assert.ok((row.tags as PurchaseTag[]).some(tag => tag.name === 'access_channel'));
+      assert.ok((row.tags as unknown as PurchaseTag[]).some(tag => tag.name === 'access_channel'));
       throw new Error('rollback attribute edit');
     }), /rollback attribute edit/);
     assert.deepEqual(await facts(productOne), before);
@@ -1725,7 +1725,7 @@ describe('catalog SQL read model', () => {
     for (const spec of ['日抛号', '普通账号', '非日抛号', '禁止速刷', '日抛状态未知']) {
       await database.updateTable('products').set({ spec }).where('id', '=', productOne).execute();
       const facts = await database.selectFrom('catalog_product_facts').select('tags').where('product_id', '=', productOne).executeTakeFirstOrThrow();
-      assert.ok((facts.tags as PurchaseTag[]).every(tag => tag.name !== 'intended_use' && tag.value !== 'unknown'));
+      assert.ok((facts.tags as unknown as PurchaseTag[]).every(tag => tag.name !== 'intended_use' && tag.value !== 'unknown'));
     }
   });
 

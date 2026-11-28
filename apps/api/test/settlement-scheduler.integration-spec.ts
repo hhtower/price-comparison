@@ -178,7 +178,7 @@ describe('independent settlement expiry scheduling', () => {
         : '<html><input name="gid" value="1"><h3 class="card-title">Plus</h3><div id="display_price">￥10.00</div><div id="stock_tips">库存：10</div></html>');
     };
     await createCrawlerHandler(db, new ProductsRepository(db), {
-      publicFetchFactory: async () => ({ fetch: fetchImpl, close: async () => {} }),
+      publicFetchFactory: async () => ({ fetch: fetchImpl, dial: async () => { throw new Error('Unexpected socket dial in fetch fixture'); }, close: async () => {} }),
     })((await new JobsRepository(db).claimNext('fetch_run', 'downgraded', 120000))!);
     const offer = await db.selectFrom('offers').selectAll().executeTakeFirstOrThrow();
     assert.equal(offer.settlement_price, '10.60');
@@ -211,7 +211,7 @@ describe('independent settlement expiry scheduling', () => {
       return Response.json({ cny: { usd: 0.1 } });
     };
     await createCrawlerHandler(db, new ProductsRepository(db), {
-      publicFetchFactory: async () => ({ fetch: fetchImpl, close: async () => {} }),
+      publicFetchFactory: async () => ({ fetch: fetchImpl, dial: async () => { throw new Error('Unexpected socket dial in fetch fixture'); }, close: async () => {} }),
     })(job);
     const run = await db.selectFrom('fetch_runs').selectAll().where('id', '=', job.id).executeTakeFirstOrThrow();
     assert.equal(run.status, 'succeeded');
@@ -297,7 +297,7 @@ describe('independent settlement expiry scheduling', () => {
   for (const [message, removed] of [['商品已售罄', false], ['商品不存在或已下架', true]] as const) {
     test(`supplemental 16688 ${message} updates only the affected listing`, async () => {
       await fixture(2);
-      await db.updateTable('offers').set({ settlement_kind: 'estimated', stock_quantity: 10n }).execute();
+      await db.updateTable('offers').set({ settlement_kind: 'estimated', stock_quantity: 10 }).execute();
       await enqueueDueSettlements(db, 32, now, ttlMs);
       const handler = createCrawlerHandler(db, new ProductsRepository(db), { fetchFactory: () => async (url, init) => {
         if (String(url).endsWith('/payment/list')) return Response.json({ code: 1, data: { list: [{ id: 1, show_name: 'Alipay' }] } });

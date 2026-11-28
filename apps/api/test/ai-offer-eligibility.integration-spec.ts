@@ -306,7 +306,13 @@ test('stock-only replenishment preserves evidence and exposes a wakeup without c
   assert.equal(current.content_fingerprint, product.content_fingerprint);
 });
 
-test('restock keeps a published identity and schedules only missing attribute work', async () => {
+test('restock keeps a published identity and schedules only missing attribute work', async t => {
+  const previousModel = process.env.AI_MODEL;
+  process.env.AI_MODEL = 'mock';
+  t.after(() => {
+    if (previousModel === undefined) delete process.env.AI_MODEL;
+    else process.env.AI_MODEL = previousModel;
+  });
   const product = await seed(), standard = await catalog();
   await quote(product.id, true);
   await db.insertInto('standard_product_members').values({ standard_product_id: standard.id, product_id: product.id,

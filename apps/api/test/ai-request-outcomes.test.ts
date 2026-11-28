@@ -51,7 +51,7 @@ test('confirmed transient provider response consumes the request and may use the
   await waitForFailure(state);
   await worker.stop();
   assert.deepEqual(outcomes, ['confirmed']);
-  assert.deepEqual(state.failures[0], { retry: true, backoffMs: 5_000, retryClass: 'provider_transient' });
+  assert.deepEqual(state.failures[0], { retry: true, backoffMs: 5_000, retryClass: 'provider_transient', claimToken: 'claim-1' });
 });
 
 test('rejected response_format request is confirmed and retried within budget', async () => {
@@ -71,7 +71,7 @@ test('rejected response_format request is confirmed and retried within budget', 
   await waitForFailure(state);
   await worker.stop();
   assert.deepEqual(outcomes, ['confirmed']);
-  assert.deepEqual(state.failures[0], { retry: true, backoffMs: 5_000, retryClass: 'provider_transient' });
+  assert.deepEqual(state.failures[0], { retry: true, backoffMs: 5_000, retryClass: 'provider_transient', claimToken: 'claim-1' });
 });
 
 test('unknown send outcome is recorded once and never retried', async () => {
@@ -162,5 +162,5 @@ test('decision persistence failure after a confirmed response never resends the 
   }
   // Confirmation belongs to the same transaction as the validated decision.
   assert.deepEqual(events, ['reserve', 'model', 'persist']);
-  assert.deepEqual(state.failures, [{ retry: false, backoffMs: 0, retryClass: 'result_not_saved' }]);
+  assert.deepEqual(state.failures, [{ retry: false, backoffMs: 0, retryClass: 'result_not_saved', claimToken: 'claim-1' }]);
 });

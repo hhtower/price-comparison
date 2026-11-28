@@ -1,8 +1,7 @@
 import { sql, type Kysely } from 'kysely';
-import { MEMBERSHIP_POLICY_VERSION } from '@price-comparison/catalog/membership-policy';
-import { currentMembershipKind } from '../../standardization/membership-classification.js';
+import { membershipKind037 as kind, membershipPolicy as policy } from './snapshots/membership-policy.js';
 
-export async function up(database: Kysely<unknown>): Promise<void> {
+export async function up<DB>(database: Kysely<DB>): Promise<void> {
   if (!database.isTransaction) return database.transaction().execute(up);
   await sql`lock table shops, products in share row exclusive mode`.execute(database);
   await sql`create table catalog_membership_kinds (
@@ -10,15 +9,6 @@ export async function up(database: Kysely<unknown>): Promise<void> {
     kind text not null,
     policy_version text not null
   )`.execute(database);
-  // Function bodies cannot bind parameters; render only the shared policy's constants.
-  const compiled = currentMembershipKind().compile(database);
-  const kind = sql.raw(compiled.sql.replace(/\$(\d+)/gu, (_match, index: string) => {
-    const value = compiled.parameters[Number(index) - 1];
-    return (Array.isArray(value)
-      ? sql`array[${sql.join(value.map(item => sql.lit(item)))}]::text[]`
-      : sql.lit(value)).compile(database).sql;
-  }));
-  const policy = sql.lit(MEMBERSHIP_POLICY_VERSION);
   await sql`create function catalog_membership_kinds_changed() returns trigger
     language plpgsql set search_path from current as $function$
     begin
@@ -46,7 +36,7 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   await sql`analyze catalog_membership_kinds`.execute(database);
 }
 
-export async function down(database: Kysely<unknown>): Promise<void> {
+export async function down<DB>(database: Kysely<DB>): Promise<void> {
   await sql`drop trigger catalog_membership_kinds_changed on products`.execute(database);
   await sql`drop function catalog_membership_kinds_changed()`.execute(database);
   await sql`drop table catalog_membership_kinds`.execute(database);

@@ -453,6 +453,61 @@ test('request step prepares, reserves and atomically checkpoints its confirmed r
   assert.equal(state.completed, 1);
 });
 
+test('request metrics finishing after publication is reclaimed cannot remove the publication execution', async () => {
+  const metricsEntered = Promise.withResolvers<void>();
+  const finishMetrics = Promise.withResolvers<void>();
+  const publicationEntered = Promise.withResolvers<void>();
+  const finishPublication = Promise.withResolvers<void>();
+  const oldSettled = Promise.withResolvers<void>();
+  const bothSettled = Promise.withResolvers<void>();
+  let settlements = 0;
+  const state = Object.assign(service(), {
+    onSettled: () => {
+      settlements++;
+      oldSettled.resolve();
+      if (settlements === 2) bothSettled.resolve();
+    },
+  });
+  const worker = createAiWorker(state, {
+    workerId: 'worker', concurrency: 2,
+    repository: {
+      prepareBatch: async () => {},
+      reserveBatchRequest: async () => {},
+      persistBatchDecision: async () => {
+        state.item = { ...claimed('publish'), row: { ...claimed('publish').row, claim_token: 'publication-claim' } };
+      },
+      publishBatch: async () => {
+        publicationEntered.resolve();
+        await finishPublication.promise;
+      },
+    } as never,
+    modelCall: async () => parsedResponse(),
+    aiMetrics: {
+      recordAiTiming: async () => {
+        metricsEntered.resolve();
+        await finishMetrics.promise;
+      },
+    },
+  });
+  try {
+    await worker.runOnce();
+    await metricsEntered.promise;
+    await worker.runOnce();
+    await publicationEntered.promise;
+    finishMetrics.resolve();
+    await oldSettled.promise;
+    worker.cancel(7n);
+    finishPublication.resolve();
+    await bothSettled.promise;
+    assert.equal(state.requeued, 1, 'publication must still receive cancellation after request cleanup');
+    assert.equal(state.completed, 1);
+  } finally {
+    finishMetrics.resolve();
+    finishPublication.resolve();
+    await worker.stop();
+  }
+});
+
 test('skipped request batches never call the model or consume a provider outcome', async () => {
   const calls: string[] = [];
   const state = service();
@@ -576,7 +631,7 @@ test('stream failures consume one shared reservation without persisting or autom
       assert.equal(state.completed, 0);
       assert.equal(state.requeued, 0);
       assert.deepEqual(calls, ['prepare', 'reserve', 'send', `outcome:${failure.outcome}`]);
-      assert.deepEqual(state.failureOptions, { retry: false, backoffMs: 0, retryClass: failure.retryClass });
+      assert.deepEqual(state.failureOptions, { retry: false, backoffMs: 0, retryClass: failure.retryClass, claimToken: 'claim' });
       await worker.runOnce();
       assert.deepEqual(calls, ['prepare', 'reserve', 'send', `outcome:${failure.outcome}`]);
     } finally { await worker.stop(); }

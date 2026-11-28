@@ -22,7 +22,7 @@ async function localProxy(t: TestContext, protocol: Protocol, respond: (request:
     : protocol === 'https' ? createHttpsServer(fixture) : createServer();
   const sockets = new Set<net.Socket>();
   const tunnels: net.Socket[] = [];
-  const attachOrigin = (socket: net.Socket, rest = Buffer.alloc(0)) => {
+  const attachOrigin = (socket: net.Socket, rest: Buffer = Buffer.alloc(0)) => {
     tunnels.push(socket);
     if (rest.length) socket.unshift(rest);
     origin.emit('connection', socket);
@@ -32,7 +32,7 @@ async function localProxy(t: TestContext, protocol: Protocol, respond: (request:
     socket.on('error', () => {});
     socket.on('close', () => sockets.delete(socket));
     if (protocol !== 'socks5') return;
-    let pending = Buffer.alloc(0), stage = 'greeting';
+    let pending: Buffer = Buffer.alloc(0), stage = 'greeting';
     const handshake = (chunk: Buffer) => {
       pending = Buffer.concat([pending, chunk]);
       if (stage === 'greeting') {

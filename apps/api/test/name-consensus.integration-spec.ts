@@ -255,7 +255,7 @@ test('same-name repair resolves AI plan identity without requiring product featu
     verification_state: 'verified' as const,
   }))).returning('id').execute();
   const name = 'ChatGPT Plus 同名会员独立验证样本';
-  const ids = [];
+  const ids: bigint[] = [];
   for (let count = 0; count < 3; count++) {
     ids.push((await product(name, standards[0]!.id, { evidence: 'ChatGPT Plus 账号' })).id);
   }

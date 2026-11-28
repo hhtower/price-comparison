@@ -63,17 +63,19 @@ test('compact context preserves only general fields with their applicability and
 });
 
 test('general prompt and protocol expire snapshots that included warranty extraction', () => {
+  const current = pipelineVersionSnapshot('mock');
+  assert.ok(current && typeof current === 'object' && !Array.isArray(current));
   assert.equal(PIPELINE_VERSIONS.tagPrompt, 'tag-20261121-v18');
   assert.equal(PIPELINE_VERSIONS.tagReviewPrompt, 'tag-review-20261121-v14');
   assert.equal(TAG_EXTRACTION_PROTOCOL_VERSION, 'tag-json-typed-values-20261117-v7');
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261015-v5' }, 'tag_extraction'), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261025-v7' }, 'tag_extraction'), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-object-closed-v1' }, 'tag_extraction'), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261114-v10' }, 'tag_extraction'), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagReviewPrompt: 'tag-review-20261114-v6' }, 'tag_extraction'), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagPrompt: 'tag-20261115-v16' }, 'tag_extraction'), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagReviewPrompt: 'tag-review-20261115-v12' }, 'tag_extraction'), false);
-  assert.equal(isCurrentPipeline({ ...pipelineVersionSnapshot('mock'), tagProtocol: 'tag-json-typed-values-20261115-v6' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...current, tagPrompt: 'tag-20261015-v5' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...current, tagPrompt: 'tag-20261025-v7' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...current, tagProtocol: 'tag-json-object-closed-v1' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...current, tagPrompt: 'tag-20261114-v10' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...current, tagReviewPrompt: 'tag-review-20261114-v6' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...current, tagPrompt: 'tag-20261115-v16' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...current, tagReviewPrompt: 'tag-review-20261115-v12' }, 'tag_extraction'), false);
+  assert.equal(isCurrentPipeline({ ...current, tagProtocol: 'tag-json-typed-values-20261115-v6' }, 'tag_extraction'), false);
 });
 
 

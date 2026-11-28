@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import { Kysely, PostgresDialect } from 'kysely';
 import { Pool } from 'pg';
 import { migrateToLatest } from '../scripts/migrate.js';
 import { jsonb, type AiJobStatus, type DatabaseSchema } from '../src/database/types.js';
 import { readAiTaskQueue } from '../src/ai/ai-task-queue.js';
-import { PIPELINE_VERSIONS, pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
+import { pipelineVersionSnapshot, STANDARDIZATION_POLICY_VERSION } from '../src/ai/pipeline-versions.js';
 import { STANDARDIZATION_PROMPT_VERSION } from '../src/ai/standardization-request.js';
 import { AiAdminController } from '../src/ai/ai-admin.controller.js';
 import { AiRepository } from '../src/ai/ai.repository.js';
@@ -119,10 +119,10 @@ describe('normalization task queue over PostgreSQL', () => {
     }
     const clean = await readAiTaskQueue(db,{jobType:'identity',status:'all',scopeShopId:shops[0]!.id});
     assert.equal(clean.items[0]!.remaining,0);assert.equal(clean.items[0]!.unclassified,0);
-    assert.equal(clean.summary.pendingProducts,0);assert.equal(clean.summary.currentReasons.other_unclassified,0);
+    assert.equal(clean.summary.pendingProducts,0);assert.equal(clean.summary.currentReasons!.other_unclassified,0);
     assert.equal((await readAiTaskQueue(db,{status:'attention',scopeShopId:shops[0]!.id})).items.length,0);
     const affected = await readAiTaskQueue(db,{status:'all',scopeShopId:shops[1]!.id});
-    assert.equal(affected.summary.pendingProducts,1);assert.equal(affected.summary.currentReasons.other_unclassified,1);
+    assert.equal(affected.summary.pendingProducts,1);assert.equal(affected.summary.currentReasons!.other_unclassified,1);
     assert.equal(affected.items[0]!.unclassified,1);
   });
 });

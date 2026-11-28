@@ -10,6 +10,12 @@ docs/*
 !docs/skill.md
 !docs/mcp.md
 output/
+out/
+.tmp/
+.vitest/
+**/output/
+**/node_modules/
+**/.omc/
 .playwright-cli/
 .playwright-mcp/
 .omc/

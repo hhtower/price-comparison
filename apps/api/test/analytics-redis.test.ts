@@ -59,7 +59,8 @@ test('Redis shares successful lookups for 30 days and failures for 5 minutes acr
     const known = await first.lookup('8.8.8.8');
     assert.equal(known.geoStatus, 'resolved');
     const stored = await firstCache.stores[1]!.getRaw('ip:8.8.8.8');
-    assert.deepEqual(stored?.value, known, 'success must exist in Redis, not just process memory');
+    assert.ok(stored && typeof stored === 'object');
+    assert.deepEqual(stored.value, known, 'success must exist in Redis, not just process memory');
     const remaining = stored!.expires! - Date.now();
     assert.ok(remaining > 29 * 86400000 && remaining <= 30 * 86400000);
     assert.deepEqual(await second.lookup('::ffff:808:808'), known);
@@ -67,7 +68,8 @@ test('Redis shares successful lookups for 30 days and failures for 5 minutes acr
     assert.equal((await first.lookup('1.1.1.1')).geoStatus, 'unavailable');
     assert.equal((await second.lookup('1.1.1.1')).geoStatus, 'unavailable');
     const failed = await firstCache.stores[1]!.getRaw('lookup:1.1.1.1');
-    const cooldown = failed!.expires! - Date.now();
+    assert.ok(failed && typeof failed === 'object');
+    const cooldown = failed.expires! - Date.now();
     assert.ok(cooldown > 4 * 60000 && cooldown <= 5 * 60000);
     assert.equal(await firstCache.stores[1]!.get('ip:1.1.1.1'), undefined);
     assert.equal(calls, 2);

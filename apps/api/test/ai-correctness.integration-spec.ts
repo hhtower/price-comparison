@@ -115,7 +115,7 @@ test('global pending review excludes a current manual exclusion without discardi
 test('explicit provider refusal materializes its own terminal category without a retry', async () => {
   const source = await product('ChatGPT Plus provider refusal');
   const task = await prepare([source]);
-  await new JobsRepository(db).fail('ai_batch', task.batch, 'correctness', 'provider policy', { retry: true, retryClass: 'provider_policy_rejection' });
+  await new JobsRepository(db).fail('ai_batch', task.batch, 'correctness', 'provider policy', { retry: true, retryClass: 'provider_policy_rejection', claimToken: task.requestClaim.token });
   const result = await db.selectFrom('ai_standardization_results').select('reason_code').where('job_id', '=', task.job.id).executeTakeFirstOrThrow();
   assert.equal(result.reason_code, 'provider_policy_rejection');
   const batch = await db.selectFrom('ai_job_batches').select(['status', 'request_budget_used']).where('id', '=', task.batch).executeTakeFirstOrThrow();
@@ -386,9 +386,10 @@ test('manual publication retry restores failed members, preserves successes and 
   await db.updateTable('ai_publication_units').set({ product_ids: jsonb([String(members[0]!.id)]), member_count: 1 }).where('id', '=', unit.id).execute();
   await db.insertInto('ai_publication_units').values({ batch_id: task.batch, unit_index: 1, product_ids: jsonb([String(members[1]!.id)]), member_count: 1, tag_count: 0, payload_bytes: 500n, status: 'blocked' }).execute();
   // Commit the first unit, then force a recoverable local failure in the next unit.
-  await assert.rejects(publish(task), /incomplete/);
+  const publicationClaim = await claim(task.batch, 'publish', 1n);
+  await assert.rejects(task.repository.publishBatch(task.batch, publicationClaim), /incomplete/);
   const success = await db.selectFrom('ai_standardization_results').selectAll().where('job_id', '=', task.job.id).where('product_id', '=', members[0]!.id).executeTakeFirstOrThrow();
-  await new JobsRepository(db).fail('ai_batch', task.batch, 'correctness', 'local retry exhausted', { retry: false, retryClass: 'local' });
+  await new JobsRepository(db).fail('ai_batch', task.batch, 'correctness', 'local retry exhausted', { retry: false, retryClass: 'local', claimToken: publicationClaim.token });
   await task.repository.retryJob(task.job.id);
   const reopened = await db.selectFrom('ai_job_input_members').select(['product_id', 'status']).where('job_id', '=', task.job.id).orderBy('product_id').execute();
   const reopenedByProduct = new Map(reopened.map(member => [member.product_id, member.status]));

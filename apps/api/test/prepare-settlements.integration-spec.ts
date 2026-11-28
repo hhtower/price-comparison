@@ -50,7 +50,7 @@ test('offline preparation is atomic, preserves evidence and enables the strict c
   const ambiguous = await add('ambiguous', '3.333333333332');
   const complete = await add('complete', '10');
   await sql`update offers set settlement_quantity = 2, settlement_total_amount = 20 where id = ${complete}::bigint`.execute(db);
-  const snapshot = async () => (await sql`select row_to_json(o)::text as document from offers o order by id`.execute(db)).rows;
+  const snapshot = async () => (await sql<{ document: string }>`select row_to_json(o)::text as document from offers o order by id`.execute(db)).rows;
   const before = await snapshot();
   const failed = await migrator.migrateToLatest();
   assert.match(String(failed.error), /db:prepare-settlements/);

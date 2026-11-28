@@ -251,7 +251,7 @@ test('real database HTTP/SSE flow uses shared worker and fragmented mock model, 
   assert.ok(events.length >= 2);
   assert.ok(events.every((snapshot, index) => index === 0 || snapshot.eventVersion > events[index - 1].eventVersion));
   assert.deepEqual(final.reply, {
-    kind: 'question', text: understanding.question, options: understanding.options,
+    kind: 'question', text: understanding.question, messages: [understanding.question], options: understanding.options,
     needs: { ...emptyShoppingNeeds(), preferences: ['lower_price'] }, cards: [],
   });
   assert.ok(wireChunks > 3, 'both JSON deltas and wire/SSE frames are fragmented');

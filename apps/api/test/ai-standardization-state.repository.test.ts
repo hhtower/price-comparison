@@ -574,7 +574,7 @@ test('interruption requeues only local work and never resends uncertain or confi
       if (query.sql.includes('from "ai_jobs"')) return { rows: [{ ...activeJob, status: 'paused', pause_requested: true }] };
       return {};
     });
-    await new JobsRepository(f.db).requeue('ai_batch', 7n, 'worker', 0);
+    await new JobsRepository(f.db).requeue('ai_batch', 7n, 'worker', 0, String(batch.claim_token));
     const update = f.queries.find(query => query.sql.startsWith('update "ai_job_batches"'))!;
     const valueOf = (column: string) => {
       const match = new RegExp(`"${column}" = \\$(\\d+)`).exec(update.sql);
@@ -598,7 +598,7 @@ test('local publication retry leaves provider budget and extraction progress unc
     return {};
   });
 
-  await new JobsRepository(f.db).fail('ai_batch', 7n, 'worker', 'database connection reset', { retry: true, backoffMs: 25, retryClass: 'local' });
+  await new JobsRepository(f.db).fail('ai_batch', 7n, 'worker', 'database connection reset', { retry: true, backoffMs: 25, retryClass: 'local', claimToken: String(batch.claim_token) });
 
   const batchUpdates = f.queries.filter(query => query.sql.startsWith('update ai_job_batches') || query.sql.startsWith('update "ai_job_batches"'));
   assert.ok(batchUpdates.some(query => query.parameters.includes('queued')));
@@ -682,7 +682,7 @@ test('terminal batch failure records provider_error for every unresolved member 
     return {};
   });
 
-  await new JobsRepository(f.db).fail('ai_batch', 7n, 'worker', 'provider rejected request', { retry: false, retryClass: 'provider_terminal' });
+  await new JobsRepository(f.db).fail('ai_batch', 7n, 'worker', 'provider rejected request', { retry: false, retryClass: 'provider_terminal', claimToken: String(batch.claim_token) });
 
   const result = f.queries.find(query => query.sql.startsWith('insert into "ai_standardization_results"'));
   assert.ok(result);

@@ -1,9 +1,10 @@
+import type { JsonValue } from '../src/database/types.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { planBulkStandardizationBatches, planIndependentStandardizationBatches } from '../src/ai/standardization-batch-planner.js';
 
 const limits = { maxItems: 32, maxInputBytes: 100000, maxInputTokens: 20000 };
-const item = (id: number, name: string, endpoint?: string) => ({ productId: BigInt(id), payload: { name, spec: '', sourceData: endpoint ? { apiEndpoint: endpoint } : {} }, inputBytes: 150, estimatedTokens: 40 });
+const item = (id: number, name: string, endpoint?: string): { productId: bigint; payload: JsonValue; inputBytes: number; estimatedTokens: number } => ({ productId: BigInt(id), payload: { name, spec: '', sourceData: endpoint ? { apiEndpoint: endpoint } : {} }, inputBytes: 150, estimatedTokens: 40 });
 test('unrelated goods and distinct relay providers never share refusal failure boundaries', () => {
   const inputs = [item(1, '高中数学辅导课程'), item(2, 'Steam游戏充值卡'), item(3, '大模型API中转余额', 'https://alpha.example/v1'), item(4, '大模型API中转余额', 'https://beta.example/v1')];
   const batches = planIndependentStandardizationBatches(inputs, limits);

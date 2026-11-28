@@ -47,7 +47,7 @@ test('progress notification disconnect closes the stream instead of crashing the
   const repository = new AiRepository({} as never, { async connect() { return client; } } as never);
   repository.getJobProgress = async () => null;
   const controller = new AbortController();
-  const events = repository.streamJobEvents(9n, 0n, controller.signal);
+  const events = repository.streamJobEvents(9n, 0n, controller.signal)[Symbol.asyncIterator]();
   const next = events.next();
   const failure = new Error('Connection terminated unexpectedly');
   const rejected = assert.rejects(next, failure);
@@ -116,7 +116,7 @@ test('disconnect while a progress event is yielded is observed on the next itera
   const client = new NotificationClient();
   const repository = new AiRepository({} as never, { async connect() { return client; } } as never);
   repository.getJobProgress = async () => ({ version: '1' } as never);
-  const events = repository.streamJobEvents(9n, 0n, new AbortController().signal);
+  const events = repository.streamJobEvents(9n, 0n, new AbortController().signal)[Symbol.asyncIterator]();
   assert.equal((await events.next()).value?.type, 'progress');
   const failure = new Error('disconnect while yielded');
   client.emit('error', failure);

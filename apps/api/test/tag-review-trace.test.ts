@@ -33,7 +33,9 @@ test('publication revalidation retains the original candidate indexes and model 
   const published = validateReviewedTagExtractionDecision(1n, restored.tags, restored.rejectedTags, payload, restored.reviewDecisions);
   assert.deepEqual(published, initial);
   const skipped = buildTagExtractionOutcome(published, [], { outcome: 'skipped', reasonCode: 'source_changed' });
-  assert.deepEqual(skipped.review?.decisions, [true, false, true]);
+  assert.equal(skipped.review?.mode, 'per_tag_binary');
+  assert.ok(skipped.review?.mode === 'per_tag_binary');
+  assert.deepEqual(skipped.review.decisions, [true, false, true]);
   assert.equal(skipped.outcome, 'skipped');
   assert.deepEqual(skipped.diff, []);
 });

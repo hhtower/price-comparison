@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CrawlerTasksController } from '../src/admin/crawler-tasks.controller.js';
-import { publishCrawlerMetrics, CRAWLER_METRICS_KEY_PREFIX } from '../src/crawler/metrics-store.js';
+import { publishCrawlerMetrics } from '../src/crawler/metrics-store.js';
+
+class TestCrawlerTasksController extends CrawlerTasksController {
+  override streamIntervalMs = 5;
+}
 
 function createFakeRedis() {
   const hashes = new Map<string, Record<string, string>>();
@@ -50,7 +54,7 @@ function createFakeReply() {
 test('status 合并 Redis 计数器与实例统计', async () => {
   const redis = createFakeRedis();
   await publishCrawlerMetrics(redis, 'crawler-a', { proxy_request: 3, response_blocked: 1 }, 1_000, 9_000);
-  const controller = new CrawlerTasksController(redis as never, jobs as never);
+  const controller = new TestCrawlerTasksController(redis as never, jobs as never);
   assert.deepEqual(await controller.status(), {
     counters: { proxy_request: 3, response_blocked: 1 },
     workerCount: 1,
@@ -60,7 +64,7 @@ test('status 合并 Redis 计数器与实例统计', async () => {
 });
 
 test('status 在无 Redis 时仍返回实例统计与离线标记', async () => {
-  const controller = new CrawlerTasksController(undefined, jobs as never);
+  const controller = new TestCrawlerTasksController(undefined, jobs as never);
   assert.deepEqual(await controller.status(), {
     counters: {},
     workerCount: 0,
@@ -71,7 +75,7 @@ test('status 在无 Redis 时仍返回实例统计与离线标记', async () => 
 
 test('status 和 events 均携带持久化诊断', async () => {
   const diagnostics = { snapshot: async () => ({ windowRuns: 2, listSucceeded: 1, listFailed: 1 }) };
-  const controller = new CrawlerTasksController(undefined, jobs as never, diagnostics as never);
+  const controller = new TestCrawlerTasksController(undefined, jobs as never, diagnostics as never);
   controller.streamIntervalMs = 5;
   assert.deepEqual((await controller.status()).diagnostics, await diagnostics.snapshot());
   const { written, listeners, reply } = createFakeReply();
@@ -85,7 +89,7 @@ test('status 和 events 均携带持久化诊断', async () => {
 test('events 以 progress 事件推送快照，变化时续推，连接关闭即结束', async () => {
   const redis = createFakeRedis();
   await publishCrawlerMetrics(redis, 'crawler-a', { proxy_request: 1 }, 1_000, 9_000);
-  const controller = new CrawlerTasksController(redis as never, jobs as never);
+  const controller = new TestCrawlerTasksController(redis as never, jobs as never);
   controller.streamIntervalMs = 5;
   const { headers, listeners, written, raw, reply } = createFakeReply();
   const finished = controller.events(undefined as never, reply as never);
@@ -107,7 +111,7 @@ test('events 以 progress 事件推送快照，变化时续推，连接关闭即
 });
 
 test('events 拒绝非数字 since', async () => {
-  const controller = new CrawlerTasksController(undefined, jobs as never);
+  const controller = new TestCrawlerTasksController(undefined, jobs as never);
   await assert.rejects(
     () => controller.events('abc' as never, createFakeReply().reply as never),
     (error: { code?: string }) => error.code === 'INVALID_VERSION',
@@ -119,7 +123,7 @@ test('concurrent status and stream reads share one complete database snapshot un
   let finish: (value: unknown) => void = () => {};
   const snapshot = { instances: { queued: 3, running: 1, failedRecent: 0 }, windowRuns: 1 };
   const diagnostics = { snapshot: () => { reads++; return new Promise(resolve => { finish = resolve; }); } };
-  const controller = new CrawlerTasksController(undefined, {
+  const controller = new TestCrawlerTasksController(undefined, {
     fetchRunCounts: async () => { throw new Error('queue already included in diagnostics'); },
   } as never, diagnostics as never);
   controller.streamIntervalMs = 20;
@@ -146,7 +150,7 @@ test('concurrent status and stream reads share one complete database snapshot un
 
 test('a failed shared snapshot is not cached and the next request can recover', async () => {
   let reads = 0;
-  const controller = new CrawlerTasksController(undefined, jobs as never, { snapshot: async () => {
+  const controller = new TestCrawlerTasksController(undefined, jobs as never, { snapshot: async () => {
     if (++reads === 1) throw new Error('database unavailable');
     return { instances: { queued: 1, running: 0, failedRecent: 0 } };
   } } as never);

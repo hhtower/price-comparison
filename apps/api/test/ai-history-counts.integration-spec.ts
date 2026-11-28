@@ -42,14 +42,14 @@ test('standardization history counts avoid scanning unrelated task records and f
     assert.equal(page.summary.total, 100);
     const count = queries.find(q => q.sql.includes(' as total') && !q.sql.includes('page as'))!;
     const result = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Record<string, any> }> }>(
-      CompiledQuery.raw(`explain (analyze, buffers, format json) ${count.sql}`, count.parameters),
+      CompiledQuery.raw(`explain (analyze, buffers, format json) ${count.sql}`, [...count.parameters]),
     );
     const nodes = (node: Record<string, any>): Array<Record<string, any>> => [node, ...(node.Plans ?? []).flatMap(nodes)];
     assert.ok(nodes(result.rows[0]!['QUERY PLAN'][0]!.Plan).every(node => node['Relation Name'] !== 'ai_jobs'),
       'the global exact total must use compact version/status counts, not rescan task history');
     const listing = queries.find(q => q.sql.startsWith('select "j"."id"'))!;
     const listingPlan = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Record<string, any> }> }>(
-      CompiledQuery.raw(`explain (analyze, buffers, format json) ${listing.sql}`, listing.parameters),
+      CompiledQuery.raw(`explain (analyze, buffers, format json) ${listing.sql}`, [...listing.parameters]),
     );
     assert.ok(nodes(listingPlan.rows[0]!['QUERY PLAN'][0]!.Plan).every(node =>
       node['Relation Name'] !== 'ai_jobs' || (node['Rows Removed by Filter'] ?? 0) < 100),
@@ -58,7 +58,7 @@ test('standardization history counts avoid scanning unrelated task records and f
     await new AiRepository(db).adminStatus();
     const latest = queries[0]!;
     const latestPlan = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Record<string, any> }> }>(
-      CompiledQuery.raw(`explain (analyze, buffers, format json) ${latest.sql}`, latest.parameters),
+      CompiledQuery.raw(`explain (analyze, buffers, format json) ${latest.sql}`, [...latest.parameters]),
     );
     assert.ok(nodes(latestPlan.rows[0]!['QUERY PLAN'][0]!.Plan).every(node =>
       node['Relation Name'] !== 'ai_jobs' || (node['Rows Removed by Filter'] ?? 0) < 100),
@@ -74,7 +74,7 @@ test('standardization history counts avoid scanning unrelated task records and f
     assert.equal(scoped.summary.total, 1);
     const scopedCount = queries.find(q => q.sql.includes(' as total'))!;
     const scopedPlan = await db.executeQuery<{ 'QUERY PLAN': Array<{ Plan: Record<string, any> }> }>(
-      CompiledQuery.raw(`explain (analyze, buffers, format json) ${scopedCount.sql}`, scopedCount.parameters),
+      CompiledQuery.raw(`explain (analyze, buffers, format json) ${scopedCount.sql}`, [...scopedCount.parameters]),
     );
     assert.ok(nodes(scopedPlan.rows[0]!['QUERY PLAN'][0]!.Plan).every(node =>
       node['Relation Name'] !== 'ai_jobs' || (node['Rows Removed by Filter'] ?? 0) < 100),

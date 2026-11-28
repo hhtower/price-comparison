@@ -158,7 +158,7 @@ for (const [name, content, phase] of [
     assert.equal(state.stats().sends, 1);
     assert.equal(state.stats().saved, undefined);
     assert.equal(state.stats().completed, false);
-    assert.deepEqual((state.stats().failure as { options: unknown }).options, { retry: false, backoffMs: 0, retryClass: 'invalid_response' });
+    assert.deepEqual((state.stats().failure as { options: unknown }).options, { retry: false, backoffMs: 0, retryClass: 'invalid_response', claimToken: 'tag-audit-claim' });
     assert.equal(state.outcomes.length, 1);
     assert.equal(state.outcomes[0]!.outcome, 'confirmed');
     assert.deepEqual(state.outcomes[0]!.claim, { workerId: 'tag-audit-worker', attempt: 1n, token: 'tag-audit-claim' });

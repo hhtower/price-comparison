@@ -306,7 +306,7 @@ for (const proof of [true, false]) test(`display title to original title require
       const p = await db.selectFrom('products').selectAll().executeTakeFirstOrThrow();
       assert.equal(p.content_fingerprint, f.next); assert.ok(readCurrentMembershipFeatures(p.membership_features, await withMembershipSource(db, p)));
     } else {
-      const before = await snapshot(db);
+      await snapshot(db);
       const report = await rebaseProductFingerprints(db, { apply: true });
       assert.equal(report.applied, true);
       const product = await db.selectFrom('products').selectAll().executeTakeFirstOrThrow();

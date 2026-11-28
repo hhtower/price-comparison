@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import * as policy from '../src/standardization/identity-policy.ts';
-import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.ts';
+import * as policy from '../src/standardization/identity-policy.js';
+import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
 import { identityGuardRegressions } from './fixtures/identity-guard-regressions.js';
 
@@ -126,7 +126,7 @@ test('account aliases and auxiliary filtering never hide independently sold bran
 for (const { input, identity } of identityGuardRegressions) {
   test('identity guard accepts evidenced delivery in raw and frozen text: ' + input.name, () => {
     for (const format of ['raw', 'text'] as const) {
-      const evidence = format === 'raw' ? input : buildExtractionPayload(input);
+      const evidence = format === 'raw' ? { ...input } : buildExtractionPayload(input);
       assert.equal(policy.identityEvidenceConflict(identity, evidence, format), null, format);
       if (['chatgpt', 'meta_sms', 'discord_sms', 'paypal_sms', 'google_sms', 'facebook_sms', 'amazon_sms',
         'wechat_sms', 'twitter_sms', 'luma_sms'].includes(identity.product)) {

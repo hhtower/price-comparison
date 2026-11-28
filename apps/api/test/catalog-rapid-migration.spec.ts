@@ -7,7 +7,11 @@ import { createPostgresPool } from '../src/database/database.providers.js';
 import type { DatabaseSchema } from '../src/database/types.js';
 import { migrationProvider } from '../scripts/migrate.js';
 
-let database: Kysely<DatabaseSchema>;
+// These migrations precede the JSONB tag-value conversion.
+type HistoricalSchema = Omit<DatabaseSchema, 'product_tags'> & {
+  product_tags: Omit<DatabaseSchema['product_tags'], 'value'> & { value: string };
+};
+let database: Kysely<HistoricalSchema>;
 let admin: Pool;
 const schema = `rapid_migration_${Date.now()}`;
 before(async () => {
@@ -15,7 +19,7 @@ before(async () => {
   admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   await admin.query(`create schema "${schema}"`);
   process.env.PG_SCHEMA = schema;
-  database = new Kysely<DatabaseSchema>({ dialect: new PostgresDialect({
+  database = new Kysely<HistoricalSchema>({ dialect: new PostgresDialect({
     pool: createPostgresPool({ ...process.env, DATABASE_URL: process.env.TEST_DATABASE_URL, PG_SCHEMA: schema }),
   }) });
   const { error } = await new Migrator({ db: database, provider: migrationProvider, migrationTableSchema: schema })

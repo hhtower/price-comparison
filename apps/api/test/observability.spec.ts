@@ -58,6 +58,7 @@ test('request IDs propagate through the interceptor and structured completion lo
     new StructuredLogger((line) => lines.push(line)),
   );
   const request = {
+    requestId: undefined as string | undefined,
     headers: { 'x-request-id': 'request-123' },
     method: 'GET',
     url: '/v1/catalog',
@@ -202,14 +203,14 @@ test('pool sampling starts immediately, replaces the old timer and stops on shut
   const metrics = new MetricsService();
   context.after(() => metrics.onApplicationShutdown());
   let reads = 0;
-  const first = { get totalCount() { reads++; return 2; }, idleCount: 1, waitingCount: 0, options: { max: 4 } };
+  const first = { get totalCount() { reads++; return 2; }, idleCount: 1, waitingCount: 0, options: { max: 4, maxUses: Infinity, allowExitOnIdle: false, maxLifetimeSeconds: 0, idleTimeoutMillis: 10000 } };
   metrics.startPoolSampling(first, 1);
   assert.equal(metrics.snapshot().pool.utilization, 0.25);
   context.mock.timers.tick(99);
   assert.equal(reads, 1);
   context.mock.timers.tick(1);
   assert.equal(reads, 2);
-  const second = { totalCount: 5, idleCount: 2, waitingCount: 1, options: { max: 10 } };
+  const second = { totalCount: 5, idleCount: 2, waitingCount: 1, options: { max: 10, maxUses: Infinity, allowExitOnIdle: false, maxLifetimeSeconds: 0, idleTimeoutMillis: 10000 } };
   metrics.startPoolSampling(second, 100);
   context.mock.timers.tick(100);
   assert.equal(reads, 2, 'the replaced pool must no longer be sampled');

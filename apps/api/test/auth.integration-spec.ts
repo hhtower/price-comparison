@@ -9,12 +9,7 @@ import { Pool } from 'pg';
 import '../src/config/env.js';
 import { createApp } from '../src/main.js';
 import { AppModule } from '../src/app.module.js';
-import {
-  createPostgresPool,
-  DATABASE,
-  DatabaseService,
-  PG_POOL,
-} from '../src/database/database.providers.js';
+import { createPostgresPool, DATABASE } from '../src/database/database.providers.js';
 import type { DatabaseSchema } from '../src/database/types.js';
 import { migrateToLatest } from '../scripts/migrate.js';
 import {
@@ -32,8 +27,8 @@ describe('authentication over real PostgreSQL and Redis', () => {
   let adminPool: Pool;
   let migrationDatabase: Kysely<DatabaseSchema>;
   let testingModule: TestingModule;
-  let app: ReturnType<Awaited<ReturnType<typeof createApp>>>;
-  let secondApp: ReturnType<Awaited<ReturnType<typeof createApp>>> | undefined;
+  let app: Awaited<ReturnType<typeof createApp>>;
+  let secondApp: Awaited<ReturnType<typeof createApp>> | undefined;
   let redisUrl: string;
   let controlRedis: Redis;
   let schemaName: string;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.ts';
+import { buildCanonicalStandardKey } from '../src/standardization/canonical-key.js';
 
 test('product features never split a canonical standard identity', () => {
   const identity = { family: 'openai', product: 'chatgpt', tier: 'plus' };

@@ -1,7 +1,8 @@
+import { jsonObject } from './json-object.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildExtractionPayload } from '../src/ai/adaptive-batching.js';
-import { buildTagExtractionRequest } from '../src/ai/tag-extraction-request.js';
+import { buildTagExtractionRequest, type TagExtractionInput } from '../src/ai/tag-extraction-request.js';
 import { buildMembershipFeatureRequest, buildMembershipFeatureReviewRequest } from '../src/ai/membership-feature-request.js';
 import { buildProductTextReviewRequest } from '../src/ai/product-text-review-request.js';
 import * as projections from '../src/ai/evidence-projection.js';
@@ -12,7 +13,7 @@ import { parseStandardizationReviewResponse } from '../src/ai/standardization-re
 const captured = (name: string, description: string) => ({
   unitId: 'listing', name, description, hash: 'a'.repeat(64),
 });
-const tagInput = (payload: ReturnType<typeof buildExtractionPayload>) => ({
+const tagInput = (payload: ReturnType<typeof buildExtractionPayload>): TagExtractionInput & { shopText?: unknown } => ({
   ...payload, id: String(payload.id), name: String(payload.name),
 });
 
@@ -112,7 +113,7 @@ test('semantic transport removes only complete equal captured fields and keeps c
   for (const different of [body + '\nExcept this SKU.', body.replace('\n', ' '), body.toLowerCase()]) {
     const distinct = projections.projectSemanticEvidence({ ...payload, shopText: captured('Account', different) });
     assert.deepEqual(distinct.shopText, { description: different });
-    assert.equal(distinct.sourceData.evidence, body);
+    assert.equal(jsonObject(distinct.sourceData).evidence, body);
   }
   const distinctTitle = projections.projectSemanticEvidence({ ...payload, shopText: captured('Account: NOT shared', body) });
   assert.deepEqual(distinctTitle.shopText, { name: 'Account: NOT shared' });

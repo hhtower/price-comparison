@@ -961,7 +961,7 @@ export class AiRepository {
     }) };
   }
 
-  async getBatchRequest(batchId: bigint, includeInactive = false): Promise<StandardizationRequest & {
+  async getBatchRequest(batchId: bigint, includeInactive = false): Promise<Omit<StandardizationRequest, 'inputs'> & {
     jobId: bigint; stage: Exclude<ReviewStage, 'warranty'>; proposals?: ParsedStandardizationResponse; repairReviewBatchId?: string; reviewRepairRound?: number;
     inputs: Array<StandardizationRequest['inputs'][number] & { fingerprint: string }>;
   }> {

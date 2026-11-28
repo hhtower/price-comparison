@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCatalogQuery } from '../src/catalog/catalog.service.ts';
+import { normalizeCatalogQuery } from '../src/catalog/catalog.service.js';
 
 test('minimum days are separate query constraints, not exact merchant tags', () => {
   for (const name of ['duration_min_days', 'subscription_warranty_min_days', 'usage_warranty_min_days']) {

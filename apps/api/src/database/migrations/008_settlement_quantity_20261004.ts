@@ -1,6 +1,6 @@
 import { sql, type Kysely } from 'kysely';
 
-export async function up(database: Kysely<unknown>): Promise<void> {
+export async function up<DB>(database: Kysely<DB>): Promise<void> {
   await sql`alter table offers
     alter column settlement_price type numeric,
     add column settlement_quantity integer,
@@ -16,7 +16,7 @@ export async function up(database: Kysely<unknown>): Promise<void> {
   // Existing quotes were requested for one unit; null metadata remains compatible with old writers.
 }
 
-export async function down(database: Kysely<unknown>): Promise<void> {
+export async function down<DB>(database: Kysely<DB>): Promise<void> {
   await sql`do $$ begin
     lock table offers in access exclusive mode;
     if exists (select 1 from offers where settlement_quantity > 1) then

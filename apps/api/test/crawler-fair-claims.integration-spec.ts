@@ -112,7 +112,7 @@ describe('host-fair fetch claims', () => {
       repository.claimAvailable('fetch', 'worker-b', 30),
     ])).flat();
     assert.deepEqual(claims.map(claim => claim.id), [list.id]);
-    await repository.complete('fetch_run', list.id, claims[0]!.claimed_by);
+    await repository.complete('fetch_run', list.id, claims[0]!.claimed_by, String(claims[0]!.row.claim_token));
     assert.equal((await repository.claimNext('fetch_run', 'worker-c', 5000))?.id, settlement.id);
   });
 
@@ -162,7 +162,7 @@ describe('host-fair fetch claims', () => {
     assert.notEqual(recovered.row.claim_token, 'old-token');
     assert.deepEqual(recovered.row.crawl_metrics, { version: 1, leaseFailures: 3 });
     assert.deepEqual(claims.find(claim => claim.id === legacy.id)?.row.crawl_metrics, { version: 1, leaseFailures: 1 });
-    await assert.rejects(repository.complete('fetch_run', expired.id, 'old-worker'), /lease|owner/i);
+    await assert.rejects(repository.complete('fetch_run', expired.id, 'old-worker', 'old-token'), /lease|owner/i);
   });
 
   test('future work is not claimable and configured host caps are honored', async () => {

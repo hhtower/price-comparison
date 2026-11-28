@@ -3,7 +3,9 @@ import { AsyncResource } from 'node:async_hooks';
 import { once } from 'node:events';
 import test from 'node:test';
 import { Client, Pool, Query } from 'pg';
-import { sql } from 'kysely';
+import { sql, type Kysely } from 'kysely';
+import type { FactoryProvider } from '@nestjs/common';
+import type { DatabaseSchema } from '../src/database/types.js';
 import { DATABASE, PG_POOL, databaseProviders } from '../src/database/database.providers.js';
 import { MetricsRegistry, instrumentPostgresPool } from '../src/observability/metrics.js';
 import {
@@ -15,8 +17,17 @@ const databaseCallbacks = new AsyncResource('offline-postgres');
 
 // Exercise pg's real query normalization, callbacks, timeouts and pool release without a server.
 class OfflineClient extends Client {
-  connect(callback: (error?: Error) => void): void {
-    process.nextTick(callback);
+  declare _queryQueue: Array<Query & {
+    text: string;
+    handleError(error: Error, connection: Client['connection']): void;
+    handleReadyForQuery(connection: Client['connection']): void;
+  }>;
+
+  connect(): Promise<Client>;
+  connect(callback: Parameters<Client['connect']>[0]): void;
+  connect(callback?: Parameters<Client['connect']>[0]): Promise<Client> | void {
+    if (callback) process.nextTick(callback, null, this);
+    else return Promise.resolve(this);
   }
 
   _pulseQueryQueue(): void {
@@ -33,17 +44,21 @@ function fixture(context: { after: (fn: () => Promise<void>) => void }, sink?: (
   const metrics = new MetricsRegistry();
   const lines: string[] = [];
   const logger = new StructuredLogger(sink ?? ((line) => lines.push(line)));
-  const factory = databaseProviders.find((provider) => provider.provide === PG_POOL);
+  const factory = databaseProviders.find((provider): provider is FactoryProvider<Pool> =>
+    'provide' in provider && provider.provide === PG_POOL && 'useFactory' in provider);
+  assert.ok(factory);
   const previous = process.env.DATABASE_URL;
   process.env.DATABASE_URL = 'postgres://unused:unused@127.0.0.1/unused';
   let pool: Pool;
   try {
-    pool = factory.useFactory(metrics, logger);
+    const created = factory.useFactory(metrics, logger);
+    assert.ok(created instanceof Pool);
+    pool = created;
   } finally {
     if (previous === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = previous;
   }
-  pool.Client = OfflineClient;
+  (pool as Pool & { Client: typeof Client }).Client = OfflineClient;
   context.after(() => pool.end());
   return { pool, metrics, lines, logger };
 }
@@ -100,6 +115,7 @@ test('checked-out clients preserve callback config, promise and connect callback
   await new Promise<void>((resolve, reject) => {
     assert.equal(pool.connect((error, connected, release) => {
       if (error) return reject(error);
+      assert.ok(connected);
       connected.query('select 1', (queryError) => {
         release();
         if (queryError) return reject(queryError);
@@ -115,10 +131,12 @@ test('client read timeouts and synchronous validation failures are measured once
   const { pool, metrics, lines } = fixture(context);
   const client = await pool.connect();
   try {
-    await assert.rejects(client.query({ text: 'select timeout', query_timeout: 5 }), /Query read timeout/);
+    const timeoutQuery = { text: 'select timeout', query_timeout: 5 };
+    await assert.rejects(client.query(timeoutQuery), /Query read timeout/);
+    // @ts-expect-error Exercise pg's runtime rejection of a null query.
     assert.throws(() => client.query(null), /null or undefined query/);
     await new Promise<void>((resolve) => {
-      client.query({ text: 'select timeout', query_timeout: 5 }, (error) => {
+      client.query(timeoutQuery, (error) => {
         assert.equal(error.message, 'Query read timeout');
         resolve();
       });
@@ -132,8 +150,10 @@ test('client read timeouts and synchronous validation failures are measured once
 
 test('Kysely and its transaction commands are counted at the client boundary only', async (context) => {
   const { pool, metrics, logger } = fixture(context);
-  const factory = databaseProviders.find((provider) => provider.provide === DATABASE);
-  const database = factory.useFactory(pool, metrics, logger);
+  const factory = databaseProviders.find((provider): provider is FactoryProvider<Kysely<DatabaseSchema>> =>
+    'provide' in provider && provider.provide === DATABASE && 'useFactory' in provider);
+  assert.ok(factory);
+  const database = await factory.useFactory(pool, metrics, logger);
   await sql`select 1`.execute(database);
   await assert.rejects(sql`select failure`.execute(database), (error) => error === failure);
   await database.transaction().execute(async (transaction) => {
@@ -155,7 +175,7 @@ test('Query event and callback forms preserve identity and count completion only
     assert.equal(client.query(failed), failed);
     await assert.rejects(rejected, (error) => error === failure);
     await new Promise<void>((resolve) => {
-      const withCallback = new Query('select 1', function (error, result) {
+      const withCallback = new Query('select 1', function (this: Query, error, result) {
         assert.equal(error, null);
         assert.equal(this, withCallback);
         assert.deepEqual(result.rows, []);
@@ -176,7 +196,8 @@ test('Query instrumentation does not swallow an unhandled error event or retain 
     const query = new Query('select timeout');
     client.query(query);
     assert.equal(query.listenerCount('error'), 0);
-    assert.throws(() => query.handleError(failure, client.connection), (error) => error === failure);
+    const nativeQuery = query as OfflineClient['_queryQueue'][number];
+    assert.throws(() => nativeQuery.handleError(failure, client.connection), (error) => error === failure);
     assert.equal(query.listenerCount('end'), 0);
     assert.equal(metrics.snapshot().database.queries, 1);
   } finally {

@@ -88,7 +88,7 @@ test('publication requires a review snapshot even when the saved decisions are c
   await seedAttributePublication(db, f.batch.id, [decision]);
   const stored = await db.insertInto('product_tags').values(tagRows({ product_id: f.inputId, name: 'duration', value: 90 }))
     .returningAll().execute();
-  for (const reference of [null, {}, { tagStage: 'review' }, { reviewStage: 'generate' }, { reviewStage: 'repair' }, { reviewStage: 'warranty' }]) {
+  for (const reference of Array.of<import('../src/database/types.js').JsonValue>(null, {}, { tagStage: 'review' }, { reviewStage: 'generate' }, { reviewStage: 'repair' }, { reviewStage: 'warranty' })) {
     await db.updateTable('ai_job_batches').set({ reference_snapshot: reference === null ? null : jsonb(reference) })
       .where('id', '=', f.batch.id).execute();
     const before = await db.selectFrom('ai_job_batches').selectAll().where('id', '=', f.batch.id).executeTakeFirstOrThrow();
