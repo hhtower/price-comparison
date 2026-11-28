@@ -12,7 +12,7 @@ test('consultation knowledge explains both top-up features and the limits of gen
   const knowledge = consultationKnowledge(new Date());
   const topUp = knowledge.find(fact => fact.title === '代充');
   assert.ok(topUp);
-  assert.match(topUp.text, /明确要求半价资格.*需半价资格.*其余.*通用/u);
+  assert.match(topUp.text, /ChatGPT Plus.*通用.*半价资格.*其他会员显示.*代充/u);
   assert.match(topUp.text, /通用不保证.*其他购买限制/u);
 });
 
@@ -102,6 +102,7 @@ test('warnings against guarantees are accepted while affirmative promises remain
 test('knowledge omits expired official capability claims and includes the site classification', () => {
   const knowledge = consultationKnowledge(new Date('2026-11-23T12:00:00Z'));
   assert.ok(knowledge.some(fact => fact.title === '短期' && fact.text.includes('25')));
+  assert.ok(knowledge.some(fact => fact.title === '短期' && fact.text.includes('不因未写具体天数归入短期')));
   assert.ok(knowledge.some(fact => fact.title === '使用保障'));
   assert.ok(!knowledge.some(fact => fact.title === '已核验套餐能力'));
   const comparison = knowledge.find(fact => fact.title === '选购比较')!;

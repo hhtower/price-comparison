@@ -43,11 +43,14 @@ test('generation, review and tag repair receive the same title-first evidence po
 
 test('pre-title-priority prompt snapshots are stale for each changed stage', () => {
   const current = pipelineVersionSnapshot('mock');
+  assert.ok(current && typeof current === 'object' && !Array.isArray(current));
   for (const [kind, key, value] of [
     ['manual_full', 'prompt', 'standardization-match-prompt-20261119-v1'],
     ['manual_full', 'standardizationReviewPrompt', 'standardization-match-review-20261119-v1'],
     ['membership_features', 'membershipFeaturePrompt', 'membership-features-20261114-v7'],
     ['membership_features', 'membershipFeatureReviewPrompt', 'membership-feature-review-20261114-v7'],
+    ['membership_features', 'membershipFeaturePrompt', 'membership-features-20261127-v13'],
+    ['membership_features', 'membershipFeatureReviewPrompt', 'membership-feature-review-20261127-v13'],
     ['tag_extraction', 'tagPrompt', 'tag-20261117-v17'],
     ['tag_extraction', 'tagReviewPrompt', 'tag-review-20261117-v13'],
     ['tag_extraction', 'tagWarrantyPrompt', 'tag-warranty-20261117-v1'],

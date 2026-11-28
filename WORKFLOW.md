@@ -24,6 +24,8 @@ LLM 测试使用 mock 或免费本地模型，不调用付费模型。开发约�
 
 标准化离线评估运行 `npx tsx apps/api/scripts/evaluate-standardization.ts`，使用测试 fixtures 和 mock 响应，不连接数据库或真实模型。
 
+会员分类离线评估运行 `npx tsx apps/api/scripts/evaluate-membership-features.ts responses.json report.json`，使用已有响应生成报告，不调用模型；输出文件须不存在。mock 测试通过不代表真实模型的分类准确率。
+
 ## 部署与升级
 
 部署前配置 `.env`，确认数据库和 Redis 可访问，替换示例管理密码，并设置站点 HTTPS 地址。仅在可信反向代理覆盖转发头且 API 无法被绕过时启用 `TRUST_PROXY`。

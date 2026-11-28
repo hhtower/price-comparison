@@ -46,7 +46,7 @@ export const PURCHASE_GUIDE_CONTENT = {
     },
     {
       id: 'guide-short-term', title: '短期', choice: '保障较短，或条件尚不明确',
-      text: '包括保障不足 25 天，以及保障或交付方式不明确的商品。',
+      text: '包括明确的短期商品（不足 25 天）、仅有短时或首登保障，以及没有保障承诺或交付方式不明确的商品。“质保订阅”或“保整个订阅周期”按订单保障理解，不因未写具体天数归入短期。',
     },
   ],
   comparison: {
